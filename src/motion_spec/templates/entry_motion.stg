@@ -29,9 +29,6 @@ struct <motion.id>_state {
 <chain-state-members(motion.serial_chain_solvers)>
 <if(motion.entry_snapshots)>    bool snapshot_taken = false;
 <endif>
-<motion.relative_poses:{rp |     KDL::Frame <rp.id>_start_frame;
-    bool <rp.id>_start_captured = false;
-}; separator="\n">
 <motion.controllers:{controller | <controller-member(controller)>}; separator="\n">
 <motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
 <motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
@@ -61,7 +58,6 @@ inline void update_<motion.id>(
 }><endif>
 <motion.active_observation_ages:{a |     shared.<a.coordinate> = shared.clock_time_s - shared.<a.observed_at>;
 }><motion-prelude(motion.serial_chain_solvers, solvers, backend)>
-<motion.relative_poses:{rp | <emit-relative-pose(rp)>}; separator="\n">
 <if(motion.entry_snapshots)>
     if (!state.snapshot_taken) {
 <motion.entry_snapshots:{snap | <emit-snapshot(snap, closures, views)>}; separator="\n">

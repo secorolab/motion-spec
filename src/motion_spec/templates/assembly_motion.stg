@@ -173,14 +173,6 @@ perturbation-write-block(bodies) ::= <<
 <bodies:{b |         *robot.wrench_cmd_<b.slot> = <b.members:{p|shared.<p.applied_id>}; separator=" + ">;}; separator="\n">
 >>
 
-emit-relative-pose(rp) ::= <<
-    if (!state.<rp.id>_start_captured) {
-        state.<rp.id>_start_frame = shared.<rp.fk_pose_id>;
-        state.<rp.id>_start_captured = true;
-    }
-    shared.<rp.id> = state.<rp.id>_start_frame.Inverse() * shared.<rp.fk_pose_id>;
->>
-
 emit-snapshot(snap, closures, views) ::= <<
 <if(snap.source_closure_id)>
         <({emit-call-<closures.(snap.source_closure_id).type>})(closures.(snap.source_closure_id), views)>

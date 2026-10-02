@@ -2,9 +2,9 @@
 // mj_kdl backend tool: MuJoCo+KDL simulation robot impl and CMake generation.
 
 import "backend_robot.stg"
-robot-driver-include-mj_kdl(solver, model_name, resources) ::= <<
+robot-driver-include-mj_kdl(solver, resources) ::= <<
 #include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
-#include "headers/<model_name>.kdl.hpp"
+<resources.world_trees:{tree |#include "headers/<tree.header>"}; separator="\n">
 >>
 
 robot-state-struct-mj_kdl(solver) ::= <<
@@ -118,14 +118,14 @@ robot-init-mj_kdl(solver) ::= <<
 <if(solver.hardware.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime.id>{};
 <solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
 }>    KDL::Chain built_chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
+    if (!<solver.chain.namespace>::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
     if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>", &mj_tool_<solver.runtime.id>); !_s) {
 <else>    KDL::Chain built_chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
+    if (!<solver.chain.namespace>::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
@@ -454,7 +454,6 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
             return 1;
         }
     }
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
     // Cameras this run records: a named one writes a video instead of publishing frames.
     const auto _record_video_path = [](const std::string &id) {
         const char *wanted = std::getenv("MOTION_SPEC_RECORD_CAMERAS");
@@ -574,7 +573,6 @@ app-chain-setup-mj_kdl(serial_chain_solvers, scene, config_path, ros, world_port
     \}
 }; separator="\n">
 <endif>
-#endif
 >>
 
 app-chain-post-setup-mj_kdl(serial_chain_solvers, motions, agent_homes) ::= <<
@@ -657,7 +655,7 @@ app-chain-runtime-step-mj_kdl(serial_chain_solvers, active_motion) ::= <<
         }
 >>
 
-app-chain-introspection-sample-mj_kdl(serial_chain_solvers) ::= <<
+app-chain-telemetry-sample-mj_kdl(serial_chain_solvers) ::= <<
 >>
 
 app-chain-control-apply-mj_kdl(serial_chain_solvers) ::= <<

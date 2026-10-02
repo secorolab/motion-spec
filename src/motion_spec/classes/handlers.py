@@ -192,7 +192,6 @@ class EdgeMonitor:
     active_any: bool = False
     # FSM binding (folded when the monitor's event lives in the FSM namespace).
     fsm_namespace: str | None = None
-    fsm_event_idx: int | None = None
     ros: RosPublication | None = None
     answer: RosGoalAnswer | None = None
     type: str = field(default="EdgeMonitor")

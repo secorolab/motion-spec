@@ -229,6 +229,7 @@ class MotionSpecGroup(click.Group):
                     ("run", "Execute the controller and create a recorded run archive."),
                     ("rerun", "Run the last generation again, without naming it."),
                     ("replay", "Verify, summarize, or recover data from a recorded run."),
+                    ("view", "Compose a .scenex in MuJoCo and view it."),
                 ]
             )
         with _manual_section(formatter, "ARTIFACTS"):
@@ -411,6 +412,51 @@ def _environment_options(command):
             "then the nearest setup-motion-spec.bash above the generation."
         ),
     )(command)
+
+
+def _run_options(command):
+    """What one run of a built controller takes, for `run` and `rerun` alike."""
+    for option in reversed(
+        (
+            click.option("--run-id", help="Name of this run's directory under <generation>/runs."),
+            click.option(
+                "--cwd",
+                type=click.Path(exists=True, file_okay=False, path_type=Path),
+                help="Working directory of the executable; scene assets resolve relative to it.",
+            ),
+            click.option("--headless", is_flag=True, help="Run without a GUI."),
+            click.option(
+                "--rtf",
+                type=click.FloatRange(min=0.0),
+                help="Real-time factor: 1.0 paces the loop to wall time, 0.5 half speed, 2.0 "
+                "double. Headless runs uncapped (as fast as the machine allows) unless given; "
+                "with a GUI the viewer's live speed setting applies. Only the wall duration "
+                "changes -- the simulation clock advances one control period per tick either way.",
+            ),
+            click.option(
+                "--start-paused",
+                is_flag=True,
+                help="Arm the run paused; the loop holds on its first tick until the dashboard "
+                "resumes it.",
+            ),
+            click.option(
+                "--record",
+                "record",
+                multiple=True,
+                metavar="CAMERA",
+                help="Record this camera to MP4 beside the log. Simulations render declared "
+                "cameras; real runs record their declared ROS image topics. Repeatable.",
+            ),
+            click.option(
+                "--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps."
+            ),
+            click.option(
+                "--no-log", is_flag=True, help="Do not write the frame log; the run has no replay."
+            ),
+        )
+    ):
+        command = option(command)
+    return command
 
 
 def _environment(
@@ -892,7 +938,7 @@ def examples(into: Path | None) -> None:
     "profiles",
     multiple=True,
     type=click.Choice(
-        ("base", "introspection", "dsl", "codegen", "ros", "build", "runtime", "all")
+        ("base", "telemetry", "dsl", "codegen", "ros", "build", "runtime", "all")
     ),
     default=("all",),
     show_default=True,
@@ -933,7 +979,7 @@ def health(
         click.echo("\r\033[2K", err=True, nl=False)
     requirements = {
         "base": "required for every installation",
-        "introspection": "required for recording and replay",
+        "telemetry": "required for recording and replay",
         "dsl": "required for DSL generation",
         "codegen": "required for C++ generation",
         "ros": "required only for models with ROS communication",
@@ -1163,28 +1209,49 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
 @main.command()
 @click.argument("log", type=click.Path(path_type=Path))
 @click.option("--jsonl", is_flag=True, help="Emit decoded frames as JSON Lines.")
-@click.option("--verify", is_flag=True, help="Verify the manifest and frame-log header.")
+@click.option(
+    "--verify",
+    is_flag=True,
+    help="Check the archive: every file its manifest names, the log against the generation's "
+    "contract, and every frame decoded against what the writer reported.",
+)
 def replay(log: Path, jsonl: bool, verify: bool) -> None:
     """Inspect a recorded run LOG."""
-    from motion_spec.introspection.archive import ArchiveError
-    from motion_spec.introspection.replay import (
-        decode_frames,
-        resolve_archive,
-        summarize,
-        validate_header,
-    )
+    from motion_spec.runs.archive import ArchiveError
+    from motion_spec.runs.replay import decode_frames, summarize, verify_archive
 
     try:
         if verify:
-            _run_dir, log_path, _manifest, schema = resolve_archive(log)
-            validate_header(log_path, schema)
-            _say("done", "archive OK")
+            _say("done", f"archive OK, {verify_archive(log)} frames")
         elif jsonl:
             for record in decode_frames(log):
                 click.echo(json.dumps(record, separators=(",", ":")))
         else:
             click.echo(summarize(log))
     except ArchiveError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@main.command()
+@click.argument("scenex", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Robot config whose [<agent>] home puts each driven chain at its start pose.",
+)
+@click.option("--headless", is_flag=True, help="Compose and describe the scene; open no viewer.")
+def view(scenex: Path, config: Path | None, headless: bool) -> None:
+    """Compose a .scenex in MuJoCo and view it, without generating or building anything."""
+    from rdf_utils.constraints import ConstraintViolation
+
+    with _requirements_reported():
+        from motion_spec.view import view as view_scene
+
+    try:
+        view_scene(scenex, config, headless)
+    except ConstraintViolation as exc:
+        raise _model_rejected(exc) from exc
+    except FileNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
@@ -1241,36 +1308,7 @@ def _is_simulated(generation: Path) -> bool:
     help="Name the generation tree under the base directory; defaults to the model's stem. "
     "Requires a .robmot INPUT.",
 )
-@click.option("--run-id", help="Name of this run's directory under <generation>/runs.")
-@click.option(
-    "--cwd",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Working directory of the executable; scene assets resolve relative to it.",
-)
-@click.option("--headless", is_flag=True, help="Run without a GUI.")
-@click.option(
-    "--rtf",
-    type=click.FloatRange(min=0.0),
-    help="Real-time factor: 1.0 paces the loop to wall time, 0.5 half speed, 2.0 double. "
-    "Headless runs uncapped (as fast as the machine allows) unless given; with a GUI the "
-    "viewer's live speed setting applies. Only the wall duration changes -- the simulation "
-    "clock advances one control period per tick either way.",
-)
-@click.option(
-    "--start-paused",
-    is_flag=True,
-    help="Arm the run paused; the loop holds on its first tick until the dashboard resumes it.",
-)
-@click.option(
-    "--record",
-    "record",
-    multiple=True,
-    metavar="CAMERA",
-    help="Record this camera to MP4 beside the log. Simulations render declared cameras; "
-    "real runs record their declared ROS image topics. Repeatable.",
-)
-@click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
-@click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
+@_run_options
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @_environment_options
 def run(
@@ -1301,8 +1339,8 @@ def run(
     with _requirements_reported():
         from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import build_generation, generate_model, new_id
-        from motion_spec.introspection.archive import ArchiveError
-        from motion_spec.introspection.runner import RunnerError, run_cataloged
+        from motion_spec.runs.archive import ArchiveError
+        from motion_spec.runs.runner import RunnerError, run_cataloged
 
     if steps is not None and not headless:
         raise click.UsageError("--steps requires --headless")
@@ -1378,35 +1416,11 @@ def run(
 @click.argument(
     "generation", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
-@click.option("--run-id")
-@click.option("--cwd", type=click.Path(exists=True, file_okay=False, path_type=Path))
-@click.option("--headless", is_flag=True, help="Run without a GUI.")
-@click.option(
-    "--record",
-    "record",
-    multiple=True,
-    metavar="CAMERA",
-    help="Record this camera to MP4 beside the log. Simulations render declared cameras; "
-    "real runs record their declared ROS image topics. Repeatable.",
-)
-@click.option("--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps.")
-@click.option("--no-log", is_flag=True, help="Do not write the frame log; the run has no replay.")
+@_run_options
 @click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @_environment_options
 @click.pass_context
-def rerun(
-    ctx: click.Context,
-    generation: Path | None,
-    run_id: str | None,
-    cwd: Path | None,
-    headless: bool,
-    record: tuple[str, ...],
-    steps: int | None,
-    no_log: bool,
-    executable_args: tuple[str, ...],
-    env_script: Path | None,
-    no_env: bool,
-) -> None:
+def rerun(ctx: click.Context, generation: Path | None, **options) -> None:
     """Run a generation again, in a run of its own.
 
     `run` for the generation `latest` points at, so the timestamped path a `gen` just made need
@@ -1415,18 +1429,5 @@ def rerun(
     generation = (generation or _latest_generation()).resolve()
     _say("info", f"generation {generation}")
     ctx.invoke(
-        run,
-        input=generation,
-        output_dir=None,
-        prefixes=(),
-        jobs=None,
-        run_id=run_id,
-        cwd=cwd,
-        headless=headless,
-        record=record,
-        steps=steps,
-        no_log=no_log,
-        executable_args=executable_args,
-        env_script=env_script,
-        no_env=no_env,
+        run, input=generation, output_dir=None, prefixes=(), jobs=None, name=None, **options
     )

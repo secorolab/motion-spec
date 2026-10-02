@@ -32,10 +32,9 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.namespace import NS_MM_EL
-from rdf_utils.naming import get_valid_var_name
-from rdf_utils.uri import iri_is_descendant, iri_parent
+from rdf_utils.uri import iri_is_descendant
 from rdflib.namespace import RDF, RDFS, SDO
+from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.constraints import ConstraintTransition, GuardedMotion
@@ -66,20 +65,6 @@ from motion_spec.rdf_parser.operations import (
     Schedule,
     path_projections_for_motion,
 )
-from motion_spec.rdf_parser.vocab import (
-    URI_FSM_PRED_DESCRIPTION,
-    URI_FSM_PRED_DO_TRANSITION,
-    URI_FSM_PRED_END_STATE,
-    URI_FSM_PRED_FIRES_EVENTS,
-    URI_FSM_PRED_NAME,
-    URI_FSM_PRED_REACTIONS,
-    URI_FSM_PRED_START_STATE,
-    URI_FSM_PRED_STATES,
-    URI_FSM_PRED_TRANSITION_FROM,
-    URI_FSM_PRED_TRANSITION_TO,
-    URI_FSM_PRED_TRANSITIONS,
-    URI_FSM_TYPE_FSM,
-)
 
 _PHASES = ("when", "while", "until")
 _PHASE_PREDICATES = {"when": MOT["when"], "while": MOT["while"], "until": MOT["until"]}
@@ -103,7 +88,11 @@ def _observation_instant(model, constraint_node) -> str | None:
     graph = model.graph
     interval = graph.value(constraint_node, TIME.hasTime)
     begin = graph.value(interval, TIME.hasBeginning) if interval is not None else None
-    observed = next(graph.subjects(SOSA.phenomenonTime, begin), None) if begin is not None else None
+    observed = (
+        graph.value(predicate=SOSA.phenomenonTime, object=begin)
+        if begin is not None
+        else None
+    )
     if observed is None:
         return None
     perceived = {
@@ -167,7 +156,6 @@ def guarded_motion(model, node) -> GuardedMotion:
 
 def constraint_handler(model, node) -> ConstraintHandler:
     """A ConstraintHandler: the motion it governs, and the evaluators and monitors it binds."""
-    model.expect_type(node, CSTR_HDL["ConstraintHandler"])
     graph = model.graph
 
     return ConstraintHandler(
@@ -176,7 +164,7 @@ def constraint_handler(model, node) -> ConstraintHandler:
         [constraint_evaluator(model, item) for item in graph[node : CSTR_HDL["evaluators"]]],
         [],
         [monitor_entry(model, item) for item in graph[node : CSTR_HDL["monitors"]]],
-        int(getattr(model.graph.value(node, APP.order), "value", 0)),
+        int(getattr(graph.value(node, APP.order), "value", 0)),
     )
 
 
@@ -191,13 +179,14 @@ _ELAPSED_RELATIONS = (
 @reader
 def constraint_evaluator(model, node) -> ConstraintEvaluator:
     """A ConstraintEvaluator: the constraint it watches, and the error signal it writes."""
-    model.expect_type(node, CSTR_HDL["ConstraintEvaluator"])
     graph = model.graph
     constraint_node = graph.value(node, CSTR_HDL["constraint"])
     assignment = CSTR_HDL["AssignmentEvaluator"] in get_node_types(graph, node)
     error_node = None if assignment else graph.value(node, CSTR_HDL["error"])
 
-    status_slot = quantities.goal_status_act(model, graph.value(constraint_node, CSTR["quantity"]))
+    status_slot = quantities.goal_status_act(
+        model, graph.value(constraint_node, CSTR["quantity"])
+    )
     goal_status = None
     if status_slot is not None:
         reference = graph.value(constraint_node, CSTR["reference-value"])
@@ -212,7 +201,9 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
             ((op, pred) for type_, op, pred in _ELAPSED_RELATIONS if type_ in types),
             ("<", CSTR["threshold"]),
         )
-        threshold = quantities.duration_seconds(model, graph.value(constraint_node, predicate))
+        threshold = quantities.duration_seconds(
+            model, graph.value(constraint_node, predicate)
+        )
         if operator == "==":
             band_node = graph.value(constraint_node, CSTR_EXT["tolerance"])
             elapsed_tolerance = quantities.duration_seconds(model, band_node)
@@ -241,12 +232,16 @@ def _monitored_expression(model, monitored):
     A named group and a whole-section conjunction/disjunction are the same thing here: one
     condition carrying its own members and join, which the monitor's terms are built from.
     """
-    expression = next(
-        (node for node in monitored if quantities.is_constraint_aggregate(model, node)), None
-    )
-    if expression is None:
+    expressions = [node for node in monitored if quantities.is_constraint_aggregate(model, node)]
+    if not expressions:
         return [], [], [], False
-    nodes = sorted(model.graph[expression : CSTR_EXT["has-constraint"]])
+    if len(expressions) > 1:
+        raise ConstraintViolation(
+            "coordination",
+            f"a monitor watches {len(expressions)} constraint groups -- it watches one condition",
+        )
+    expression = expressions[0]
+    nodes = list(model.graph[expression : CSTR_EXT["has-constraint"]])
     members = [model.id(member) for member in nodes]
     bands = [model.graph.value(member, CSTR_EXT["tolerance"]) for member in nodes]
 
@@ -261,9 +256,10 @@ def _monitored_expression(model, monitored):
 @reader
 def monitor_entry(model, node):
     """A monitor: a level flag its constraint sets continuously, or an edge event it fires once."""
-    model.expect_type(node, CSTR_HDL["Monitor"])
     graph = model.graph
-    handler = next(graph.subjects(CSTR_HDL.monitors, node), None)
+    handler = ensure_one_typed_subject_uri(
+        graph, node, CSTR_HDL.monitors, CSTR_HDL.ConstraintHandler
+    )
     motion = graph.value(handler, CSTR_HDL.motion) if handler is not None else None
     monitored = set(graph.objects(node, CSTR_HDL.constraint))
     sections = {
@@ -297,8 +293,8 @@ def monitor_entry(model, node):
         "group_constraint_uris": group_uris,
         "group_constraint_tolerances": group_bands,
         "group_any": group_any,
-        "constraint_ids": sorted(model.id(item) for item in monitored),
-        "constraint_uris": sorted(str(item) for item in monitored),
+        "constraint_ids": [model.id(item) for item in monitored],
+        "constraint_uris": [str(item) for item in monitored],
     }
     types = get_node_types(graph, node)
     publication = _ros_publication(model, node)
@@ -328,7 +324,6 @@ def monitor_entry(model, node):
         None,
         **shared,
         event_uri=str(event_node),
-        event_name=event.upper(),
         fallback_motion=model.id(fallback) if fallback is not None else None,
         debounce_id=model.id(debounce) if debounce is not None else None,
         **publication,
@@ -410,15 +405,7 @@ def action_shape(type_name: str) -> dict:
         "include": include,
         "goal": goal,
         "result": result,
-        # A goal or a result may reach into other interface packages; the build needs every one
-        # of them, not just the package the action itself lives in.
-        "packages": sorted({package} | _leaf_packages(goal) | _leaf_packages(result)),
     }
-
-
-def _leaf_packages(shape: dict) -> set:
-    """The interface packages the message classes owning a shape's leaves come from."""
-    return {owner.__module__.split(".")[0] for _element, owner in shape["leaves"].values()}
 
 
 def _cpp_names(message) -> tuple[str, str, str]:
@@ -521,10 +508,6 @@ def observation_shape(type_name: str, pose_path: str) -> dict:
         "package": package,
         "cpp_type": cpp_type,
         "include": include,
-        # The message may reach into other interface packages; the build needs every one of them.
-        "packages": sorted(
-            {package} | _leaf_packages(_shape_of(root, type_name, package, include))
-        ),
         "detections_path": detections_path,
         "id_path": _sole(ids, "string fields", element_name),
         "frame_path": f"{header}.{_FRAME_FIELD}",
@@ -576,7 +559,7 @@ def _detection_pose(detection, element_name: str, pose_path: str) -> str:
 def _sole(candidates: list, what: str, where: str):
     """The one candidate, or the error naming what was offered instead."""
     if len(candidates) != 1:
-        offered = ", ".join(sorted(str(c) for c in candidates)) or "none"
+        offered = ", ".join(str(c) for c in candidates) or "none"
         raise ConstraintViolation(
             "communication", f"'{where}' offers {len(candidates)} {what}: {offered}"
         )
@@ -679,7 +662,7 @@ def _shape_of(root, type_name: str, package: str, include: str) -> dict:
     """
     leaves: dict[str, tuple[str, object]] = {}
     auto: dict[str, str] = {}
-    repeated: set[str] = set()
+    repeated: list[str] = []
 
     def walk(message, prefix: str) -> None:
         for name, field_type in message.get_fields_and_field_types().items():
@@ -694,7 +677,7 @@ def _shape_of(root, type_name: str, package: str, include: str) -> dict:
             else:
                 leaves[path] = (element, message)
                 if many:
-                    repeated.add(path)
+                    repeated.append(path)
 
     walk(root, "")
 
@@ -735,7 +718,7 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
         raise ConstraintViolation(
             "communication",
             f"a '{quantity_type}' has no ROS type that carries it whole; a standing publish "
-            f"reports {', '.join(sorted(_PAYLOAD_TYPES))}",
+            f"reports {', '.join(_PAYLOAD_TYPES)}",
         )
     root = _message_class(type_name)
     wanted = _carried(root, carriers)
@@ -747,21 +730,17 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
     entry = None if carries_one else _entry_shape(root, wanted, type_name)
     shape = {
         **shape,
-        # The message may reach into other interface packages; the build needs every one of them.
-        "packages": sorted({package} | _leaf_packages(shape)),
         # Dotted prefix, empty when the message is the quantity and nothing else.
         "payload_path": "" if entry else _prefix(_descend_to(root, wanted, type_name)),
         # The frame the quantity is stated against is the message's to carry, when it has a header.
         "frame_path": _frame_path(root),
-        "auto_time": sorted(path for path, kind in shape["auto"].items() if kind == "time"),
-        "auto_context_id": sorted(
+        "auto_time": [path for path, kind in shape["auto"].items() if kind == "time"],
+        "auto_context_id": [
             path for path, kind in shape["auto"].items() if kind == "context_id"
-        ),
+        ],
         "entry": entry,
         "carrier": _message_class(wanted).__name__,
     }
-    if entry:
-        shape["packages"] = sorted(set(shape["packages"]) | set(entry["packages"]))
 
     return shape
 
@@ -792,8 +771,7 @@ def _entry_shape(root, wanted: str, type_name: str) -> dict:
         # the read side compares against.
         "id_path": _sole(ids, "string fields", entry_name),
         "frame_path": _frame_path(entry),
-        "auto_time": sorted(path for path, kind in shape["auto"].items() if kind == "time"),
-        "packages": sorted({package} | _leaf_packages(shape)),
+        "auto_time": [path for path, kind in shape["auto"].items() if kind == "time"],
     }
 
 
@@ -813,7 +791,7 @@ def _frame_path(message) -> str | None:
 
 def _sole_payload_path(shape: dict) -> str:
     """The one field the sugar form means, once the auto-filled ones are set aside."""
-    leaves = sorted(shape["leaves"])
+    leaves = list(shape["leaves"])
     if len(leaves) != 1:
         raise ConstraintViolation(
             "communication",
@@ -851,7 +829,7 @@ def publish_field(shape: dict, path: str, text: str) -> dict:
         raise ConstraintViolation(
             "communication",
             f"'{path}' is not a payload field of '{shape['type_name']}'; it offers "
-            f"{', '.join(sorted(shape['leaves'])) or 'none'}",
+            f"{', '.join(shape['leaves']) or 'none'}",
         )
     return {"path": path, "cpp_value": _cpp_value(shape, path, text)}
 
@@ -898,7 +876,7 @@ def _ros_publication(model, node) -> dict:
     occurrence_path = None
     occurrence_events: list[str] = []
 
-    for row in sorted(graph.objects(node, RDFS.member)):
+    for row in graph.objects(node, RDFS.member):
         # An action member is the goal this monitor answers, which is nothing this topic carries.
         if (row, RDF.type, NS_MM_ROS["Action"]) in graph:
             continue
@@ -938,8 +916,8 @@ def _ros_publication(model, node) -> dict:
             f"{model.id(node)}_pub".replace("-", "_"),
             on_satisfied=on_satisfied,
             on_violated=on_violated,
-            auto_time=sorted(path for path, kind in auto.items() if kind == "time"),
-            auto_context_id=sorted(path for path, kind in auto.items() if kind == "context_id"),
+            auto_time=[path for path, kind in auto.items() if kind == "time"],
+            auto_context_id=[path for path, kind in auto.items() if kind == "context_id"],
             occurrence_path=occurrence_path,
             occurrence_events=occurrence_events,
             rate_hz=_publish_rate(model, node),
@@ -969,7 +947,7 @@ def _ros_answer(model, node) -> dict:
     answer = next(
         (
             member
-            for member in sorted(graph.objects(node, RDFS.member))
+            for member in graph.objects(node, RDFS.member)
             if (member, RDF.type, NS_MM_ROS["Action"]) in graph
         ),
         None,
@@ -979,7 +957,7 @@ def _ros_answer(model, node) -> dict:
     shape = action_shape(str(graph.value(answer, NS_MM_ROS["type-name"]) or ""))["result"]
     watched = set(graph.objects(node, CSTR_HDL["constraint"]))
     outcome, satisfied, fields = None, True, []
-    for member in sorted(graph.objects(answer, RDFS.member)):
+    for member in graph.objects(answer, RDFS.member):
         path = graph.value(member, NS_MM_ROS["field-path"])
         if path is None:
             outcome = str(graph.value(member, RDF.value))
@@ -990,7 +968,7 @@ def _ros_answer(model, node) -> dict:
         raise ConstraintViolation(
             "communication",
             f"monitor '{model.id(node)}' answers its goal '{outcome}'; a run answers "
-            f"{' or '.join(sorted(_ANSWER_METHODS))}",
+            f"{' or '.join(_ANSWER_METHODS)}",
         )
 
     return {
@@ -1000,10 +978,10 @@ def _ros_answer(model, node) -> dict:
             shape["cpp_type"],
             fields=fields,
             satisfied=satisfied,
-            auto_time=sorted(path for path, kind in shape["auto"].items() if kind == "time"),
-            auto_context_id=sorted(
+            auto_time=[path for path, kind in shape["auto"].items() if kind == "time"],
+            auto_context_id=[
                 path for path, kind in shape["auto"].items() if kind == "context_id"
-            ),
+            ],
         )
     }
 
@@ -1072,9 +1050,7 @@ def build_constraint_handlers(model, schedule, derivation):
             for controller in reversed(derivation.controllers_for(plan))
         )
         steps.extend(
-            SolverIdFactory(
-                model.id(plan.controller), model.motion_suffix(plan.motion)
-            ).pose_evaluator()
+            SolverIdFactory(model, plan.controller).pose_evaluator()
             for plan in reversed(plans)
             if len(plan.axes) > 1 and alignment_rotation_op(model, plan.quantity) is None
         )
@@ -1140,7 +1116,7 @@ class PhaseNodes:
             # A group monitor names one of the section's nodes, not the whole section, and the
             # group node itself never appears in the expanded member sets.
             for phase in ("when", "until"):
-                if monitored == self.raw[phase] or monitored <= self.raw[phase]:
+                if monitored <= self.raw[phase]:
                     return phase
 
             return next((p for p in _PHASES if monitored & self.watched[p]), None)
@@ -1169,13 +1145,13 @@ class PhaseNodes:
 def _upstream_dependencies(data_id: str, closure_inputs: dict) -> set:
     """Every data id that feeds one id, however many closures deep."""
     result: set[str] = set()
-    pending = list(closure_inputs.get(data_id, set()))
+    pending = list(closure_inputs.get(data_id, ()))
     while pending:
         item = pending.pop()
         if item in result:
             continue
         result.add(item)
-        pending.extend(closure_inputs.get(item, set()))
+        pending.extend(closure_inputs.get(item, ()))
     return result
 
 
@@ -1186,12 +1162,17 @@ def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
     template reaches them through `solver_id` into `resources.by_id`.
     """
     result = []
-    driver_id = f"driver_{handler.id}"
     for solver in serial_chains:
         if solver.id not in solver_ids or not solver.motion_drivers:
             continue
-        drivers = solver.motion_drivers
-        selected = next((driver for driver in drivers if driver.id == driver_id), drivers[0])
+        owned = [driver for driver in solver.motion_drivers if driver.handler == handler.id]
+        if len(owned) != 1:
+            raise ConstraintViolation(
+                "coordination",
+                f"solver '{solver.id}' carries {len(owned)} motion drivers of handler "
+                f"'{handler.id}' -- a handler drives a solver through one",
+            )
+        selected = owned[0]
         result.append(
             MotionSolverSlice(
                 id=solver.id,
@@ -1215,17 +1196,16 @@ def _cartesian_force_nodes(model, chain_solvers, handler, computation, handler_n
         for node in (model.node_by_id.get(solver.motion_driver.id) for solver in chain_solvers)
         if node is not None
     ]
-    # A force distribution's drivers hang off the solver, not off a chain. sorted() throughout:
-    # triples iterate in hash order, which varies between processes and orders the schedule.
+    # A force distribution's drivers hang off the solver, not off a chain.
     if handler_node is not None:
         driver_nodes.extend(
             driver
-            for solver_node in sorted(graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"]))
+            for solver_node in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
             if (solver_node, RDF.type, SLV["ForceDistributionSolver"]) in graph
-            for driver in sorted(graph[solver_node : SLV["motion-drivers"]])
+            for driver in graph[solver_node : SLV["motion-drivers"]]
         )
     for driver_node in driver_nodes:
-        for node in sorted(graph[driver_node : SLV["cartesian-force"]]):
+        for node in graph[driver_node : SLV["cartesian-force"]]:
             force = graph.value(node, SLV["force"])
             if force is None:
                 continue
@@ -1319,13 +1299,13 @@ def _motion_schedules(
             until.append(model.id(node))
 
     grouped_ids = {component.eval_id for group in groups for component in group.components}
-    grouped_nodes = {node for node in phase.evaluators["while"] if model.id(node) in grouped_ids}
+    grouped_nodes = [node for node in phase.evaluators["while"] if model.id(node) in grouped_ids]
     # A grouped evaluator's error is emitted inline ahead of the schedule block, but whatever
     # produces its reference still has to run first -- so walk the grouped nodes before the main
     # pass rather than skipping those producers entirely.
     while_pre = [
         step
-        for step in scope.of(sorted(grouped_nodes, key=str), OPS_GENERIC + OPS_HANDLER)
+        for step in scope.of(grouped_nodes, OPS_GENERIC + OPS_HANDLER)
         if step not in grouped_ids
     ]
 
@@ -1381,8 +1361,7 @@ def _alignment_chain_steps(model, phase) -> list:
     """
     graph = model.graph
     steps = []
-    # sorted(): a set of nodes iterates in hash order, which varies between processes.
-    for constraint in sorted(phase.constraints["while"]):
+    for constraint in phase.constraints["while"]:
         quantity = graph.value(constraint, CSTR.quantity)
         if quantity is None:
             continue
@@ -1411,11 +1390,7 @@ def _pose_command_steps(model, scope, active_plans) -> list:
         )
         if interpolation is not None:
             steps.extend(scope.of([interpolation], OPS_GENERIC + OPS_HANDLER))
-        steps.append(
-            SolverIdFactory(
-                model.id(plan.controller), model.motion_suffix(plan.motion)
-            ).pose_evaluator()
-        )
+        steps.append(SolverIdFactory(model, plan.controller).pose_evaluator())
 
     return steps
 
@@ -1435,7 +1410,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
     """
     motions = []
     tokens = {
-        model.motion_suffix(model.graph.value(model.node_by_id[handler.id], CSTR_HDL["motion"]))
+        model.id(model.graph.value(model.node_by_id[handler.id], CSTR_HDL["motion"]))
         for handler in handlers
     }
     # A per-motion slice copies nothing off its solver: `solver_id` resolves through the
@@ -1472,7 +1447,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         ]
         # Drop the calls another motion owns: the backward walk can reach its closures, and
         # running them here would recompute its outputs while it is inactive.
-        token = model.motion_suffix(motion_node)
+        token = model.id(motion_node)
         owner = computation.indexes.closure_owner
         schedules.active = [step for step in schedules.active if owner.get(step, token) == token]
         schedules.while_pre = [
@@ -1563,9 +1538,6 @@ def _motion_unit(
         has_elapsed=bool(when_elapsed or active_elapsed or when_ages or active_ages),
         has_until_condition=bool(evaluators["until"]),
         serial_chain_solvers=chain_solvers,
-        relative_poses=quantities.relative_poses_for_motion(
-            all_evaluators, computation.views, chain_solvers
-        ),
         pose_axis_error_groups=groups,
         while_pre_schedule=schedules.while_pre,
         forwarded_commands=_forwarded_commands(
@@ -1579,7 +1551,7 @@ def _motion_unit(
             # while_pre too: a grouped row's setpoint generator runs there and may read a snapshot.
             schedules.while_pre + schedules.active + schedules.when + schedules.until,
             computation.closures,
-            model.motion_suffix(motion_node),
+            model.id(motion_node),
             tokens,
         ),
         path_projections=path_projections_for_motion(
@@ -1675,12 +1647,12 @@ def annotate_sensor_dependencies(motions, computation) -> None:
             if view.subobject.id in references
         }
         for solver in motion.serial_chain_solvers:
-            solver.required_sensors = sorted(
+            solver.required_sensors = [
                 output.sensor_name
                 for output in solver.output
                 if (output.id in references or output.id in referenced_outputs)
                 and getattr(output, "sensor_name", "")
-            )
+            ]
 
 
 def evaluator_term(evaluator) -> dict:
@@ -1688,7 +1660,7 @@ def evaluator_term(evaluator) -> dict:
 
     An elapsed timing predicate or a solver constraint-satisfied check. Every term kind reads
     shared state and nothing else, so the same condition renders identically inside the motion and
-    in the introspection sample that runs outside it.
+    in the telemetry sample that runs outside it.
     """
     if evaluator.goal_status:
         return {
@@ -1808,7 +1780,7 @@ def _set_monitor_conditions(motion, phase: str) -> None:
             continue
         # A whole-section monitor over a flat constraint list, from a graph minted before
         # sections carried an expression node. Archived generations vendor those graphs and
-        # introspection replay rebuilds the IR from them, so the join is spelled out here: a
+        # telemetry replay rebuilds the IR from them, so the join is spelled out here: a
         # section only ever linked flat when it meant a conjunction.
         if getattr(monitor, aggregate_field):
             _stamp_terms(monitor, terms, False, f"the whole '{phase}' section of '{motion.id}'")
@@ -1831,7 +1803,7 @@ def _set_motion_conditions(motion) -> None:
 def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
     """Fold the capability booleans each generated function's signature is built from.
 
-    Also assigns each motion its introspection index, so the frame-log schema and the generated
+    Also assigns each motion its telemetry index, so the frame-log schema and the generated
     sample switch read one field rather than agreeing with a second generator.
     """
     for index, motion in enumerate(motions):
@@ -1861,7 +1833,7 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
 
         motion.apply_needs_state = has_chain
         # Gate on the torque limit, not on the joint-space samples: this runs before the
-        # introspection artifact exists, so the sample list does not yet.
+        # telemetry artifact exists, so the sample list does not yet.
         motion.apply_needs_shared = bool(motion.forwarded_commands) or any(
             solvers_by_id[solver.solver_id].torque_saturation
             for solver in motion.serial_chain_solvers
@@ -1890,78 +1862,6 @@ def _add_motion_function_interfaces(motions: list, solvers_by_id: dict) -> None:
         motion.step_needs_events = until_events or control_events
 
 
-def read_fsm(model) -> dict | None:
-    """The FSM named graph, framed the way codegen reads it.
-
-    States, events, transitions and reactions, in the same shape the standalone header uses, so
-    codegen needs no second read of the FSM document. None when the model imports no `.fsm`.
-
-    Returns:
-        the framed FSM, with every table sorted -- event indices are assigned from this order and
-        baked into the generated C++, so two generations must agree on it
-    """
-    graph = model.graph
-    fsm_node = next(iter(graph.subjects(RDF["type"], URI_FSM_TYPE_FSM)), None)
-    if fsm_node is None:
-        return None
-
-    def token(uri):
-        return get_valid_var_name(graph.compute_qname(uri)[2]).upper()
-
-    state_uris = dict(
-        sorted((token(s), str(s)) for s in graph.objects(fsm_node, URI_FSM_PRED_STATES))
-    )
-    event_loop = graph.value(fsm_node, NS_MM_EL["event-loop"])
-    event_uris = dict(
-        sorted((token(e), str(e)) for e in graph.objects(event_loop, NS_MM_EL["has-event"]))
-    )
-    transitions = sorted(
-        (
-            {
-                "id": token(node),
-                "uri": str(node),
-                "from_state": token(graph.value(node, URI_FSM_PRED_TRANSITION_FROM)),
-                "to_state": token(graph.value(node, URI_FSM_PRED_TRANSITION_TO)),
-            }
-            for node in graph.objects(fsm_node, URI_FSM_PRED_TRANSITIONS)
-        ),
-        key=lambda row: row["id"],
-    )
-    reactions = sorted(
-        (
-            {
-                "id": token(node),
-                "uri": str(node),
-                "when_event": token(graph.value(node, NS_MM_EL["ref-event"])),
-                "do_transition": token(graph.value(node, URI_FSM_PRED_DO_TRANSITION)),
-                "fires_events": sorted(
-                    token(event) for event in graph.objects(node, URI_FSM_PRED_FIRES_EVENTS)
-                ),
-                "num_fires": len(list(graph.objects(node, URI_FSM_PRED_FIRES_EVENTS))),
-            }
-            for node in graph.objects(fsm_node, URI_FSM_PRED_REACTIONS)
-        ),
-        key=lambda row: row["id"],
-    )
-    description = graph.value(fsm_node, URI_FSM_PRED_DESCRIPTION)
-
-    return {
-        "name": str(graph.value(fsm_node, URI_FSM_PRED_NAME)),
-        "description": str(description) if description is not None else None,
-        "start_state": token(graph.value(fsm_node, URI_FSM_PRED_START_STATE)),
-        "end_state": token(graph.value(fsm_node, URI_FSM_PRED_END_STATE)),
-        "states": list(state_uris),
-        "state_uris": state_uris,
-        "events": list(event_uris),
-        "event_uris": event_uris,
-        "transitions_table": transitions,
-        "reactions_table": reactions,
-        # Event and state IRIs share the FSM node's parent path; a monitor's event is matched
-        # against it to tell an FSM event from a monitor-owned one.
-        "namespace_uri": str(model.child_node(iri_parent(fsm_node), "")),
-    }
-
-
 def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
     """Tag the monitors that fire the FSM, and return the wiring codegen needs beside it.
 
@@ -1971,8 +1871,7 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
             motion names no hold motion, or an unknown one.
     """
     namespace = fsm["name"].lower() if fsm else None
-    events = fsm.get("events", []) if fsm else []
-    index_by_event = {event: index for index, event in enumerate(events)}
+    events = fsm["event_uris"] if fsm else {}
     step_event = "E_STEP" if "E_STEP" in events else None
     # The heartbeat is the clock and is not logged every tick, but where a transition's guard is
     # the clock, that occurrence caused the state change -- so name those transitions.
@@ -1980,8 +1879,8 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
     meta = {
         "cpp_namespace": namespace,
         "header": f"{fsm['name']}.hpp" if fsm else None,
+        "start_state": fsm["start_state"] if fsm else None,
         "step_event": step_event,
-        "step_event_idx": index_by_event.get(step_event, -1),
         "step_transitions": [
             {"from": transition["from_state"], "to": transition["to_state"]}
             for reaction in (fsm.get("reactions_table", []) if fsm else [])
@@ -1997,7 +1896,7 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
         if stuck:
             raise ConstraintViolation(
                 "coordination",
-                f"motions {sorted(stuck)} declare no 'until' condition and the model imports no "
+                f"motions {stuck} declare no 'until' condition and the model imports no "
                 "FSM, so nothing can end them; add an 'until' condition or coordinate the model "
                 "with an FSM",
             )
@@ -2006,6 +1905,8 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
         return meta
 
     namespace_uri = fsm.get("namespace_uri")
+    # coord-dsl's own token per event IRI: the name its enum gives the event.
+    event_by_uri = {uri: token for token, uri in events.items()}
     state_by_event = {
         reaction["when_event"]: transitions[reaction["do_transition"]]["from_state"]
         for reaction in fsm["reactions_table"]
@@ -2035,7 +1936,7 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
                     "ends the run; it needs a monitor on that until, or the loop never leaves.",
                 )
             motion.runs_in_end_state = True
-            fsm["end_motion"] = motion.id
+            meta["end_motion"] = motion.id
 
     def fires_fsm_event(monitor) -> bool:
         """A monitor fires the FSM only when its event lives in the FSM's namespace; a
@@ -2046,8 +1947,15 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
         )
 
     def stamp(monitor):
+        event_name = event_by_uri.get(monitor.event_uri)
+        if event_name is None:
+            raise ConstraintViolation(
+                "coordination",
+                f"monitor '{monitor.id}' fires '{monitor.event_uri}', which the FSM '{namespace}' "
+                "does not declare.",
+            )
         monitor.fsm_namespace = namespace
-        monitor.fsm_event_idx = index_by_event.get(monitor.event_name or "", -1)
+        monitor.event_name = event_name
 
     # A sensor re-tares on occurrences the same way a snapshot re-samples on them.
     for solver in solvers:
@@ -2056,11 +1964,11 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 continue
             names = []
             for uri in out.retare_event_uris:
-                name = uri.rsplit("/", 1)[-1].rsplit("#", 1)[-1]
-                if not iri_is_descendant(namespace_uri or "", uri) or name not in index_by_event:
+                name = event_by_uri.get(uri)
+                if name is None:
                     raise ConstraintViolation(
                         "coordination",
-                        f"Wrench '{out.id}' re-tares on '{name}', which '{namespace}' does not "
+                        f"Wrench '{out.id}' re-tares on '{uri}', which '{namespace}' does not "
                         "declare.",
                     )
                 names.append(f"{namespace}::{name}")
@@ -2071,12 +1979,14 @@ def _apply_fsm_wiring(motions, fsm, solvers) -> dict:
         for snapshot in motion.snapshots:
             if not snapshot.trigger_event:
                 continue
-            if snapshot.trigger_event not in index_by_event:
+            trigger = event_by_uri.get(snapshot.trigger_event)
+            if trigger is None:
                 raise ConstraintViolation(
                     "coordination",
                     f"Snapshot '{snapshot.target_id}' in motion '{motion.id}' triggers on "
                     f"'{snapshot.trigger_event}', which the FSM '{namespace}' does not declare.",
                 )
+            snapshot.trigger_event = trigger
             snapshot.fsm_namespace = namespace
         for monitor in [*motion.until_monitors, *motion.while_monitors]:
             if not fires_fsm_event(monitor):
@@ -2160,12 +2070,8 @@ def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
         )
 
     passed_through = {transition["from"] for transition in meta["step_transitions"]}
-    idle = sorted(
-        _reachable_states(fsm)
-        - {motion.fsm_state for motion in motions}
-        - passed_through
-        - {fsm["end_state"]}
-    )
+    bound = {motion.fsm_state for motion in motions} | passed_through | {fsm["end_state"]}
+    idle = [state for state in _reachable_states(fsm) if state not in bound]
     if idle:
         raise ConstraintViolation(
             "coordination",
@@ -2226,7 +2132,7 @@ def _apply_reentry_events(motions, fsm) -> None:
         if state is not None:
             fired_by_state.setdefault(state, set()).update(row["fires_events"])
     for motion in motions:
-        motion.reentry_events = sorted(fired_by_state.get(motion.fsm_state, ()))
+        motion.reentry_events = list(fired_by_state.get(motion.fsm_state, ()))
 
 
 def _when_gate_fallback(motion, monitor, units_by_motion):
@@ -2255,7 +2161,7 @@ def _when_gate_fallback(motion, monitor, units_by_motion):
             "coordination",
             f"WHEN monitor '{monitor.id}' on motion '{motion.id}' falls back to "
             f"'{monitor.fallback_motion}', which is realized by more than one constraint "
-            f"handler ({', '.join(sorted(unit.id for unit in candidates))}), so nothing says "
+            f"handler ({', '.join(unit.id for unit in candidates)}), so nothing says "
             "which of them holds while the gated motion waits. Name the handler's own motion.",
         )
 

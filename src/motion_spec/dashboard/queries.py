@@ -22,8 +22,8 @@ from motion_spec.dashboard.graph import (
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.replay import resolve_archive
+from motion_spec.runs.replay import resolve_archive
+from motion_spec.telemetry import frame_log_pb
 
 # A picture of a hundred thousand triples is a locked browser, not an answer.
 GRAPH_MAX_TRIPLES = 20_000
@@ -53,7 +53,12 @@ def run_graph(run_dir: Path) -> GraphService:
     key = (str(log), log.stat().st_size, True)
     if key not in _GRAPHS:
         _GRAPHS.clear()
-        _GRAPHS[key] = GraphService(run_dir.parent.parent, manifest=run_model_manifest(run_dir))
+        named = json_file(run_dir / "manifest.json").get("files", {}).get("graphs")
+        _GRAPHS[key] = GraphService(
+            run_dir.parent.parent,
+            manifest=run_model_manifest(run_dir),
+            graphs=[(run_dir / path).resolve() for path in named] if named else None,
+        )
     return _GRAPHS[key]
 
 

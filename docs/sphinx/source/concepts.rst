@@ -80,6 +80,8 @@ High-level commands
      - ``run`` for the generation ``latest`` points at (or a named one); generates and builds nothing
    * - ``replay RUN``
      - Summarize, verify, decode, or recover a recorded run
+   * - ``view SCENEX``
+     - Compose a scene in MuJoCo and view it, without generating or building anything
 
 Use ``--prefix`` on ``build`` or ``run`` to add CMake package prefixes. It is
 repeatable for ``build``. ``-o``, ``--prefix``, and ``-j`` configure generation

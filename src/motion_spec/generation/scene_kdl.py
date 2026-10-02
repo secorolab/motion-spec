@@ -3,31 +3,13 @@
 
 `scene-dsl` lowers the scene graph into KDL segments and renders them as C++ (plan 012);
 this module is the seam where `motion-spec` picks that up: it names the chain each robot
-assembly should build, lists that chain's joints as MuJoCo knows them, and writes the
-header the generated controller includes. See `plans/013-kdl-chain-from-scenex.md`.
+assembly should build and lists that chain's joints as MuJoCo knows them.
+See `plans/013-kdl-chain-from-scenex.md`.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from jinja2 import Environment, FileSystemLoader
 from rdf_utils.constraints import ConstraintViolation
-from rdflib import Graph
-from scene_dsl.kdl_tree import build_kdl_trees
-
-NAMESPACE = "scene_kdl"
-
-
-def model_stem(source: str | Path) -> str:
-    """The motion model's own name, stripped of the manifest suffix it arrives with."""
-    name = Path(source).name
-    return name[: -len("-app.ld.json")] if name.endswith("-app.ld.json") else Path(name).stem
-
-
-def kdl_header_name(source: str | Path) -> str:
-    """The controller-local KDL header named after its source motion model."""
-    return f"{model_stem(source)}.kdl.hpp"
 
 
 def _joint_segments(tree: dict, chain: dict) -> list[str]:
@@ -99,6 +81,7 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
                 return {
                     "name": chain["cpp_name"],
                     "tree": tree["cpp_name"],
+                    "namespace": tree["namespace"],
                     "joints": [joint["local_name"] for joint in chain["joints"]],
                     "joint_segments": _joint_segments(tree, chain),
                     "frames": chain["frames"],
@@ -112,6 +95,7 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
     return {
         "name": "",
         "tree": "",
+        "namespace": "",
         "joints": [],
         "joint_segments": [],
         "frames": {},
@@ -122,30 +106,3 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
         "tree_root": "",
         "world_segments": {},
     }
-
-
-def _template_dir() -> Path:
-    import scene_dsl
-
-    return Path(scene_dsl.__file__).parent / "templates"
-
-
-def write_scene_kdl_header(
-    graph: Graph, output_dir: Path, source: str, base_dir: Path | None = None
-) -> Path:
-    """Render the scene's KDL builders next to the controller that includes them."""
-    env = Environment(loader=FileSystemLoader(_template_dir()), keep_trailing_newline=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / kdl_header_name(source)
-    path.write_text(
-        env.get_template("kdl.hpp.jinja2").render(
-            {
-                "data": {
-                    "name": NAMESPACE,
-                    "source": source,
-                    "trees": build_kdl_trees(graph, base_dir),
-                }
-            }
-        )
-    )
-    return path

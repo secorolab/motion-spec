@@ -174,7 +174,7 @@ in its header:
 .. code-block:: console
 
    $ motion-spec run <model>.robmot -o <generations>
-   $ python -c "from motion_spec.introspection.replay import summarize; print(summarize('<log>.pb'))"
+   $ python -c "from motion_spec.runs.replay import summarize; print(summarize('<log>.pb'))"
 
 The summary reports mean and maximum period alongside mean and maximum compute time. Compare the
 two: if compute is a small fraction of the period and the period still overshoots, the cause is

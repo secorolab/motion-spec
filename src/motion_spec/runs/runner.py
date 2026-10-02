@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # SPDX-FileContributor: Vamsi Kalagaturu <vamsikalagaturu@gmail.com>
-"""Launch generated introspection executables under REC cataloging."""
+"""Launch generated controllers under REC cataloging."""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -15,20 +16,17 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from rdflib import Graph
+from rdflib import Graph, URIRef
 from rec import State, Verdict
 
-from motion_spec.introspection.archive import create_archive_manifest, verify_manifest
-from motion_spec.introspection.frame_log_pb import ctrl_shm_name, read_sampling, shm_name_for
-from motion_spec.introspection.lifecycle_events import publish_lifecycle
-from motion_spec.introspection.provenance import (
+from motion_spec.runs.archive import create_archive_manifest, verify_manifest
+from motion_spec.runs.lifecycle_events import publish_lifecycle
+from motion_spec.runs.provenance import (
     CONTROLLER_PROCESS,
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
     GRAPH_EXECUTION,
     RUN_IRI_BASE,
-    ensure_local_rec_importable,
-    host_info,
     parse_rec_time,
     rec_document,
     rec_run_lifecycle_from_file,
@@ -36,10 +34,10 @@ from motion_spec.introspection.provenance import (
     record_execution,
     record_software,
     record_used_file,
-    uri,
     write_generation_graph,
 )
-from motion_spec.introspection.ros_video import RosImageRecorder, real_camera_recordings
+from motion_spec.runs.ros_video import RosImageRecorder, real_camera_recordings
+from motion_spec.telemetry.frame_log_pb import ctrl_shm_name, read_sampling, shm_name_for
 
 
 class RunnerError(RuntimeError):
@@ -323,14 +321,14 @@ def _start_rec_run(
     cwd: Path | None = None,
     environment: dict | None = None,
 ) -> None:
-    ensure_local_rec_importable()
-    from rec.run import Run
+    from rec.run import Run, host_info
 
     # One run, one node: rec describes the same IRI the generation provenance describes, so
     # the documents union instead of standing side by side.
     run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
     run._emit_started()
-    run.log_host_info(host_info(environment))
+    # The environment a build and a run depend on: the host alone names no toolchain or prefix.
+    run.log_host_info({**host_info(), **({"environment": environment} if environment else {})})
     record_software(run, run_dir)
     _record_execution_inputs(run, run_dir, executable, schema, cwd, environment)
     run.observers[0].close()
@@ -365,9 +363,13 @@ def _record_execution_inputs(
         if not config.is_absolute():
             config = (cwd or Path.cwd()) / declared
         inputs.append((config, "deployment_config"))
-    script = (environment or {}).get("script")
-    if script:
-        inputs.append((Path(script), "environment"))
+    script = Path((environment or {}).get("script") or "")
+    if script.is_file():
+        # Kept with the run: the workspace's file can change or go, and its path is the machine's.
+        kept = run_dir / "files" / f"environment{script.suffix}"
+        kept.parent.mkdir(exist_ok=True)
+        shutil.copy2(script, kept)
+        inputs.append((kept, "environment"))
     for path, role in inputs:
         if path.exists():
             record_used_file(run, path, role, os.path.relpath(path, run_dir))
@@ -564,7 +566,6 @@ def _tee(stream, sink) -> None:
 
 def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
     """Complete the run with VERDICT: passed, or error for a run stopped early, else failed."""
-    ensure_local_rec_importable()
     from rec.run import Run
 
     run_dir = rec_path.parent
@@ -593,7 +594,6 @@ def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
 
 def _record_sampling(rec_path: Path, run_id: str, sampling: dict) -> None:
     """The seed as a metric of the run, and each drawn value as an entity the run generated."""
-    ensure_local_rec_importable()
     from rec.run import Run
 
     run_dir = rec_path.parent
@@ -603,7 +603,14 @@ def _record_sampling(rec_path: Path, run_id: str, sampling: dict) -> None:
     drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=timezone.utc)
     graph = Graph()
     for quantity, values in sorted(sampling["draws"].items()):
-        record_draw(graph, run_id, uri(CONTROLLER_PROCESS), quantity, values, drawn_at)
+        record_draw(
+            graph,
+            run_id,
+            URIRef(CONTROLLER_PROCESS.format(run_id=run_id)),
+            quantity,
+            values,
+            drawn_at,
+        )
     write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
 
 

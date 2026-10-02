@@ -6,7 +6,7 @@ How a model becomes C++: what each stage does, what each module owns, and what t
 interfaces between the stages contain. Read this, then read `rdf_parser/ir.py` top to bottom —
 it *is* the pipeline, in order, and nothing else in the package is reachable except through it.
 
-Diagrams: `proposed-ir`, `proposed-templates`, `proposed-runtime` (`.dot` + `.png`).
+Diagrams: `proposed-templates`, `proposed-runtime` (`.dot` + `.png`).
 The sim/real fork surface and the external-wrench law are a separate page:
 [../sphinx/source/sim-real-parity.rst](../sphinx/source/sim-real-parity.rst).
 
@@ -17,8 +17,9 @@ The sim/real fork surface and the external-wrench law are a separate page:
 `ir.py` is one forward pass. Reading it top to bottom is reading the data flow:
 
 ```text
-<model>-app.ld.json                          the manifest: the app graph plus its imports
-  model.load_model                           one merged graph, the identity rules, the read cache
+<model>.robmot
+  motion_spec_dsl.gens.generate              writes the JSON-LD; returns the dataset, one graph per document
+  model.Model                                that dataset, the identity rules, the read cache
   operations.normalize                       materialize the operations the model implies
   operations.build_closures / Schedule       the computations and the order they run in
   quantities.read_*                          poses, views, snapshots — the values that exist
@@ -26,7 +27,7 @@ The sim/real fork surface and the external-wrench law are a separate page:
   resources.*                                the scene, the robots, the platform they run on
   coordination.*                             handlers, motions, monitors, the FSM
   quantities.annotate_dataflow               the blackboard contract
-  communication.build_introspection          the frame log, the model samples, the run graph
+  communication.build_telemetry              the frame log, the model samples, the run graph
   → the published IR, sectioned by the 5Cs
 generated/model/ir.json
   → generation/codegen.py + templates/*.stg
@@ -81,7 +82,7 @@ records, constraint handlers, and every member of `shared_data` including the ru
 A published payload that nothing mutates after it is built may stay a plain dict: the `platform`,
 the trace settings, the agent homes, the `by_kind` views. Two mutated structures stay dicts
 because a fixed set of fields cannot describe them — a **closure**, whose keys are operand names
-taken from RDF predicates, and an **introspection row**, whose shape is the artifact's. Both are
+taken from RDF predicates, and a **telemetry row**, whose shape is the artifact's. Both are
 read and written as dicts.
 
 There is therefore no dict-or-dataclass access helper. Attributes are read as attributes and keys
@@ -91,11 +92,11 @@ design error, not a reason to reintroduce one.
 **Each concern validates what it reads, at the moment it reads it.** There is no validator module
 and no `check_*` entry point: a scene object on real hardware is rejected inside `read_scene`, a
 solver the backend cannot run inside `build_robots`, an unresolvable id inside
-`build_introspection`. Fail fast, in the one place that still holds the context needed for the
+`build_telemetry`. Fail fast, in the one place that still holds the context needed for the
 message. A module never validates another module's records.
 
 **A concern exposes what it knows as data; only `communication.py` turns data into rows.** No
-module outside it appends to the introspection artifact or to the frame log. When a concern has
+module outside it appends to the telemetry artifact or to the frame log. When a concern has
 something to contribute — the internal state a PID keeps, the gains a controller carries, the
 joint-space channels a serial chain mirrors — it publishes that as a table, and
 `communication.py` reads the table and builds every member and every row itself.
@@ -105,10 +106,11 @@ named section rather than a comment in the middle of a long file.
 
 ### `model.py` — the loaded model
 
-`load_model(manifest_path) -> Model` resolves the manifest's imports, installs the IRI-to-file
-resolver and merges one graph. `Model` then carries everything every reader needs:
+`Model` wraps the dataset `motion_spec_dsl.gens.generate` returns, read in process rather than
+re-parsed from the files it wrote: the manifest in the default graph, each imported document as
+the graph its import IRI names, read as their union. It carries everything every reader needs:
 
-- the graph, the app-model path, and the imported model/provenance sources;
+- the graph and the app-model path;
 - **identity** — `id(node)` is the single id-minting rule, `label(node)`, and
   `assert_no_id_collisions()`, which rejects two distinct IRIs collapsing onto one generated id;
 - **derived IRIs** — `register_derived(id_, parent_iri, suffix, relation)` mints
@@ -162,8 +164,8 @@ Public, in three groups:
 - readers — `quantity`, `pose`, `position`, `orientation`, `velocity_twist`,
   `acceleration_twist`, `wrench`, `joint_position`, `frame`, `position_values`,
   `orientation_quaternion`, `read_views`, `read_data_structures`;
-- per-motion queries — `relative_poses_for_motion`, `scene_relative_poses_for_motion`,
-  `snapshots_for_motion`, `pose_axis_error_groups_for_motion`, `declared_pose_component_entries`,
+- per-motion queries — `snapshots_for_motion`, `pose_axis_error_groups_for_motion`,
+  `declared_pose_component_entries`,
   `collect_motion_references`, `elapsed_coordinate_ids`, `expanded_constraints`;
 - blackboard — `build_indexes`, `ComputationIndexes`, `filter_shared_data`, `views_for_access`,
   `views_by_subobject`, `annotate_dataflow`, `PORT_PRODUCERS`.
@@ -218,20 +220,19 @@ Public: `build_constraint_handlers`, `build_motions`, `read_fsm`, `evaluator_ter
 
 ### `communication.py` — what leaves the loop
 
-The introspection artifact — uris, motion/controller/monitor/quantity/signal rows, provenance —
+The telemetry artifact — uris, motion/controller/monitor/quantity/signal rows, provenance —
 the frame-log samples built from the blackboard, and the ROS publishers collected off the
 monitors. It reads the tables each concern exports — the internal state a PID keeps, the gains a
 controller carries, the joint-space channels a chain mirrors — and builds every member and every
 row itself. It also checks that every published id resolves to an IRI: one that does not is a
 derived entity minted without registering where it came from.
 
-Public: `build_introspection`, `ros_publishers`.
+Public: `build_telemetry`, `ros_publishers`.
 
 ### `ir.py` — the pipeline
 
-`generate_ir(manifest_path)` calls the stages above in order and assembles the six sections. It
-holds no derivation. Public: `generate_ir` — a caller that wants the graph itself asks
-`model.load_model`, not a re-export from here.
+`generate_ir(model)` calls the stages above in order and assembles the six sections. It holds no
+derivation. Public: `generate_ir`.
 
 ## 3. The two interfaces
 
@@ -256,7 +257,7 @@ generated `main.cpp` loop already conforms to the 4C loop — clock read (commun
 | `composition` | `scene` | how bodies are placed and attached into one world |
 | `computation` | `shared_data`, `values`, `closures`, `views`, `clock` | what is computed each tick, and the blackboard it lives on |
 | `coordination` | `motions`, `fsm` | what runs when |
-| `communication` | `introspection`, `ros` | what leaves the loop: the frame log, the shm publisher, the ROS topics — one story, not three |
+| `communication` | `telemetry`, `ros` | what leaves the loop: the frame log, the shm publisher, the ROS topics — one story, not three |
 
 Two rules keep the table from drifting:
 

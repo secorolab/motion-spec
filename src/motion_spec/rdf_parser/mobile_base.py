@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 import numpy as np
 from rdf_utils.constraints import ConstraintViolation
 
+from motion_spec.classes.geometry import Axis, Subspace
 from motion_spec.rdf_parser.model import local_name
+from motion_spec.rdf_parser.quantities import views_by_subobject
 
 
 @dataclass
@@ -160,17 +162,14 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
     )
 
 
-# Which platform coordinate a controller drives, read off the component it regulates. The
-# platform's three coordinates are longitudinal, transverse and yaw, so a controller closing on the
-# twist's x velocity and one commanding the wrench's x force both produce the same coordinate --
+# Which platform coordinate a controller drives, read off the view of the component it regulates.
+# The platform's three coordinates are longitudinal, transverse and yaw, so a controller closing on
+# the twist's x velocity and one commanding the wrench's x force both produce the same coordinate --
 # the first by regulating it, the second open loop.
 _COORDINATE_BY_COMPONENT = {
-    "linvel_x": 0,
-    "linvel_y": 1,
-    "angvel_z": 2,
-    "force_x": 0,
-    "force_y": 1,
-    "torque_z": 2,
+    (Subspace.Linear, Axis.X): 0,
+    (Subspace.Linear, Axis.Y): 1,
+    (Subspace.Angular, Axis.Z): 2,
 }
 
 
@@ -178,7 +177,7 @@ _COORDINATE_BY_COMPONENT = {
 _PLATFORM_WRENCH_COMPONENTS = (("force", "x"), ("force", "y"), ("torque", "z"))
 
 
-def wrench_terms_by_motion(motions, velocity_solvers, force_solvers=()) -> list[dict]:
+def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -> list[dict]:
     """Per motion, the controller outputs that make up the platform wrench, by coordinate.
 
     Two kinds of term reach the platform. A controller closing on one of the platform's own
@@ -195,17 +194,19 @@ def wrench_terms_by_motion(motions, velocity_solvers, force_solvers=()) -> list[
     platform_ids = {
         solver.velocity.id for solver in velocity_solvers if getattr(solver, "velocity", None)
     } | {solver.force.id for solver in force_solvers if getattr(solver, "force", None)}
+    by_subobject = views_by_subobject(views)
     # Every wrench the force distributions are fed, by the controller that commands it.
     wrench_by_controller = {}
     for solver in force_solvers:
-        platform_key = getattr(getattr(solver, "force", None), "as_seen_by", None)
-        platform_key = getattr(platform_key, "world_key", None)
+        platform_frame = getattr(getattr(solver, "force", None), "as_seen_by", None)
+        platform_key = solver.world_keys.get(getattr(platform_frame, "uri", None))
         for spec in getattr(solver, "forces", ()) or ():
             wrench = getattr(getattr(spec, "force", None), "id", None)
             if wrench:
-                wrench_by_controller[spec.id] = (
+                frame = getattr(spec.force, "as_seen_by", None)
+                wrench_by_controller[spec.controller] = (
                     wrench,
-                    getattr(getattr(spec.force, "as_seen_by", None), "world_key", None),
+                    solver.world_keys.get(getattr(frame, "uri", None)),
                     platform_key,
                 )
 
@@ -216,7 +217,7 @@ def wrench_terms_by_motion(motions, velocity_solvers, force_solvers=()) -> list[
             signal = getattr(getattr(controller, "control_signal", None), "id", None)
             if not signal:
                 continue
-            commanded = wrench_by_controller.get(f"spec_{controller.id}")
+            commanded = wrench_by_controller.get(controller.id)
             if commanded is not None:
                 wrench, frame_key, platform_key = commanded
                 # The wrench is built in the frame its constraint measures in; the platform sums
@@ -240,13 +241,16 @@ def wrench_terms_by_motion(motions, velocity_solvers, force_solvers=()) -> list[
                     for index, (subspace, axis) in enumerate(_PLATFORM_WRENCH_COMPONENTS)
                 )
                 continue
-            measured = getattr(controller, "measured_signal", None)
-            if not measured:
+            measured = by_subobject.get(getattr(controller, "measured_signal", None), ())
+            if len(measured) > 1:
+                raise ConstraintViolation(
+                    "control",
+                    f"controller '{controller.id}' measures a quantity {len(measured)} views read",
+                )
+            view = measured[0] if measured else None
+            if view is None or getattr(view.superobject, "id", None) not in platform_ids:
                 continue
-            owner = next((pid for pid in platform_ids if measured.startswith(f"{pid}_")), None)
-            if owner is None:
-                continue
-            coordinate = _COORDINATE_BY_COMPONENT.get(measured[len(owner) + 1 :])
+            coordinate = _COORDINATE_BY_COMPONENT.get((view.subspace, view.axis))
             if coordinate is None:
                 continue
             terms.append({"signal": signal, "coordinate": coordinate})

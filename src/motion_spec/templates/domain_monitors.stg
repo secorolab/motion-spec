@@ -17,7 +17,7 @@ motion_spec::runtime::constraint_satisfied(shared.<t.error_id>, <band(t.toleranc
 
 // The elapsed seconds are a shared value, like every other term's input: the motion owns the
 // phase's start time, and whoever reads the condition -- the motion itself, or the
-// introspection sample running outside its state -- reads the same number.
+// telemetry sample running outside its state -- reads the same number.
 
 cond-term-elapsed(t) ::= <<
 (shared.<t.elapsed_id> <t.op> <t.threshold>)

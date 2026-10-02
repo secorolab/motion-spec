@@ -41,6 +41,8 @@ class MjcfSceneRobot:
     """A robot placed in the scene, with its attachments."""
 
     id: str
+    # The scene's agent node, which provenance names the robot by.
+    agent: str
     path: str
     prefix: str = ""
     attach_kind: str = "World"

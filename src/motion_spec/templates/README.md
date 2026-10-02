@@ -1,7 +1,7 @@
 # templates
 
 StringTemplate v4 (`.stg`) groups that motion-spec codegen renders into the generated C++
-controller, introspection artifacts, and CMake.
+controller, its telemetry, and CMake.
 
 Architecture, measurements and citations: `docs/codegen-architecture/`.
 
@@ -37,18 +37,20 @@ emit something need a rule.
 | root | `main.stg` | imports the entry groups; no rules |
 | L4 entry | `entry_program.stg` | `main_source`, `shared_state_header` |
 | | `entry_motion.stg` | `motion_header` |
-| | `entry_introspection.stg` | `frame_layout.h`, the frame-log writer, model samples, `frame_log.proto` |
+| | `entry_telemetry.stg` | `frame_layout.h`, the frame-log and shared-memory writer, model samples |
 | | `entry_build.stg` | `cmake_mj_kdl`, `cmake_robif2b`, `robot_config.hpp` |
-| L3 assembly | `assembly_loop.stg` | chain setup, clock, telemetry, ROS wiring |
+| | `runtime.stg` | `runtime_header`: the loop core, then each domain's runtime section the spec uses |
+| L3 assembly | `assembly_loop.stg` | the import anchor for every backend leaf |
 | | `assembly_coordination.stg` | FSM dispatch and per-state step functions |
 | | `assembly_motion.stg` | schedules, motion cycle, chain and device members |
 | L2 domain | `domain_solver.stg` | Vereshchagin/RNE solver state, init, run stages |
 | | `domain_closures.stg` | closure library: trajectories, controllers, geometry |
 | | `domain_monitors.stg` | conditions, edges, flags, ROS publish |
 | | `domain_poses.stg` | pose composition: rotation, position, deltas |
+| | `domain_mobile_base.stg` | the mobile-base cycle and its runtime constants |
+| | `world_kinematics.stg` | the world model every chain reads its poses from |
 | L1 expression | `expr_values.stg` | access expressions, shared members, saturation, lookups |
-| L0 backend | `backend_robot.stg` | backend-neutral dispatch shim |
+| L0 backend | `backend_robot.stg` | the RNE includes and the world-port address table |
 | | `backend_mj_kdl.stg` | MuJoCo+KDL robot impl |
 | | `backend_robif2b.stg` | robif2b robot impl and bound devices |
 | | `backend_kelo.stg` | KELO mobile base (nothing renders it today) |
-| — | `runtime.stg` | 625 lines of static C++ with 1% templating; a shipped header wearing a template's clothes |

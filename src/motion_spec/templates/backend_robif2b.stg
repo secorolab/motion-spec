@@ -4,8 +4,8 @@
 import "backend_robot.stg"
 import "backend_robif2b_io.stg"
 
-robot-driver-include-robif2b(solver, model_name, resources) ::= <<
-<({robot-driver-include-robif2b-<solver.hardware.model>})(solver, model_name, resources)>
+robot-driver-include-robif2b(solver, resources) ::= <<
+<({robot-driver-include-robif2b-<solver.hardware.model>})(solver, resources)>
 >>
 robot-state-struct-robif2b(solver) ::= <<
 <({robot-state-struct-robif2b-<solver.hardware.model>})(solver)>
@@ -30,8 +30,8 @@ robot-shutdown-robif2b(solver) ::= <<
 >>
 
 // The robotiq driver headers ride in device_io.hpp, which includes them per bound device.
-robot-driver-include-robif2b-KinovaGen3(solver, model_name, resources) ::= <<
-#include "headers/<model_name>.kdl.hpp"
+robot-driver-include-robif2b-KinovaGen3(solver, resources) ::= <<
+<resources.world_trees:{tree |#include "headers/<tree.header>"}; separator="\n">
 <if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))>#include "device_io.hpp"
 <endif>#include \<robif2b/functions/kinova_gen3.h\>
 >>
@@ -474,7 +474,7 @@ device-shutdown-robif2b-RobotiqFT300s(solver, device) ::= <<
 
 robot-chain-robif2b-KinovaGen3(solver) ::= <<
 <if(solver.runtime.owner)>    KDL::Chain chain_<solver.runtime.id>{};
-    if (!scene_kdl::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &chain_<solver.runtime.id>)) {
+    if (!<solver.chain.namespace>::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         return 1;
     \}
@@ -543,17 +543,17 @@ app-chain-runtime-step-robif2b(serial_chain_solvers, active_motion) ::= <<
         \}
 >>
 
-device-introspection-sample-impl ::= [
-    "RobotiqFT300s": "device-introspection-sample-robif2b-RobotiqFT300s",
+device-telemetry-sample-impl ::= [
+    "RobotiqFT300s": "device-telemetry-sample-robif2b-RobotiqFT300s",
     default: "device-nothing"
 ]
 
-device-introspection-sample-robif2b-RobotiqFT300s(solver, device) ::= <<
-        { const auto health = ft_<device.drives>_io.sample.read(); _introspection_pub.device_sample(<device.health_index>, health.seq, health.value.success); \}
+device-telemetry-sample-robif2b-RobotiqFT300s(solver, device) ::= <<
+        { const auto health = ft_<device.drives>_io.sample.read(); _telemetry.device_sample(<device.health_index>, health.seq, health.value.success); \}
 >>
 
-app-chain-introspection-sample-robif2b(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <({<device-introspection-sample-impl.(device.kind)>})(solver, device)>}; separator=""><endif>}; separator="">
+app-chain-telemetry-sample-robif2b(serial_chain_solvers) ::= <<
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)><solver.devices:{device | <({<device-telemetry-sample-impl.(device.kind)>})(solver, device)>}; separator=""><endif>}; separator="">
 >>
 
 app-chain-trace-update-robif2b(serial_chain_solvers, trace) ::= <<

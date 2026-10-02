@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """SPARQL over a run's model graph.
 
-One named graph, ``urn:model``, parsed once from the generation's app manifest and its imports.
+One named graph, ``urn:model``, parsed once from the generation's app manifest and its imports,
+and the scene and FSM graphs beside it.
 The dashboard mints no vocabulary of its own.
 """
 
@@ -118,7 +119,13 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
 class GraphService:
     """One run's queryable model graph."""
 
-    def __init__(self, generation_dir: Path | str, *, manifest: Path | None = None):
+    def __init__(
+        self,
+        generation_dir: Path | str,
+        *,
+        manifest: Path | None = None,
+        graphs: list[Path] | None = None,
+    ):
         self.generation_dir = Path(generation_dir)
         self.dataset = rdflib.Dataset(default_union=True)
         self.model = self.dataset.graph(MODEL_GRAPH)
@@ -129,6 +136,24 @@ class GraphService:
         )
         if manifest is not None:
             self.sources = load_model_graph(manifest, self.dataset, self.model)
+        # The scene and FSM graphs the IR names nodes of, which the manifest imports none of.
+        if graphs is None:
+            model_dir = self.generation_dir / MODEL_REL
+            graphs = [
+                path
+                for pattern in ("*.scenex.ld.json", "*.fsm.ld.json")
+                for path in model_dir.glob(pattern)
+            ]
+        for path in graphs:
+            before = graph_sizes(self.dataset)
+            self.model.parse(path, format="json-ld")
+            self.sources.append(
+                {
+                    "iri": path.resolve().as_uri(),
+                    "path": str(path.resolve()),
+                    **graph_growth(before, graph_sizes(self.dataset)),
+                }
+            )
 
     def query(self, sparql: str) -> tuple[str, object]:
         """(result type, payload) for a SPARQL query over the current dataset.

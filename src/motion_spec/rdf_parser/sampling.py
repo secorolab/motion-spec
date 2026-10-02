@@ -45,14 +45,15 @@ def unplaced_frames(tree: dict) -> list[dict]:
 
 
 def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
-    """Every sampled quantity of the model, sorted by IRI so a seed reproduces the draw."""
+    """Every sampled quantity of the model, in the order the model states them."""
     frames = {
         frame["position_coord_iri"]: (tree, frame)
         for tree in trees
         for frame in unplaced_frames(tree)
     }
-    nodes = sorted(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY), key=str)
-    for coord in sorted(set(frames) - {str(node) for node in nodes}):
+    nodes = list(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
+    sampled = {str(node) for node in nodes}
+    for coord in (coord for coord in frames if coord not in sampled):
         _, frame = frames[coord]
         raise ConstraintViolation(
             "sampling",

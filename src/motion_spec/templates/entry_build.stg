@@ -46,8 +46,6 @@ endif()
 <endif>
 <endif>
 
-option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
-
 add_executable(main
     main.cpp
 )
@@ -87,13 +85,10 @@ target_link_libraries(main PRIVATE
 <communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )
-if(MOTION_SPEC_ENABLE_INTROSPECTION)
-    find_package(Protobuf REQUIRED)
-    target_sources(main PRIVATE frame_log.pb.cc)
-    target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
-    target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
-    target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
-endif()
+find_package(Protobuf REQUIRED)
+target_sources(main PRIVATE frame_log.pb.cc)
+target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
+target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
 target_compile_options(main PRIVATE -Wall -Wextra -ftemplate-depth=2048)
 >>
 
@@ -404,8 +399,6 @@ find_package(rclcpp_action REQUIRED)
 <communication.ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
 <endif>
 
-option(MOTION_SPEC_ENABLE_INTROSPECTION "Enable generated runtime introspection logging" OFF)
-
 add_executable(main
     main.cpp
 )
@@ -445,13 +438,10 @@ target_link_libraries(main PRIVATE
 <communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )
-if(MOTION_SPEC_ENABLE_INTROSPECTION)
-    find_package(Protobuf REQUIRED)
-    target_sources(main PRIVATE frame_log.pb.cc)
-    target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
-    target_compile_definitions(main PRIVATE MOTION_SPEC_ENABLE_INTROSPECTION)
-    target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
-endif()
+find_package(Protobuf REQUIRED)
+target_sources(main PRIVATE frame_log.pb.cc)
+target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
+target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
 target_compile_options(main PRIVATE -Wall -Wextra -ftemplate-depth=2048)
 >>
 

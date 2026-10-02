@@ -2,12 +2,12 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """What leaves the loop.
 
-In order: the rows the introspection artifact is made of; the members each concern's table adds
+In order: the rows the telemetry artifact is made of; the members each concern's table adds
 to the blackboard, and the rows that report them; the frame-log samples; the ROS interface -- what
 the model publishes, the goals it sends and the one it answers; the provenance document; and
-`build_introspection`, which runs all of it in the one order the frame layout depends on.
+`build_telemetry`, which runs all of it in the one order the frame layout depends on.
 
-No other module appends to the introspection artifact or to the frame log. A concern publishes
+No other module appends to the telemetry artifact or to the frame log. A concern publishes
 what it knows as a table -- the internal state a PID keeps, the gains a controller carries, the
 joint-space channels a chain mirrors -- and this module reads the table and builds every member
 and every row itself.
@@ -23,10 +23,12 @@ from rdf_utils.models.common import get_node_types
 from rdflib.namespace import PROV, RDF, RDFS, SOSA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
+from motion_spec.classes.base import unique_by_id
 from motion_spec.classes.motion import BlackboardValue
 from motion_spec.classes.qudt import QuantityKind, Unit
 from motion_spec.rdf_parser import constraint_handler, coordination, quantities, resources
-from motion_spec.rdf_parser.model import identifier
+from motion_spec.rdf_parser.model import identifier, local_name
+from motion_spec.rdf_parser.operations import closure_maps
 
 # Types that get a whole-object frame-log slot rather than per-axis scalar rows.
 _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
@@ -47,17 +49,6 @@ def _prune(row: dict) -> dict:
     return {key: value for key, value in row.items() if value is not None and value != []}
 
 
-def _dedupe_by_id(rows: list) -> list:
-    """Rows deduplicated by id, keeping the first occurrence."""
-    result, seen = [], set()
-    for row in rows:
-        if row.get("id") in seen:
-            continue
-        seen.add(row.get("id"))
-        result.append(row)
-    return result
-
-
 def _id_of(value):
     """The id a row field names, whether it holds the id itself, a record or an enum."""
     if value is None or isinstance(value, str):
@@ -68,7 +59,7 @@ def _id_of(value):
 
 
 def _controller_rows(controller, motion_id: str, uri_by_id: dict):
-    """One controller's introspection row, and one row per signal it binds."""
+    """One controller's telemetry row, and one row per signal it binds."""
     entry = _prune(
         {
             "id": controller.id,
@@ -120,7 +111,7 @@ def _controller_rows(controller, motion_id: str, uri_by_id: dict):
 
 
 def _quantity_row(item, uri_by_id: dict, snapshot_ids: frozenset) -> dict:
-    """One data structure's introspection row: what it is, and where its value came from.
+    """One data structure's telemetry row: what it is, and where its value came from.
 
     `snapshot` is a graph fact, not `Provenance`'s -- looked up by id against the snapshot
     targets `quantities.snapshot_target_ids` collects, since this reader holds a record, not a
@@ -431,8 +422,10 @@ def _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, ba
                     type="Quantity",
                     role="joint_space",
                     producer={"kind": channel.producer, "id": producer_id[channel.producer]},
-                    quantity_kind=QuantityKind(channel.quantity_kind),
-                    unit=Unit(channel.unit),
+                    quantity_kind=QuantityKind(
+                        identifier(local_name(channel.quantity_kind)), str(channel.quantity_kind)
+                    ),
+                    unit=Unit(identifier(local_name(channel.unit)), str(channel.unit)),
                     runtime=runtime_id,
                     channel=channel.name,
                     joint=joint,
@@ -506,7 +499,7 @@ _COMPOSITE_SUPEROBJECTS = {
 }
 
 
-def add_quantity_samples(introspection: dict, shared_data: list, views: dict) -> None:
+def add_quantity_samples(telemetry: dict, shared_data: list, views: dict) -> None:
     """Build the per-quantity frame-log sample rows.
 
     Each row carries a backend-agnostic descriptor -- a kind plus ids and an axis -- and the view
@@ -536,7 +529,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
         )
         samples.append(row)
 
-    for quantity in introspection["quantities"]:
+    for quantity in telemetry["quantities"]:
         quantity_id = quantity.get("id")
         if not quantity_id or quantity_id in spatial_ids:
             continue
@@ -568,7 +561,7 @@ def add_quantity_samples(introspection: dict, shared_data: list, views: dict) ->
         elif item.id in quantities.PORT_PRODUCERS:
             add(_runtime_row(item), "", {"kind": "shared", "id": item.id})
 
-    introspection["quantity_samples"] = samples
+    telemetry["quantity_samples"] = samples
 
 
 def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, spatial_ids, indexed_views):
@@ -593,7 +586,7 @@ def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, spatial_ids
         types = {view.superobject.type for view in views}
         if len(types) != 1:
             raise ConstraintViolation(
-                "introspection",
+                "telemetry",
                 f"quantity sampling: '{quantity_id}' belongs to incompatible MAP views",
             )
         if next(iter(types)) in _COMPOSITE_SUPEROBJECTS:
@@ -606,14 +599,14 @@ def _scalar_descriptor(quantity: dict, quantity_id: str, shared_ids, spatial_ids
     return None
 
 
-def add_spatial_samples(introspection: dict, shared_data: list) -> None:
+def add_spatial_samples(telemetry: dict, shared_data: list) -> None:
     """Build the whole-object pose, twist and wrench frame-log slots."""
     spatial = {"poses": [], "twists": [], "wrenches": []}
     for item in shared_data:
         pool = _SPATIAL_SLOT_KINDS.get(item.type)
         if item.id and pool is not None:
             spatial[pool].append({"id": item.id, "index": len(spatial[pool])})
-    introspection["spatial_samples"] = spatial
+    telemetry["spatial_samples"] = spatial
 
 
 def _publisher_member(by_channel: dict, entry: dict) -> str:
@@ -691,7 +684,7 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
     by_id = {item.id: item for item in data_structures}
     period_s = control_period_ns * 1e-9
     standing = []
-    for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Topic"]), key=str):
+    for node in graph.subjects(RDF["type"], NS_MM_ROS["Topic"]):
         rate_node = graph.value(node, SENSORS["update-rate"])
         # A monitor states a rate too, but what it publishes belongs to its motion rather than
         # to the run, so it is published where the motion is and not from here.
@@ -699,14 +692,11 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
             continue
         # A member stating a field path maps one field; one stating none is an entry the message
         # carries whole.
-        reported = sorted(
-            (
-                row
-                for row in graph.objects(node, RDFS.member)
-                if graph.value(row, NS_MM_ROS["field-path"]) is None
-            ),
-            key=str,
-        )
+        reported = [
+            row
+            for row in graph.objects(node, RDFS.member)
+            if graph.value(row, NS_MM_ROS["field-path"]) is None
+        ]
         if not reported:
             raise ConstraintViolation(
                 "communication",
@@ -727,7 +717,7 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
         if len(kinds) > 1:
             raise ConstraintViolation(
                 "communication",
-                f"'{model.id(node)}' reports {', '.join(sorted(kinds))} on one message; a "
+                f"'{model.id(node)}' reports {', '.join(kinds)} on one message; a "
                 "message carries one kind of quantity",
             )
         rate_hz = quantities.quantity(model, rate_node).value
@@ -780,7 +770,6 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
                             "type_name",
                             "cpp_type",
                             "include",
-                            "packages",
                             "frame_path",
                             "auto_time",
                             "auto_context_id",
@@ -883,7 +872,7 @@ def _standing_fields(model, node, shape: dict) -> list:
     """
     graph = model.graph
     rows = []
-    for row in sorted(graph.objects(node, RDFS.member)):
+    for row in graph.objects(node, RDFS.member):
         authored = graph.value(row, NS_MM_ROS["field-path"])
         if authored is None:
             continue
@@ -892,7 +881,7 @@ def _standing_fields(model, node, shape: dict) -> list:
             raise ConstraintViolation(
                 "communication",
                 f"'{path}' is not a payload field of '{shape['type_name']}'; it offers "
-                f"{', '.join(sorted(shape['leaves'])) or 'none'}",
+                f"{', '.join(shape['leaves']) or 'none'}",
             )
         rows.append({"path": path, "ref": model.id(graph.value(row, RDF.value))})
 
@@ -922,7 +911,7 @@ def _act_motion(model, status_slot) -> str:
     """
     graph = model.graph
     watching = set(graph.subjects(CSTR["quantity"], status_slot))
-    for node in sorted(graph.subjects(RDF["type"], MOT["GuardedMotion"]), key=str):
+    for node in graph.subjects(RDF["type"], MOT["GuardedMotion"]):
         members = set(graph.objects(node, MOT["until"]))
         members |= {
             member for item in members for member in graph.objects(item, CSTR_EXT["has-constraint"])
@@ -946,7 +935,7 @@ def ros_action_clients(model) -> list:
     graph = model.graph
     written = quantities.perceived_written_poses(model)
     clients = []
-    for act in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str):
+    for act in graph.subjects(RDF["type"], NS_MM_ROS["Action"]):
         # A member is a goal arriving: that action is served, not performed.
         if next(iter(graph.objects(act, RDFS.member)), None) is not None:
             continue
@@ -966,10 +955,9 @@ def ros_action_clients(model) -> list:
                 "cpp_type": shape["cpp_type"],
                 "include": shape["include"],
                 "pkg": shape["package"],
-                "packages": shape["packages"],
                 "status_id": model.id(status_slot),
                 "motion": _act_motion(model, status_slot),
-                "target_iris": sorted({row["target_iri"] for row in rows}),
+                "target_iris": list({row["target_iri"] for row in rows}),
                 "written_poses": rows,
                 **detect,
             }
@@ -1003,7 +991,7 @@ def ros_subscriptions(model, segment_by_iri: dict) -> list:
     graph = model.graph
     written = quantities.perceived_written_poses(model)
     subscriptions = []
-    for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Topic"]), key=str):
+    for node in graph.subjects(RDF["type"], NS_MM_ROS["Topic"]):
         rows = written.get(str(node)) or []
         if not rows:
             continue
@@ -1019,7 +1007,6 @@ def ros_subscriptions(model, segment_by_iri: dict) -> list:
                 "cpp_type": shape["cpp_type"],
                 "include": shape["include"],
                 "pkg": shape["package"],
-                "packages": shape["packages"],
                 "written_poses": [
                     {
                         **row,
@@ -1114,7 +1101,7 @@ def _served_action(model):
     graph = model.graph
     served = [
         node
-        for node in sorted(graph.subjects(RDF["type"], NS_MM_ROS["Action"]), key=str)
+        for node in graph.subjects(RDF["type"], NS_MM_ROS["Action"])
         if any(
             graph.value(member, RDF.value) is None for member in graph.objects(node, RDFS.member)
         )
@@ -1152,20 +1139,17 @@ def action_server(model, fsm) -> dict | None:
         )
 
     # A member with no authored value is not a result row: it is the event a goal produces.
-    goal_event = next(
-        (
-            row
-            for row in sorted(graph.objects(node, RDFS.member))
-            if graph.value(row, RDF.value) is None
-        ),
-        None,
-    )
-    if goal_event is None:
+    goal_events = [
+        row for row in graph.objects(node, RDFS.member) if graph.value(row, RDF.value) is None
+    ]
+    if len(goal_events) != 1:
         raise ConstraintViolation(
-            "communication", f"'{model.id(node)}' names no event for an accepted goal to produce"
+            "communication",
+            f"'{model.id(node)}' names {len(goal_events)} events for an accepted goal to "
+            "produce; it needs exactly one",
         )
-    # Tokens, never raw indices: the generated FSM enum is declaration-ordered while this
-    # reader's tables are sorted, so only the enum symbol is stable across the two.
+    (goal_event,) = goal_events
+    # Tokens, never indices: coord-dsl's enum alone numbers the events.
     token_by_uri = {uri: token for token, uri in fsm["event_uris"].items()}
     goal_token = token_by_uri.get(str(goal_event))
     if goal_token is None:
@@ -1177,11 +1161,11 @@ def action_server(model, fsm) -> dict | None:
     # An FSM event lives one tick, so the goal event is produced only when the FSM sits in a
     # state that reacts to it -- a goal accepted during startup must not fire into S_START.
     transitions = {row["id"]: row for row in fsm["transitions_table"]}
-    armed_states = sorted(
+    armed_states = [
         transitions[row["do_transition"]]["from_state"]
         for row in fsm["reactions_table"]
         if row["when_event"] == goal_token
-    )
+    ]
     if not armed_states:
         raise ConstraintViolation(
             "communication",
@@ -1200,21 +1184,20 @@ def action_server(model, fsm) -> dict | None:
         "result_cpp_type": result["cpp_type"],
         "include": shape["include"],
         "pkg": shape["package"],
-        "packages": shape["packages"],
         "goal_event": goal_token,
         "goal_states": armed_states,
         # The scenario a run belongs to arrives on the goal; the run stamps it on everything it
         # publishes afterwards.
-        "goal_context_id": sorted(
+        "goal_context_id": [
             path for path, kind in goal["auto"].items() if kind == "context_id"
-        ),
+        ],
         # A goal may carry more than the run reads. Repeated fields are the ones it can report
         # having ignored, since only they can be counted.
-        "ignored_goal_fields": sorted(goal["repeated"]),
-        "result_auto_time": sorted(path for path, kind in result["auto"].items() if kind == "time"),
-        "result_auto_context_id": sorted(
+        "ignored_goal_fields": goal["repeated"],
+        "result_auto_time": [path for path, kind in result["auto"].items() if kind == "time"],
+        "result_auto_context_id": [
             path for path, kind in result["auto"].items() if kind == "context_id"
-        ),
+        ],
     }
 
 
@@ -1242,7 +1225,7 @@ def annotate_publish_rates(motions, control_period_ns: int) -> None:
             publication.divider = max(1, round(1.0 / (publication.rate_hz * period_s)))
 
 
-def build_introspection(
+def build_telemetry(
     model,
     motions,
     computation,
@@ -1254,7 +1237,7 @@ def build_introspection(
     subscriptions=(),
     config_poses=(),
 ):
-    """Build the introspection artifact.
+    """Build the telemetry artifact.
 
     The order here is the frame layout: the members each concern contributes are added before the
     two sorts, and the two sorts turn list order into the positional indices the frame log and the
@@ -1269,22 +1252,26 @@ def build_introspection(
         motions, uri_by_id, computation.closures
     )
     snapshot_ids = quantities.snapshot_target_ids(model)
+    # Only what reaches the blackboard is a runtime quantity to report.
+    shared_ids = {item.id for item in shared_data}
     quantity_rows = [
-        _quantity_row(item, uri_by_id, snapshot_ids) for item in computation.data_structures
+        _quantity_row(item, uri_by_id, snapshot_ids)
+        for item in computation.data_structures
+        if item.id in shared_ids
     ]
 
-    introspection = {
+    telemetry = {
         "contract_version": 2,
         "control_period_ns": control_period_ns,
         "uris": model.uri_rows(),
         "motions": motion_rows,
-        "controllers": _dedupe_by_id(controller_rows),
-        "monitors": _dedupe_by_id(monitor_rows),
-        "quantities": _dedupe_by_id(quantity_rows),
-        "signals": _dedupe_by_id(signals),
+        "controllers": unique_by_id(controller_rows),
+        "monitors": unique_by_id(monitor_rows),
+        "quantities": unique_by_id(quantity_rows),
+        "signals": unique_by_id(signals),
     }
 
-    rows = introspection["quantities"]
+    rows = telemetry["quantities"]
     seen = {
         "shared": {item.id for item in shared_data if item.id},
         "rows": {row["id"] for row in rows if row.get("id")},
@@ -1294,12 +1281,10 @@ def build_introspection(
     _add_joint_space_mirrors(model, robots, motions, shared_data, rows, seen, backend)
     _add_goal_status_slots(model, shared_data, rows, seen, action_clients)
 
-    shared_data.sort(key=lambda item: item.id or "")
-    rows.sort(key=lambda row: row.get("id") or "")
-    add_quantity_samples(introspection, shared_data, computation.views)
-    add_spatial_samples(introspection, shared_data)
+    add_quantity_samples(telemetry, shared_data, computation.views)
+    add_spatial_samples(telemetry, shared_data)
     quantities.annotate_dataflow(
-        introspection,
+        telemetry,
         shared_data,
         computation.closures,
         motions,
@@ -1313,34 +1298,48 @@ def build_introspection(
 
     # The registry grew while folding the samples in: rebuild the table and backfill every row
     # minted before it was complete.
-    introspection["uris"] = model.uri_rows()
-    introspection["derivations"] = model.derivation_nodes()
-    complete = {row["id"]: row["uri"] for row in introspection["uris"] if row.get("uri")}
+    telemetry["uris"] = model.uri_rows()
+    telemetry["derivations"] = model.derivation_nodes()
+    complete = {row["id"]: row["uri"] for row in telemetry["uris"] if row.get("uri")}
     for key in _ROW_FAMILIES:
-        for row in introspection.get(key) or ():
+        for row in telemetry.get(key) or ():
             if not row.get("uri"):
                 row["uri"] = complete.get(row.get("source_id") or row.get("id")) or row.get("uri")
-    for rows in (introspection.get("spatial_samples") or {}).values():
+    for rows in (telemetry.get("spatial_samples") or {}).values():
         for row in rows:
             if not row.get("uri"):
                 row["uri"] = complete.get(row.get("id")) or row.get("uri")
-    _check_every_id_resolves(introspection)
+    # What a derived value is, and the values it is computed from: what its writers read.
+    reads = closure_maps(computation.closures).operands
+    members = {item.id: item for item in shared_data}
+    for row in telemetry["derivations"]:
+        member = members.get(row["id"])
+        kind = getattr(getattr(member, "quantity_kind", None), "iri", None)
+        unit = getattr(getattr(member, "unit", None), "iri", None)
+        if kind is not None:
+            row["kind"] = kind
+        if unit is not None:
+            row["unit"] = unit
+        sources = [complete[read] for read in reads.get(row["id"], ()) if read in complete]
+        if sources:
+            row["sources"] = sources
+    _check_every_id_resolves(telemetry)
 
-    return introspection
+    return telemetry
 
 
 # The row families that name a slot in the frame log or an entity in the artifact.
 _ROW_FAMILIES = ("controllers", "monitors", "motions", "quantities", "quantity_samples")
 
 
-def _check_every_id_resolves(introspection: dict) -> None:
+def _check_every_id_resolves(telemetry: dict) -> None:
     """Every published id must resolve to an IRI, or a run graph cannot state what was recorded.
 
     Raises:
         RuntimeError: an id has no IRI -- a derived entity was minted without registering where it
             came from.
     """
-    uri_by_id = {row["id"]: row["uri"] for row in introspection["uris"] if row.get("uri")}
+    uri_by_id = {row["id"]: row["uri"] for row in telemetry["uris"] if row.get("uri")}
     unresolved: dict[str, set] = {}
 
     def check(id_, origin: str) -> None:
@@ -1348,7 +1347,7 @@ def _check_every_id_resolves(introspection: dict) -> None:
             unresolved.setdefault(id_, set()).add(origin)
 
     for key in (*_ROW_FAMILIES, "signals"):
-        for row in introspection.get(key) or ():
+        for row in telemetry.get(key) or ():
             if row.get("uri"):
                 continue
             # A signal row is a binding, not an entity: its id is a synthetic `<owner>.<role>` and
@@ -1357,19 +1356,19 @@ def _check_every_id_resolves(introspection: dict) -> None:
                 check(row.get("quantity"), key)
             else:
                 check(row.get("source_id") or row.get("id"), key)
-    for pool, rows in (introspection.get("spatial_samples") or {}).items():
+    for pool, rows in (telemetry.get("spatial_samples") or {}).items():
         for row in rows:
             check(row.get("id"), f"spatial_samples.{pool}")
-    for member_id, entry in (introspection.get("dataflow") or {}).items():
+    for member_id, entry in (telemetry.get("dataflow") or {}).items():
         check(member_id, "dataflow")
         check((entry.get("producer") or {}).get("id"), "dataflow.producer")
 
     if unresolved:
         details = "\n".join(
-            f"  '{id_}' (from {', '.join(sorted(origins))})"
-            for id_, origins in sorted(unresolved.items())
+            f"  '{id_}' (from {', '.join(origins)})"
+            for id_, origins in unresolved.items()
         )
         raise RuntimeError(
-            "introspection: ids with no IRI -- a derived entity was minted without registering "
+            "telemetry: ids with no IRI -- a derived entity was minted without registering "
             f"its IRI against the node it came from:\n{details}"
         )

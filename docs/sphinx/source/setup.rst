@@ -491,10 +491,9 @@ Python profiles
    * - Base
      - `Python 3.11+ <https://www.python.org/>`_,
        `Click <https://click.palletsprojects.com/>`_,
-       `RDFLib <https://github.com/RDFLib/rdflib>`_,
-       `rdf-utils <https://github.com/minhnh/rdf-utils>`_, and
-       `Jinja <https://github.com/pallets/jinja>`_
-     - CLI, RDF loading, IR, and the scene's KDL headers
+       `RDFLib <https://github.com/RDFLib/rdflib>`_, and
+       `rdf-utils <https://github.com/minhnh/rdf-utils>`_
+     - CLI, RDF loading, and IR
    * - DSL
      - `motion-spec-dsl <https://github.com/secorolab/motion-spec-dsl>`_,
        `textX <https://github.com/textX/textX>`_,
@@ -504,7 +503,7 @@ Python profiles
    * - Validation
      - `pySHACL <https://github.com/RDFLib/pySHACL>`_
      - ``motion-spec check``
-   * - Introspection
+   * - Telemetry
      - `pySHACL <https://github.com/RDFLib/pySHACL>`_,
        `REC <https://github.com/secorolab/rec>`_, and
        `Protocol Buffers <https://github.com/protocolbuffers/protobuf>`_
@@ -617,8 +616,8 @@ installed beside it. Several checks configure a CMake project, so each one is
 announced as it runs; the dashboard's Health page shows the same progress and
 offers the workspace's environment files to check under.
 
-The health profiles are ``base``, ``validation``, ``introspection``, ``dsl``,
-``codegen``, ``ros``, ``build``, and ``runtime``. Build and runtime are
+The health profiles are ``base``, ``telemetry``, ``dsl``, ``codegen``, ``ros``,
+``build``, and ``runtime``. Build and runtime are
 evaluated per target: everything both targets share is reported under ``build``,
 and only what a target adds appears under ``build[mujoco]`` or
 ``build[robif2b]``.

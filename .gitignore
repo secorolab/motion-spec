@@ -4,7 +4,7 @@ comp-rob2b/
 build/
 .stst/
 generated/
-runs/
+/runs/
 docs/_build/
 docs/sphinx/source/_static/dsl-paths/
 

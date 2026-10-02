@@ -5,5 +5,5 @@
 
 import "entry_program.stg"
 import "entry_motion.stg"
-import "entry_introspection.stg"
+import "entry_telemetry.stg"
 import "entry_build.stg"

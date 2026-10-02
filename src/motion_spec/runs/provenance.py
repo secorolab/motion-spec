@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # SPDX-FileContributor: Vamsi Kalagaturu <vamsikalagaturu@gmail.com>
-"""Introspection provenance for generated artifacts, archives and recorded executions."""
+"""Provenance for generated artifacts, archives and recorded executions."""
 
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import json
-import platform
+import os
 import re
-import socket
 import subprocess
-import sys
+import urllib.parse
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 
@@ -20,16 +18,15 @@ from rdf_utils.models.prov import (
     add_agent,
     add_entity,
     add_file_entity,
+    get_git_info,
+    get_pkg_info,
     load_pkg_prov,
     load_sampling_prov,
     load_transformation_prov,
 )
 from rdf_utils.models.vocab import URI_AGN_TYPE_MOD_AGN
-from rdf_utils.namespace import (
-    URL_MM_PROV_EXT_JSON,
-    URL_MM_PROV_JSON,
-)
-from rdflib import Dataset, Graph, Literal, URIRef
+from rdf_utils.namespace import NS_MM_QUDT, URL_MM_PROV_EXT_JSON, URL_MM_PROV_JSON
+from rdflib import Dataset, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import PROV, RDF, SDO
 
 MSPROV = "https://secorolab.github.io/motion-spec/provenance/"
@@ -56,18 +53,6 @@ GRAPH_EXECUTION = URIRef(f"{MSPROV}graph/execution")
 # What rec is told to mint run nodes under, so its record and these graphs share the node.
 RUN_IRI_BASE = f"{MSPROV}run/"
 SCHEMA_VERSION = 1
-
-# What each package is, for the one agent node it gets. The commit is read from the checkout
-# (motion-spec) or from the pinned repos file (stst); a wheel has neither.
-_PACKAGES = {
-    "motion_spec": ("motion-spec", "motion_spec", "https://github.com/secorolab/motion-spec"),
-    "rdf_utils": ("rdf-utils", "rdf_utils", None),
-    "rdflib": ("rdflib", "rdflib", "https://github.com/RDFLib/rdflib"),
-    "stst": ("stst", None, None),
-    "cmake": ("cmake", None, None),
-}
-# The ones motion_spec.repos pins, whose repository is read from it.
-_MANIFEST_ENTRIES = {"rdf_utils": "thirdparty/rdf-utils", "stst": "thirdparty/STSTv4"}
 
 
 def _slug(value: str) -> str:
@@ -113,47 +98,44 @@ def run_entity_uri(run_id: str, slug: str) -> str:
     return f"{MSPROV}entity/run/{_slug(run_id)}/{_slug(slug)}"
 
 
+def generation_scope(generation: Path) -> Namespace:
+    """Where one generation names its steps and files, so two generations never merge into one."""
+    generation = Path(generation).resolve()
+    return Namespace(
+        f"{MSPROV}generation/{_slug(generation.parent.name)}/{_slug(generation.name)}/"
+    )
+
+
+def package_agent_uri(name: str, version: str | None, commit: str | None) -> URIRef:
+    """A package as one agent per release it ran as: another version or revision is another one."""
+    parts = [name, version or "unversioned", *([commit] if commit else [])]
+    return URIRef(f"{MSPROV}agent/{'/'.join(_slug(part) for part in parts)}")
+
+
+def file_path(location) -> Path | None:
+    """The local path a `file:` IRI names, or None for any other IRI."""
+    parsed = urllib.parse.urlparse(str(location))
+    return Path(urllib.parse.unquote(parsed.path)) if parsed.scheme == "file" else None
+
+
 def _mtime(path: Path) -> datetime:
     return datetime.fromtimestamp(Path(path).stat().st_mtime, UTC)
 
 
-def _version(distribution: str | None) -> str | None:
-    if distribution is None:
-        return None
-    try:
-        return importlib.metadata.version(distribution)
-    except importlib.metadata.PackageNotFoundError:
-        return None
-
-
-def _stst_commit() -> str | None:
-    """The STSTv4 revision motion_spec.repos pins."""
-    from motion_spec.setup import STST_REPOSITORY, shipped_pin
-
-    return shipped_pin(STST_REPOSITORY).version
-
-
-def _cmake_version() -> str | None:
-    text = run_tool("cmake", "--version")
-    match = re.search(r"cmake version (\S+)", text or "")
-    return match.group(1) if match else None
-
-
 def add_package(graph: Graph, key: str) -> URIRef:
-    """Declare one software package as the agent a step is associated with."""
-    name, distribution, repository = _PACKAGES[key]
-    if key in _MANIFEST_ENTRIES:
-        from motion_spec.setup import shipped_pin
+    """One package as the agent a step is associated with; stst and cmake are not Python ones."""
+    if key == "stst":
+        from motion_spec.setup import STST_REPOSITORY, shipped_pin
 
-        repository = shipped_pin(_MANIFEST_ENTRIES[key]).url.removesuffix(".git")
-    agent = uri(f"agent:{key}")
-    commit = None
-    if key == "motion_spec":
-        commit = git(Path(__file__).resolve().parent, "rev-parse", "HEAD")
-    elif key == "stst":
-        commit = _stst_commit()
-    version = _cmake_version() if key == "cmake" else _version(distribution)
-    load_pkg_prov(graph, agent, name, version=version, commit=commit, repository=repository)
+        pin = shipped_pin(STST_REPOSITORY)
+        name, version, commit, repository = "stst", None, pin.version, pin.url.removesuffix(".git")
+    elif key == "cmake":
+        match = re.search(r"cmake version (\S+)", run_tool("cmake", "--version") or "")
+        name, version, commit, repository = "cmake", match.group(1) if match else None, None, None
+    else:
+        name, version, commit, repository = get_pkg_info(key)
+    agent = package_agent_uri(name, version, commit)
+    load_pkg_prov(graph, agent, name, version, commit, repository)
     return agent
 
 
@@ -172,11 +154,10 @@ def _document_nodes(graph: Graph) -> list[dict]:
 
 
 def append_generation_graph(document: Path, graph_id: URIRef, nodes: list[dict]) -> None:
-    """Merge nodes into one named graph of the generation document, leaving the rest as written.
+    """Merge nodes into one named graph of the document, leaving the rest as written.
 
-    The document is edited as JSON rather than round-tripped through rdflib: a re-serialization
-    resolves the archive-relative `prov:atLocation` values `_organize_generation` writes back
-    into absolute file IRIs.
+    Edited as JSON rather than round-tripped through rdflib, which would resolve the relative
+    `prov:atLocation` values back into absolute file IRIs.
     """
     data = (
         json.loads(document.read_text())
@@ -208,71 +189,103 @@ def read_generation_dataset(document: Path) -> Dataset:
     return dataset
 
 
+def write_generation_document(document: Path, graphs: dict[URIRef, Graph]) -> None:
+    """The generation's provenance, written once: each tool's graph a named graph of it."""
+    data = {
+        "schema_version": SCHEMA_VERSION,
+        "@context": PROV_CONTEXT,
+        "@graph": [
+            {"@id": str(graph_id), "@graph": _document_nodes(graph)}
+            for graph_id, graph in graphs.items()
+        ],
+    }
+    document.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def generated_file(graph: Graph, generated: Path, path: Path) -> URIRef:
+    """One generation-scoped file entity, located relative to GENERATED so the tree can move."""
+    entity = generation_scope(generated.parent)[f"entity/{os.path.relpath(path, generated.parent)}"]
+    add_file_entity(
+        graph, entity, location=URIRef(os.path.relpath(path, generated)), generated_at=_mtime(path)
+    )
+    return entity
+
+
 def record_ir_generation(
+    graph: Graph,
     generated: Path,
-    manifest: Path,
+    manifest: URIRef,
+    inputs: list[URIRef],
     ir: dict,
-    targets: dict[str, Path],
+    ir_path: Path,
+    derived_path: Path,
     *,
     started: datetime,
     ended: datetime,
 ) -> None:
-    """The transformation that turned the app manifest and its model graphs into the IR."""
-    from motion_spec.rdf_parser.model import imported_models
-
-    graph = Graph()
-    activity = uri("activity:motion_spec_ir_generation")
+    """The IR's transformation from the manifest and its documents, by the DSL's nodes for them."""
+    activity = generation_scope(generated.parent)["activity/motion_spec_ir_generation"]
     package = add_package(graph, "motion_spec")
+    ir_entity = generated_file(graph, generated, ir_path)
+    load_transformation_prov(
+        graph,
+        activity,
+        [manifest, *inputs],
+        [ir_entity, generated_file(graph, generated, derived_path)],
+        package,
+        started,
+        ended,
+    )
+    graph.add((ir_entity, PROV.wasDerivedFrom, manifest))
 
-    app_manifest = uri("entity:app_manifest")
-    add_file_entity(graph, app_manifest, location=str(Path(manifest).resolve()))
-    sources = [app_manifest]
-    for index, imported in enumerate(imported_models(manifest)):
-        source = uri(f"entity:imported_graph:{index}")
-        add_file_entity(graph, source, location=imported)
-        sources.append(source)
-
-    generated_ids = []
-    for identifier, path in targets.items():
-        entity = uri(identifier)
-        add_file_entity(graph, entity, location=str(path.resolve()), generated_at=_mtime(path))
-        generated_ids.append(entity)
-
-    load_transformation_prov(graph, activity, sources, generated_ids, package, started, ended)
-    graph.add((uri("entity:motion_spec_ir"), PROV.wasDerivedFrom, app_manifest))
-
+    # The robots the scene models, by the scene's own nodes for them.
     for robot in (ir["composition"]["scene"] or {}).get("robots") or ():
-        if robot.get("id"):
-            agent = uri(f"agent:modelled:{robot['id']}")
-            add_agent(graph, agent, (URI_AGN_TYPE_MOD_AGN,), robot["id"])
-    write_generation_graph(generated / GENERATION_DOCUMENT, GRAPH_MOTION_SPEC, graph)
+        add_agent(graph, URIRef(robot["agent"]), (URI_AGN_TYPE_MOD_AGN,), robot["id"])
 
 
 def record_code_generation(
-    generated: Path, ir_path: Path, written: list[Path], *, started: datetime, ended: datetime
+    graph: Graph,
+    generated: Path,
+    ir_path: Path,
+    written: list[Path],
+    *,
+    started: datetime,
+    ended: datetime,
 ) -> None:
-    """The transformation that turned the IR into the controller sources."""
-    graph = Graph()
-    activity = uri("activity:code_generation")
+    """The transformation that turned the IR into the controller sources and the contract."""
+    activity = generation_scope(generated.parent)["activity/code_generation"]
     package = add_package(graph, "motion_spec")
-    for key in ("stst", "rdf_utils", "rdflib"):
-        add_package(graph, key)
+    # motion-spec drives it; stst renders every template.
+    graph.add((activity, PROV.wasAssociatedWith, add_package(graph, "stst")))
+    targets = [generated_file(graph, generated, path) for path in written]
+    load_transformation_prov(
+        graph,
+        activity,
+        [generated_file(graph, generated, ir_path)],
+        targets,
+        package,
+        started,
+        ended,
+    )
 
-    source = uri("entity:motion_spec_ir")
-    add_file_entity(graph, source, location=str(Path(ir_path).resolve()))
-    controller = Path(written[0]).parent if written else generated / "controller"
-    targets = []
-    for path in written:
-        entity = uri(f"entity:generated_{_relative_name(path, controller)}")
-        add_file_entity(graph, entity, location=str(path.resolve()), generated_at=_mtime(path))
-        targets.append(entity)
-    load_transformation_prov(graph, activity, [source], targets, package, started, ended)
-    write_generation_graph(generated / GENERATION_DOCUMENT, GRAPH_MOTION_SPEC, graph)
 
-
-def _relative_name(path: Path, root: Path) -> str:
-    path = Path(path)
-    return path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
+def record_tool_generation(
+    graph: Graph,
+    generated: Path,
+    step: str,
+    package: str,
+    sources: list[URIRef],
+    written: list[Path],
+    *,
+    started: datetime,
+    ended: datetime,
+) -> None:
+    """A transformation a DSL package ran for motion-spec, from the DSL's nodes for its sources."""
+    activity = generation_scope(generated.parent)[f"activity/{step}"]
+    targets = [generated_file(graph, generated, path) for path in written]
+    load_transformation_prov(
+        graph, activity, sources, targets, add_package(graph, package), started, ended
+    )
 
 
 def record_build(
@@ -281,50 +294,85 @@ def record_build(
     """The transformation that compiled the generated sources into the controller executable."""
     document = generated / GENERATION_DOCUMENT
     dataset = read_generation_dataset(document)
-    code_generation = uri("activity:code_generation")
-    declared = set(dataset.subjects(PROV.wasGeneratedBy, code_generation))
+    # Whichever tool wrote a source, it is a file in the controller tree cmake compiled.
+    sources = {
+        entity
+        for entity, location in dataset.subject_objects(PROV.atLocation)
+        if (path := file_path(location)) is not None and path.is_relative_to(controller.resolve())
+    }
 
     graph = Graph()
-    activity = uri("activity:build")
+    activity = generation_scope(generated.parent)["activity/build"]
     package = add_package(graph, "cmake")
-    sources = [
-        entity
-        for path in sorted(item for item in controller.rglob("*") if item.is_file())
-        if (entity := uri(f"entity:generated_{_relative_name(path, controller)}")) in declared
-    ]
-    target = uri("entity:controller_executable")
-    add_file_entity(
-        graph, target, location=str(executable.resolve()), generated_at=_mtime(executable)
-    )
+    target = generated_file(graph, generated, executable)
     load_transformation_prov(graph, activity, sources, [target], package, started, ended)
     write_generation_graph(document, GRAPH_MOTION_SPEC, graph)
 
 
-# The activity that mints these -- the same one the generation provenance already names as the
-# generator of the IR they are part of.
-_DERIVATION_ACTIVITY = "activity:motion_spec_ir_generation"
+def build_derivation_document(
+    ir: dict, derived: Graph, authored: list[Graph], generated: Path
+) -> dict:
+    """Declare what IR generation added: every derived entity the IR uses, with what it is and
+    what it is computed from, and every node it materialized in DERIVED.
 
-
-def build_derivation_document(ir: dict) -> dict:
-    """Declare every codegen-derived entity, and what it was derived from.
-
-    A frame-log slot names its value by IRI. Two thirds of those values are minted during IR
-    generation and have no node in the authored model, so without this graph their IRIs resolve
-    to nothing and a run graph cannot make a statement about what the log recorded.
+    A frame-log slot names its value by IRI, and most of those values have no node in the
+    authored model; without this graph a run graph could make no statement about them.
     """
-    derivations = ir["communication"]["introspection"].get("derivations") or []
+    # The step the generation document names as the IR's generator.
+    activity = generation_scope(generated.parent)["activity/motion_spec_ir_generation"]
+    telemetry = ir["communication"]["telemetry"]
+    # The tables of every id and its derivation name each id once; that is not a use of it.
+    tables = {id(telemetry.get("uris")), id(telemetry.get("derivations"))}
+    used: set[str] = set()
+    pending = [ir]
+    while pending:
+        value = pending.pop()
+        if id(value) in tables:
+            continue
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str):
+            used.add(value)
+
+    graph = Graph()
+    for entry in telemetry.get("derivations") or ():
+        if entry["id"] not in used:
+            continue
+        node = URIRef(entry["uri"])
+        add_entity(graph, node)
+        graph.add((node, PROV.wasGeneratedBy, activity))
+        for type_ in entry["types"]:
+            graph.add((node, RDF.type, URIRef(type_)))
+        if entry["relation"] == "specializationOf":
+            add_entity(graph, URIRef(entry["parent"]))
+            graph.add((node, PROV.specializationOf, URIRef(entry["parent"])))
+        # What it is computed from when the IR says; otherwise only the node it derives from.
+        sources = entry.get("sources") or (
+            [entry["parent"]] if entry["relation"] == "wasDerivedFrom" else []
+        )
+        for source in sources:
+            add_entity(graph, URIRef(source))
+            graph.add((node, PROV.wasDerivedFrom, URIRef(source)))
+        if entry.get("kind"):
+            graph.add((node, RDF.type, NS_MM_QUDT["Quantity"]))
+            graph.add((node, NS_MM_QUDT["hasQuantityKind"], URIRef(entry["kind"])))
+        if entry.get("unit"):
+            graph.add((node, NS_MM_QUDT["unit"], URIRef(entry["unit"])))
+
+    graph += derived
+    for subject in set(derived.subjects()):
+        if isinstance(subject, URIRef) and not any(
+            (subject, None, None) in document for document in authored
+        ):
+            add_entity(graph, subject)
+            graph.add((subject, PROV.wasGeneratedBy, activity))
+
     return {
         "schema_version": SCHEMA_VERSION,
         "@context": PROV_CONTEXT,
-        "@graph": [
-            {
-                "@id": entry["id"],
-                "@type": entry["types"],
-                f"prov:{entry['relation']}": {"@id": entry["parent"]},
-                "prov:wasGeneratedBy": prov_uri(_DERIVATION_ACTIVITY),
-            }
-            for entry in derivations
-        ],
+        "@graph": _document_nodes(graph),
     }
 
 
@@ -335,7 +383,6 @@ def rec_run_lifecycle_from_file(path) -> dict:
     contexts, which a run list would pay per row. Every key is None when there is no document
     or it was written before the OSLC terms.
     """
-    ensure_local_rec_importable()
     from rec import jsonld
 
     empty = {"state": None, "verdict": None, "started_time": None, "completed_time": None}
@@ -362,42 +409,8 @@ def parse_rec_time(value: str) -> datetime:
     return parsed
 
 
-def ensure_local_rec_importable() -> None:
-    try:
-        import rec
-
-        # A bare `<ws>/src/rec` on sys.path imports as a namespace package (__file__ is
-        # None) and has no Run; drop it so the real package below wins.
-        if getattr(rec, "__file__", None):
-            return
-        del sys.modules["rec"]
-    except ImportError:
-        pass
-    rec_root = local_rec_root()
-    if rec_root:
-        sys.path.insert(0, str(rec_root))
-
-
-ensure_local_rec_importable()
-
-
-def runtime_agent_uri(platform_facts: dict) -> URIRef:
-    """The runtime the controller process acts for, named by the platform the model authored."""
-    return uri(f"agent:runtime_{_slug(platform_facts.get('name') or 'runtime').casefold()}")
-
-
-CONTROLLER_PROCESS = "agent:controller_process"
-
-
-def record_run_agents(graph: Graph, generation_document: Path, platform_facts: dict) -> URIRef:
-    """The process that produced the run's logs, the runtime it ran on, and the modelled robots."""
-    runtime = runtime_agent_uri(platform_facts)
-    add_agent(graph, runtime, (PROV.SoftwareAgent,), platform_facts.get("name") or "runtime")
-    controller = uri(CONTROLLER_PROCESS)
-    add_agent(graph, controller, (PROV.SoftwareAgent,), "controller", acted_on_behalf_of=runtime)
-    for agent_id, name in modelled_agents(generation_document):
-        add_agent(graph, URIRef(agent_id), (URI_AGN_TYPE_MOD_AGN,), name)
-    return controller
+# The process one run started, which produced its logs: another run is another process.
+CONTROLLER_PROCESS = RUN_IRI_BASE + "{run_id}/controller_process"
 
 
 def record_used_file(run, path: Path, role: str, archive_path: str) -> None:
@@ -431,11 +444,34 @@ def record_execution(
     from rdf_utils.models.prov import load_execution_prov
 
     graph = Graph()
-    record_run_agents(graph, generation_document, platform_facts)
-    arguments_entity = record_arguments(graph, run_id, arguments)
+    generation = read_generation_dataset(generation_document)
+    # A simulated run steps the wrapper's physics; a real one runs on the platform it names.
+    if platform_facts.get("simulated"):
+        runtime = add_package(graph, "mj_kdl_wrapper")
+    else:
+        runtime = uri(f"agent:runtime_{_slug(platform_facts.get('backend') or 'runtime')}")
+        add_agent(graph, runtime, (PROV.SoftwareAgent,), platform_facts.get("backend") or "runtime")
+    controller = URIRef(CONTROLLER_PROCESS.format(run_id=run_id))
+    add_agent(graph, controller, (PROV.SoftwareAgent,), "controller", acted_on_behalf_of=runtime)
+    for agent in set(generation.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
+        add_agent(graph, agent, (URI_AGN_TYPE_MOD_AGN,), str(generation.value(agent, SDO.name)))
+    run = uri(f"run:{run_id}")
+    # The executable is the node the generation's build generated, when it was built.
+    executables = [
+        entity
+        for entity, activity in generation.subject_objects(PROV.wasGeneratedBy)
+        if str(activity).endswith("/activity/build")
+    ]
     load_execution_prov(
-        graph, uri(f"run:{run_id}"), [arguments_entity], add_package(graph, "motion_spec"), started
+        graph,
+        run,
+        [record_arguments(graph, run_id, arguments), *executables],
+        add_package(graph, "motion_spec"),
+        started,
     )
+    # The controller process carried the run out, driving the robots the scene models.
+    for agent in (controller, *graph.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
+        graph.add((run, PROV.wasAssociatedWith, agent))
     write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
 
 
@@ -550,76 +586,14 @@ def artifact_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def host_info(environment: dict | None = None) -> dict:
-    # The interpreter identity that matters for reproducibility is its version (python);
-    # sys.executable is just the local venv path — machine-specific and provenance-free.
-    info = {"hostname": socket.gethostname(), "os": platform.platform(), "python": sys.version}
-    # The environment file this run was launched under, and the variables it set that a build
-    # and a run depend on: without them, "it worked on that host" names the host but not the
-    # toolchain, the prefixes or the ROS distribution that produced the result.
-    if environment:
-        info["environment"] = environment
-    return info
-
-
-def dependencies() -> list[dict]:
-    rows = []
-    for name in ("motion_spec", "rec", "rdflib", "pyshacl"):
-        try:
-            rows.append({"name": name, "version": importlib.metadata.version(name)})
-        except importlib.metadata.PackageNotFoundError:
-            continue
-    return rows
-
-
 def record_software(run, run_dir: Path) -> None:
-    """The checked-out repositories and installed packages the run ran with."""
-    run.log_repositories(repositories(run_dir))
-    run.log_dependencies(dependencies())
-
-
-def repositories(run_dir: Path) -> list[dict]:
-    """Portable repo provenance: name + commit + remote url."""
-    rows = []
-    seen: set[str] = set()
-
-    def add(root: Path | None, name: str | None = None) -> None:
-        if root is None or str(root) in seen:
-            return
-        seen.add(str(root))
-        row = {"name": name or root.name, "commit": git(root, "rev-parse", "HEAD")}
-        url = git(root, "remote", "get-url", "origin")
-        if url:
-            row["url"] = url
-        rows.append(row)
-
-    for path in (run_dir, Path(__file__).resolve()):
-        add(git_root(path))
-    add(local_rec_root(), name="rec")
-    return rows
-
-
-def local_rec_root() -> Path | None:
-    for root in (Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents):
-        candidate = root / "src" / "rec"
-        if (candidate / "rec" / "__init__.py").exists():
-            return candidate
-    return None
-
-
-def git_root(path: Path) -> Path | None:
-    start = path if path.is_dir() else path.parent
-    root = git(start, "rev-parse", "--show-toplevel")
-    return Path(root) if root else None
-
-
-def git(cwd: Path, *args: str) -> str | None:
-    try:
-        return subprocess.check_output(
-            ["git", *args], cwd=cwd, text=True, stderr=subprocess.DEVNULL
-        ).strip()
-    except Exception:
-        return None
+    """The recorder, and the checkout the run sits in; the execution document names motion-spec."""
+    name, version, _, _ = get_pkg_info("rec")
+    run.log_dependencies([{"name": name, **({"version": version} if version else {})}])
+    commit, url = get_git_info(run_dir)
+    if commit:
+        name = url.rsplit("/", 1)[-1] if url else Path(run_dir).name
+        run.log_repositories([{"name": name, "commit": commit, **({"url": url} if url else {})}])
 
 
 def run_tool(*command: str) -> str | None:
@@ -627,17 +601,3 @@ def run_tool(*command: str) -> str | None:
         return subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
     except Exception:
         return None
-
-
-def modelled_agents(generation_document: Path) -> list[tuple[str, str]]:
-    """Every robot the generation modelled, as its agent IRI and name."""
-    if not Path(generation_document).exists():
-        return []
-    try:
-        dataset = read_generation_dataset(generation_document)
-    except Exception:
-        return []
-    return [
-        (str(subject), str(dataset.value(subject, SDO.name) or ""))
-        for subject in set(dataset.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN))
-    ]

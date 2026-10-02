@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 
-package motion_spec.introspection.log;
+package motion_spec.telemetry.log;
 
 // What a list index names: the index, the generated id, and the model IRI. An id is a lossy
 // projection of its IRI, so both travel.

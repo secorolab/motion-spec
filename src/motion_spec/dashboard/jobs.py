@@ -146,6 +146,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     ]
     # Only what a browser can meaningfully choose; the CLI decides the rest.
     argv += run_arguments(options, simulated)
+    argv += ["--env", ENVIRONMENT["script"]] if ENVIRONMENT["script"] else ["--no-env"]
     # A simulator renders any declared camera and its standard view; a real platform records
     # the cameras that name a ROS image topic to read.
     recordable = {
@@ -399,11 +400,12 @@ def start_generate(source: Path) -> dict:
     # overwrites what the others wrote.
     # pipefail, or the status is tail's, build is reached with an empty path, and click's
     # "Directory '' does not exist" buries the rejection. bash, not sh: dash has no pipefail.
+    env = f" --env {shlex.quote(ENVIRONMENT['script'])}" if ENVIRONMENT["script"] else " --no-env"
     chain = (
         "set -o pipefail; "
         f"g=$(motion-spec gen code {shlex.quote(str(source))}"
         f" -o {shlex.quote(str(roots.GENERATIONS))} | tail -n 1)"
-        f' && printf "generation: %s\\n" "$g" && exec motion-spec build "$g"'
+        f' && printf "generation: %s\\n" "$g" && exec motion-spec build{env} "$g"'
     )
     argv = ["bash", "-c", chain]
     _reap_jobs()

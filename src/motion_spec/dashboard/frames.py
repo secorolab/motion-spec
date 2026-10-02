@@ -12,7 +12,7 @@ import mmap
 import struct
 from pathlib import Path
 
-from motion_spec.introspection.frame_log_pb import (
+from motion_spec.telemetry.frame_log_pb import (
     _CONSTRAINT_KEYS,
     _MONITOR_KEYS,
     _SPATIAL,
@@ -89,6 +89,14 @@ class FrameLayout:
     """A generation's frame_layout.json as the struct that decodes its shm Frame."""
 
     def __init__(self, layout: dict):
+        from motion_spec.generation.artifacts import FRAME_LAYOUT_VERSION
+
+        version = layout.get("frame_layout_version")
+        if version != FRAME_LAYOUT_VERSION:
+            raise ValueError(
+                f"frame_layout.json is layout version {version}; this motion-spec reads "
+                f"version {FRAME_LAYOUT_VERSION}"
+            )
         self.layout = layout
         self.fields = layout["fields"]
         self.pools = layout["pools"]

@@ -1,10 +1,13 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [project]
 name = "motion_spec"
-version = "0.1.0"
+dynamic = ["version"]
 description = "IR generator and C++ code generator for motion specification models"
 authors = [
     {name = "Sven Schneider", email = "sven.schneider@h-brs.de"},
@@ -22,7 +25,6 @@ dependencies = [
     "click>=8.1",
     # No multi-type scoped @context support; generated models use none.
     "rdflib>=7.6.0",
-    "jinja2",
     "pyshacl>=0.25.0",
     # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
     "protobuf>=4.22",
@@ -42,24 +44,8 @@ dev = ["pytest", "ruff"]
 [project.scripts]
 motion-spec = "motion_spec.cli:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-# frontend/**, not frontend/*: the vendored libraries live in subdirectories, and a
-# single-level glob shipped a dashboard whose editor and charts were missing.
-motion_spec = [
-    "templates/*.stg",
-    "introspection/frame_log.proto",
-    "dashboard/frontend/**/*",
-    # `motion-spec setup` reads what to install from these at run time, so they ship.
-    "*.repos",
-    "colcon.meta",
-]
+[tool.hatch.build.targets.wheel]
+packages = ["src/motion_spec"]
 
 [tool.pytest.ini_options]
 # rdflib's Dataset.parse() internally reads its deprecated default_context

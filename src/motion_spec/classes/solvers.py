@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
+
 from motion_spec.classes.base import INTERNAL
 from motion_spec.classes.bindings import (
     ChainBinding,
@@ -66,11 +68,9 @@ class DynamicsSolverFamily:
     """
 
     codegen_name: str = ""
-    signal_prefix: str | None = None
     driver: type | None = None
     driver_field: str | None = None
     payload_field: str | None = None
-    id_tags: tuple[str, ...] = ()
     max_axes: int | None = None
     axes_must_be_distinct: bool = False
 
@@ -84,17 +84,21 @@ class AccelerationEnergyDriven(DynamicsSolverFamily):
     """
 
     codegen_name = "ACHD"
-    signal_prefix = "eacc"
     driver = AccelerationConstraint
     driver_field = "acceleration_constraint"
     payload_field = "acceleration_energy"
-    id_tags = ("acc-cstr", "eacc")
     max_axes = 6
     axes_must_be_distinct = True
 
     @staticmethod
     def payload(id: str, axis: Subspace) -> Quantity:
-        return Quantity(id, QuantityKind("AccelerationEnergy"), Unit("N_M2_PER_SEC2"), None, False)
+        return Quantity(
+            id,
+            QuantityKind("AccelerationEnergy", str(NS_MM_QUDT_QTY["AccelerationEnergy"])),
+            Unit("N_M2_PER_SEC2", str(NS_MM_QUDT_UNIT["N-M2-PER-SEC2"])),
+            None,
+            False,
+        )
 
 
 class CartesianAccelerationDriven(DynamicsSolverFamily):
@@ -103,20 +107,24 @@ class CartesianAccelerationDriven(DynamicsSolverFamily):
     """
 
     codegen_name = "RNE"
-    signal_prefix = "acc"
     driver = AccelerationConstraint
     driver_field = "cartesian_acceleration"
     payload_field = "acceleration"
-    id_tags = ("cart-acc", "acc")
 
     @staticmethod
     def payload(id: str, axis: Subspace) -> Quantity:
         kind, unit = (
-            ("LinearAcceleration", "M_PER_SEC2")
+            ("LinearAcceleration", "M-PER-SEC2")
             if axis == Subspace.Linear
-            else ("AngularAcceleration", "RAD_PER_SEC2")
+            else ("AngularAcceleration", "RAD-PER-SEC2")
         )
-        return Quantity(id, QuantityKind(kind), Unit(unit), None, False)
+        return Quantity(
+            id,
+            QuantityKind(kind, str(NS_MM_QUDT_QTY[kind])),
+            Unit(unit.replace("-", "_"), str(NS_MM_QUDT_UNIT[unit])),
+            None,
+            False,
+        )
 
 
 class CommandForwarding(DynamicsSolverFamily):
@@ -129,11 +137,12 @@ class CommandForwarding(DynamicsSolverFamily):
 
 @dataclass
 class CartesianForceSpecification:
-    """A Cartesian force applied to a body."""
+    """A Cartesian force applied to a body, and the controller commanding it."""
 
     id: str
     force: Wrench
     attached_to: SimplicialComplex
+    controller: str
     type: str = field(default="CartesianForceSpecification")
 
 
@@ -151,11 +160,13 @@ class JointForceSpecification:
 
 @dataclass
 class MotionDrivers:
-    """The physically distinct inputs accepted by a dynamics solver pipeline."""
+    """The physically distinct inputs accepted by a dynamics solver pipeline, for the handler
+    whose controllers state them."""
 
     id: str
     acceleration_constraint: list[AccelerationConstraint]
     cartesian_force: list[CartesianForceSpecification]
+    handler: str
     cartesian_acceleration: list[AccelerationConstraint] = field(default_factory=list)
     joint_force: list[JointForceSpecification] = field(default_factory=list)
     has_cartesian_force: bool = False
@@ -227,5 +238,8 @@ class ForceDistributionSolver:
     # scalar -- a distance, say -- contributes through the wrench built from it and its
     # direction, which is the only form a distribution can take.
     forces: tuple = field(default=())
+    # The world-model read this solver makes per frame IRI: its own, since another solver may
+    # read the same frame under its own key.
+    world_keys: dict = field(default_factory=dict, metadata=INTERNAL)
     kind: str = field(default="mobile_base")
     type: str = field(default="ForceDistributionSolver")

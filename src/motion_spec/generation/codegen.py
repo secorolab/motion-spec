@@ -8,13 +8,14 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from itertools import chain
 from pathlib import Path
 
 from motion_spec.classes.base import DataclassJSONEncoder
-from motion_spec.generation.artifacts import write_introspection_artifacts
-from motion_spec.introspection import frame_log_pb
+from motion_spec.generation.artifacts import write_telemetry_artifacts
+from motion_spec.telemetry import frame_log_pb
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MAIN_TEMPLATE = "main"
@@ -32,11 +33,9 @@ ST_OPTIONAL_READ = "no such property or can't access"
 
 
 def write_json(path: Path, payload):
-    """Write payload as pretty, dataclass-aware JSON, creating parent directories.
-
-    ``sort_keys`` so dict-insertion order can never make two generations of the same model differ."""
+    """Write payload as pretty, dataclass-aware JSON, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4, sort_keys=True) + "\n")
+    path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4) + "\n")
 
 
 def _for_templates(o):
@@ -75,7 +74,7 @@ def runtime_uses(ir: dict) -> dict:
                         uses.add("ProduceEvent")
                 elif monitor.get("flag"):
                     uses.add("Flag")
-    return dict.fromkeys(sorted(uses), True)
+    return dict.fromkeys(uses, True)
 
 
 def write_payload(path: Path, payload) -> None:
@@ -175,52 +174,6 @@ def load_ir(input_path: Path):
         return json.load(handle)
 
 
-def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
-    """Index FSM states and events the way the runtime does.
-
-    A frame's ``fsm_state`` is ``fsm->currentStateIndex`` and a produced event's flag sits at
-    the coord-dsl enum's value -- both enums are built from ``fsm_ir.json``. ir_gen re-derives
-    its own lists by iterating the merged app graph, and rdflib hands them back in a different
-    order, so the schema's indices named the wrong state or event. Take the order from the
-    artifact that defines the enums, and remap every event index ir_gen already baked
-    (``step_event_idx``, each monitor's ``fsm_event_idx``): after this there is exactly one
-    index space -- enum value, schema index and recorded value all agree.
-    """
-    fsm = ir["coordination"].get("fsm")
-    fsm_ir_path = next((path for path in candidates if path.is_file()), None)
-    if not fsm or fsm_ir_path is None:
-        return
-    doc = json.loads(fsm_ir_path.read_text())
-    for kind in ("states", "events"):
-        adopted = doc.get(kind)
-        if not adopted:
-            continue
-        if set(adopted) != set(fsm.get(kind, [])):
-            raise RuntimeError(
-                f"{fsm_ir_path.name} {kind} {sorted(adopted)} do not match the model's "
-                f"{sorted(fsm.get(kind, []))}"
-            )
-        if kind == "events":
-            remap = {old: adopted.index(name) for old, name in enumerate(fsm["events"])}
-            if fsm.get("step_event_idx", -1) >= 0:
-                fsm["step_event_idx"] = remap[fsm["step_event_idx"]]
-            _remap_event_indices(ir["coordination"], remap)
-        fsm[kind] = list(adopted)
-
-
-def _remap_event_indices(node, remap: dict) -> None:
-    """Rewrite every ``fsm_event_idx`` under `node` into the adopted index space."""
-    if isinstance(node, dict):
-        idx = node.get("fsm_event_idx")
-        if isinstance(idx, int) and idx >= 0:
-            node["fsm_event_idx"] = remap[idx]
-        for value in node.values():
-            _remap_event_indices(value, remap)
-    elif isinstance(node, list):
-        for value in node:
-            _remap_event_indices(value, remap)
-
-
 class MissingAssets(RuntimeError):
     """The MJCF files a model names that nothing here supplies, and where they were looked for.
 
@@ -310,7 +263,7 @@ def resolve_model_assets(ir, model_dir: Path) -> list[str]:
 
 def unresolved_assets(ir) -> list[str]:
     """The MJCF assets the IR names that nothing on this machine can supply."""
-    declared = dict.fromkeys(node["path"] for node in _asset_nodes(ir))
+    declared = {node["path"] for node in _asset_nodes(ir)}
     return [
         path
         for path in declared
@@ -318,13 +271,16 @@ def unresolved_assets(ir) -> list[str]:
     ]
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
-    """Render every C++/artifact file for an IR: introspection headers, runtime and
+def generate_code(
+    ir_path: Path, output_dir: Path, contract_dir: Path, stst_bin: str, fsm: dict | None
+) -> list[Path]:
+    """Render every C++/artifact file for an IR: telemetry headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
-    main.cpp, and return the files written.
+    main.cpp into OUTPUT_DIR, the frame-log contract into CONTRACT_DIR, and return the files
+    written.
 
-    ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
-    wiring); codegen only loads it, writes artifacts, and renders.
+    ir.json carries every codegen-facing field but the FSM's own tables, which come from
+    coord-dsl's framed FSM `fsm`.
 
     Raises:
         RuntimeError: the IR declares no FSM. The generated program is an FSM dispatcher.
@@ -339,43 +295,39 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
     missing = unresolved_assets(ir)
     if missing:
         raise MissingAssets(Path(ir_path), missing, asset_roots())
-    # The pipeline moves fsm_ir.json into the controller dir before calling codegen; the
-    # standalone `gen code <ir.json>` path leaves it beside the IR.
-    _adopt_fsm_state_order(
-        ir, Path(output_dir) / "fsm_ir.json", Path(ir_path).parent / "fsm_ir.json"
-    )
 
-    ir["communication"]["introspection_artifacts"] = write_introspection_artifacts(
-        ir, ir_path=ir_path, output_dir=output_dir
+    ir["communication"]["telemetry_artifacts"] = write_telemetry_artifacts(
+        ir, ir_path=ir_path, output_dir=contract_dir, fsm_ir=fsm
     )
-    written = [output_dir / "frame_layout.json", output_dir / "frame_log_header.pb"]
+    written = [contract_dir / "frame_layout.json", contract_dir / "frame_log_header.pb"]
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
-    # The DSL-generated FSM header stays at the source root (like frame_layout.h); the bare
+    # coord-dsl's FSM header stays at the source root (like frame_layout.h); the bare
     # include in shared_state.hpp resolves it via the root include dir, so no headers/ copy
     # is needed — copying it there just duplicated the file in the tree and the archive.
 
     ir["computation"]["uses"] = runtime_uses(ir)
-    payload_dir = output_dir / ".stst"
-    payload_dir.mkdir(parents=True, exist_ok=True)
+    # What stst renders from is scratch, not part of the generation.
+    scratch = tempfile.TemporaryDirectory(prefix="motion-spec-stst-")
+    payload_dir = Path(scratch.name)
     ir_payload_path = payload_dir / "ir.json"
     write_payload(ir_payload_path, ir)
 
     written.append(
         render_template(
             stst_bin,
-            "introspection_runtime_header",
+            "telemetry_header",
             ir_payload_path,
-            output_dir / "introspection_runtime.hpp",
+            output_dir / "telemetry.hpp",
         )
     )
     written.append(
         render_template(
             stst_bin,
-            "introspect_model_header",
+            "telemetry_model_header",
             ir_payload_path,
-            output_dir / "introspect_model.hpp",
+            output_dir / "telemetry_model.hpp",
         )
     )
     written.append(
@@ -383,10 +335,10 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
             stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"
         )
     )
-    shutil.copyfile(frame_log_pb.PROTO, output_dir / "frame_log.proto")
+    shutil.copyfile(frame_log_pb.PROTO, contract_dir / "frame_log.proto")
     frame_log_pb.run_protoc(f"--cpp_out={output_dir}")
     written += [
-        output_dir / "frame_log.proto",
+        contract_dir / "frame_log.proto",
         output_dir / "frame_log.pb.h",
         output_dir / "frame_log.pb.cc",
     ]
@@ -452,4 +404,5 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
                 stst_bin, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"
             )
         )
+    scratch.cleanup()
     return written

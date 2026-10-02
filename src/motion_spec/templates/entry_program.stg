@@ -11,9 +11,7 @@ import "runtime.stg"
 main_source(configuration, resources, composition, computation, coordination, communication) ::= <<
 #include "runtime.hpp"
 #include "shared_state.hpp"
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
-#include "introspect_model.hpp"
-#endif
+#include "telemetry_model.hpp"
 <if(resources.by_kind.mobile_base)>
 #include "mobile_base_cycle.hpp"
 <endif>
@@ -106,18 +104,16 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <if(coordination.fsm)>
     int _fsm_prev_state = -1;
 <endif>
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 <if(composition.sampling)>
 <sampling-record(composition.sampling)>
-    motion_spec::introspection::RunPublisher _introspection_pub(&_sampling_record);
+    motion_spec::telemetry::RunPublisher _telemetry(&_sampling_record);
 <else>
-    motion_spec::introspection::RunPublisher _introspection_pub;
+    motion_spec::telemetry::RunPublisher _telemetry;
 <endif>
 <if(configuration.platform.simulated)>
     // The operator asked to arm the run and press play.
-    if (_start_paused) _introspection_pub.start_paused();
+    if (_start_paused) _telemetry.start_paused();
 <endif>
-#endif
     timespec _next_tick{};
     clock_gettime(CLOCK_MONOTONIC, &_next_tick);
     double _prev_clock_s = 0.0;
@@ -126,8 +122,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <endif>
     while (!motion_spec::runtime::stop_requested() && (<({app-loop-condition-<configuration.backend>})(resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
 <if(configuration.platform.simulated)>
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
-        const auto _ctrl = _introspection_pub.poll_control();
+        const auto _ctrl = _telemetry.poll_control();
         if (_ctrl.stop) motion_spec::runtime::request_stop(0);
 <if(resources.by_kind.serial_chain)>
 <({app-chain-control-apply-<configuration.backend>})(resources.by_kind.serial_chain)>
@@ -144,7 +139,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
             motion_spec::runtime::advance_uncapped(_next_tick);
             continue;
         \}
-#endif
 <endif>
         shared.clock_time_s = <if(resources.driven)><({clock-time-source-<configuration.backend>})()><else>motion_spec::runtime::monotonic_time_s()<endif>;
 <if(communication.ros.clock)>
@@ -239,7 +233,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
         // After the swap, currentEvents holds exactly what this tick produced -- by a monitor,
         // a reaction chain, or a goal -- each flag current for one cycle. Recording here, the
         // one point every producer routes through, is what makes the log carry every fire, and
-        // enum value == log index by construction (codegen adopts fsm_ir's order for both).
+        // enum value == log index: coord-dsl's fsm_ir.json numbers both.
         // The heartbeat stays excluded as ever; the transition it causes is recorded below.
         for (unsigned int _e = 0; _e \< fsm->eventData->numEvents; ++_e) {
 <if(coordination.fsm.step_event)>            if (_e == static_cast\<unsigned int\>(<coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>)) continue;
@@ -248,32 +242,30 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <coordination.fsm.step_transitions:{t |         // The clock is this transition's guard, so this one heartbeat is the cause of the
         // state change -- record it, unlike the 24k that drive nothing.
         if (_fsm_state_before == <coordination.fsm.cpp_namespace>::<t.from> && fsm->currentStateIndex == <coordination.fsm.cpp_namespace>::<t.to>) {
-            events.record(<coordination.fsm.step_event_idx>);
+            events.record(static_cast\<int\>(<coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>));
         \}}; separator="\n">
         static_cast\<void\>(_fsm_state_before);
 <endif>
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
 <if(resources.by_kind.serial_chain)>
 <({app-chain-camera-publish-<configuration.backend>})(composition.scene.cameras, communication.ros)>
 <endif>
         // The frame's t is the platform clock: simulation time under MuJoCo, so a log is the
         // same regardless of how fast the host stepped it; wall_ns stays alongside for wall
         // anchoring.
-        _introspection_pub.begin_tick(
+        _telemetry.begin_tick(
             shared.clock_time_s,
             static_cast\<std::uint64_t\>(_step),
             _active_motion,
             static_cast\<int\>(fsm->currentStateIndex));
-        _introspection_pub.event_occurrences(events.count, events.buffer, events.size);
-        motion_spec::introspection::sample_model(
-            _introspection_pub,
+        _telemetry.event_occurrences(events.count, events.buffer, events.size);
+        motion_spec::telemetry::sample_model(
+            _telemetry,
             _active_motion,
             shared);
 <if(resources.by_kind.serial_chain)>
-<({app-chain-introspection-sample-<configuration.backend>})(resources.by_kind.serial_chain)>
+<({app-chain-telemetry-sample-<configuration.backend>})(resources.by_kind.serial_chain)>
 <endif>
-        _introspection_pub.end_tick();
-#endif
+        _telemetry.end_tick();
         ++_step;
         // One pacer for this loop. The real-time factor scales the period rather than adding a
         // second sleep somewhere else: in simulation it is the viewer's live setting, so the
@@ -286,12 +278,10 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
             motion_spec::runtime::advance_uncapped(_next_tick);
         \}
     }
-#ifdef MOTION_SPEC_ENABLE_INTROSPECTION
-    _introspection_pub.close();
+    _telemetry.close();
 <if(resources.by_kind.serial_chain)>
 <({app-chain-camera-cleanup-<configuration.backend>})(composition.scene.cameras)>
 <endif>
-#endif
 <if(resources.driven)>
 
 <({app-chain-cleanup-<configuration.backend>})(resources.driven)>
@@ -330,7 +320,7 @@ world-model-trees(resources) ::= <<
     motion_spec::runtime::WorldKinematics world;
     std::string world_error;
 <resources.world_trees:{tree |     KDL::Tree world_tree_<tree.cpp_name>{\};
-    if (!scene_kdl::make_tree_<tree.cpp_name>(&world_tree_<tree.cpp_name>)) {
+    if (!<tree.namespace>::make_tree_<tree.cpp_name>(&world_tree_<tree.cpp_name>)) {
         std::cerr \<\< "make_tree_<tree.cpp_name>() failed" \<\< std::endl;
         return 1;
     \}
@@ -371,7 +361,7 @@ sampling-draw(s) ::= <<
 >>
 
 sampling-record(sampling) ::= <<
-    motion_spec::introspection::log::FrameLogRecord _sampling_record;
+    motion_spec::telemetry::log::FrameLogRecord _sampling_record;
     _sampling_record.mutable_sampling()->set_seed(sampling_seed);
     _sampling_record.mutable_sampling()->set_drawn_at_ns(sampling_drawn_at_ns);
 <sampling:{s | <sampling-record-draw(s)>}; separator="\n">
@@ -530,7 +520,7 @@ shared_state_header(configuration, resources, computation, coordination, communi
 #include \<kdl/chainhdsolver_vereshchagin.hpp\>
 #include \<kdl/chainjnttojacsolver.hpp\>
 <if(resources.by_kind.serial_chain)><solver-rnea-include()><endif>
-<if(resources.by_kind.serial_chain)><({robot-driver-include-<configuration.backend>})(first(resources.by_kind.serial_chain), configuration.model_name, resources)><endif>
+<if(resources.by_kind.serial_chain)><({robot-driver-include-<configuration.backend>})(first(resources.by_kind.serial_chain), resources)><endif>
 <if(resources.by_kind.mobile_base)>
 <({<mobile-base-driver-include-impl.(configuration.backend)>})()>
 <endif>

@@ -16,9 +16,9 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from motion_spec.introspection.archive import ArchiveError
+from motion_spec.runs.archive import ArchiveError
 
-PROTO_PACKAGE = "motion_spec.introspection.log"
+PROTO_PACKAGE = "motion_spec.telemetry.log"
 
 # A run writes its log uncompressed -- the writer is on the control loop's heels and the
 # dashboard tails the file while it grows -- and archiving compresses it once, afterwards.

@@ -12,12 +12,11 @@ of the file is the single answer to *who writes this value*.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from typing import NamedTuple
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
-    ACT,
     AGN,
     ALGO_EXT,
     CSTR,
@@ -88,14 +87,12 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_RAD,
 )
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
-from rdf_utils.naming import get_valid_var_name
 from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, SOSA
 from scene_dsl.rdf.sensors import URI_SENS_TYPE_CAMERA
-from scene_dsl.rdf_parser.common import ensure_one_obj_uri
+from scene_dsl.rdf_parser.common import ensure_one_obj_uri, ensure_one_typed_subject_uri
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
-from motion_spec.classes.base import dedupe_by_id
 from motion_spec.classes.constraints import (
     BilateralConstraint,
     Constraint,
@@ -128,7 +125,6 @@ from motion_spec.classes.motion import (
     PoseComponents,
     PoseErrorComponent,
     PoseErrorRegroup,
-    RelativePoseCapture,
     SnapshotCapture,
 )
 from motion_spec.classes.qudt import (
@@ -154,6 +150,7 @@ from motion_spec.rdf_parser.operations import (
     closure_output_ids,
     closure_owner_map,
     data_reference_map,
+    declaring_block,
 )
 
 
@@ -161,7 +158,8 @@ def duration_seconds(model, node) -> float:
     """The value in seconds of a Duration node, converting from the unit it was written in."""
     graph = model.graph
     return seconds(
-        float(graph.value(node, QUDT_SCHEMA["value"])), graph.value(node, QUDT_SCHEMA["unit"])
+        float(graph.value(node, QUDT_SCHEMA["value"])),
+        graph.value(node, QUDT_SCHEMA["unit"]),
     )
 
 
@@ -178,7 +176,9 @@ def optional_float(model, subject, predicate) -> float | None:
     if value is None:
         return None
     literal = (
-        value if isinstance(value, rdflib.Literal) else model.graph.value(value, QUDT_SCHEMA.value)
+        value
+        if isinstance(value, rdflib.Literal)
+        else model.graph.value(value, QUDT_SCHEMA.value)
     )
     if literal is None:
         raise ConstraintViolation(
@@ -369,7 +369,9 @@ def parse_xyz(model, node) -> list[float] | None:
     values = [graph.value(node, predicate) for predicate in _XYZ_PREDICATES]
     if any(value is None for value in values):
         return None
-    return si_all((value.value for value in values), graph.value(node, QUDT_SCHEMA["unit"]))
+    return si_all(
+        (value.value for value in values), graph.value(node, QUDT_SCHEMA["unit"])
+    )
 
 
 @reader
@@ -478,13 +480,8 @@ def _orientation_composition(model, node):
     if node is None:
         return None
 
-    return next(
-        (
-            operation
-            for operation in model.graph.subjects(GEOM_OP["composite"], node)
-            if GEOM_OP_EXT.ComposeOrientation in get_node_types(model.graph, operation)
-        ),
-        None,
+    return ensure_one_typed_subject_uri(
+        model.graph, node, GEOM_OP["composite"], GEOM_OP_EXT.ComposeOrientation
     )
 
 
@@ -570,9 +567,9 @@ def view_of(graph, operand):
     """The MAP view an operand resolves through. A constraint names the view itself (relations
     are pooled per frame pair); an operand that is a subobject still finds the view sampling it.
     """
-    if graph.value(operand, MAP.subobject) is not None:
+    if (operand, MAP.subobject, None) in graph:
         return operand
-    return next(graph.subjects(MAP.subobject, operand), None)
+    return graph.value(predicate=MAP.subobject, object=operand)
 
 
 class ReferenceFrames(NamedTuple):
@@ -592,10 +589,12 @@ def derived_reference_frames(model, node) -> ReferenceFrames:
     graph = model.graph
     source = graph.value(node, PROV.wasDerivedFrom)
     if source is None:
-        owner = next(graph.subjects(CSTR["reference-value"], node), None)
+        owner = graph.value(predicate=CSTR["reference-value"], object=node)
         quantity_node = graph.value(owner, CSTR.quantity) if owner is not None else None
         view = view_of(graph, quantity_node) if quantity_node is not None else None
-        source = graph.value(view, MAP.superobject) if view is not None else quantity_node
+        source = (
+            graph.value(view, MAP.superobject) if view is not None else quantity_node
+        )
     if source is None:
         return ReferenceFrames(None, None, None)
 
@@ -656,11 +655,11 @@ def pose(model, node) -> Pose:
         euler_intrinsic = URI_GEOM_TYPE_INTRINSIC in coordinate.orientation_coord.types
 
     units = list(
-        dict.fromkeys(
+        {
             model.id(si_unit(unit))
             for component in (coordinate.position_coord.id, coordinate.orientation_coord.id)
             for unit in graph[component : QUDT_SCHEMA["unit"]]
-        )
+        }
     )
 
     return Pose(
@@ -694,7 +693,7 @@ def _pose_provenance(model, node, coordinate) -> Provenance:
     composed_and_viewed = _orientation_composition(
         model, coordinate.orientation_coord.id
     ) is not None and any(
-        model.graph.value(view, MAP["axis"]) is not None
+        (view, MAP["axis"], None) in model.graph
         for view in model.graph.subjects(MAP["superobject"], node)
     )
     authored = (
@@ -709,8 +708,6 @@ def _pose_provenance(model, node, coordinate) -> Provenance:
 @reader
 def direction(model, node) -> Direction:
     """A Direction quantity: a unit vector as seen by a frame."""
-    model.expect_type(node, GEOM_COORD["DirectionCoordinate"])
-    model.expect_type(node, GEOM_COORD["VectorXYZ"])
     graph = model.graph
 
     return Direction(
@@ -730,7 +727,9 @@ def _spatial_fields(model, node) -> dict:
     return {
         "id": model.id(node),
         "quantity_kind": [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
-        "reference_point": point(model, graph.value(node, GEOM_REL["reference-point"])),
+        "reference_point": point(
+            model, graph.value(node, GEOM_REL["reference-point"])
+        ),
         "as_seen_by": frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
         "unit": [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
         "provenance": quantity_provenance(model, node),
@@ -740,8 +739,6 @@ def _spatial_fields(model, node) -> dict:
 @reader
 def velocity_twist(model, node) -> VelocityTwist:
     """A VelocityTwist quantity: of a body with respect to another, about a reference point."""
-    model.expect_type(node, GEOM_COORD["VelocityTwistCoordinate"])
-    model.expect_type(node, GEOM_COORD["VectorXYZ"])
     return VelocityTwist(
         of=simplicial_complex(model, model.graph.value(node, GEOM_REL["of"])),
         with_respect_to=simplicial_complex(
@@ -754,16 +751,12 @@ def velocity_twist(model, node) -> VelocityTwist:
 @reader
 def acceleration_twist(model, node) -> AccelerationTwist:
     """An AccelerationTwist quantity."""
-    model.expect_type(node, GEOM_COORD["AccelerationTwistCoordinate"])
-    model.expect_type(node, GEOM_COORD["VectorXYZ"])
     return AccelerationTwist(**_spatial_fields(model, node))
 
 
 @reader
 def pose_difference(model, node) -> PoseDifference:
     """A PoseDifference quantity."""
-    model.expect_type(node, GEOM_COORD["PoseDifferenceCoordinate"])
-    model.expect_type(node, GEOM_COORD["VectorXYZ"])
     return PoseDifference(**_spatial_fields(model, node))
 
 
@@ -771,7 +764,6 @@ def pose_difference(model, node) -> PoseDifference:
 def wrench(model, node) -> Wrench:
     """A Wrench quantity, with the force/torque sensor measuring it when there is one."""
     graph = model.graph
-    model.expect_type(node, RBDYN_COORD["WrenchCoordinate"])
     relation = graph.value(node, RBDYN_COORD["of-wrench"])
     if relation is None or RBDYN_ENT.Wrench not in get_node_types(graph, relation):
         raise ConstraintViolation(
@@ -783,8 +775,11 @@ def wrench(model, node) -> Wrench:
         raise ConstraintViolation(
             "dynamics", f"WrenchCoordinate '{node}' is missing reference-point/as-seen-by"
         )
-    sensor = graph.value(node, SOSA.madeBySensor)
-    sensor_frame_node = graph.value(sensor, SENSORS.frame) if sensor is not None else None
+    observation = ensure_one_typed_subject_uri(graph, node, SOSA.observedProperty, SOSA.Observation)
+    sensor = graph.value(observation, SOSA.madeBySensor) if observation is not None else None
+    sensor_frame_node = (
+        graph.value(sensor, SENSORS.frame) if sensor is not None else None
+    )
     if sensor is not None and sensor_frame_node is None:
         raise ConstraintViolation(
             "dynamics", f"WrenchCoordinate '{node}' sensor '{sensor}' has no physical frame"
@@ -797,14 +792,12 @@ def wrench(model, node) -> Wrench:
             raise ConstraintViolation(
                 "dynamics", f"momentum observer '{observer}' names no agent to run on"
             )
+        gain = graph.value(observer, EST["estimation-gain"])
+        filter_constant = graph.value(observer, EST["filter-constant"])
         estimator = WrenchEstimator(
             agent=model.id(agent_node),
-            estimation_gain_hz=float(
-                graph.value(graph.value(observer, EST["estimation-gain"]), QUDT_SCHEMA["value"])
-            ),
-            filter_constant=float(
-                graph.value(graph.value(observer, EST["filter-constant"]), QUDT_SCHEMA["value"])
-            ),
+            estimation_gain_hz=float(graph.value(gain, QUDT_SCHEMA["value"])),
+            filter_constant=float(graph.value(filter_constant, QUDT_SCHEMA["value"])),
         )
 
     return Wrench(
@@ -831,7 +824,7 @@ def _is_duration(model, node) -> bool:
     """
     if TIME["Duration"] in get_node_types(model.graph, node):
         return True
-    return model.graph.value(node, QUDT_SCHEMA.hasQuantityKind) == NS_MM_QUDT_QTY["Time"]
+    return (node, QUDT_SCHEMA.hasQuantityKind, NS_MM_QUDT_QTY["Time"]) in model.graph
 
 
 def _observed_at_id(model, pose_node) -> str | None:
@@ -859,18 +852,16 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
     graph = model.graph
     world_poses = [
         pose(model, node)
-        for node in sorted(graph.subjects(RDF["type"], GEOM_COORD["PoseCoordinate"]), key=str)
-        if getattr(model.context_scope(node), "section", None) == "world"
+        for node in graph.subjects(RDF["type"], GEOM_COORD["PoseCoordinate"])
+        if (node, RDF["type"], SOSA.ObservableProperty) in graph
     ]
-    sources = sorted(
-        set(graph.subjects(RDF["type"], NS_MM_ROS["Action"]))
-        | set(graph.subjects(RDF["type"], NS_MM_ROS["Topic"])),
-        key=str,
+    sources = set(graph.subjects(RDF["type"], NS_MM_ROS["Action"])) | set(
+        graph.subjects(RDF["type"], NS_MM_ROS["Topic"])
     )
     written: dict[str, list[dict]] = {}
     for act in sources:
         rows = []
-        for target in sorted(graph.objects(act, SOSA.hasFeatureOfInterest), key=str):
+        for target in graph.objects(act, SOSA.hasFeatureOfInterest):
             # A camera is what a channel carries, not a pose it writes: a viewer reads those
             # images, and nothing in the loop does.
             if URI_SENS_TYPE_CAMERA in get_node_types(graph, target):
@@ -881,19 +872,18 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                 # The reading's own of/wrt when the channel states them: the composition into
                 # this quantity is the model's, so both ends travel with the row.
                 observed = graph.value(act, SOSA.observedProperty)
+                of_frame = graph.value(observed, GEOM_REL.of)
                 rows.append(
                     {
                         "target_iri": target_iri,
                         "pose_id": item.id,
                         "frame_id": item.with_respect_to.id,
                         "frame_iri": getattr(item.with_respect_to, "uri", ""),
-                        "observed_of_iri": str(graph.value(observed, GEOM_REL.of) or ""),
+                        "observed_of_iri": str(of_frame or ""),
                         # The body the reading places: its root segment is what the world model
                         # binds, so every other frame on it follows from the one measurement.
                         "observed_body_iri": str(
-                            body_of_frame(of_frame, graph)
-                            if (of_frame := graph.value(observed, GEOM_REL.of)) is not None
-                            else ""
+                            body_of_frame(of_frame, graph) if of_frame is not None else ""
                         ),
                         "observed_wrt_iri": str(
                             graph.value(observed, GEOM_REL["with-respect-to"]) or ""
@@ -932,14 +922,16 @@ def goal_status_act(model, node):
     """The action node whose goal status this node holds, or None if it holds no status."""
     if node is None:
         return None
-    return next(
-        (
-            act
-            for act in model.graph.objects(node, PROV.wasDerivedFrom)
-            if NS_MM_ROS["Action"] in get_node_types(model.graph, act)
-        ),
-        None,
-    )
+    acts = [
+        act
+        for act in model.graph.objects(node, PROV.wasDerivedFrom)
+        if NS_MM_ROS["Action"] in get_node_types(model.graph, act)
+    ]
+    if len(acts) > 1:
+        raise ConstraintViolation(
+            "communication", f"'{node}' holds the goal status of {len(acts)} actions -- it holds one"
+        )
+    return acts[0] if acts else None
 
 
 @reader
@@ -953,7 +945,7 @@ def quantity(model, node):
         graph = model.graph
         superobject = graph.value(node, MAP.superobject)
         subspace = graph.value(node, MAP.subspace)
-        if graph.value(node, MAP.axis) is not None:
+        if (node, MAP.axis, None) in graph:
             # A single-axis view names its own scalar; only whole-component views need the
             # superobject to pin one sampling of the pooled relation.
             superobject = None
@@ -976,7 +968,6 @@ def quantity(model, node):
         return GoalStatus(model.id(node))
     if _is_duration(model, node):
         return duration_quantity(model, node)
-    model.expect_type(node, QUDT_SCHEMA["Quantity"])
     graph = model.graph
     types = get_node_types(graph, node)
     if URI_GEOM_TYPE_POSE_COORD in types:
@@ -987,40 +978,34 @@ def quantity(model, node):
         return position(model, node)
     if URI_GEOM_TYPE_ORIENT in types:
         return orientation(model, node)
+    if GEOM_COORD["VelocityTwistCoordinate"] in types:
+        return velocity_twist(model, node)
 
-    kind = QuantityKind(model.id(graph.value(node, QUDT_SCHEMA.hasQuantityKind)))
+    kind_node = graph.value(node, QUDT_SCHEMA.hasQuantityKind)
+    kind = QuantityKind(model.id(kind_node), str(kind_node))
     # Values below are converted, so the unit reported alongside them is the SI one.
-    unit = Unit(model.id(si_unit(graph.value(node, QUDT_SCHEMA["unit"]))))
+    unit_node = graph.value(node, QUDT_SCHEMA["unit"])
+    si_node = si_unit(unit_node)
+    unit = Unit(model.id(si_node), str(si_node))
     has_view = (node, ~MAP["subobject"], None) in graph
     provenance = quantity_provenance(model, node)
 
     if CSTR_HDL_EXT["SetpointGenerator"] in types:
-        value_kind = next(
-            (
-                candidate
-                for candidate in graph[node : QUDT_SCHEMA["hasQuantityKind"]]
-                if candidate != CSTR_HDL_EXT.SetpointGenerator
-            ),
-            None,
-        )
-
         return SetpointQuantity(
             model.id(node),
             kind,
             unit,
             has_view,
             provenance=provenance,
-            value_kind=model.id(value_kind) if value_kind is not None else None,
+            value_kind=kind.id,
         )
     if kind.id == "FreeVector" and GEOM_COORD["VectorXYZ"] in types:
         return FreeVector(
             model.id(node), kind, unit, parse_xyz(model, node), has_view, provenance=provenance
         )
 
-    value = None
-    if (node, QUDT_SCHEMA["value"], None) in graph:
-        authored = graph.value(node, QUDT_SCHEMA["value"])
-        value = si(float(authored), graph.value(node, QUDT_SCHEMA["unit"]))
+    authored = graph.value(node, QUDT_SCHEMA["value"])
+    value = si(float(authored), unit_node) if authored is not None else None
     reference = graph.value(node, CSTR["reference-value"])
 
     return Quantity(
@@ -1050,8 +1035,8 @@ def duration_quantity(model, node) -> Quantity:
 
     return Quantity(
         model.id(node),
-        QuantityKind("Duration"),
-        Unit("Second"),
+        QuantityKind("Duration", str(NS_MM_QUDT_QTY["Time"])),
+        Unit("Second", str(NS_MM_QUDT_UNIT["SEC"])),
         value,
         False,
         provenance=quantity_provenance(model, node),
@@ -1062,8 +1047,6 @@ def duration_quantity(model, node) -> Quantity:
 @reader
 def joint_position(model, node) -> JointPosition:
     """A JointPosition quantity, named by the joint it reads."""
-    model.expect_type(node, KC_STAT["JointPositionCoordinate"])
-    model.expect_type(node, KC_STAT["JointReference"])
     joint = model.graph.value(node, KC_STAT["of-joint"])
     if not isinstance(joint, URIRef):
         raise ConstraintViolation(
@@ -1080,8 +1063,6 @@ def joint_position(model, node) -> JointPosition:
 @reader
 def joint_velocity(model, node) -> JointVelocity:
     """A JointVelocity quantity, named by the joint it reads."""
-    model.expect_type(node, KC_STAT["JointVelocityCoordinate"])
-    model.expect_type(node, KC_STAT["JointReference"])
     joint = model.graph.value(node, KC_STAT["of-joint"])
     if not isinstance(joint, URIRef):
         raise ConstraintViolation(
@@ -1093,8 +1074,6 @@ def joint_velocity(model, node) -> JointVelocity:
 @reader
 def joint_current(model, node) -> JointCurrent:
     """A JointCurrent quantity, named by the joint whose motor draws it."""
-    model.expect_type(node, ACT["JointCurrent"])
-    model.expect_type(node, KC_STAT["JointReference"])
     joint = model.graph.value(node, KC_STAT["of-joint"])
     if not isinstance(joint, URIRef):
         raise ConstraintViolation("actuation", f"JointCurrent '{node}' has no of-joint URI")
@@ -1152,8 +1131,8 @@ def _is_snapshot(model, node) -> bool:
     """
     graph = model.graph
     return (
-        graph.value(node, PROV.wasDerivedFrom) is not None
-        and next(graph.subjects(URI_TIME_PRED_OF_CONSTRAINT, node), None) is not None
+        (node, PROV.wasDerivedFrom, None) in graph
+        and (None, URI_TIME_PRED_OF_CONSTRAINT, node) in graph
     )
 
 
@@ -1174,7 +1153,7 @@ def snapshot_target_ids(model) -> frozenset:
     return frozenset(
         model.id(node)
         for node in set(graph.objects(None, URI_TIME_PRED_OF_CONSTRAINT))
-        if graph.value(node, PROV.wasDerivedFrom) is not None
+        if (node, PROV.wasDerivedFrom, None) in graph
     )
 
 
@@ -1198,20 +1177,12 @@ def simplicial_complex(model, node) -> SimplicialComplex:
 @reader
 def frame(model, node) -> Frame:
     """A reference frame, mapping a scene-dsl body-origin frame to its runtime body."""
-    model.expect_type(node, GEOM_ENT["Frame"])
     return Frame(_body_or_self(model, node), uri=str(node))
 
 
 def body_of(model, node):
     """The rigid body a frame is a simplex of, or None when no body carries it."""
-    return next(
-        (
-            owner
-            for owner in model.graph.subjects(GEOM_ENT.simplices, node)
-            if GEOM_ENT.RigidBody in get_node_types(model.graph, owner)
-        ),
-        None,
-    )
+    return ensure_one_typed_subject_uri(model.graph, node, GEOM_ENT.simplices, GEOM_ENT.RigidBody)
 
 
 def placement_frame(model, node):
@@ -1251,11 +1222,10 @@ def object_root_frame(model, node):
     Raises:
         ConstraintViolation: no asset maps the object onto a scene body.
     """
-    model.expect_type(node, ENV.RigidObject)
     graph = model.graph
-    for modelled in sorted(graph.subjects(ENV["of-object"], node), key=str):
-        for asset in sorted(graph.objects(modelled, ENV["has-object-model"]), key=str):
-            for mapping in sorted(graph.objects(asset, EXEC["has-mapping"]), key=str):
+    for modelled in graph.subjects(ENV["of-object"], node):
+        for asset in graph.objects(modelled, ENV["has-object-model"]):
+            for mapping in graph.objects(asset, EXEC["has-mapping"]):
                 mapped = get_kinematic_mapping(mapping, graph)
                 if mapped.target_type == GEOM_ENT.RigidBody:
                     return placement_frame(model, mapped.target_id)
@@ -1273,7 +1243,6 @@ def constraint(model, node) -> Constraint:
     A goal status is not measured against an operand of its own kind: the status it must reach
     rides on the evaluator, so the constraint states the slot and nothing else.
     """
-    model.expect_type(node, CSTR["Constraint"])
     quantity_node = model.graph.value(node, CSTR["quantity"])
     if goal_status_act(model, quantity_node) is not None:
         return Constraint(model.id(node), quantity(model, quantity_node), None)
@@ -1287,9 +1256,7 @@ def constraint(model, node) -> Constraint:
     else:
         parameter = _bilateral_constraint(model, node)
 
-    return Constraint(
-        model.id(node), quantity(model, model.graph.value(node, CSTR["quantity"])), parameter
-    )
+    return Constraint(model.id(node), quantity(model, quantity_node), parameter)
 
 
 def _threshold(model, node, predicate) -> Quantity:
@@ -1298,13 +1265,11 @@ def _threshold(model, node, predicate) -> Quantity:
 
 @reader
 def _equality_constraint(model, node) -> EqualityConstraint:
-    model.expect_type(node, CSTR["EqualityConstraint"])
     return EqualityConstraint(_threshold(model, node, CSTR["reference-value"]))
 
 
 @reader
 def _unilateral_constraint(model, node) -> UnilateralConstraint:
-    model.expect_type(node, CSTR["UnilateralConstraint"])
     type_ = UnilateralConstraintType.LessThan
     if CSTR["GreaterThanConstraint"] in get_node_types(model.graph, node):
         type_ = UnilateralConstraintType.GreaterThan
@@ -1313,7 +1278,6 @@ def _unilateral_constraint(model, node) -> UnilateralConstraint:
 
 @reader
 def _bilateral_constraint(model, node) -> BilateralConstraint:
-    model.expect_type(node, CSTR["BilateralConstraint"])
     return BilateralConstraint(
         _threshold(model, node, CSTR["lower-threshold"]),
         _threshold(model, node, CSTR["upper-threshold"]),
@@ -1322,7 +1286,6 @@ def _bilateral_constraint(model, node) -> BilateralConstraint:
 
 @reader
 def _outside_constraint(model, node) -> OutsideConstraint:
-    model.expect_type(node, CSTR_EXT["OutsideConstraint"])
     return OutsideConstraint(
         _threshold(model, node, CSTR["lower-threshold"]),
         _threshold(model, node, CSTR["upper-threshold"]),
@@ -1367,9 +1330,7 @@ def read_views(model) -> dict:
     """
     graph = model.graph
     views = {}
-    # sorted(): views_for_access keeps the first view seen for a subobject, so an unordered walk
-    # would publish a different (equivalent) view id on every generation.
-    for node in sorted(graph[: RDF["type"] : MAP["View"]]):
+    for node in graph[: RDF["type"] : MAP["View"]]:
         types = get_node_types(graph, node)
         superobject_node = graph.value(node, MAP["superobject"])
         read = next((func for type_, func in _VIEW_SUPEROBJECTS if type_ in types), None)
@@ -1411,23 +1372,25 @@ def _is_pooled_relation(model, node) -> bool:
 
 
 def read_data_structures(model) -> list:
-    """Every data-structure entity in the graph.
+    """Every data-structure entity the model itself declares or derives.
+
+    A scene element's coordinates are scene-dsl's and reach the run through the world model, not
+    the blackboard, so only the model's own nodes are read.
 
     Returns:
-        the records, grouped by type in most-specific-first order and deduplicated by id, so a
-        combined pose coordinate is read as a pose rather than as its position half
+        one record per node, read by the most specific reader its types match, so a combined
+        pose coordinate is read as a pose rather than as its position half
     """
-    return dedupe_by_id(
-        [
-            read(model, node)
-            # Sort within the type group: keeps the most-specific-first dispatch the dedupe
-            # relies on, while making the published order reproducible.
-            for type_, read in _DATA_STRUCTURE_READERS
-            for node in sorted(model.graph[: RDF["type"] : type_])
+    own = model.node_by_id
+    reader_by_node = {}
+    for type_, read in _DATA_STRUCTURE_READERS:
+        for node in model.graph[: RDF["type"] : type_]:
             # A pooled relation is no slot of its own: each of its samplings is one.
-            if not _is_pooled_relation(model, node)
-        ]
-    )
+            if own.get(model.id(node)) != node or _is_pooled_relation(model, node):
+                continue
+            # The readers run most specific first; a node keeps the first that matches it.
+            reader_by_node.setdefault(node, read)
+    return [read(model, node) for node, read in reader_by_node.items()]
 
 
 def views_by_subobject(views: dict) -> dict[str, list]:
@@ -1513,7 +1476,7 @@ def views_for_access(
     # Dropping the reading here used to leave the quantity to render as its own shared field --
     # a field nothing writes, which compiles to a zero and flies the robot at it. Nothing can
     # compute this quantity, so say so instead of emitting the zero.
-    unreadable = sorted(id_ for id_, view in indexed.items() if view is None)
+    unreadable = [id_ for id_, view in indexed.items() if view is None]
     if unreadable:
         raise ConstraintViolation(
             "geometry",
@@ -1536,37 +1499,6 @@ def expanded_constraints(model, nodes) -> set:
             else (node,)
         )
     }
-
-
-def relative_poses_for_motion(evaluators, views: dict, serial_chain_solvers) -> list:
-    """Poses stated with respect to a `_start` frame, paired with the FK output they capture."""
-    fk_poses = {
-        out.of.id: out.id
-        for solver in serial_chain_solvers
-        for out in solver.output
-        if getattr(out, "type", "") == "Pose" and getattr(getattr(out, "of", None), "id", None)
-    }
-    indexed = views_by_subobject(views)
-    start_relative: dict[str, object] = {}
-    for evaluator in evaluators:
-        quantity_record = getattr(getattr(evaluator, "constraint", None), "quantity", None)
-        if quantity_record is None or not getattr(quantity_record, "has_view", False):
-            continue
-        view = _unique_view(indexed, quantity_record.id, "relative pose lookup")
-        if view is None:
-            continue
-        wrt = getattr(view.superobject, "with_respect_to", None)
-        if wrt and getattr(wrt, "id", "").endswith("_start"):
-            start_relative[view.superobject.id] = view.superobject
-
-    result = []
-    for pose_id, pose_record in start_relative.items():
-        of_id = getattr(getattr(pose_record, "of", None), "id", None)
-        fk_pose_id = fk_poses.get(of_id) if of_id else None
-        if fk_pose_id:
-            result.append(RelativePoseCapture(id=pose_id, fk_pose_id=fk_pose_id))
-
-    return result
 
 
 _GROUPABLE_SUPEROBJECTS = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench"}
@@ -1651,8 +1583,8 @@ def snapshots_for_motion(
     """A motion's sample-and-hold captures, from every reference value it reaches.
 
     Parameters:
-        token: the motion's own suffix, as `snapshot_owner` names declaring motions
-        tokens: every motion's suffix, so an unowned snapshot can be told from another's
+        token: the motion's own id, as `snapshot_owner` names declaring blocks
+        tokens: every motion's id, so a shared snapshot can be told from another motion's
 
     Returns:
         one capture per snapshot target this motion may sample, sorted by target id
@@ -1711,7 +1643,7 @@ def snapshots_for_motion(
                 expand(item)
 
     result = []
-    for target_id in sorted(referenced):
+    for target_id in referenced:
         if target_id not in indexes.snapshot_source:
             continue
         # Capture only what this motion declares: re-capturing another motion's snapshot would
@@ -1725,6 +1657,15 @@ def snapshots_for_motion(
         trigger = indexes.snapshot_trigger.get((owner, target_id))
         source_id = indexes.snapshot_source[target_id]
         scope = "event" if trigger else ("entry" if owner in tokens else "task")
+        writers = (
+            set() if source_id in supers_by_subobject else indexes.closure_output.get(source_id, set())
+        )
+        if len(writers) > 1:
+            raise ConstraintViolation(
+                "coordination",
+                f"snapshot '{target_id}' captures '{source_id}', which {len(writers)} closures "
+                "write -- a capture computes its source once",
+            )
         result.append(
             SnapshotCapture(
                 target_id=target_id,
@@ -1732,11 +1673,7 @@ def snapshots_for_motion(
                 scope=scope,
                 # Only a run-scoped capture is latched; an entry- or event-scoped one re-captures.
                 captured_id=f"{target_id}_captured" if scope == "task" else None,
-                source_closure_id=(
-                    None
-                    if source_id in supers_by_subobject
-                    else indexes.closure_output.get(source_id)
-                ),
+                source_closure_id=next(iter(writers), None),
                 trigger_event=trigger,
             )
         )
@@ -1797,7 +1734,7 @@ def elapsed_coordinate_id(evaluator) -> str:
     """The shared value an elapsed constraint measures: its own authored duration coordinate.
 
     The error signal is the elapsed duration itself, so this is where the motion writes the
-    seconds and where the condition, the introspection sample and the frame log all find them.
+    seconds and where the condition, the telemetry sample and the frame log all find them.
     """
     coordinate = getattr(evaluator.error, "id", None)
     if not coordinate:
@@ -1809,13 +1746,13 @@ def elapsed_coordinate_id(evaluator) -> str:
 
 
 def elapsed_coordinate_ids(evaluators) -> list[str]:
-    """A phase's elapsed coordinates, deduplicated, in authored order."""
+    """A phase's elapsed coordinates, each once."""
     return list(
-        dict.fromkeys(
+        {
             elapsed_coordinate_id(evaluator)
             for evaluator in evaluators
             if evaluator.is_elapsed and not evaluator.observed_at_id
-        )
+        }
     )
 
 
@@ -2041,12 +1978,12 @@ class _SnapshotMaps(NamedTuple):
 def _snapshot_maps(model) -> _SnapshotMaps:
     """One walk over the snapshots for the three maps codegen asks about.
 
-    ``source``: each snapshot output to its source quantity. ``owner``: each output to the motion
-    declaring it, taken from the motion segment of the quantity URI -- every motion captures each
-    snapshot it references and they share one slot, so without an owner a motion silently
-    retargets another's. ``trigger``: each event-triggered snapshot to its trigger event's local
-    name, keyed by (declaring scope, output id) -- a motion's own re-samples only for it, a
-    shared one for whichever motion reads it.
+    ``source``: each snapshot output to its source quantity. ``owner``: each output to the block
+    whose context declares it (`prov:hadMember`) -- every motion captures each snapshot it
+    references and they share one slot, so without an owner a motion silently retargets another's.
+    ``trigger``: each event-triggered snapshot to its trigger event's IRI, keyed by
+    (declaring block, output id) -- a motion's own re-samples only for it, a shared one for
+    whichever motion reads it.
     """
     graph = model.graph
     source: dict[str, str] = {}
@@ -2062,15 +1999,13 @@ def _snapshot_maps(model) -> _SnapshotMaps:
             continue
         output_id = model.id(output_node)
         source[output_id] = model.id(source_node)
-        scope = model.context_scope(output_node)
-        if scope is None:
+        block = declaring_block(model, output_node)
+        if block is None:
             continue
-        owner[output_id] = get_valid_var_name(scope[0])
+        owner[output_id] = model.id(block)
         trigger_node = graph.value(schedule, URI_TIME_PRED_AFTER_EVT)
         if trigger_node is not None:
-            trigger[(owner[output_id], output_id)] = get_valid_var_name(
-                local_name(trigger_node)
-            ).upper()
+            trigger[(owner[output_id], output_id)] = str(trigger_node)
 
     return _SnapshotMaps(source, owner, trigger)
 
@@ -2110,50 +2045,43 @@ def build_indexes(model, closures: dict, data_structures: list, views: dict) -> 
     return Computation(closures, data_structures, views, indexes)
 
 
-def filter_shared_data(data_structures, schedule, closures: dict, views: dict, fk_output_ids):
-    """The data structures that reach the blackboard.
+def filter_shared_data(data_structures, users) -> list:
+    """The data structures that reach the blackboard: exactly those the program reads or writes.
 
-    Anything a scheduled call, a view, a closure or an FK output names is shared. What nothing
-    names is kept only if it is a value in its own right: a viewed quantity, a kindless one and a
-    whole pose or twist are all projections of something else and drop out.
-
-    Parameters:
-        schedule: every scheduled call id, across all four solver-section schedules
-        fk_output_ids: the ids the chain solvers write, which no schedule mentions
+    Read off `users` -- the IR parts built before the blackboard: schedules, closures, views,
+    motions, solvers and publishes -- at any depth, and closed over what a kept record names in
+    turn, so a value reached only through another (a reference value, a composed orientation's
+    base pose) stays. A value nothing names, a scene element's own coordinates among them, is no
+    runtime value at all.
     """
-    referenced: set[str] = set(schedule) | set(fk_output_ids)
-    for closure in closures.values():
-        for value in closure.values():
-            # An n-ary port (algo-ext:in) arrives as a list of operand ids.
-            for item in value if isinstance(value, list) else [value]:
-                if isinstance(item, str):
-                    referenced.add(item)
-    for view in views.values():
-        for endpoint in (view.superobject, view.subobject):
-            if endpoint:
-                referenced.add(endpoint.id)
-    # A composed orientation's base pose is read by the pose materializer, not by any
-    # schedule, closure or view.
-    for item in data_structures:
-        for operand in getattr(item, "orientation_operands", None) or ():
-            base = operand.get("pose")
-            if isinstance(base, str):
-                referenced.add(base)
+    by_id = {item.id: item for item in data_structures}
+    referenced: set[str] = set()
+    # Records are shared between motions; one walk through each is enough.
+    walked: set[int] = set()
 
-    result = []
-    for item in data_structures:
-        if item.id in referenced:
-            result.append(item)
-            continue
-        if item.type == "Quantity" and item.has_view:
-            continue
-        if item.type == "Quantity" and item.value is None and item.quantity_kind.id is None:
-            continue
-        if item.type in ("Pose", "VelocityTwist"):
-            continue
-        result.append(item)
+    def visit(value) -> None:
+        """Mark every data id named anywhere in `value`, and what each one names in turn."""
+        if isinstance(value, str):
+            if value in by_id and value not in referenced:
+                referenced.add(value)
+                visit(by_id[value])
+            return
+        if id(value) in walked:
+            return
+        walked.add(id(value))
+        if isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                visit(item)
+        elif is_dataclass(value) and not isinstance(value, type):
+            for item in fields(value):
+                visit(getattr(value, item.name))
 
-    return dedupe_by_id(result)
+    visit(users)
+
+    return [item for item in data_structures if item.id in referenced]
 
 
 # Storage follows from write cadence, in one place. A value written once says nothing new when
@@ -2294,7 +2222,7 @@ def _owners_by_value(motions, closures: dict, world_output_ids: set) -> _ValueOw
             # channels are live in every motion that drives it.
             for sample in [*solver.joint_space_samples, *solver.joint_space_cmd_samples]:
                 own(sample["id"], motion.id)
-        for entry in [*motion.declared_pose_components, *motion.relative_poses]:
+        for entry in motion.declared_pose_components:
             own(entry["id"] if isinstance(entry, dict) else entry.id, motion.id, "pose")
         for snapshot in motion.snapshots:
             own(snapshot.target_id, motion.id, "snapshot")
@@ -2313,7 +2241,7 @@ def _owners_by_value(motions, closures: dict, world_output_ids: set) -> _ValueOw
 
 
 def annotate_dataflow(
-    introspection: dict,
+    telemetry: dict,
     shared_data: list,
     closures: dict,
     motions,
@@ -2396,7 +2324,7 @@ def annotate_dataflow(
             # than inside a motion's step, so it is live in every state.
             return _Contract(perceived_by_output[item.id], "tick")
         motion_ids = owners.get(item.id)
-        cadence = {"motions": sorted(motion_ids)} if motion_ids else "tick"
+        cadence = {"motions": list(motion_ids)} if motion_ids else "tick"
         if getattr(item, "role", None) == "joint_space":
             # Declared at the mirror site, which is the only place that knows what it reads.
 
@@ -2440,7 +2368,7 @@ def annotate_dataflow(
 
     _apply_view_liveness(dataflow, views)
     for member_id, consumers in _consumers_by_id(
-        introspection, closures, serial_chain_solvers, motions
+        telemetry, closures, serial_chain_solvers, motions
     ).items():
         if member_id in dataflow:
             dataflow[member_id]["consumers"] = consumers
@@ -2457,12 +2385,12 @@ def annotate_dataflow(
             "dataflow: read but never written: "
             + "; ".join(
                 f"{member_id} (read by {', '.join(c['id'] for c in consumers)})"
-                for member_id, consumers in sorted(orphans.items())
+                for member_id, consumers in orphans.items()
             )
         )
 
-    introspection["dataflow"] = dataflow
-    _apply_dataflow(introspection, shared_data, items_by_id, dataflow)
+    telemetry["dataflow"] = dataflow
+    _apply_dataflow(telemetry, shared_data, items_by_id, dataflow)
 
 
 def _apply_view_liveness(dataflow: dict, views) -> None:
@@ -2480,7 +2408,7 @@ def _apply_view_liveness(dataflow: dict, views) -> None:
 
     for subobject_id, superobject_ids in superobjects_of.items():
         entry = dataflow.get(subobject_id)
-        sources = [dataflow[sid] for sid in sorted(superobject_ids) if sid in dataflow]
+        sources = [dataflow[sid] for sid in superobject_ids if sid in dataflow]
         if entry is None or not sources:
             continue
         live = [source["cadence"] for source in sources if source["storage"] == "log"]
@@ -2489,7 +2417,7 @@ def _apply_view_liveness(dataflow: dict, views) -> None:
             cadence = (
                 "tick"
                 if any(not isinstance(source, dict) for source in live)
-                else {"motions": sorted({m for source in live for m in source["motions"]})}
+                else {"motions": list({m for source in live for m in source["motions"]})}
             )
         elif entry["producer"]["kind"] == "none":
             cadence = sources[0]["cadence"]
@@ -2527,7 +2455,7 @@ def _bound_ids(value, path: str):
 
 
 def _consumers_by_id(
-    introspection: dict, closures: dict, serial_chain_solvers, motions=()
+    telemetry: dict, closures: dict, serial_chain_solvers, motions=()
 ) -> dict[str, list]:
     """Who reads each shared value: the monitors, controllers, closures, solvers and motion
     entry code bound to it."""
@@ -2539,7 +2467,7 @@ def _consumers_by_id(
                 {"kind": kind, "id": reader_id, "role": role}
             )
 
-    for monitor in introspection.get("monitors", []):
+    for monitor in telemetry.get("monitors", []):
         # An aggregate monitor judges each member constraint on its own band, so the terms bind
         # values the monitor's own two signals never name.
         for source in (monitor, *(monitor.get("watched") or ())):
@@ -2548,7 +2476,7 @@ def _consumers_by_id(
             add(source.get("tolerance_signal"), "monitor", monitor.get("id"), "tolerance")
         # The debounce is the monitor's own, never a watched member's.
         add(monitor.get("debounce_signal"), "monitor", monitor.get("id"), "debounce")
-    for controller in introspection.get("controllers", []):
+    for controller in telemetry.get("controllers", []):
         for role in ("error_signal", "measured_signal", "setpoint_signal", "tolerance_signal"):
             add(controller.get(role), "controller", controller.get("id"), role)
     for closure_id, closure in closures.items():
@@ -2572,22 +2500,21 @@ def _consumers_by_id(
         for entry in getattr(motion, "declared_pose_components", ()):
             for operand in entry.get("orientation_operands") or ():
                 add(operand.get("pose"), "motion", motion.id, "pose.orientation.base")
-    # Readers are collected from dicts whose order is the graph's; the list is an artifact.
     for member_id, readers in consumers.items():
         unique = {(entry["kind"], entry["id"], entry["role"]): entry for entry in readers}
-        consumers[member_id] = [unique[key] for key in sorted(unique)]
+        consumers[member_id] = list(unique.values())
 
     return consumers
 
 
-def _apply_dataflow(introspection: dict, shared_data: list, items_by_id: dict, dataflow: dict):
+def _apply_dataflow(telemetry: dict, shared_data: list, items_by_id: dict, dataflow: dict):
     """Act on the contract: absent values leave the program, init values leave the per-tick frame."""
     shared_data[:] = [
         item for item in shared_data if dataflow.get(item.id, {}).get("storage") != "absent"
     ]
 
     logged, constants, unattributed = [], [], []
-    for sample in introspection.get("quantity_samples", []):
+    for sample in telemetry.get("quantity_samples", []):
         entry = dataflow.get(sample.get("source_id"))
         if entry is None:
             unattributed.append(sample.get("id"))
@@ -2613,12 +2540,12 @@ def _apply_dataflow(introspection: dict, shared_data: list, items_by_id: dict, d
             }
             constants.append({key: val for key, val in row.items() if val is not None})
     if unattributed:
-        raise RuntimeError(f"dataflow: samples with no resolvable contract: {sorted(unattributed)}")
-    introspection["quantity_samples"] = logged
-    introspection["constants"] = constants
+        raise RuntimeError(f"dataflow: samples with no resolvable contract: {unattributed}")
+    telemetry["quantity_samples"] = logged
+    telemetry["constants"] = constants
 
-    for pool, rows in (introspection.get("spatial_samples") or {}).items():
+    for pool, rows in (telemetry.get("spatial_samples") or {}).items():
         kept = [row for row in rows if dataflow.get(row["id"], {}).get("storage") == "log"]
-        introspection["spatial_samples"][pool] = [
+        telemetry["spatial_samples"][pool] = [
             dict(row, index=index) for index, row in enumerate(kept)
         ]

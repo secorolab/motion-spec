@@ -2,8 +2,7 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """The loaded model: the graph every other module reads through.
 
-In order: the naming rules, the QUDT-to-SI conversions, dataset loading, ``Model``, and the
-reader cache.
+In order: the naming rules, the QUDT-to-SI conversions, ``Model``, and the reader cache.
 
 ``Model`` carries the four things every reader shares -- the merged graph, the one id-minting
 rule, the registry of IRIs for entities the model implies but does not author, and the cache the
@@ -18,17 +17,13 @@ from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import urlsplit
 
 import rdflib
-from motion_spec_dsl.rdf_parser.manifest import build_url_map, install_metamodel_resolver
-from motion_spec_dsl.rdf_parser.vocab import APP, CSTR_HDL
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.models.common import get_node_types
 from rdf_utils.models.vocab import URI_QUDT_UNIT_CM, URI_QUDT_UNIT_M, URI_QUDT_UNIT_MM
 from rdf_utils.namespace import NS_MM_QUDT_UNIT
 from rdflib import URIRef
-from rdflib.namespace import PROV, RDF, split_uri
+from rdflib.namespace import split_uri
 
 
 def identifier(name) -> str:
@@ -116,71 +111,6 @@ def seconds(value: float, unit) -> float:
     return si(value, unit)
 
 
-# The DSL writes its provenance import under this exact name (motion_spec_dsl.gens), and the
-# manifest offers nothing else to tell a provenance import from a model one. A repo-wide path
-# convention, ported unchanged from the old loader rather than re-derived.
-_PROVENANCE_SUFFIX = "/provenance/dsl.ld.json"
-
-
-def _import_path(location: str, url_map: dict[str, str]) -> str:
-    """An import location as a local file path, through the manifest's url map."""
-    for base, root in sorted(url_map.items(), key=lambda item: len(item[0]), reverse=True):
-        if location.startswith(base):
-            return str((Path(root) / location[len(base) :]).resolve())
-    return location
-
-
-def _parse_manifest(manifest_path) -> tuple[rdflib.Dataset, Path, dict[str, str]]:
-    """The manifest parsed alone, its resolved path and its url map, with the resolver on it."""
-    app_path = Path(manifest_path).resolve()
-    graph = rdflib.Dataset(default_union=True)
-    install_metamodel_resolver()
-    graph.parse(str(app_path), format="json-ld")
-    url_map = build_url_map(graph, app_path)
-    install_metamodel_resolver(url_map)
-    return graph, app_path, url_map
-
-
-def _imports(graph: rdflib.Dataset) -> tuple[list[str], list[str]]:
-    """The manifest's imports, split into model graphs and provenance documents."""
-    imported = list(dict.fromkeys(str(model) for model in graph.objects(predicate=APP["import"])))
-    provenance = [item for item in imported if item.endswith(_PROVENANCE_SUFFIX)]
-    models = [item for item in imported if not item.endswith(_PROVENANCE_SUFFIX)]
-    return models, provenance
-
-
-def imported_models(manifest_path) -> list[str]:
-    """The model graphs a manifest imports, as local file paths."""
-    graph, _app_path, url_map = _parse_manifest(manifest_path)
-    models, _provenance = _imports(graph)
-    return [_import_path(item, url_map) for item in models]
-
-
-def load_model(manifest_path) -> Model:
-    """Load an app manifest and every model it imports into one merged graph.
-
-    Installs the IRI-to-file resolver twice: once with the metamodel map so the manifest itself
-    parses, then again with the manifest's own url map, which only exists once it has.
-
-    Parameters:
-        manifest_path: path to the `<model>-app.ld.json` the DSL generated
-
-    Returns:
-        the `Model` every reader in the package reads through
-    """
-    graph, app_path, url_map = _parse_manifest(manifest_path)
-    models, provenance = _imports(graph)
-    for location in models:
-        graph.parse(location=location, format="json-ld")
-
-    return Model(
-        graph=graph,
-        app_path=app_path,
-        imported_models=[_import_path(item, url_map) for item in models],
-        imported_provenance=[_import_path(item, url_map) for item in provenance],
-    )
-
-
 class _DerivedIri(NamedTuple):
     """One registry row: the IRI minted for an id, and where it came from."""
 
@@ -190,92 +120,70 @@ class _DerivedIri(NamedTuple):
     types: list
 
 
-class _ContextScope(NamedTuple):
-    """The three parts of a context quantity's IRI."""
-
-    owner: str
-    section: str
-    member_path: tuple
-
-
-class _Index(NamedTuple):
-    """The three lookups one walk over the complete graph produces."""
-
-    node_by_id: dict
-    id_nodes: list
-    authored_iris: dict
-
-
 @dataclass
 class Model:
     """The loaded model: the merged graph, the identity rules every reader shares, the registry of
     derived IRIs, and the cache those readers memoize on.
-
-    The id/IRI index is built on first use rather than at construction, because
-    ``operations.normalize`` is still to run and a node it mints has to appear in it.
     """
 
     graph: rdflib.Dataset
     app_path: Path
-    imported_models: list[str]
-    imported_provenance: list[str]
+    # The namespaces the application document declares: the nodes under them are the model's own.
+    namespaces: tuple = ()
     cache: dict = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
-        self._ambiguous: set[str] | None = None
-        self._shared_handlers: dict | None = None
         self._ids: dict = {}
-        self._id_sources: dict[str, set[str]] = {}
-        self._index: _Index | None = None
+        # Each of the model's own ids, and the one node it names.
+        self._app_nodes: dict[str, URIRef] = {}
+        self._walked = False
         self._derived: dict[str, _DerivedIri] = {}
+        # What IR generation adds to the graph, apart from what was authored: the union reads it,
+        # and it is what the derivation document states.
+        self.derived = self.graph.graph(URIRef(f"{Path(self.app_path).resolve().as_uri()}#derived"))
 
     # identity
 
-    def context_scope(self, node) -> _ContextScope | None:
-        """The owner, section and member path of a context quantity's IRI, or None when the node
-        is not one: a context IRI is ``<app>/<owner>/(spec|world)/<member path>``.
-        """
-        parts = tuple(part for part in urlsplit(str(node)).path.split("/") if part)
-        for index in range(1, len(parts) - 1):
-            if parts[index] in ("spec", "world"):
-                return _ContextScope(parts[index - 1], parts[index], parts[index + 1 :])
-        return None
-
     def id(self, node) -> str:
-        """The stable generated id of a node.
+        """The generated id of a node.
 
-        Its URI's local name, qualified by its owner when that name is shared -- by more than one
-        context quantity, or by nodes under more than one constraint handler. A context quantity
-        becomes a field on the blackboard and a handler-owned name a family of derived entities,
-        so two of either collapsing onto one id would silently merge unrelated things.
+        A node the application declares is named by its IRI below the namespace it is declared
+        in -- `align/while/centred` is `align_while_centred` -- so the scope it is written in stays
+        in its name. Any other node keeps its own local name: a scene element, an FSM state and a
+        metamodel term are named by the tool or vocabulary they belong to.
 
         Returns:
-            the id, or the node itself when it has no qname to take one from
+            the id, or the node itself when it is a literal, a blank node or no node
+
+        Raises:
+            ConstraintViolation: two of the model's own nodes fold onto one id.
         """
         cached = self._ids.get(node)
         if cached is not None:
             return cached
-        local = self._qname(node)
-        if local is None:
-            # A literal, a blank node or a URI with no local part has no qname and so no id of
-            # its own; it stands for itself wherever a reader passes it on.
+        if not isinstance(node, URIRef):
             self._ids[node] = node
-
             return node
-        # Only context quantities and handler-owned names can merge silently; constraint names,
-        # metamodel predicates and aliases legitimately share an id.
-        scope = self.context_scope(node)
-        if scope:
-            owner, _section, member_path = scope
-            if local in self._ambiguous_names():
-                local = identifier("-".join((owner, *member_path)))
-            self._id_sources.setdefault(local, set()).add(str(node))
-        elif (handler := self._shared_handler_names().get(node)) is not None:
-            local = identifier(f"{self._qname(handler)}-{local}")
-            self._id_sources.setdefault(local, set()).add(str(node))
-        self._ids[node] = local
-
-        return local
+        iri = str(node)
+        base = max(
+            (ns for ns in self.namespaces if iri.startswith(ns) and iri != ns),
+            key=len,
+            default=None,
+        )
+        if base is None:
+            local = self._qname(node)
+            self._ids[node] = node if local is None else local
+            return self._ids[node]
+        id_ = identifier(iri[len(base) :])
+        claimed = self._app_nodes.setdefault(id_, node)
+        if claimed != node:
+            raise ConstraintViolation(
+                "motion-spec",
+                f"'{claimed}' and '{iri}' both name the id '{id_}' in the generated code -- "
+                "rename one of them in the model",
+            )
+        self._ids[node] = id_
+        return id_
 
     def label(self, node) -> str:
         """The node's human-readable local name, or its URI when it has no qname."""
@@ -291,120 +199,30 @@ class Model:
         except (TypeError, ValueError):
             return None
 
-    def motion_suffix(self, motion) -> str:
-        """The fragment a motion contributes to the ids derived under it."""
-        return self.id(motion).removeprefix("motion_")
-
-    def expect_type(self, node, type_) -> None:
-        """Assert a node's rdf:type at the reader that requires it.
-
-        Raises:
-            ConstraintViolation: the node does not carry `type_`.
-        """
-        if type_ not in get_node_types(self.graph, node):
-            raise ConstraintViolation(
-                "motion-spec", f"Node '{node}' is missing expected rdf:type '{type_}'"
-            )
-
-    def _ambiguous_names(self) -> set[str]:
-        """Local names more than one context quantity would collapse onto."""
-        if self._ambiguous is None:
-            sources: dict[str, set[str]] = {}
-            for node in set(self.graph.subjects()):
-                local = self._qname(node) if self.context_scope(node) is not None else None
-                if local is not None:
-                    sources.setdefault(local, set()).add(str(node))
-            self._ambiguous = {name for name, urls in sources.items() if len(urls) > 1}
-        return self._ambiguous
-
-    def _shared_handler_names(self) -> dict:
-        """The handler owning each node whose name a node under a second handler also carries.
-
-        A name written inside a `constraint-handler` block is handler-scoped, and the IRI keeps
-        that scope (`<handler>/<name>`) -- the id, being the local name alone, drops it. So two
-        handlers reusing a controller name would put one id on two controllers, on the saturation
-        and normalization nodes beside them, and on everything derived under them. The handler
-        prefix restores the scope the id dropped. An alias is one controller a second handler
-        lists, not a second controller: it stays under its own handler and keeps its one id.
-
-        Anywhere below the handler counts, not just directly under it: a node the model hangs
-        under a controller (`<handler>/<controller>/<name>`) took its name from that controller,
-        so it is as handler-scoped as the controller is.
-        """
-        if self._shared_handlers is None:
-            owners = tuple(
-                (f"{handler}/", handler)
-                for handler in self.graph.subjects(RDF.type, CSTR_HDL.ConstraintHandler)
-            )
-            by_name: dict[str, dict] = {}
-            for node in set(self.graph.subjects()):
-                handler = next(
-                    (owner for prefix, owner in owners if str(node).startswith(prefix)), None
-                )
-                local = self._qname(node) if handler is not None else None
-                if local is not None:
-                    by_name.setdefault(local, {}).setdefault(node, handler)
-            self._shared_handlers = {
-                node: handler
-                for shared in by_name.values()
-                if len(shared) > 1
-                for node, handler in shared.items()
-            }
-        return self._shared_handlers
-
     # the id/IRI index
 
     @property
     def node_by_id(self) -> dict:
-        """The node each generated id names, first occurrence winning."""
-        return self._indexes().node_by_id
+        """The node each of the model's own ids names.
 
-    @property
-    def id_nodes(self) -> list:
-        """Every ``(id, node)`` pair in the graph, in node order."""
-        return self._indexes().id_nodes
-
-    def _indexes(self) -> _Index:
-        node_by_id: dict = {}
-        id_nodes: list = []
-        if self._index is not None:
-            return self._index
-        for node in sorted(self.graph.subjects(), key=str):
-            id_ = self.id(node)
-            id_nodes.append((id_, node))
-            node_by_id.setdefault(id_, node)
-        authored = {id_: str(node) for id_, node in id_nodes if isinstance(node, URIRef)}
-        self._index = _Index(node_by_id, id_nodes, authored)
-        self._assert_no_id_collisions()
-
-        return self._index
-
-    def _assert_no_id_collisions(self) -> None:
-        """Fail loudly when two distinct context-quantity or handler-owned URIs collapse to one
-        generated id even after owner-qualification: that would silently merge unrelated shared
-        fields, and a genuinely shared quantity has one URI.
+        Every node is named once on first use, so an id is known before any reader asks for it;
+        a node minted later is named when a reader first meets it.
         """
-        collisions = {i: sorted(u) for i, u in self._id_sources.items() if len(u) > 1}
-        if not collisions:
-            return
-        details = "\n".join(
-            f"  id '{i}' is claimed by:\n" + "\n".join(f"    {u}" for u in uris)
-            for i, uris in sorted(collisions.items())
-        )
-        raise ConstraintViolation(
-            "motion-spec",
-            "an id names one entity in the generated code, but these ids each name several, so "
-            "their values would silently merge. Owner-qualification (the context quantity's "
-            "owner, the controller's handler) did not separate them, so the names collide even "
-            f"after it -- rename one of each pair in the model:\n{details}",
-        )
+        if not self._walked:
+            for node in set(self.graph.subjects()):
+                self.id(node)
+            self._walked = True
+        return self._app_nodes
 
     # derived IRIs
 
     def iri_of(self, id_) -> str | None:
         """The IRI an id resolves to, authored or already derived; None when neither."""
         entry = self._derived.get(id_)
-        return entry.uri if entry else self._indexes().authored_iris.get(id_)
+        if entry is not None:
+            return entry.uri
+        node = self.node_by_id.get(id_)
+        return str(node) if node is not None else None
 
     def register_derived(self, id_, parent_iri, suffix, relation, types=()) -> str | None:
         """Mint `<parent_iri>/<suffix>` for an entity the model implies but does not author.
@@ -431,9 +249,9 @@ class Model:
         if not id_ or not parent_iri:
             return None
         # An authored node always wins: a derived IRI must never shadow a model's own.
-        authored = self._indexes().authored_iris.get(id_)
+        authored = self.node_by_id.get(id_)
         if authored is not None:
-            return authored
+            return str(authored)
         uri = str(self.child_node(parent_iri, kebab(suffix)))
         existing = self._derived.get(id_)
         if existing is not None:
@@ -458,7 +276,7 @@ class Model:
         The other half of the derived-IRI rule: `register_derived` names an entity that has no
         node, this names one that will have triples of its own, so it needs no registration --
         it becomes a graph subject and so an authored IRI in `uri_rows`. The pattern is
-        behaviour: these IRIs surface in the introspection artifact and in the run graph.
+        behaviour: these IRIs surface in the telemetry artifact and in the run graph.
         """
         return self._mint(f"{parent}.derived-{suffix}")
 
@@ -476,29 +294,23 @@ class Model:
         return URIRef(text)
 
     def uri_rows(self) -> list[dict]:
-        """``[{id, uri}]`` for every authored node then every derived entity.
-
-        Appended, never substituted, and last-wins on a repeated id is deliberate: constraint
-        names, metamodel predicates and aliases legitimately share a bare id.
-        """
-        authored = [
-            {"id": id_, "uri": str(node)}
-            for id_, node in sorted(self.id_nodes, key=lambda item: (item[0], str(item[1])))
-            if isinstance(node, URIRef)
-        ]
-        derived = [{"id": id_, "uri": entry.uri} for id_, entry in sorted(self._derived.items())]
+        """``[{id, uri}]`` for every one of the model's own nodes, then every derived entity: one
+        row per id, since an id names one entity."""
+        authored = [{"id": id_, "uri": str(node)} for id_, node in self.node_by_id.items()]
+        derived = [{"id": id_, "uri": entry.uri} for id_, entry in self._derived.items()]
         return authored + derived
 
     def derivation_nodes(self) -> list[dict]:
         """Derivation-graph nodes: what each derived entity is, and what it came from."""
         return [
             {
-                "id": entry.uri,
-                "types": [self.graph.namespace_manager.normalizeUri(PROV.Entity), *entry.types],
+                "id": id_,
+                "uri": entry.uri,
+                "types": [str(type_) for type_ in entry.types],
                 "relation": local_name(entry.relation),
                 "parent": entry.parent,
             }
-            for _, entry in sorted(self._derived.items())
+            for id_, entry in self._derived.items()
         ]
 
 

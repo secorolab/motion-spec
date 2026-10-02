@@ -24,9 +24,9 @@ from motion_spec.dashboard.metadata import annotations, baseline
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError
-from motion_spec.introspection.replay import read_health, resolve_archive
+from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.replay import read_health, resolve_archive
+from motion_spec.telemetry import frame_log_pb
 
 
 def _last_run(path: Path) -> dict | None:

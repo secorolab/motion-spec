@@ -21,7 +21,7 @@ class BlackboardValue:
     FT tare state, a controller's internal state, a control parameter, a joint-space mirror.
 
     The blackboard publishes what a member is -- its id, its storage type, its initial value and
-    the role it plays. What it was derived from is the introspection artifact's to report, so the
+    the role it plays. What it was derived from is the telemetry artifact's to report, so the
     descriptive fields are construction inputs that `communication.py` reads to build the row.
     """
 
@@ -34,7 +34,7 @@ class BlackboardValue:
     producer: dict | None = field(default=None, metadata=INTERNAL)
     quantity_kind: QuantityKind | None = field(default=None, metadata=INTERNAL)
     unit: Unit | None = field(default=None, metadata=INTERNAL)
-    # Who the value belongs to, named the way its introspection row names it.
+    # Who the value belongs to, named the way its telemetry row names it.
     owner: str | None = field(default=None, metadata=INTERNAL)
     parameter: str | None = field(default=None, metadata=INTERNAL)
     controller: str | None = field(default=None, metadata=INTERNAL)
@@ -113,15 +113,6 @@ class SnapshotCapture:
     trigger_event: str | None = None
     fsm_namespace: str | None = None
     type: str = field(default="SnapshotCapture")
-
-
-@dataclass
-class RelativePoseCapture:
-    """A pose captured relative to its start frame."""
-
-    id: str
-    fk_pose_id: str
-    type: str = field(default="RelativePoseCapture")
 
 
 @dataclass
@@ -234,9 +225,6 @@ class MotionUnit:
     entry_snapshots: list[SnapshotCapture] = field(default_factory=list)
     task_snapshots: list[SnapshotCapture] = field(default_factory=list)
 
-    # Relative-from-start pose computations (e.g. pose_start_ee)
-    relative_poses: list[RelativePoseCapture] = field(default_factory=list)
-
     # Pose coordinate-view scalar constraints grouped back into one KDL::diff pose error.
     pose_axis_error_groups: list[PoseErrorRegroup] = field(default_factory=list)
 
@@ -249,7 +237,7 @@ class MotionUnit:
     # motion, so entry runs again (snapshots re-capture, goals re-send).
     reentry_events: list = field(default_factory=list)
 
-    # This motion's introspection index: the single index space the frame log's active_motion,
+    # This motion's telemetry index: the single index space the frame log's active_motion,
     # the generated sample switch and schema["by_motion"] all share.
     index: int = -1
 

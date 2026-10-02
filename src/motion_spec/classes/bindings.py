@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rdflib import URIRef
+
 from motion_spec.classes.base import INTERNAL
 
 
@@ -20,8 +22,10 @@ class ChainBinding:
     end: str
     tip: str
     # Identifier-safe (sanitized in Python; ST4 cannot sanitize). `tree` names the kinematic
-    # tree the chain is sliced from; `name` is the chain's own qualified name.
+    # tree the chain is sliced from, `namespace` the scene header declaring it; `name` is the
+    # chain's own qualified name.
     tree: str
+    namespace: str
     name: str
     # Ordered revolute joint local names, unprefixed; the runtime prefix is `runtime.prefix`.
     joints: list[str]
@@ -159,6 +163,6 @@ class JointSpaceChannel:
 
     name: str
     producer: str
-    quantity_kind: str
-    unit: str
+    quantity_kind: URIRef
+    unit: URIRef
     backends: tuple | None = None

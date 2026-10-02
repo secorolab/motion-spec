@@ -12,8 +12,8 @@ import "ros.stg"
 event-buffer-struct() ::= <<
 struct motion_spec_event_buffer {
     static constexpr int size =
-        motion_spec::introspection::kNumTriggers > 0
-            ? static_cast\<int\>(motion_spec::introspection::kNumTriggers)
+        motion_spec::telemetry::kNumTriggers > 0
+            ? static_cast\<int\>(motion_spec::telemetry::kNumTriggers)
             : 1;
     int count = 0;
     int buffer[size] = {};
@@ -40,7 +40,6 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, shar
 <motion.until_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
 <motion.perturbations:{p | <perturbation-rearm(motion.id, p)>}; separator="\n">
 <motion.controllers:{controller |         <controller-reset(motion.id, controller, motion.entry_snapshots)>}; separator="\n">
-<motion.relative_poses:{rp |         <motion.id>_state_instance.<rp.id>_start_captured = false;}; separator="\n">
 <motion.path_projections:{proj |         shared.<proj.parameter> = 0.0;
         shared.<proj.along_speed> = 0.0;}; separator="\n">
     }

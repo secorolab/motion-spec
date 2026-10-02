@@ -10,7 +10,7 @@ digraph proposed_templates {
   subgraph cluster4 { label="L4  entry — one group per generated artifact" style=filled fillcolor="#dff0df" fontsize=11 color="#7fae7f"
     node [fillcolor="#b8ddb8" color="#7fae7f"]
     e1 [label="entry_program"] e2 [label="entry_motion"]
-    e3 [label="entry_introspection"] e4 [label="entry_build"] }
+    e3 [label="entry_telemetry"] e4 [label="entry_build"] }
 
   subgraph cluster3 { label="L3  assembly — program shape" style=filled fillcolor="#e6f4e6" fontsize=11 color="#8fb98f"
     node [fillcolor="#c8e4c8" color="#8fb98f"]

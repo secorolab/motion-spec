@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Replay generated introspection frame logs from a run archive."""
+"""Replay a run's frame log from its archive."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError, load_manifest
+from motion_spec.runs.archive import ArchiveError, load_manifest
+from motion_spec.telemetry import frame_log_pb
 
 
 def run_dir_for(log_path: Path) -> Path:
@@ -60,6 +60,46 @@ def validate_header(log_path: Path | str, contract=None) -> dict:
     if not header.schema_hash:
         raise ArchiveError(f"{log_path}: frame log header carries no schema hash")
     return {"schema_hash": header.schema_hash}
+
+
+def verify_archive(path: Path | str) -> int:
+    """Check a run's archive end to end and return how many frames its log holds.
+
+    Raises:
+        ArchiveError: a file the manifest names is missing, the log was written against
+            another contract than its generation's, or the log holds other than the frames
+            the writer reported.
+    """
+    run_dir, log_path, manifest, contract = resolve_archive(path)
+    validate_header(log_path, contract)
+    if manifest is None:
+        raise ArchiveError(f"{run_dir}: no manifest.json")
+    named = [
+        location
+        for value in manifest["files"].values()
+        for location in (value if isinstance(value, list) else [value])
+        if location is not None
+    ]
+    missing = [location for location in named if not (run_dir / location).exists()]
+    if missing:
+        raise ArchiveError(f"{run_dir}: missing {', '.join(missing)}")
+    layout_path = (run_dir / manifest["files"]["frame_log_proto"]).parent / "frame_layout.json"
+    expected = json.loads(layout_path.read_text())["schema_hash"]
+    if contract.header.schema_hash != expected:
+        raise ArchiveError(
+            f"{log_path}: written against schema {contract.header.schema_hash}, "
+            f"the generation's is {expected}"
+        )
+    frames = sum(1 for _ in frame_log_pb.frame_records(log_path, contract))
+    health = read_health(log_path)
+    if health is None:
+        raise ArchiveError(f"{log_path}: no health record beside the log")
+    if health["written_frames"] != frames:
+        raise ArchiveError(
+            f"{log_path}: the writer reported {health['written_frames']} frames, the log holds "
+            f"{frames}"
+        )
+    return frames
 
 
 def read_health(log_path: Path | str) -> dict | None:

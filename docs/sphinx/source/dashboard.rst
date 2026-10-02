@@ -16,10 +16,10 @@ everything shown is read from the files the pipeline already writes.
 
 ``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``, else
 ``$MOTION_SPEC_WS/generations``); ``--sources`` the model source root (default: the
-logs root's parent); ``--env`` the environment file health reports under (default:
+logs root's parent); ``--env`` the environment file health, builds and runs use (default:
 the nearest one above the logs root, ``--no-env`` for this shell). The Health page
-can switch between the workspace's environment files itself, and rechecks under the
-one chosen.
+can switch between the workspace's environment files itself; health rechecks under the
+one chosen, and every build and run started from the page after that uses it.
 
 The pages
 ---------
@@ -87,7 +87,7 @@ Chromium executable. Give pytest a fresh ``--basetemp`` directory under
 Driving a simulated run
 -----------------------
 
-A simulated, introspected run creates a control block the loop polls once per tick; the
+A simulated run creates a control block the loop polls once per tick; the
 dashboard writes it, the loop acks. Pause skips the whole tick — no FSM step, no frame, no
 control against a frozen plant. Step runs a counted number of ticks while paused. Speed sets
 the real-time factor, so it means nothing to an uncapped headless run. On a real platform the

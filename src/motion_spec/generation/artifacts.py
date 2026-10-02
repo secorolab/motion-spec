@@ -8,12 +8,8 @@ import json
 import re
 from pathlib import Path
 
-SCHEMA_VERSION = 1
-# 3: the log carries its own decode contract in its header record -- the message descriptor,
-# every slot's id and IRI, the per-motion gate and the FSM tables. A v2 log has none of that,
-# so read_contract rejects it rather than guessing.
+# The shared-memory Frame struct frame_layout.json describes; a reader refuses any other.
 FRAME_LAYOUT_VERSION = 5
-RUNTIME_RDF_CONTRACT_VERSION = 1
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
 HEADER = [
@@ -115,10 +111,10 @@ def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
 
 
 def _uri_by_id(ir: dict) -> dict:
-    """Map every introspection id to its canonical URI."""
+    """Map every telemetry id to its canonical URI."""
     return {
         row["id"]: row["uri"]
-        for row in ir["communication"]["introspection"].get("uris", [])
+        for row in ir["communication"]["telemetry"].get("uris", [])
         if isinstance(row, dict) and row.get("id") and row.get("uri")
     }
 
@@ -154,8 +150,11 @@ def _evaluator_by_error(ir: dict) -> dict:
             continue
         for error in (closure.get("error"), *(closure.get("errors") or ())):
             error_id = _signal_id(error)
-            if error_id:
-                index.setdefault(error_id, closure)
+            if error_id and index.setdefault(error_id, closure) != closure:
+                raise ValueError(
+                    f"error '{error_id}' is computed by both '{index[error_id].get('id')}' and "
+                    f"'{closure.get('id')}' -- one evaluator writes an error"
+                )
     return index
 
 
@@ -183,7 +182,7 @@ def _evaluator_terms(evaluators: dict, error_id: str | None) -> dict:
 def _controller_slot(
     row: dict, controller: dict, index: int, uri_by_id: dict, evaluators: dict
 ) -> dict:
-    """Introspection slot for a controller: its published row, indexed, with signal URIs.
+    """Telemetry slot for a controller: its published row, indexed, with signal URIs.
 
     `controller` is the coordination record, read only for the measured quantity and the
     reference value a row names no signal for.
@@ -242,9 +241,9 @@ def _monitor_slot(
     row: dict,
     evaluators: dict,
 ) -> dict:
-    """Introspection slot for a monitor: trigger, event/flag and active-condition terms.
+    """Telemetry slot for a monitor: trigger, event/flag and active-condition terms.
 
-    `row` is the monitor's published introspection row: it carries the watched constraints, which
+    `row` is the monitor's published telemetry row: it carries the watched constraints, which
     are construction-only on the coordination record.
     """
     error = monitor.get("error")
@@ -263,7 +262,6 @@ def _monitor_slot(
         "type": monitor.get("monitor_type") or monitor.get("type"),
         "trigger": "edge" if monitor.get("is_edge_triggered") else "level",
         "event": event_id,
-        "event_index": monitor.get("fsm_event_idx", monitor.get("event_idx")),
         "event_uri": monitor.get("event_uri") or uri_by_id.get(event_id),
         "event_name": monitor.get("event_name"),
         "flag": monitor.get("flag"),
@@ -345,15 +343,15 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
 
 
 def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | None) -> dict:
-    """Build the run's introspection schema (pools, per-state slots, quantities, provenance) and its schema_hash."""
-    introspection = ir["communication"]["introspection"]
+    """Build the run's telemetry schema (pools, per-state slots, quantities, provenance) and its schema_hash."""
+    telemetry = ir["communication"]["telemetry"]
     uri_by_id = _uri_by_id(ir)
     evaluators = _evaluator_by_error(ir)
     fsm = _fsm_meta(fsm_ir)
     motions = ir["coordination"]["motions"]
     motion_by_id = {motion.get("id"): motion for motion in motions}
-    monitor_rows = {row.get("id"): row for row in introspection.get("monitors") or ()}
-    controller_rows = {row.get("id"): row for row in introspection.get("controllers") or ()}
+    monitor_rows = {row.get("id"): row for row in telemetry.get("monitors") or ()}
+    controller_rows = {row.get("id"): row for row in telemetry.get("controllers") or ()}
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
     # Slots are keyed by the motion that computes them, not by the coordinator state that happens
@@ -364,7 +362,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     # ir_gen owns this index (add_motion_function_interfaces); read it, never re-derive it.
     motion_index = {motion.get("id"): motion.get("index", -1) for motion in motions}
     if -1 in motion_index.values():
-        raise RuntimeError(f"motions without an introspection index: {sorted(motion_index)}")
+        raise RuntimeError(f"motions without an telemetry index: {list(motion_index)}")
 
     for motion in motions:
         state_id = motion.get("fsm_state") or motion.get("id")
@@ -419,13 +417,13 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     quantities = [
         {"index": idx, **quantity}
         for idx, quantity in enumerate(
-            introspection.get("quantity_samples") or introspection.get("quantities", [])
+            telemetry.get("quantity_samples") or telemetry.get("quantities", [])
         )
     ]
     # A gated slot keeps its global index for the whole run -- only the set_ call is gated -- so a
     # decoder resolves "unset" against the writing motions here rather than guessing from absence.
-    spatial = introspection.get("spatial_samples") or {"poses": [], "twists": [], "wrenches": []}
-    dataflow = introspection.get("dataflow") or {}
+    spatial = telemetry.get("spatial_samples") or {"poses": [], "twists": [], "wrenches": []}
+    dataflow = telemetry.get("dataflow") or {}
     devices = sorted(
         (
             {
@@ -478,9 +476,6 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "wrenches": len(spatial["wrenches"]),
     }
     schema = {
-        "schema_version": SCHEMA_VERSION,
-        "frame_layout_version": FRAME_LAYOUT_VERSION,
-        "runtime_rdf_contract_version": RUNTIME_RDF_CONTRACT_VERSION,
         "generated_by": "motion_spec.generation.codegen",
         # Portable basenames only — absolute build-tree paths here would leak machine
         # paths into the archive AND make schema_hash (carried in the frame-log header)
@@ -490,27 +485,27 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         # validator read one fact rather than sniffing a derived agent id.
         "platform": ir["configuration"]["platform"],
         "pools": pools,
-        "timing": {"nominal_period_ns": introspection.get("control_period_ns")},
-        "control_period_ns": introspection.get("control_period_ns"),
+        "timing": {"nominal_period_ns": telemetry.get("control_period_ns")},
+        "control_period_ns": telemetry.get("control_period_ns"),
         "fsm": fsm,
         "by_motion": by_motion,
-        "motions": introspection.get("motions", []),
-        "controllers": introspection.get("controllers", []),
-        "monitors": introspection.get("monitors", []),
+        "motions": telemetry.get("motions", []),
+        "controllers": telemetry.get("controllers", []),
+        "monitors": telemetry.get("monitors", []),
         "quantities": quantities,
         "devices": devices,
         "cameras": cameras,
         # Written once at init: one copy in the header says everything repeating it per tick would.
-        "constants": introspection.get("constants", []),
+        "constants": telemetry.get("constants", []),
         # The dataflow contract for everything that survives into the layout, so a reader can see
         # who writes each value and when without re-deriving it from the model graph.
         "catalogue": [
             {"id": member_id, **entry}
-            for member_id, entry in sorted((introspection.get("dataflow") or {}).items())
+            for member_id, entry in (telemetry.get("dataflow") or {}).items()
             if entry["storage"] != "absent"
         ],
         "spatial": spatial,
-        "signals": introspection.get("signals", []),
+        "signals": telemetry.get("signals", []),
     }
     schema["schema_hash"] = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[
         :16
@@ -523,8 +518,6 @@ def build_frame_layout(schema: dict) -> dict:
     fields, frame_size = fields_with_offsets(schema["pools"])
     layout = {
         "frame_layout_version": FRAME_LAYOUT_VERSION,
-        "schema_version": schema["schema_version"],
-        "runtime_rdf_contract_version": schema["runtime_rdf_contract_version"],
         "pools": schema["pools"],
         "field_bytes": FIELD_BYTES,
         "frame_size_bytes": frame_size,
@@ -547,13 +540,8 @@ def _uri_comment(uri: str | None) -> str:
     return re.sub(r"[\r\n]|\*/", " ", uri or "")
 
 
-def _shared_signal(signal_id: str | None, shared_ids) -> str | None:
-    """The signal id when it names a shared field, else None so the template samples a constant."""
-    return signal_id if signal_id and signal_id in shared_ids else None
-
-
-def build_introspection_model(schema: dict, ir: dict) -> dict:
-    """Per-FSM-state sample model (controller/monitor exprs, quantity/spatial ids) that the introspect_model template renders."""
+def build_telemetry_model(schema: dict, ir: dict) -> dict:
+    """Per-FSM-state sample model (controller/monitor exprs, quantity/spatial ids) that the telemetry_model template renders."""
     shared_ids = {
         item.get("id")
         for item in ir["computation"]["shared_data"]
@@ -592,13 +580,16 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
             # error/output are the controller's own dedicated shared fields (never views), so the
             # template reads them with shared-sig. measured/setpoint may reference a view, so they
             # go through access-expr(id, views) instead.
+            for role in ("error_signal", "tolerance_signal", "output_signal"):
+                if slot.get(role) and slot[role] not in shared_ids:
+                    raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
             controllers.append(
                 {
                     "index": slot.get("index", 0),
                     "uri_comment": _uri_comment(slot.get("uri")),
-                    "error_signal": _shared_signal(slot.get("error_signal"), shared_ids),
-                    "tolerance_signal": _shared_signal(slot.get("tolerance_signal"), shared_ids),
-                    "output_signal": _shared_signal(slot.get("output_signal"), shared_ids),
+                    "error_signal": slot.get("error_signal") or None,
+                    "tolerance_signal": slot.get("tolerance_signal") or None,
+                    "output_signal": slot.get("output_signal") or None,
                     "measured_signal": slot.get("measured_signal"),
                     "setpoint_signal": slot.get("setpoint_signal"),
                 }
@@ -619,16 +610,17 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
                     }
                 )
             else:
+                for role in ("error_signal", "tolerance_signal"):
+                    if slot.get(role) and slot[role] not in shared_ids:
+                        raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
                 monitors.append(
                     {
                         "index": slot.get("index", 0),
                         "uri_comment": _uri_comment(slot.get("uri")),
                         "has_active": False,
-                        "value_signal": _shared_signal(slot.get("error_signal"), shared_ids),
+                        "value_signal": slot.get("error_signal") or None,
                         "composite_error": slot.get("composite_error", False),
-                        "tolerance_signal": _shared_signal(
-                            slot.get("tolerance_signal"), shared_ids
-                        ),
+                        "tolerance_signal": slot.get("tolerance_signal") or None,
                     }
                 )
         cases.append(
@@ -645,16 +637,14 @@ def build_introspection_model(schema: dict, ir: dict) -> dict:
     return {"motions": cases, **ungated}
 
 
-def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) -> dict:
+def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict) -> dict:
     """Write frame_layout.json, provenance.ld.json and the derivation graph, and return the
     frame-log header + sample model that codegen folds into the IR.
 
     The decode contract is not written here: it is serialized into the frame log's own header
-    record, so a log needs no companion artifact to be read. The framed FSM lives in ir["fsm"].
+    record, so a log needs no companion artifact to be read. `fsm_ir` is coord-dsl's framed FSM.
     """
-    schema = build_schema(
-        ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=ir["coordination"].get("fsm")
-    )
+    schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=fsm_ir)
     layout = build_frame_layout(schema)
     end_state = schema.get("fsm", {}).get("end")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -662,7 +652,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
     header_record = build_frame_log_header_record(schema)
     # The same delimited record the runtime writes as the log's first bytes: a reader gets the
     # decode contract from the generation before any run has written a log.
-    from motion_spec.introspection import frame_log_pb
+    from motion_spec.telemetry import frame_log_pb
 
     with (output_dir / "frame_log_header.pb").open("wb") as fh:
         frame_log_pb.write_delimited(fh, header_record)
@@ -670,9 +660,6 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
         "schema_hash": schema["schema_hash"],
         "frame_layout_hash": layout["frame_layout_hash"],
         "frame_layout": {
-            "schema_version": schema["schema_version"],
-            "frame_layout_version": layout["frame_layout_version"],
-            "runtime_rdf_contract_version": schema["runtime_rdf_contract_version"],
             "pools": schema["pools"],
             "frame_size_bytes": layout["frame_size_bytes"],
             "schema_hash": schema["schema_hash"],
@@ -681,7 +668,7 @@ def write_introspection_artifacts(ir: dict, *, ir_path: Path, output_dir: Path) 
             "nominal_period_ns": schema.get("control_period_ns") or 0,
             "header_record_rows": _hex_rows(header_record),
         },
-        "model": build_introspection_model(schema, ir),
+        "model": build_telemetry_model(schema, ir),
     }
 
 
@@ -738,7 +725,7 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     Built here, once, rather than assembled by generated C++: every field is known at generation
     time, so the runtime only has to write these bytes out verbatim.
     """
-    from motion_spec.introspection import frame_log_pb
+    from motion_spec.telemetry import frame_log_pb
 
     rec = frame_log_pb.record_class()()
     header = rec.header

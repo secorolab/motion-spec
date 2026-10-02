@@ -90,7 +90,7 @@ from motion_spec.dashboard.sources import (
     source_path,
 )
 from motion_spec.devices import probe_devices
-from motion_spec.introspection.lifecycle_events import socket_path
+from motion_spec.runs.lifecycle_events import socket_path
 
 LIFECYCLE = None
 

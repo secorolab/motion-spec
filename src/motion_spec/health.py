@@ -28,7 +28,6 @@ PROFILE_IMPORTS = {
         "click",
         "rdflib",
         "rdf_utils",
-        "jinja2",
         "motion_spec_dsl",
         "scene_dsl",
         "pyshacl",
@@ -36,7 +35,7 @@ PROFILE_IMPORTS = {
         "google.protobuf",
     ),
     # Everything Python it needed is required now; what is left is the C++ library below.
-    "introspection": (),
+    "telemetry": (),
     "dsl": ("textx", "coord_dsl"),
 }
 PROFILES = (*PROFILE_IMPORTS, "codegen", "ros", "build", "runtime")
@@ -315,10 +314,6 @@ DETAILS: dict[str, dict[str, str]] = {
     "google.protobuf": {
         "why": "decodes the frame log every run writes",
         "source": "https://github.com/protocolbuffers/protobuf",
-    },
-    "jinja2": {
-        "why": "renders the scene's KDL headers from the shipped templates",
-        "source": "https://github.com/pallets/jinja",
     },
     "java": {
         "why": "runs stst, the StringTemplate engine the C++ generator drives",
@@ -623,7 +618,7 @@ def _cmake_package_path(
         return target
 
 
-# What a target needs before it can be generated, built and run. ROS and introspection are
+# What a target needs before it can be generated, built and run. ROS and telemetry are
 # left out: whether a model needs them is a property of the model, not of the target.
 VERDICT_PROFILES = ("base", "dsl", "codegen", "build", "runtime")
 VERDICTS = {"mujoco": "sim", "robif2b": "real"}
@@ -735,7 +730,7 @@ def check_health(
                     else f"motion-spec install {profile}",
                 )
             )
-        if profile == "introspection":
+        if profile == "telemetry":
             # The Python module reads a recorded run; the generated C++ writes one, and links
             # the C++ library to do it.
             announce("Protobuf")

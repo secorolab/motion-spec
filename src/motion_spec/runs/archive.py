@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import shutil
-import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,13 +19,12 @@ from motion_spec_dsl.rdf_parser.manifest import (
 from pyshacl import validate
 from rec import State
 
-from motion_spec.introspection.provenance import (
+from motion_spec.runs.provenance import (
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
     RUN_IRI_BASE,
     artifact_sha256,
-    ensure_local_rec_importable,
-    host_info,
+    file_path,
     parse_rec_time,
     prov_uri,
     rec_document,
@@ -70,14 +68,6 @@ def _camera_videos(run_dir: Path) -> list[str] | None:
     return videos or None
 
 
-def _file_uri_to_path(value: str) -> Path | None:
-    """Resolve a ``file://`` atLocation to a local path (None for other IRIs)."""
-    if not isinstance(value, str) or not value.startswith("file://"):
-        return None
-    parsed = urllib.parse.urlparse(value)
-    return Path(urllib.parse.unquote(parsed.path))
-
-
 def create_archive_manifest(
     run_dir: Path | str,
     *,
@@ -113,7 +103,7 @@ def create_archive_manifest(
             _copy_file(frame_log_path, run_dir / "logs/frame_log.pb")
         frame_log_path = run_dir / "logs" / "frame_log.pb"
         # The run states its own contract; nothing is read back out of a generated file.
-        from motion_spec.introspection import frame_log_pb
+        from motion_spec.telemetry import frame_log_pb
 
         schema = frame_log_pb.read_contract(frame_log_path).summary()
     else:
@@ -136,6 +126,13 @@ def create_archive_manifest(
             (relative(path) for path in (generated / "model").glob("*-derived.ld.json")), None
         ),
         "ir": relative(generated / "model" / "ir.json"),
+        # The scene and FSM graphs as their tools built them; the IR names their nodes.
+        "graphs": [
+            relative(path)
+            for pattern in ("*.scenex.ld.json", "*.fsm.ld.json")
+            for path in (generated / "model").glob(pattern)
+        ]
+        or None,
         "sources": sources or None,
         "controller": relative(generated / "controller"),
         "log_producer_executable": (
@@ -145,6 +142,9 @@ def create_archive_manifest(
         "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "console": _existing(run_dir, "logs/console.log"),
+        "environment": next(
+            (f"files/{path.name}" for path in (run_dir / "files").glob("environment*")), None
+        ),
         "videos": _camera_videos(run_dir),
         # metadata.yaml is what says rosbag2 closed the bag.
         "bag": "bag" if (run_dir / "bag" / "metadata.yaml").is_file() else None,
@@ -231,7 +231,7 @@ def _verify_checksums(rec_graph: rdflib.Graph, run_dir: Path, errors: list[str])
     for entity, checksum in rec_graph.subject_objects(spdx.checksum):
         expected = rec_graph.value(checksum, spdx.checksumValue)
         location = rec_graph.value(entity, PROV.atLocation)
-        path = _file_uri_to_path(str(location)) if location else None
+        path = file_path(location) if location else None
         if path is None and location is not None:
             path = run_dir / str(location)
         if path is None or not path.exists():
@@ -316,15 +316,10 @@ def _write_rec_snapshot(
     run_dir: Path, manifest: dict, schema: dict, *, complete_lifecycle: bool = True
 ) -> None:
     try:
-        ensure_local_rec_importable()
         from rec.observers.file_observer import FileObserver
-        from rec.run import Run
+        from rec.run import Run, host_info
     except ImportError as exc:
-        raise ArchiveError(
-            "REC is required to create introspection archives. Install the sibling "
-            "package with `pip install -e /home/batsy/work/ms/src/rec` or install "
-            "`motion-spec[introspection]` once REC is published."
-        ) from exc
+        raise ArchiveError("REC is required to archive a run: `motion-spec setup rec`.") from exc
 
     run_id = manifest["run_id"]
     observer = FileObserver(run_dir, base=RUN_IRI_BASE)

@@ -11,9 +11,9 @@ from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import rdf_name, run_videos
 from motion_spec.dashboard.frames import slot_signals
 from motion_spec.dashboard.sources import _key, authored_lines
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError
-from motion_spec.introspection.replay import read_health, resolve_archive, validate_header
+from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.replay import read_health, resolve_archive, validate_header
+from motion_spec.telemetry import frame_log_pb
 
 
 def downsample(values: list[float], target: int = 1600) -> list[float]:

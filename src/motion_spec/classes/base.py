@@ -39,17 +39,24 @@ class DataclassJSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-def dedupe_by_id(items: list) -> list:
-    """Records deduplicated by id, keeping the first occurrence. An id-less record always survives:
-    it names nothing, so nothing can be a repeat of it.
+def unique_by_id(items: list) -> list:
+    """Records by id, each once. An equal record met again is one fact stated twice; a different
+    record under the same id would merge two things, and is refused. A record or row with no id
+    names nothing, so it always stays.
+
+    Raises:
+        ValueError: one id names two different records.
     """
     result = []
-    seen = set()
+    first_by_id: dict = {}
     for item in items:
-        key = getattr(item, "id", None)
+        key = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
         if key is None:
             result.append(item)
-        elif key not in seen:
-            seen.add(key)
+            continue
+        first = first_by_id.setdefault(key, item)
+        if first is item:
             result.append(item)
+        elif first != item:
+            raise ValueError(f"id '{key}' names two different records:\n  {first!r}\n  {item!r}")
     return result

@@ -7,8 +7,8 @@ from pathlib import Path
 
 from google.protobuf.message import DecodeError
 
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError
+from motion_spec.runs.archive import ArchiveError
+from motion_spec.telemetry import frame_log_pb
 
 
 class FrameLogTail:

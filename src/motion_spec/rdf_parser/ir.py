@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """The lowering pipeline.
 
-One forward pass from a model manifest to the published IR. Reading this file top to bottom is
+One forward pass from a loaded model to the published IR. Reading this file top to bottom is
 reading the data flow; it holds no derivation of its own, and nothing else in the package is
 reachable except through it.
 """
@@ -21,25 +21,23 @@ from motion_spec.rdf_parser import (
 from rdflib.namespace import PROV
 
 from motion_spec.classes.motion import BlackboardValue
-from motion_spec.rdf_parser.model import load_model
+from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.sampling import sampled_quantities
 
 _ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
 
 
-def generate_ir(manifest_path) -> dict:
-    """Lower a model manifest to the IR codegen renders from.
+def generate_ir(model: Model, fsm: dict | None = None) -> dict:
+    """Lower a loaded model to the IR codegen renders from.
 
     Parameters:
-        manifest_path: path to the `<model>-app.ld.json` the DSL generated
+        fsm: coord-dsl's framed FSM (`gen_json`), whose tokens name its states and events;
+            None when the model imports no `.fsm`
 
     Returns:
         the IR, sectioned by the 5Cs plus the resources the program commands; complete by
         construction, so codegen loads it and renders with no derivation pass of its own
     """
-    from motion_spec.generation.scene_kdl import model_stem
-
-    model = load_model(manifest_path)
     operations.normalize(model)
 
     # The platform, the scene and the FSM are pure functions of the graph, and everything the
@@ -49,7 +47,6 @@ def generate_ir(manifest_path) -> dict:
     backend = platform["backend"]
     setups, _ordered, world_trees = resources.robot_setups(model)
     scene = resources.read_scene(model, world_trees)
-    fsm = coordination.read_fsm(model)
     derivation = constraint_handler.solver_derivation_context(model)
     sampling = sampled_quantities(model, world_trees)
 
@@ -100,38 +97,35 @@ def generate_ir(manifest_path) -> dict:
     # A subscription places its detections through the world model, so it is built against the
     # same segment names the chains resolved against.
     subscriptions = communication.ros_subscriptions(model, world_index)
-    standing = communication.ros_standing(model, data_structures, control_period_ns, world_index)
+    standing_publishes = communication.ros_standing(
+        model, data_structures, control_period_ns, world_index
+    )
     clients_by_motion: dict[str, list] = {}
     for client in action_clients:
         clients_by_motion.setdefault(client["motion"], []).append(client)
     for motion in motions:
         motion.action_clients = clients_by_motion.get(motion.motion_id, [])
-    shared_data = quantities.filter_shared_data(
-        data_structures,
-        robots.schedule_steps + handler_steps,
+    blackboard_users = (
+        robots.schedule_steps,
+        handler_steps,
         closures,
         views,
-        {out.id for solver in robots.serial_chains for out in solver.output}
-        # A platform solver's quantity is its published interface, as a chain's outputs are: the
-        # composition writes the twist every tick whether or not a constraint is judged on it.
-        | {
-            quantity.id
-            for solver in (*robots.platform_velocity, *robots.platform_force)
-            for quantity in (getattr(solver, "velocity", None), getattr(solver, "force", None))
-            if quantity is not None
-        }
-        | perceived_pose_ids
-        # A standing publish is the only reader of what it reports, and it reads it off the
-        # blackboard: without this the quantity drops out and the message has nothing to carry.
-        | {entry["value_id"] for publish in standing for entry in publish["entries"]},
+        computation.indexes.pose_components,
+        motions,
+        robots.serial_chains,
+        robots.platform_velocity,
+        robots.platform_force,
+        perceived_pose_ids,
+        standing_publishes,
     )
+    shared_data = quantities.filter_shared_data(data_structures, blackboard_users)
     shared_data += resources.shared_runtime_members(
         model, robots.serial_chains, control_period_ns, platform.get("uri")
     )
     # A snapshot the shared context declares is captured once for the run, so its guard belongs
     # to the run and not to whichever motion happened to reach it first.
     latches = {s.target_id: s.captured_id for motion in motions for s in motion.task_snapshots}
-    for target_id, captured_id in sorted(latches.items()):
+    for target_id, captured_id in latches.items():
         node = model.node_by_id.get(target_id)
         if node is None:
             raise RuntimeError(f"task snapshot '{target_id}' has no node to derive its guard from")
@@ -143,14 +137,12 @@ def generate_ir(manifest_path) -> dict:
     # An observation instant is written by the channel that perceives its pose, from the executor
     # thread; until the first reading lands it is minus infinity, so the age read off it is
     # infinite and a freshness gate stays shut.
-    observed_at_ids = sorted(
-        {
-            row["observed_at_id"]
-            for channel in (*action_clients, *subscriptions)
-            for row in channel["written_poses"]
-            if row.get("observed_at_id")
-        }
-    )
+    observed_at_ids = {
+        row["observed_at_id"]
+        for channel in (*action_clients, *subscriptions)
+        for row in channel["written_poses"]
+        if row.get("observed_at_id")
+    }
     for observed_at_id in observed_at_ids:
         shared_data.append(BlackboardValue(id=observed_at_id, type="Quantity", unset=True))
 
@@ -177,7 +169,7 @@ def generate_ir(manifest_path) -> dict:
     )
 
     config_poses = resources.config_poses(model, platform_config)
-    introspection = communication.build_introspection(
+    telemetry = communication.build_telemetry(
         model,
         motions,
         computation,
@@ -194,9 +186,6 @@ def generate_ir(manifest_path) -> dict:
         "configuration": {
             "control_period_ns": control_period_ns,
             "backend": backend,
-            # The model's own name, so a backend derives its artifact filenames instead of the
-            # IR carrying one backend's spelling of them.
-            "model_name": model_stem(model.app_path),
             # The authored execution platform, so provenance and the runtime graph read the
             # model's own answer instead of matching substrings of a derived id.
             "platform": platform,
@@ -207,7 +196,7 @@ def generate_ir(manifest_path) -> dict:
             "trace": resources.TRACE_DISABLED,
         },
         "resources": _resources_section(
-            robots, world_trees, world_frames, sampling, ports, motions
+            robots, world_trees, world_frames, sampling, ports, motions, views
         ),
         "composition": {"scene": scene, "sampling": sampling},
         "computation": _computation_section(
@@ -217,7 +206,7 @@ def generate_ir(manifest_path) -> dict:
             motions, fsm, fsm_meta, run_perturbations, perturbation_bodies
         ),
         "communication": _communication_section(
-            introspection,
+            telemetry,
             motions,
             resources.ros_joint_states(platform, platform_config, robots.serial_chains),
             resources.ros_clock(platform, platform_config),
@@ -233,12 +222,14 @@ def generate_ir(manifest_path) -> dict:
             action_clients,
             communication.action_server(model, fsm),
             subscriptions,
-            standing,
+            standing_publishes,
         ),
     }
 
 
-def _resources_section(robots, world_trees, world_frames, sampling, ports, motions=()) -> dict:
+def _resources_section(
+    robots, world_trees, world_frames, sampling, ports, motions=(), views=None
+) -> dict:
     """Every actuated resource the program commands, plus the by-kind cuts of it.
 
     An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
@@ -263,16 +254,15 @@ def _resources_section(robots, world_trees, world_frames, sampling, ports, motio
             "drives": drives,
             "num_drives": len(drives),
             "wrench_by_motion": mobile_base.wrench_terms_by_motion(
-                motions, robots.platform_velocity, robots.platform_force
+                motions, views or {}, robots.platform_velocity, robots.platform_force
             ),
         }
 
     # Every device and sensor kind the model binds, as a membership map: templates emit code for
     # a kind only when the platform block or the scene names it.
-    device_kinds = sorted(
-        {device.kind for robot in every for device in getattr(robot, "devices", [])}
-        | {sensor.type for robot in every for sensor in getattr(robot, "sensors", [])}
-    )
+    device_kinds = {device.kind for robot in every for device in getattr(robot, "devices", [])} | {
+        sensor.type for robot in every for sensor in getattr(robot, "sensors", [])
+    }
 
     # `by_id` is how a per-motion solver slice resolves everything the solver owns.
     section = {
@@ -296,6 +286,8 @@ def _resources_section(robots, world_trees, world_frames, sampling, ports, motio
             {
                 "name": tree["name"],
                 "cpp_name": tree["cpp_name"],
+                "namespace": tree["namespace"],
+                "header": tree["header"],
                 "sampled_frames": [
                     {"name": s.segment, "parent": s.parent, "rotation": s.rotation, "draw": s.id}
                     for s in sampling
@@ -359,13 +351,13 @@ def _coordination_section(motions, fsm, fsm_meta, perturbations=(), perturbation
         section["perturbations"] = perturbations
         section["perturbation_bodies"] = perturbation_bodies
     if fsm:
-        section["fsm"] = {**fsm, **fsm_meta}
+        section["fsm"] = fsm_meta
 
     return section
 
 
 def _communication_section(
-    introspection,
+    telemetry,
     motions,
     joint_states,
     clock=None,
@@ -373,11 +365,11 @@ def _communication_section(
     action_clients=(),
     server=None,
     subscriptions=(),
-    standing=(),
+    standing_publishes=(),
 ) -> dict:
     """What leaves the loop: the frame log, and the ROS topics, goals and results the model asks for."""
-    section = {"introspection": introspection}
-    publishers = communication.ros_publishers(motions, standing)
+    section = {"telemetry": telemetry}
+    publishers = communication.ros_publishers(motions, standing_publishes)
     if (
         not publishers
         and joint_states is None
@@ -395,7 +387,7 @@ def _communication_section(
         ros["scenario_context_id"] = True
     if server is not None:
         ros["action_server"] = server
-        packages.update(server["packages"])
+        packages.add(server["pkg"])
     if joint_states is not None:
         ros["joint_states"] = joint_states
         packages.add("sensor_msgs")
@@ -407,15 +399,14 @@ def _communication_section(
         packages.update({"tf2_msgs", "geometry_msgs"})
     if action_clients:
         ros["action_clients"] = action_clients
-        # Whatever the goal and the result reach into, not just the package the action lives in.
-        packages.update(pkg for client in action_clients for pkg in client["packages"])
+        packages.update(client["pkg"] for client in action_clients)
     if subscriptions:
         ros["subscriptions"] = subscriptions
-        packages.update(pkg for sub in subscriptions for pkg in sub["packages"])
-    if standing:
-        ros["standing"] = standing
-        packages.update(pkg for publish in standing for pkg in publish["packages"])
-    ros["packages"] = sorted(packages)
+        packages.update(sub["pkg"] for sub in subscriptions)
+    if standing_publishes:
+        ros["standing"] = standing_publishes
+        packages.update(publish["pkg"] for publish in standing_publishes)
+    ros["packages"] = list(packages)
     section["ros"] = ros
 
     return section

@@ -17,7 +17,7 @@ from motion_spec.dashboard.frames import (
     shm_path,
 )
 from motion_spec.generation.artifacts import build_frame_layout
-from motion_spec.introspection import frame_log_pb
+from motion_spec.telemetry import frame_log_pb
 
 from dashboard_fixture import schema
 from frame_log_fixture import flat_frame, write_frame_log_pb
@@ -160,8 +160,11 @@ LIVE_FRAME = {
     "step": 7,
     "period_ns": 1_000_000,
     "compute_ns": 25_000,
+    # The writer emits a sample only for the slots the active motion drives.
+    "c0.active": 1,
     "c0.error": 0.125,
     "c0.satisfied": 1,
+    "m0.active": 1,
     "m0.value": 0.004,
     "q0": 42.5,
     "q1": 0.02,

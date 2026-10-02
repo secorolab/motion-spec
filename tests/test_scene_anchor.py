@@ -30,7 +30,7 @@ def _model(*anchors: str) -> Model:
     graph.add((NS["kgraph"], RDF.type, URI_GEOM_TYPE_KGRAPH))
     for anchor in anchors:
         graph.add((NS["kgraph"], NS_MM_KC_EXT["anchor"], NS[anchor]))
-    return Model(graph=graph, app_path=Path("."), imported_models=[], imported_provenance=[])
+    return Model(graph=graph, app_path=Path("."))
 
 
 def test_the_anchor_is_the_frame_the_graph_declares() -> None:

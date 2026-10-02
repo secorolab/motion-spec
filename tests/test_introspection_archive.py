@@ -9,26 +9,24 @@ from pathlib import Path
 import pytest
 import rdflib
 
-from motion_spec.introspection.archive import (
+from motion_spec.runs.archive import (
     ArchiveError,
     create_archive_manifest,
     sha256_file,
     verify_manifest,
 )
-from motion_spec.introspection.provenance import (
+from motion_spec.runs.provenance import (
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
-    GRAPH_DSL,
     prov_uri,
     read_generation_dataset,
     rec_document,
     rec_run_lifecycle_from_file,
 )
 from rec import State, Verdict
-from motion_spec.introspection import replay
-from motion_spec.introspection.replay import decode_frames, summarize, validate_header
-from motion_spec_dsl.rdf_parser.vocab import APP
-from support import _provenance, _schema, _source_tree, _start_run, _write_frame_log
+from motion_spec.runs import replay
+from motion_spec.runs.replay import decode_frames, summarize, validate_header
+from support import _schema, _source_tree, _start_run, _write_frame_log
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
@@ -58,12 +56,18 @@ def _archived(tmp_path: Path, run_dir: Path, source: Path, **manifest) -> dict:
     """A run catalogued as the runner catalogues it, then archived."""
     executable = _executable(tmp_path)
     _start_run(run_dir, source, executable)
+    if manifest.get("recorded", True):
+        # The runtime writes its health report beside the log it wrote.
+        (run_dir / "logs").mkdir(parents=True, exist_ok=True)
+        health = "frame_log.pb.health.json"
+        (run_dir / "logs" / health).write_bytes((source / health).read_bytes())
+        manifest.setdefault("frame_log", source / "frame_log.pb")
     return create_archive_manifest(
         run_dir, source_dir=source, run_id="run-test", log_producer_executable=executable, **manifest
     )
 
 
-def test_archive_and_replay_are_self_contained(tmp_path: Path) -> None:
+def test_archive_references_its_generation_and_replays(tmp_path: Path) -> None:
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "copied-run"
 
@@ -72,17 +76,16 @@ def test_archive_and_replay_are_self_contained(tmp_path: Path) -> None:
     assert manifest["files"]["rec"] == "run-test.ld.json"
     assert manifest["files"]["execution"] == EXECUTION_DOCUMENT
     assert manifest["files"]["frame_log_health"] == "logs/frame_log.pb.health.json"
-    assert manifest["files"]["frame_log_proto"] == "contract/frame_log.proto"
+    # What the generation owns is referenced where it lives, relative to the run.
+    assert manifest["files"]["frame_log_proto"] == "../source/contract/frame_log.proto"
     assert "frame_layout" not in manifest["files"]
     # One provenance document, not one per tool.
-    assert manifest["files"]["provenance"] == GENERATION_DOCUMENT
+    assert manifest["files"]["provenance"] == f"../source/{GENERATION_DOCUMENT}"
     assert "dsl_provenance" not in manifest["files"]
     assert "runtime_ttl" not in manifest["files"]
     assert "rec" not in manifest
-    assert manifest["files"]["controller"] == "controller/source"
+    assert manifest["files"]["controller"] == "../source/controller"
     assert "artifacts" not in manifest
-    # The archived proto is the generated semantic one (copied from source), not a static file.
-    assert "double q0 = 3000;" in (run_dir / "contract" / "frame_log.proto").read_text()
     assert verify_manifest(run_dir)["run_id"] == "run-test"
     # The header states the contract the log was written against and nothing about the run.
     assert validate_header(run_dir / "logs" / "frame_log.pb") == {
@@ -176,133 +179,6 @@ def test_replay_works_on_aborted_run_without_manifest(tmp_path: Path) -> None:
     validate_header(log_path, schema)
 
 
-def _importing_manifest() -> dict:
-    return {
-        "@context": {
-            "@version": 1.1,
-            "xsd": "http://www.w3.org/2001/XMLSchema#",
-            "app": "https://comp-rob2b.github.io/metamodels/application/",
-            "import": {
-                "@id": "app:import",
-                "@type": "@id",
-                "@context": {"@base": "https://secorolab.github.io/"},
-            },
-            "iri-map": {"@id": "app:iri-map", "@container": "@id"},
-            "path": {"@id": "app:path", "@type": "xsd:string"},
-        },
-        "@id": "https://secorolab.github.io/models/generated/",
-        "@graph": [
-            {
-                "import": ["sub.ld.json"],
-                "iri-map": {"https://secorolab.github.io/": {"path": "models/"}},
-            }
-        ],
-    }
-
-
-def test_archive_vendors_imported_model_graph_and_verify_catches_dangling(tmp_path: Path) -> None:
-    # The app manifest imports a model graph; the archive must vendor it next to
-    # model/model.ld.json so the import resolves offline, and verify must reject an
-    # archive where that imported graph is missing.
-    source = _source_tree(tmp_path / "source")
-    (source / "model.ld.json").write_text(json.dumps(_importing_manifest(), indent=4))
-    (source / "sub.ld.json").write_text(
-        json.dumps(
-            {
-                "@context": {"prov": "http://www.w3.org/ns/prov#"},
-                "@graph": [{"@id": "https://example.test/x", "@type": "prov:Entity"}],
-            }
-        )
-    )
-    run_dir = tmp_path / "run"
-
-    manifest = _archived(tmp_path, run_dir, source)
-    assert manifest["files"]["model_imports"] == ["model/sub.ld.json"]
-    assert (run_dir / "model" / "sub.ld.json").is_file()
-    assert "artifacts" not in manifest
-    assert verify_manifest(run_dir)["run_id"] == "run-test"
-
-    (run_dir / "model" / "sub.ld.json").unlink()
-    with pytest.raises(ArchiveError, match="model/sub.ld.json: missing"):
-        verify_manifest(run_dir)
-
-
-def test_archive_is_provenance_complete_and_relative(tmp_path: Path) -> None:
-    # The DSL's authored source (referenced by the generation provenance) is vendored into
-    # source/ and its atLocation rewritten relative; a vendor asset the model only points at is
-    # NOT archived. The manifest import/iri-map are rewritten to resolve inside the archive.
-    source = _source_tree(tmp_path / "source")
-    authored = tmp_path / "inputs" / "model.robmot"
-    authored.parent.mkdir()
-    authored.write_text("robot { }\n")
-    vendor = tmp_path / "vendor" / "gen3.xml"
-    vendor.parent.mkdir()
-    vendor.write_text("<mujoco/>\n")
-
-    manifest_doc = _importing_manifest()
-    (source / "model.ld.json").write_text(json.dumps(manifest_doc, indent=4))
-    (source / "sub.ld.json").write_text(
-        json.dumps({"@context": {"prov": "http://www.w3.org/ns/prov#"}, "@graph": []})
-    )
-    # The DSL's graph names the authored source (vendored + rewritten); motion-spec's names a
-    # vendor asset the archive only points at.
-    document = _provenance()
-    document["@graph"][0]["@graph"].append(
-        {
-            "@id": "https://example.test/entity/asset",
-            "@type": "Entity",
-            "atLocation": vendor.resolve().as_uri(),
-        }
-    )
-    document["@graph"].append(
-        {
-            "@id": str(GRAPH_DSL),
-            "@graph": [
-                {
-                    "@id": "https://example.test/entity/src",
-                    "@type": "Entity",
-                    "atLocation": authored.resolve().as_uri(),
-                }
-            ],
-        }
-    )
-    (source / GENERATION_DOCUMENT).write_text(json.dumps(document, indent=4))
-    run_dir = tmp_path / "run"
-
-    manifest = _archived(tmp_path, run_dir, source)
-
-    # Authored source vendored under source/, tracked, reachable.
-    assert manifest["files"]["sources"] == ["source/model.robmot"]
-    assert (run_dir / "source" / "model.robmot").is_file()
-    assert "artifacts" not in manifest
-
-    # Vendor asset NOT archived; its reference left untouched.
-    assert not (run_dir / "source" / "gen3.xml").exists()
-    archived = rdflib.Dataset(default_union=True).parse(
-        run_dir / GENERATION_DOCUMENT, format="json-ld"
-    )
-    asset = rdflib.URIRef("https://example.test/entity/asset")
-    assert archived.value(asset, PROV.atLocation) == rdflib.URIRef(vendor.resolve().as_uri())
-    # The authored source's location now names the archived copy.
-    src_node = rdflib.URIRef("https://example.test/entity/src")
-    assert archived.value(src_node, PROV.atLocation) == rdflib.URIRef(
-        (run_dir / "source" / "model.robmot").resolve().as_uri()
-    )
-    # The document keeps its shape: the wrapper and the named graph survive the rewrite.
-    written = json.loads((run_dir / GENERATION_DOCUMENT).read_text())
-    assert written["schema_version"] == 1 and written["@graph"][0]["@graph"]
-
-    # Manifest import + iri-map rewritten to resolve archive-relative.
-    model = rdflib.Dataset().parse(run_dir / "model" / "model.ld.json", format="json-ld")
-    assert {str(value) for _, _, value, _ in model.quads((None, APP["import"], None, None))} == {
-        "https://secorolab.github.io/model/sub.ld.json"
-    }
-    iri_root = rdflib.URIRef("https://secorolab.github.io/")
-    assert next(model.quads((iri_root, APP.path, None, None)))[2] == rdflib.Literal("..")
-
-    assert verify_manifest(run_dir)["run_id"] == "run-test"
-
-
 def test_manifest_lists_console_and_videos_only_when_present(tmp_path: Path) -> None:
     # A manifest that promises a file the run never wrote is a false record.
     source = _source_tree(tmp_path / "source")
@@ -348,28 +224,12 @@ def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(tmp_path:
         verify_manifest(run_dir)
 
 
-def _generation_tree(tmp_path: Path) -> tuple[Path, Path]:
-    """A generation bundle and the flat source tree its artifacts were copied from."""
-    flat = _source_tree(tmp_path / "flat")
-    generated = tmp_path / "generation" / "generated"
-    for directory in ("contract", "model", "controller"):
-        (generated / directory).mkdir(parents=True, exist_ok=True)
-    for source, target in (
-        (flat / "frame_log.proto", generated / "contract/frame_log.proto"),
-        (flat / GENERATION_DOCUMENT, generated / GENERATION_DOCUMENT),
-        (flat / "model.ld.json", generated / "model/demo-app.ld.json"),
-        (flat / "ir.json", generated / "model/ir.json"),
-    ):
-        target.write_bytes(source.read_bytes())
-    return flat, generated
-
-
 def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> None:
-    flat, generated = _generation_tree(tmp_path)
+    generated = _source_tree(tmp_path / "generation" / "generated")
 
     run_dir = generated.parent / "runs" / "run-1"
     manifest = create_archive_manifest(
-        run_dir, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
+        run_dir, source_dir=generated, run_id="run-1", frame_log=generated / "frame_log.pb"
     )
 
     assert {path.name for path in run_dir.iterdir()} == {
@@ -387,14 +247,14 @@ def test_generation_owned_run_does_not_copy_static_artifacts(tmp_path: Path) -> 
 def test_generation_run_vendors_its_authored_source(tmp_path: Path) -> None:
     # The generated artifacts stay generation-relative, but the authored source is copied in:
     # it is kilobytes, and without it a run moved out of its generation shows no source lines.
-    flat, generated = _generation_tree(tmp_path)
+    generated = _source_tree(tmp_path / "generation" / "generated")
     (generated / "source").mkdir()
     (generated / "source" / "demo.robmot").write_text("guarded-motion (ns=demo) move {\n}\n")
     (generated / "source" / "demo.fsm").write_text("fsm demo {\n}\n")
 
     run_dir = generated.parent / "runs" / "run-1"
     manifest = create_archive_manifest(
-        run_dir, source_dir=generated, run_id="run-1", frame_log=flat / "frame_log.pb"
+        run_dir, source_dir=generated, run_id="run-1", frame_log=generated / "frame_log.pb"
     )
 
     assert manifest["files"]["sources"] == ["source/demo.fsm", "source/demo.robmot"]
@@ -409,7 +269,11 @@ def test_verify_requires_the_run_to_be_a_recorded_execution(tmp_path: Path) -> N
     source = _source_tree(tmp_path / "source")
     run_dir = tmp_path / "run"
     create_archive_manifest(
-        run_dir, source_dir=source, run_id="run-test", log_producer_executable=_executable(tmp_path)
+        run_dir,
+        source_dir=source,
+        run_id="run-test",
+        frame_log=source / "frame_log.pb",
+        log_producer_executable=_executable(tmp_path),
     )
     rec_path = rec_document(run_dir, "run-test")
     rec_path.write_text(rec_path.read_text().replace('"Execution"', '"Activity"'))

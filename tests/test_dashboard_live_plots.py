@@ -16,9 +16,9 @@ import pytest
 from motion_spec.dashboard import jobs, live, replay, roots
 from motion_spec.dashboard.frames import FrameLayout
 from motion_spec.generation.artifacts import build_frame_layout, build_frame_log_header_record
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError
-from motion_spec.introspection.replay import resolve_archive
+from motion_spec.telemetry import frame_log_pb
+from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.replay import resolve_archive
 
 from frame_log_fixture import flat_frame
 from support import _hash_doc

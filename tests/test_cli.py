@@ -41,7 +41,7 @@ def test_cli_exposes_lazy_click_commands(monkeypatch, tmp_path) -> None:
     _declare_simulated(generation)
     received = {}
     monkeypatch.setattr(
-        "motion_spec.introspection.runner.run_cataloged",
+        "motion_spec.runs.runner.run_cataloged",
         lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
     )
     result = runner.invoke(
@@ -63,7 +63,7 @@ def test_rerun_runs_a_generation_again_under_a_new_id(monkeypatch, tmp_path) -> 
     _declare_simulated(generation)
     received = {}
     monkeypatch.setattr(
-        "motion_spec.introspection.runner.run_cataloged",
+        "motion_spec.runs.runner.run_cataloged",
         lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
     )
 
@@ -90,7 +90,7 @@ def test_rerun_takes_the_generation_latest_points_at(monkeypatch, tmp_path) -> N
     cli._point_latest(generation)
     received = {}
     monkeypatch.setattr(
-        "motion_spec.introspection.runner.run_cataloged",
+        "motion_spec.runs.runner.run_cataloged",
         lambda *args, **kwargs: received.update(args=args, kwargs=kwargs) or 0,
     )
 
@@ -197,7 +197,7 @@ def test_gen_and_run_compose_the_model_pipeline(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("motion_spec.generation.pipeline.build_generation", build)
     monkeypatch.setattr("motion_spec.generation.pipeline.new_id", lambda name: f"{name}-1")
     monkeypatch.setattr(
-        "motion_spec.introspection.runner.run_cataloged",
+        "motion_spec.runs.runner.run_cataloged",
         lambda *args, **kwargs: received.update(run=(args, kwargs)) or 0,
     )
 
@@ -304,7 +304,7 @@ def _quiet_setup(monkeypatch, imported: frozenset = frozenset()) -> list:
     monkeypatch.setattr(
         "motion_spec.setup.source_state",
         lambda repository, root, imported=False: stst_setup.SourceState(
-            stst_setup.source_directory(root, repository.path), imported, True, ref="r" * 40
+            stst_setup.source_directory(root, repository.path), True, ref="r" * 40
         ),
     )
     return imports
@@ -322,9 +322,9 @@ def test_setup_installs_into_the_workspace_it_was_given(monkeypatch, tmp_path) -
     _quiet_setup(monkeypatch)
     monkeypatch.setattr(
         "motion_spec.setup.install_stst",
-        lambda root, state, prefix=None, force=False, **_kwargs: (
-            received.update(root=root, state=state, prefix=prefix, force=force)
-            or prefix / "bin" / "stst"
+        lambda root, state, force=False, **_kwargs: (
+            received.update(root=root, state=state, force=force)
+            or stst_setup.install_prefix(root) / "bin" / "stst"
         ),
     )
     install = tmp_path / "install"
@@ -333,7 +333,7 @@ def test_setup_installs_into_the_workspace_it_was_given(monkeypatch, tmp_path) -
 
     assert result.exit_code == 0, result.output
     # WORKSPACE/install, never the user's ~/.local: what setup installs is a toolchain.
-    assert received["prefix"] == install
+    assert received["root"] == tmp_path.resolve()
     assert received["force"] is False
     assert received["state"].path == tmp_path / "src" / "thirdparty" / "STSTv4"
     assert str(install / "bin" / "stst") in result.output
@@ -344,24 +344,6 @@ def test_setup_installs_into_the_workspace_it_was_given(monkeypatch, tmp_path) -
 
     CliRunner().invoke(main, ["setup", "STSTv4", "--workspace", str(tmp_path), "--force"])
     assert received["force"] is True
-
-    launcher = install / "bin" / "stst"
-    monkeypatch.setattr(
-        "motion_spec.setup.remove_stst",
-        lambda root, prefix=None: (
-            [stst_setup.Removed(str(launcher), TRASH / "stst")] if prefix == install else []
-        ),
-    )
-    # Something for the prompt to offer: with nothing installed there is nothing to ask about.
-    launcher.parent.mkdir(parents=True, exist_ok=True)
-    launcher.write_text("#!/usr/bin/env bash\n")
-    result = CliRunner().invoke(
-        main, ["setup", "STSTv4", "--workspace", str(tmp_path), "--clean", "--yes"]
-    )
-    assert result.exit_code == 0
-    # Each item with where the trash keeps it, so it can be found and restored.
-    assert f"trashed install/bin/stst → {TRASH / 'stst'}" in result.output
-    assert "cleaned: stst" in result.output
 
 
 def test_setup_without_a_workspace_says_so_instead_of_choosing_one(monkeypatch, tmp_path) -> None:
@@ -388,13 +370,13 @@ def test_setup_installs_every_repository_in_manifest_order(monkeypatch, tmp_path
     _one_package_per_repository(monkeypatch)
     monkeypatch.setattr(
         "motion_spec.setup.install_stst",
-        lambda root, state, prefix=None, **_kwargs: (
-            order.append(("stst", None)) or prefix / "bin" / "stst"
+        lambda root, state, **_kwargs: (
+            order.append(("stst", None)) or stst_setup.install_prefix(root) / "bin" / "stst"
         ),
     )
     monkeypatch.setattr(
         "motion_spec.setup.install_package",
-        lambda package, _state, _root, _prefix, _python, build_type="", **_kwargs: order.append(
+        lambda package, _state, _root, _python, build_type="", **_kwargs: order.append(
             (package.name, build_type)
         ),
     )
@@ -464,27 +446,9 @@ def test_setup_real_layers_the_device_drivers_on_top(monkeypatch, tmp_path) -> N
     assert plain.exit_code != 0 and "robif2b" in plain.output
 
 
-def test_setup_repos_replaces_the_shipped_manifest(monkeypatch, tmp_path) -> None:
-    installed = []
-    imports = _quiet_setup(monkeypatch)
-    _one_package_per_repository(monkeypatch)
-    monkeypatch.setattr(
-        "motion_spec.setup.install_package",
-        lambda package, *_a, **_k: installed.append(package.name),
-    )
-    mine = tmp_path / "mine.repos"
-    mine.write_text(
-        "repositories:\n  mylib:\n    type: git\n    url: https://example.org/mylib.git\n"
-        "    version: main\n"
-    )
-
-    result = CliRunner().invoke(main, ["setup", "--repos", str(mine), "--workspace", str(tmp_path)])
-
-    assert result.exit_code == 0, result.output
-    assert installed == ["mylib"] and imports == [[mine]]
-
-
-def test_setup_clear_cache_rebuilds_selected_cmake_package(monkeypatch, tmp_path) -> None:
+def test_setup_force_rebuilds_selected_cmake_package_from_a_cleared_cache(
+    monkeypatch, tmp_path
+) -> None:
     _quiet_setup(monkeypatch)
     checkout = stst_setup.source_directory(tmp_path, "coord2b")
     (checkout / ".git").mkdir(parents=True)
@@ -497,9 +461,7 @@ def test_setup_clear_cache_rebuilds_selected_cmake_package(monkeypatch, tmp_path
     commands = []
     monkeypatch.setattr(stst_setup, "tee", lambda command, **_k: commands.append(command))
 
-    result = CliRunner().invoke(
-        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clear-cache"]
-    )
+    result = CliRunner().invoke(main, ["setup", "coord2b", "--workspace", str(tmp_path), "--force"])
 
     assert result.exit_code == 0, result.output
     assert not (build / "CMakeCache.txt").exists()
@@ -507,16 +469,14 @@ def test_setup_clear_cache_rebuilds_selected_cmake_package(monkeypatch, tmp_path
     assert any("-S" in command for command in commands)
 
     commands.clear()
-    # Installed and not asked to clear: nothing is built again.
+    # Installed and not forced: nothing is built again.
     result = CliRunner().invoke(main, ["setup", "coord2b", "--workspace", str(tmp_path)])
     assert result.exit_code == 0 and "coord2b already installed" in result.output
     assert commands == []
 
-    conflict = CliRunner().invoke(
-        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean", "--clear-cache"]
-    )
-    assert conflict.exit_code != 0
-    assert "cannot be used together" in conflict.output
+    named = CliRunner().invoke(main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean"])
+    assert named.exit_code != 0
+    assert "takes no names" in named.output
 
 
 def test_manifest_pins_what_setup_builds_and_the_template_asks_for() -> None:
@@ -579,11 +539,6 @@ def test_manifests_layer_file_after_file_and_refuse_a_path_listed_twice(tmp_path
     mine = _manifest(
         tmp_path / "mine.repos", "  a:\n    type: git\n    url: https://x/a.git\n    version: 1\n"
     )
-    # A manifest given replaces the shipped core; --real still layers the drivers on top.
-    assert stst_setup.manifest_files((mine,), real=True) == [
-        mine,
-        stst_setup.shipped(stst_setup.REAL_MANIFEST),
-    ]
     twice = _manifest(
         tmp_path / "twice.repos", "  a:\n    type: git\n    url: https://y/a.git\n    version: 2\n"
     )
@@ -715,7 +670,7 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
     source = stst_setup.source_directory(tmp_path, stst_setup.STST_REPOSITORY)
     (source / ".git").mkdir(parents=True)
     pin = stst_setup.shipped_pin(stst_setup.STST_REPOSITORY).version
-    state = stst_setup.SourceState(source, True, True, ref=pin)
+    state = stst_setup.SourceState(source, True, ref=pin)
 
     launcher = stst_setup.install_stst(tmp_path, state)
     first_call_count = len(calls)
@@ -726,7 +681,7 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
     assert source == tmp_path / "src" / "thirdparty" / "STSTv4"
     # The commit the checkout is on, which is what the next run compares HEAD against.
     marker = tmp_path / "install" / "share" / "motion-spec" / ".stst-managed"
-    assert marker.read_text().splitlines() == [pin, "cloned"]
+    assert marker.read_text().splitlines() == [pin]
     assert stst_setup.install_stst(tmp_path, state) == launcher
     assert len(calls) == first_call_count
     # A launcher whose jar went missing is a broken install, not a done one.
@@ -737,15 +692,6 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
     assert stst_setup.install_stst(tmp_path, state, force=True) == launcher
     assert len(calls) > rebuilt_call_count
 
-    # The launcher goes to the trash, the one-line marker is deleted, and the source stays.
-    assert stst_setup.remove_stst(tmp_path) == [
-        stst_setup.Removed(str(launcher), TRASH / "stst"),
-        stst_setup.Removed(str(marker), None, deleted=True),
-    ]
-    assert trashed == [launcher]
-    assert source.is_dir()
-    assert stst_setup.remove_stst(tmp_path) == []
-
     def failing_ant(command, **_kwargs):
         if command[0] == "ant":
             raise RuntimeError("build failed")
@@ -755,7 +701,7 @@ def test_stst_setup_builds_pinned_launcher_once(monkeypatch, tmp_path) -> None:
         stst_setup.install_stst(tmp_path, state, force=True)
     assert not stst_setup.stst_installed(tmp_path)
 
-    unusable = stst_setup.SourceState(source, False, False, "was not imported")
+    unusable = stst_setup.SourceState(source, False, "was not imported")
     with pytest.raises(RuntimeError, match="was not imported"):
         stst_setup.install_stst(tmp_path / "other", unusable)
 
@@ -818,24 +764,24 @@ def _package(tmp_path: Path, name: str, cmake: bool = True, python: bool = False
     (checkout / ".git").mkdir(parents=True, exist_ok=True)
     return (
         stst_setup.Package(name, checkout, cmake, python),
-        stst_setup.SourceState(checkout, True, True, ref="c" * 40),
+        stst_setup.SourceState(checkout, True, ref="c" * 40),
     )
 
 
 def test_a_build_is_never_given_an_unlimited_job_count(monkeypatch, tmp_path) -> None:
     """A bare `cmake --build --parallel` is `make -j`, which swaps the machine to death."""
     package, state = _package(tmp_path, "coord2b")
-    prefix, python = stst_setup.install_prefix(tmp_path), tmp_path / "python"
+    python = tmp_path / "python"
     commands = []
     monkeypatch.setattr(stst_setup, "tee", lambda command, **_kwargs: commands.append(command))
     monkeypatch.setattr(stst_setup, "extension_options", lambda *_a, **_k: ())
 
-    stst_setup.install_package(package, state, tmp_path, prefix, python, jobs=3)
+    stst_setup.install_package(package, state, tmp_path, python, jobs=3)
     build = next(c for c in commands if "--build" in c)
     assert build[build.index("--parallel") + 1] == "3"
 
     commands.clear()
-    stst_setup.install_package(package, state, tmp_path, prefix, python)
+    stst_setup.install_package(package, state, tmp_path, python)
     build = next(c for c in commands if "--build" in c)
     # Whatever this machine computes, --parallel is never the last word.
     assert int(build[build.index("--parallel") + 1]) >= 1
@@ -848,17 +794,15 @@ def test_a_build_is_never_given_an_unlimited_job_count(monkeypatch, tmp_path) ->
 
     monkeypatch.setattr(stst_setup, "tee", record)
     monkeypatch.setattr(stst_setup.shutil, "which", lambda command: f"/usr/bin/{command}")
-    stst_setup.install_package(package, state, tmp_path, prefix, python, ros=True, jobs=2)
+    stst_setup.install_package(package, state, tmp_path, python, ros=True, jobs=2)
     assert captured["env"]["MAKEFLAGS"] == "-j2 -l2"
 
     commands.clear()
-    stst_setup.install_package(
-        package, state, tmp_path, prefix, python, ros=True, clear_cache=True, jobs=2
-    )
+    stst_setup.install_package(package, state, tmp_path, python, ros=True, fresh=True, jobs=2)
     assert "--cmake-clean-cache" in commands[0]
 
 
-def test_a_cmake_build_takes_colcon_meta_the_interpreter_and_this_runs_args(monkeypatch, tmp_path):
+def test_a_cmake_build_takes_colcon_meta_and_the_interpreter(monkeypatch, tmp_path):
     package, state = _package(tmp_path, "mj_kdl_wrapper", cmake=True, python=True)
     prefix, python = stst_setup.install_prefix(tmp_path), tmp_path / "python"
     commands, pips = [], []
@@ -876,32 +820,32 @@ def test_a_cmake_build_takes_colcon_meta_the_interpreter_and_this_runs_args(monk
     meta = stst_setup.workspace_colcon_meta(tmp_path)
     meta.write_text(json.dumps({"names": {"mj_kdl_wrapper": {"cmake-args": ["-DFROM_META=ON"]}}}))
 
-    stst_setup.install_package(package, state, tmp_path, prefix, python, extra=("-DONCE=1",))
+    stst_setup.install_package(package, state, tmp_path, python)
 
     configure = next(c for c in commands if "-S" in c)
-    # The same arguments colcon would read from colcon.meta, then this machine, then this run.
-    assert configure[-3:] == ["-DFROM_META=ON", "-DPython3_EXECUTABLE=p", "-DONCE=1"]
+    # The same arguments colcon would read from colcon.meta, then this machine.
+    assert configure[-2:] == ["-DFROM_META=ON", "-DPython3_EXECUTABLE=p"]
     # The bindings link what the CMake build linked, into the environment setup targets.
     [(source, editable, into, ros, defines)] = pips
     assert (source, editable, into, ros) == (package.path, False, python, False)
-    assert defines[:3] == ("-DFROM_META=ON", "-DPython3_EXECUTABLE=p", "-DONCE=1")
+    assert defines[:2] == ("-DFROM_META=ON", "-DPython3_EXECUTABLE=p")
     marker = prefix / "share" / "motion-spec" / ".mj_kdl_wrapper-managed"
-    assert marker.read_text().splitlines() == [state.ref, "cloned"]
+    assert marker.read_text().splitlines() == [state.ref]
 
 
 def test_a_python_package_is_installed_editable_only_under_dev(monkeypatch, tmp_path) -> None:
     package, state = _package(tmp_path, "motion_spec_dsl", cmake=False, python=True)
-    prefix, python = stst_setup.install_prefix(tmp_path), tmp_path / "python"
+    python = tmp_path / "python"
     commands = []
     monkeypatch.setattr(stst_setup, "tee", lambda command, **_kwargs: commands.append(command))
     monkeypatch.setattr(stst_setup, "installer", lambda py=None: [str(py), "-m", "pip", "install"])
 
-    stst_setup.install_package(package, state, tmp_path, prefix, python, dev=True)
+    stst_setup.install_package(package, state, tmp_path, python, dev=True)
     # Into the target environment, pointing back at the checkout, and nothing built by cmake.
     assert commands == [[str(python), "-m", "pip", "install", "--editable", str(package.path)]]
 
     commands.clear()
-    stst_setup.install_package(package, state, tmp_path, prefix, python, dev=False)
+    stst_setup.install_package(package, state, tmp_path, python, dev=False)
     assert commands == [[str(python), "-m", "pip", "install", str(package.path)]]
 
 
@@ -972,15 +916,15 @@ def test_an_existing_checkout_is_used_at_whatever_ref_it_is_on(monkeypatch, tmp_
     assert (missing.usable, missing.reason) == (False, "was not imported")
     (checkout / ".git").mkdir(parents=True)
 
-    # Just imported: setup's own clone, so `--clean` knows it made it.
+    # Just imported: the commit it was cloned at.
     answers.update({"rev-parse": pinned, "status": ""})
     imported = stst_setup.source_state(pinned_repository, tmp_path, imported=True)
-    assert (imported.usable, imported.cloned, imported.ref) == (True, True, pinned)
+    assert (imported.usable, imported.ref) == (True, pinned)
 
-    # On the pin and clean: built where it stands, and not cloned, so `--clean` leaves it.
+    # On the pin and clean: built where it stands, with nothing to report.
     monkeypatch.setattr(stst_setup, "_pinned_commit", lambda *_a: pinned)
     state = stst_setup.source_state(pinned_repository, tmp_path)
-    assert (state.usable, state.cloned, state.drift) == (True, False, "")
+    assert (state.usable, state.drift) == (True, "")
 
     # Work in progress is built, since it is the whole reason to keep a checkout here.
     answers["status"] = " M src/main.cpp"
@@ -1000,128 +944,25 @@ def test_an_existing_checkout_is_used_at_whatever_ref_it_is_on(monkeypatch, tmp_
     assert unknown.usable is True and unknown.ref == "b" * 40
 
 
-def test_clean_refuses_a_checkout_it_did_not_make(tmp_path) -> None:
-    checkout = stst_setup.source_directory(tmp_path, "coord2b")
-    build = stst_setup.build_directory(tmp_path, "coord2b")
-
-    assert stst_setup.remove_package("coord2b", tmp_path) == []
-
-    checkout.mkdir(parents=True)
-    (checkout / "work-in-progress").write_text("mine")
-    build.mkdir(parents=True)
-    with pytest.raises(RuntimeError, match="unmanaged"):
-        stst_setup.remove_package("coord2b", tmp_path)
-    assert (checkout / "work-in-progress").is_file()
-
-
-def test_clean_leaves_a_checkout_it_only_adopted(monkeypatch, tmp_path) -> None:
-    marker = stst_setup.install_prefix(tmp_path) / "share" / "motion-spec" / ".coord2b-managed"
-    marker.parent.mkdir(parents=True)
-    marker.write_text("master\nadopted\n")
-    stst_setup.build_directory(tmp_path, "coord2b").mkdir(parents=True)
-    trashed = []
-    monkeypatch.setattr(stst_setup, "trash", _trashing(trashed))
-
-    build = stst_setup.build_directory(tmp_path, "coord2b")
-    assert stst_setup.remove_package("coord2b", tmp_path) == [
-        stst_setup.Removed(str(build), TRASH / "coord2b"),
-        stst_setup.Removed(str(marker), None, deleted=True),
-    ]
-
-    # The build is setup's; the source it merely built in is not, whoever cleans up after it.
-    assert trashed == [build]
-
-
-def test_clean_asks_for_each_path_and_takes_nothing_on_a_no(monkeypatch, tmp_path) -> None:
-    monkeypatch.delenv(stst_setup.WORKSPACE_VARIABLE, raising=False)
-    prefix = stst_setup.install_prefix(tmp_path)
-    installed = prefix / "lib" / "libcoord2b.so"
-    installed.parent.mkdir(parents=True)
-    installed.write_text("o" * 2048)
-    marker = prefix / "share" / "motion-spec" / ".coord2b-managed"
-    marker.parent.mkdir(parents=True)
-    marker.write_text("master\ncloned\n")
-    build = stst_setup.build_directory(tmp_path, "coord2b")
-    build.mkdir(parents=True)
-    (build / "install_manifest.txt").write_text(f"{installed}\n")
-    checkout = stst_setup.source_directory(tmp_path, "coord2b")
-    (checkout / ".git").mkdir(parents=True)
-    # Clean finds the package names in the checkout, as colcon would.
-    (checkout / "CMakeLists.txt").write_text("project(coord2b)\n")
-    trashed = []
-    monkeypatch.setattr(stst_setup, "trash", _trashing(trashed))
-
-    refused = CliRunner().invoke(
-        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean"], input="n\n"
-    )
-
-    # Every path it would take, with its size, before the question -- and a no takes none.
-    assert "build/coord2b" in refused.output and "1 installed file" in refused.output
-    assert "2.0 KiB" in refused.output
-    assert trashed == [] and installed.is_file() and build.is_dir()
-
-    accepted = CliRunner().invoke(
-        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean"], input="y\n"
-    )
-
-    assert accepted.exit_code == 0, accepted.output
-    assert not installed.exists() and not build.exists()
-    # Each item said with where the trash keeps it; the marker is deleted, and says so.
-    assert f"trashed 1 installed files from install → {TRASH / '.removed-coord2b-install'}" in (
-        accepted.output
-    )
-    assert f"trashed build/coord2b → {TRASH / 'coord2b'}" in accepted.output
-    assert "deleted install/share/motion-spec/.coord2b-managed" in accepted.output
-    # The one thing a clean never takes, whoever cloned it.
-    assert (checkout / ".git").is_dir()
-    assert "sources left in place: src/coord2b" in accepted.output
-
-
-def test_clean_all_offers_the_whole_output_tree(monkeypatch, tmp_path) -> None:
+def test_clean_trashes_the_whole_output_tree(monkeypatch, tmp_path) -> None:
     for directory in ("build", "install", "log"):
         (tmp_path / directory / "inside").mkdir(parents=True)
     (tmp_path / "setup-motion-spec.bash").write_text("x\n")
     (tmp_path / "src" / "coord2b").mkdir(parents=True)
     (tmp_path / "generations").mkdir()
     trashed = []
-    monkeypatch.setattr("motion_spec.utils.trash", _trashing(trashed))
+    monkeypatch.setattr(stst_setup, "trash", _trashing(trashed))
 
-    result = CliRunner().invoke(
-        main, ["setup", "--workspace", str(tmp_path), "--clean", "--all", "--yes"]
-    )
+    result = CliRunner().invoke(main, ["setup", "--workspace", str(tmp_path), "--clean"])
 
     assert result.exit_code == 0, result.output
     assert [path.name for path in trashed] == ["build", "install", "log", "setup-motion-spec.bash"]
-    assert f"trashed build → {TRASH / 'build'}" in result.output
-    # Sources and generations are not outputs, so --all never offers them.
+    assert f"trashed {tmp_path.resolve() / 'build'} → {TRASH / 'build'}" in result.output
+    # Sources and generations are not outputs, so a clean never takes them.
     assert (tmp_path / "src" / "coord2b").is_dir() and (tmp_path / "generations").is_dir()
 
-    named = CliRunner().invoke(
-        main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean", "--all"]
-    )
-    assert named.exit_code != 0 and "takes no repositories" in named.output
-
-
-def test_clean_only_removes_manifest_files_inside_prefix(monkeypatch, tmp_path) -> None:
-    prefix = tmp_path / "install"
-    owned = prefix / "lib" / "owned.so"
-    owned.parent.mkdir(parents=True)
-    owned.write_text("owned")
-    outside = tmp_path / "outside.so"
-    outside.write_text("keep")
-    manifest = tmp_path / "install_manifest.txt"
-    manifest.write_text(f"{owned}\n{outside}\n{prefix / '..' / outside.name}\n")
-    monkeypatch.setattr(stst_setup, "trash", _trashing([]))
-    removed = []
-
-    stst_setup._trash_installed(manifest, prefix, "test", removed)
-
-    assert not owned.exists()
-    assert outside.read_text() == "keep"
-    # One trash entry for all of them, reported with where the trash keeps it.
-    assert removed == [
-        stst_setup.Removed(f"1 installed files from {prefix}", TRASH / ".removed-test")
-    ]
+    named = CliRunner().invoke(main, ["setup", "coord2b", "--workspace", str(tmp_path), "--clean"])
+    assert named.exit_code != 0 and "takes no names" in named.output
 
 
 TRASH = Path("/trash/files")
@@ -1218,14 +1059,6 @@ def test_build_runs_under_the_environment_it_found(monkeypatch, tmp_path) -> Non
     result = CliRunner().invoke(main, ["build", str(generation), "--no-env"])
     assert result.exit_code == 0, result.output
     assert received["env"] is None
-
-
-def test_a_run_records_the_environment_it_happened_in() -> None:
-    from motion_spec.introspection.provenance import host_info
-
-    assert "environment" not in host_info()
-    record = {"script": "/ws/setup-motion-spec.bash", "variables": {"ROS_DISTRO": "jazzy"}}
-    assert host_info(record)["environment"] == record
 
 
 def _ros_root(tmp_path: Path, *distros: str) -> Path:
@@ -1388,9 +1221,15 @@ def test_where_a_dependency_comes_from_is_the_manifests_pin() -> None:
 
 
 def test_provenance_names_the_stst_commit_the_manifest_pins() -> None:
-    from motion_spec.introspection import provenance
+    from rdflib import Graph
+    from rdflib.namespace import SDO
 
-    assert provenance._stst_commit() == stst_setup.shipped_pin(stst_setup.STST_REPOSITORY).version
+    from motion_spec.runs import provenance
+
+    graph = Graph()
+    agent = provenance.add_package(graph, "stst")
+    pin = stst_setup.shipped_pin(stst_setup.STST_REPOSITORY).version
+    assert str(graph.value(agent, SDO.identifier)) == pin
 
 
 def test_stst_on_path_wins_over_managed(monkeypatch, tmp_path) -> None:
@@ -1472,9 +1311,8 @@ def test_a_config_file_says_what_the_workspace_is_and_how_it_builds(monkeypatch,
     assert stst_setup.workspace() == tmp_path.resolve()
     assert stst_setup.generations_root() == tmp_path / "gen-out"
 
-    settings, path = config.settings()
-    assert path == written
-    assert settings["ros"]["workspace"] is True
+    assert config.find_config() == written
+    assert config.load(written)["ros"]["workspace"] is True
 
     # An environment variable still wins over the file.
     monkeypatch.setenv(stst_setup.GENERATION_VARIABLE, str(tmp_path / "elsewhere"))
@@ -1482,16 +1320,16 @@ def test_a_config_file_says_what_the_workspace_is_and_how_it_builds(monkeypatch,
 
     written.write_text("[nonsense]\nkey = 1\n")
     try:
-        config.settings()
+        config.load(written)
     except ValueError as exc:
-        assert "unknown section" in str(exc)
+        assert r"unknown key key in [nonsense]" in str(exc)
     else:
         raise AssertionError("a key nobody reads is a setting that silently does nothing")
 
     # What setup installs is the manifests and its flags; a [setup] table would be ignored.
     written.write_text('[setup]\nbuild_type = "Debug"\n')
-    with pytest.raises(ValueError, match=r"unknown section \[setup\]"):
-        config.settings()
+    with pytest.raises(ValueError, match=r"unknown key build_type in \[setup\]"):
+        config.load(written)
 
 
 def test_the_sample_sets_the_core_keys_and_the_shell_it_found(monkeypatch, tmp_path) -> None:
@@ -1501,9 +1339,9 @@ def test_the_sample_sets_the_core_keys_and_the_shell_it_found(monkeypatch, tmp_p
     monkeypatch.delenv(stst_setup.ENVIRONMENT_VARIABLE, raising=False)
     # Away from the checkout, whose own workspace has these files.
     monkeypatch.chdir(tmp_path)
-    assert config.detect_shell() == "zsh"
+    assert config.shell() == "zsh"
     monkeypatch.setenv("SHELL", "/bin/fish")
-    assert config.detect_shell() == "bash"
+    assert config.shell() == "bash"
 
     monkeypatch.setenv("SHELL", "/usr/bin/zsh")
     CliRunner().invoke(main, ["config", "--init", "--workspace", str(tmp_path)])
@@ -1512,13 +1350,9 @@ def test_the_sample_sets_the_core_keys_and_the_shell_it_found(monkeypatch, tmp_p
         f'root = "{tmp_path}"',
         'generations = "generations"',
         'environment = "setup-motion-spec.zsh"',
-        'shell = "zsh"',
     ):
         assert f"\n{live}" in written, live
     assert "[setup]" not in written
-
-    settings, _ = config.settings(tmp_path)
-    assert config.shell(settings) == "zsh"
     # Declared but not written yet: discovery carries on rather than failing every command.
     assert stst_setup.find_environment(tmp_path) is None
     (tmp_path / "setup-motion-spec.zsh").write_text("export FROM_ZSH=yes\n")
@@ -1572,28 +1406,12 @@ def test_a_generated_file_says_which_version_it_is(monkeypatch, tmp_path) -> Non
     current = formats.FORMATS["config"].current
     written.write_text(written.read_text().replace(f"version = {current}", "version = 9"))
     try:
-        config.settings(tmp_path)
+        config.load(written)
     except ValueError as exc:
         # The range, not just a refusal: it says what this build reads and who wrote the file.
         assert "version 9" in str(exc) and "reads 1" in str(exc)
     else:
         raise AssertionError("a file from a newer motion-spec must not be half-read")
-
-
-def test_an_old_install_marker_is_read_as_one_setup_cloned(monkeypatch, tmp_path) -> None:
-    marker = stst_setup.install_prefix(tmp_path) / "share" / "motion-spec" / ".coord2b-managed"
-    marker.parent.mkdir(parents=True)
-    # v1: the ref alone, from before setup could adopt a checkout it had not made.
-    marker.write_text("master\n")
-    stst_setup.build_directory(tmp_path, "coord2b").mkdir(parents=True)
-    trashed = []
-    monkeypatch.setattr(stst_setup, "trash", _trashing(trashed))
-
-    assert stst_setup._recorded_origin(marker) == "cloned"
-    assert stst_setup.remove_package("coord2b", tmp_path)
-
-    # Cloned or not, the source is the operator's: clean takes the build only.
-    assert trashed == [stst_setup.build_directory(tmp_path, "coord2b")]
 
 
 def test_setup_takes_its_build_options_from_its_flags(monkeypatch, tmp_path) -> None:
@@ -1602,33 +1420,22 @@ def test_setup_takes_its_build_options_from_its_flags(monkeypatch, tmp_path) -> 
     _one_package_per_repository(monkeypatch)
     monkeypatch.setattr(
         "motion_spec.setup.install_package",
-        lambda package, *_a, build_type="", extra=(), dev=False, **_k: installed.append(
-            (package.name, build_type, extra, dev)
+        lambda package, *_a, build_type="", dev=False, **_k: installed.append(
+            (package.name, build_type, dev)
         ),
     )
 
     result = CliRunner().invoke(
         main,
-        [
-            "setup",
-            "coord2b",
-            "--workspace",
-            str(tmp_path),
-            "--build-type",
-            "Debug",
-            "--cmake-arg",
-            "-DX=1",
-            "--dev",
-        ],
+        ["setup", "coord2b", "--workspace", str(tmp_path), "--build-type", "Debug", "--dev"],
     )
 
     assert result.exit_code == 0, result.output
-    # --cmake-arg is this run's alone; lasting arguments are colcon.meta's.
-    assert installed == [("coord2b", "Debug", ("-DX=1",), True)]
+    assert installed == [("coord2b", "Debug", True)]
 
     installed.clear()
     CliRunner().invoke(main, ["setup", "coord2b", "--workspace", str(tmp_path)])
-    assert installed == [("coord2b", stst_setup.BUILD_TYPE, (), False)]
+    assert installed == [("coord2b", stst_setup.BUILD_TYPE, False)]
 
 
 def test_generations_root_is_the_workspace_and_never_the_working_directory(monkeypatch, tmp_path):

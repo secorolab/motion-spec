@@ -16,7 +16,7 @@ import pytest
 from motion_spec.rdf_parser.coordination import detect_shape
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_HDL, MOT
 from rdf_utils.constraints import ConstraintViolation
-from rdflib import Graph, Literal, URIRef
+from rdflib import Dataset, Graph, Literal, URIRef
 from rdflib.namespace import PROV, RDF
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
@@ -35,8 +35,9 @@ NS = "https://example.test/"
 
 
 def _model(graph: Graph) -> Model:
+    # Over the graph's own store, so what a test adds after this is in the model too.
     return Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+        graph=Dataset(store=graph.store, default_union=True), app_path=Path("model-app.ld.json")
     )
 
 

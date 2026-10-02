@@ -34,7 +34,14 @@ def _render_runtime_header(tmp_path: Path) -> Path:
     payload = tmp_path / "ir.json"
     payload.write_text(
         json.dumps(
-            {"configuration": {"control_period_ns": 1000000}, "resources": {"device_kinds": {}}}
+            {
+                "configuration": {"control_period_ns": 1000000, "backend": "mj_kdl"},
+                # The world model is rendered only for a program that declares a scene tree.
+                "resources": {
+                    "device_kinds": {},
+                    "world_trees": [{"name": "tree", "cpp_name": "tree", "sampled_frames": []}],
+                },
+            }
         )
     )
     header = tmp_path / "runtime.hpp"

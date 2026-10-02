@@ -107,7 +107,7 @@ constraint-handler (ns=app) handler-watch {
     controllers { }
     solvers {
         arm-solver: serial-chain {
-            agent:     <agents.kinova_ft_2f85>,
+            agent:     <agents.arm1>,
             algorithm: fpk
         }
     }

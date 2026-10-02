@@ -7,8 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
-from frame_log_fixture import flat_frame, write_frame_log_proto
-from google.protobuf import descriptor_pb2
+from frame_log_fixture import flat_frame
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
@@ -17,12 +16,8 @@ from motion_spec.classes.geometry import Direction, Pose, Position, Wrench, Wren
 from motion_spec.classes.motion import BlackboardValue, MotionSolverSlice, MotionUnit
 from motion_spec.classes.qudt import FreeVector, Quantity, QuantityKind, Unit
 from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
-from motion_spec.generation.artifacts import (
-    build_frame_log_proto_fields,
-    build_introspection_model,
-    build_schema,
-)
-from motion_spec.introspection import frame_log_pb
+from motion_spec.generation.artifacts import build_schema, build_telemetry_model
+from motion_spec.telemetry import frame_log_pb
 from motion_spec.rdf_parser.quantities import annotate_dataflow
 
 # The plan's storage table, restated here so the test pins the contract rather than the constant
@@ -51,10 +46,14 @@ def _solver(sid: str, output: list) -> SolverWithInputAndOutput:
     return SolverWithInputAndOutput(
         id=sid,
         motion_drivers=[
-            MotionDrivers(id=f"{sid}_drivers", acceleration_constraint=[], cartesian_force=[])
+            MotionDrivers(
+                id=f"{sid}_drivers", acceleration_constraint=[], cartesian_force=[], handler="move"
+            )
         ],
         output=output,
-        chain=ChainBinding(root="base", end="ee", tip="", tree="", name="", joints=[]),
+        chain=ChainBinding(
+            root="base", end="ee", tip="", tree="", namespace="", name="", joints=[]
+        ),
         hardware=HardwareBinding(urdf="", model="arm", tool_body="", tcp_frame=""),
         runtime=RuntimeBinding(id=sid, owner=True, prefix="", owned_trees=[], config_key=""),
     )
@@ -144,9 +143,11 @@ def _schema(*, closures: dict | None = None, controllers: list | None = None) ->
     motions = json.loads(json.dumps(_model()[3], cls=DataclassJSONEncoder))
     if controllers is not None:
         motions[1]["controllers"] = controllers  # motion_arc
+        # A slot is built from the controller's published row.
+        introspection["controllers"] = controllers
     ir = {
         "configuration": {"platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"}},
-        "communication": {"introspection": introspection},
+        "communication": {"telemetry": introspection},
         "coordination": {"motions": motions},
         "computation": {"shared_data": [], "closures": closures or {}},
     }
@@ -176,7 +177,8 @@ def test_a_value_written_by_several_motions_is_one_producer_over_all_of_them() -
     assert pose["producer"]["kind"] == "solver"
     # One solver declaration, instantiated per motion: the cadence unions them rather than
     # attributing the value to whichever motion happened to be seen last.
-    assert pose["cadence"] == {"motions": ["motion_arc", "motion_home"]}
+    assert set(pose["cadence"]) == {"motions"}
+    assert sorted(pose["cadence"]["motions"]) == ["motion_arc", "motion_home"]
 
 
 def test_a_sensor_reading_is_produced_by_the_solver_that_reads_it() -> None:
@@ -455,7 +457,7 @@ def test_gated_slots_appear_only_in_the_motions_that_write_them() -> None:
     assert schema["by_motion"]["motion_arc"]["quantities"] == [index_of["arc_only_error"]]
     assert schema["by_motion"]["motion_home"]["quantities"] == [index_of["home_only_error"]]
 
-    model = build_introspection_model(schema, {"computation": {"shared_data": []}})
+    model = build_telemetry_model(schema, {"computation": {"shared_data": []}})
     # Gated slots move out of the unconditional block into their motion's case.
     assert model["quantities"] == []
     by_index = {
@@ -546,7 +548,6 @@ def test_ft_communication_failure_survives_the_log_round_trip(tmp_path: Path) ->
     schema = _schema()
     schema["devices"] = [{"index": 0, "id": "arm1.wrist_ft", "required_by_motion": [1]}]
     schema["pools"]["devices"] = 1
-    schema["protobuf"] = build_frame_log_proto_fields(schema)
     schema["schema_hash"] += "-ft-health"
     log = _written_log(
         tmp_path, schema, [flat_frame(schema, **{"device0.seq": 42, "device0.success": 0})]
@@ -590,17 +591,18 @@ def test_the_embedded_descriptor_alone_rebuilds_the_frame_message(tmp_path: Path
     for file_proto in descriptor_set.file:
         pool.Add(file_proto)
     frame_cls = message_factory.GetMessageClass(
-        pool.FindMessageTypeByName("motion_spec.introspection.log.RuntimeFrame")
+        pool.FindMessageTypeByName("motion_spec.telemetry.log.RuntimeFrame")
     )
-    names = {field.name for field in frame_cls.DESCRIPTOR.fields}
-    # Slot fields are named from their model id, so the descriptor is readable on its own.
-    assert "arc_only_error" in names and "home_only_error" in names
+    assert "quantities" in {field.name for field in frame_cls.DESCRIPTOR.fields}
+    # The header names each quantity slot by its model id, so the log is readable on its own.
+    ids = {slot.id for slot in contract.header.quantities}
+    assert "arc_only_error" in ids and "home_only_error" in ids
 
 
 def test_every_slot_carries_its_model_iri(tmp_path: Path) -> None:
     schema = _schema()
     contract = frame_log_pb.read_contract(_written_log(tmp_path, schema, []))
-    by_id = {slot.id: slot.iri for slot in contract.header.slots}
+    by_id = {slot.id: slot.iri for slot in contract.header.quantities}
     quantity_ids = {q["id"] for q in schema["quantities"]}
     assert quantity_ids <= set(by_id)
     # An id is a lossy projection of its IRI, so the IRI has to travel rather than be recomputed.
@@ -703,85 +705,14 @@ def test_a_slot_names_the_evaluator_and_the_pair_it_compares(tmp_path: Path) -> 
     assert (list(free.operand_ids), free.difference_id, free.evaluator_id) == ([], "", "")
 
 
-# Proto type words the descriptor builder's scalar types render as in the .proto text.
-_PROTO_WORD = {
-    getattr(descriptor_pb2.FieldDescriptorProto, f"TYPE_{word.upper()}"): word
-    for word in (
-        "uint32",
-        "uint64",
-        "int32",
-        "int64",
-        "string",
-        "bytes",
-        "bool",
-        "double",
-        "sfixed64",
-    )
-}
-
-
-def _declared_in_proto_text(text: str) -> dict:
-    """{message: {field: (type word, number, repeated)}}, parsed off the rendered .proto."""
-    messages: dict = {}
-    current, depth = None, 0
-    for raw in text.splitlines():
-        line = raw.split("//")[0].strip()
-        if line.startswith("message "):
-            current, depth = line.split()[1], 1
-            messages[current] = {}
-        elif current is None or not line or line.startswith("reserved "):
-            continue
-        elif line.endswith("{"):
-            depth += 1
-        elif line == "}":
-            depth -= 1
-            if depth == 0:
-                current = None
-        elif line.endswith(";"):
-            parts = line[:-1].split()
-            repeated = parts[0] == "repeated"
-            type_word, name, _eq, number = parts[1:] if repeated else parts
-            messages[current][name] = (type_word, int(number), repeated)
-    return messages
-
-
-def _declared_in_descriptor(fields: dict) -> dict:
-    D = descriptor_pb2.FieldDescriptorProto
-    return {
-        message.name: {
-            field.name: (
-                field.type_name.rsplit(".", 1)[-1]
-                if field.type == D.TYPE_MESSAGE
-                else _PROTO_WORD[field.type],
-                field.number,
-                field.label == D.LABEL_REPEATED,
-            )
-            for field in message.field
-        }
-        for message in frame_log_pb._build_file_descriptor(fields).message_type
-    }
-
-
-def test_the_proto_text_and_the_python_descriptor_declare_the_same_wire(tmp_path: Path) -> None:
-    """protoc reads the template's .proto, replay reads the Python descriptor: one contract, so a
-    field added to either without the other would decode a log nobody wrote."""
-    schema = _schema()
-    proto = tmp_path / "frame_log.proto"
-    write_frame_log_proto(proto, schema)
-    assert _declared_in_proto_text(proto.read_text()) == _declared_in_descriptor(
-        frame_log_pb._proto_fields(schema)
-    )
-
-
 def test_a_log_without_an_embedded_descriptor_is_rejected(tmp_path: Path) -> None:
-    from motion_spec.introspection.archive import ArchiveError
+    from motion_spec.runs.archive import ArchiveError
 
     schema = _schema()
-    record_cls, _ = frame_log_pb._record_class(schema)
-    stale = record_cls()
+    stale = frame_log_pb.record_class()()
     stale.header.schema_hash = schema["schema_hash"]  # a pre-v3 header: identity only
     log = tmp_path / "frame_log.pb"
     with log.open("wb") as fh:
         frame_log_pb.write_delimited(fh, stale.SerializeToString())
-    with pytest.raises(ArchiveError, match="no descriptor set"):
+    with pytest.raises(ArchiveError, match="not a frame-log header carrying its schema"):
         frame_log_pb.read_contract(log)

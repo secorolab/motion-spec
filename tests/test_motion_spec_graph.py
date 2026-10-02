@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 from conftest import requires_interfaces, requires_workspace
-from motion_spec_dsl.gens import _gen_graph
 from motion_spec_dsl.langs import motion_spec_metamodel
 from motion_spec_dsl.rdf.model import ROS
 from motion_spec_dsl.rdf.motion_spec import MotionSpecDatasetBuilder
@@ -25,12 +24,13 @@ from motion_spec_dsl.rdf_parser.vocab import (
     SLV,
     SLV_EXT,
 )
-from rdflib import Graph, Namespace, URIRef
-from rdflib.namespace import RDF
-from support import DSL_MODELS, example
+from rdflib import Namespace
+from rdflib.namespace import RDF, SDO
+from support import DSL_MODELS, example, load_model
 
+from motion_spec.generation.pipeline import generate_model
 from motion_spec.rdf_parser.ir import generate_ir
-from motion_spec.rdf_parser.model import load_model
+from motion_spec.runs import provenance
 
 MODELS = DSL_MODELS
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -41,36 +41,21 @@ pytestmark = [
     requires_interfaces("aruco_perception/action/LocateObjects"),
     requires_workspace(METAMODELS / "prov.shacl.ttl"),
 ]
+PICK_AND_PLACE = example("pick_and_place") / "pick_and_place.robmot"
+DUAL_ARM = example("dual_arm_pick_and_place") / "dual_arm_pick_and_place.robmot"
 
 
 @pytest.fixture(scope="module")
-def generated_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Generate the representative model once per module; consumers load their own
-    fresh graph from the immutable result and must not mutate the manifest on disk."""
-    tmp_path = tmp_path_factory.mktemp("pick_and_place")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("METAMODELS_PATH", str(METAMODELS))
-        metamodel = motion_spec_metamodel()
-        model = metamodel.model_from_file(example("pick_and_place") / "pick_and_place.robmot")
-        _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-    return tmp_path / "pick_and_place-app.ld.json"
+def generation(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The representative model generated through the IR once per module."""
+    generation = tmp_path_factory.mktemp("pick_and_place")
+    generate_model(PICK_AND_PLACE, generation, stage="ir")
+    return generation
 
 
-@pytest.fixture(scope="module")
-def generated_dual_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Generate the dual-arm model once per module; consumers load their own fresh
-    graph from the immutable result and must not mutate the manifest on disk."""
-    tmp_path = tmp_path_factory.mktemp("dual_arm_pick_and_place")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("METAMODELS_PATH", str(METAMODELS))
-        metamodel = motion_spec_metamodel()
-        model = metamodel.model_from_file(example("dual_arm_pick_and_place") / "dual_arm_pick_and_place.robmot")
-        _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-    return tmp_path / "dual_arm_pick_and_place-app.ld.json"
-
-
-def test_dual_arm_physical_profiles_and_path_progress_reach_ir(generated_dual_model: Path) -> None:
-    graph = load_model(generated_dual_model).graph
+def test_dual_arm_physical_profiles_and_path_progress_reach_ir(tmp_path: Path) -> None:
+    model, fsm = load_model(DUAL_ARM, tmp_path)
+    graph = model.graph
     assert len(set(graph.subjects(QUDT_SCHEMA.hasQuantityKind, QKIND_EXT.LinearJerk))) == 1
     # Each arm follows its own path, so each gets its own projection and its own local frame.
     projections = set(graph.subjects(RDF.type, GEOM_OP_EXT.PathProjection))
@@ -80,7 +65,7 @@ def test_dual_arm_physical_profiles_and_path_progress_reach_ir(generated_dual_mo
     assert len(frames) == 2
     assert len({graph.value(node, GEOM_OP_EXT.tangent) for node in frames}) == 2
 
-    ir = generate_ir(generated_dual_model)
+    ir = generate_ir(model, fsm)
     profiles = [
         value
         for value in ir["computation"]["closures"].values()
@@ -111,51 +96,45 @@ def test_dual_arm_physical_profiles_and_path_progress_reach_ir(generated_dual_mo
     }
 
 
-def test_generation_keeps_scene_fsm_and_provenance_separate(generated_model: Path) -> None:
-    output = generated_model.parent
+def test_generation_keeps_scene_fsm_and_provenance_separate(generation: Path) -> None:
+    output = generation / "generated" / "model"
     assert (output / "pick_and_place.ld.json").exists()
     assert (output / "pick_and_place.scenex.ld.json").exists()
-    header = output / "pick_and_place.kdl.hpp"
-    assert header.exists()
-    assert "make_tree_" in header.read_text()
-    assert (output / "pick_and_place_fsm.ld.json").exists()
+    assert (output / "pick_and_place.fsm.ld.json").exists()
 
-    provenance = Graph().parse(output / "provenance" / "dsl.ld.json", format="json-ld")
-    prov = Namespace("http://www.w3.org/ns/prov#")
-    activity = URIRef(
-        "https://secorolab.github.io/motion-spec-dsl/provenance/"
-        "activity/jsonld_generation/pick_and_place"
+    dataset = provenance.read_generation_dataset(
+        generation / "generated" / provenance.GENERATION_DOCUMENT
     )
-    assert (activity, RDF.type, prov.Activity) in provenance
+    activity = provenance.generation_scope(generation)["activity/jsonld_generation/pick_and_place"]
+    prov = Namespace("http://www.w3.org/ns/prov#")
+    assert (activity, RDF.type, prov.Activity) in dataset.graph(provenance.GRAPH_DSL)
 
 
-def test_generation_documents_share_one_node_per_tool_and_per_file(generated_model: Path) -> None:
-    """dslprov names this document's own activities; everything shared is minted once, in the
-    space motion-spec already mints agents and run artefacts in."""
-    output = generated_model.parent
-    msprov = Namespace("https://secorolab.github.io/motion-spec/provenance/")
+def test_generation_documents_share_one_node_per_tool_and_per_file(generation: Path) -> None:
+    """Every tool is one agent per release, and every file one node, across the tool graphs."""
     prov_ext = Namespace("https://secorolab.github.io/metamodels/prov#")
     prov = Namespace("http://www.w3.org/ns/prov#")
-    dsl = Graph().parse(output / "provenance" / "dsl.ld.json", format="json-ld")
-    coord = Graph().parse(output / "provenance.ld.json", format="json-ld")
+    dataset = provenance.read_generation_dataset(
+        generation / "generated" / provenance.GENERATION_DOCUMENT
+    )
+    dsl = dataset.graph(provenance.GRAPH_DSL)
+    motion_spec = dataset.graph(provenance.GRAPH_MOTION_SPEC)
 
-    agents = set(dsl.subjects(RDF.type, prov.SoftwareAgent))
-    assert agents == {
-        msprov["agent/motion_spec_dsl"],
-        msprov["agent/coord_dsl"],
-        msprov["agent/scene_dsl"],
+    agents = set(dataset.subjects(RDF.type, prov.SoftwareAgent))
+    assert {str(dataset.value(agent, SDO.name)) for agent in agents} == {
+        "motion_spec_dsl",
+        "motion_spec",
+        "coord_dsl",
+        "scene-dsl",
     }
-    # The one tool both documents describe is one node, and so is the .fsm they both read.
-    assert msprov["agent/coord_dsl"] in set(coord.subjects(RDF.type, prov.SoftwareAgent))
-    assert msprov["entity/source/pick_and_place.fsm"] in set(coord.objects(None, prov.used))
-    assert msprov["entity/source/pick_and_place.fsm"] in set(dsl.objects(None, prov.used))
+    # The .fsm the DSL read and the one its FSM graph was built from are one node.
+    fsm = provenance.generation_scope(generation)["entity/generated/source/pick_and_place.fsm"]
+    assert fsm in set(dsl.objects(None, prov.used))
+    assert fsm in set(motion_spec.objects(None, prov.used))
 
     # Turning one model into another is what these activities do; the class says so in both.
     assert set(dsl.subjects(RDF.type, prov_ext.Transformation))
-    assert set(coord.subjects(RDF.type, prov_ext.Transformation))
-    assert not set(coord.predicates(None, None)) & {
-        URIRef("https://secorolab.github.io/coord-dsl/provenance/version")
-    }
+    assert set(motion_spec.subjects(RDF.type, prov_ext.Transformation))
 
 
 def test_non_pose_component_views_keep_their_subspace(
@@ -163,12 +142,8 @@ def test_non_pose_component_views_keep_their_subspace(
 ) -> None:
     """Wrench and twist axes retain their authored non-pose subspaces."""
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
-    metamodel = motion_spec_metamodel()
-    model = metamodel.model_from_file(
-        example("arc_tracing_with_admittance") / "arc_tracing_with_admittance.robmot"
-    )
-    _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-    graph = load_model(tmp_path / "arc_tracing_with_admittance-app.ld.json").graph
+    robmot = example("arc_tracing_with_admittance") / "arc_tracing_with_admittance.robmot"
+    graph = load_model(robmot, tmp_path)[0].graph
     wrench_views = set(graph.subjects(RDF.type, MAP_EXT.WrenchCoordinateView))
     twist_views = set(graph.subjects(RDF.type, MAP_EXT.VelocityTwistCoordinateView))
     assert wrench_views and twist_views
@@ -205,14 +180,15 @@ def test_monitor_publishes_to_ros_topic(monkeypatch: pytest.MonkeyPatch) -> None
     assert '"ros": "https://index.ros.org/p/"' in document
 
 
-def test_ir_derives_forwarded_commands_and_monitors(generated_model: Path) -> None:
-    ir = generate_ir(generated_model)
+def test_ir_derives_forwarded_commands_and_monitors(tmp_path: Path) -> None:
+    model, fsm = load_model(PICK_AND_PLACE, tmp_path)
+    ir = generate_ir(model, fsm)
     forwarded = [
         command for motion in ir["coordination"]["motions"] for command in motion.forwarded_commands
     ]
     assert len(forwarded) == 6
     assert all(command.target for command in forwarded)
-    graph = load_model(generated_model).graph
+    graph = model.graph
     # The progress guard is a lower bound on the measured speed along the path, so it names
     # the same path as the projection and never produces the parameter itself.
     (guard,) = [
@@ -275,8 +251,8 @@ def test_ir_derives_forwarded_commands_and_monitors(generated_model: Path) -> No
     )
 
 
-def test_generated_manifest_is_portable(generated_model: Path) -> None:
-    document = json.loads(generated_model.read_text())
-    text = json.dumps(document)
-    assert str(generated_model.parent) not in text
+def test_generated_manifest_is_portable(generation: Path) -> None:
+    manifest = generation / "generated" / "model" / "pick_and_place-app.ld.json"
+    text = json.dumps(json.loads(manifest.read_text()))
+    assert str(manifest.parent) not in text
     assert "https://secorolab.github.io/" in text

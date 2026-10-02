@@ -32,9 +32,7 @@ def _elapsed(id_: str) -> Quantity:
 
 
 def _model(g: Graph) -> Model:
-    return Model(
-        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+    return Model(graph=g, app_path=Path("model-app.ld.json"))
 
 
 def _instant(g: Graph, name: str) -> URIRef:

@@ -12,13 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.gens import _gen_graph
-from motion_spec_dsl.langs import motion_spec_metamodel
 
 from motion_spec.rdf_parser.ir import generate_ir
 
 from conftest import requires_workspace
-from support import example
+from support import example, load_model
 
 MODEL = Path(__file__).parent / "fixtures" / "shared_motion"
 SCENE = example("arc_tracing_with_admittance")
@@ -37,11 +35,7 @@ def shared_motion_ir(tmp_path_factory: pytest.TempPathFactory) -> dict:
     tmp_path = tmp_path_factory.mktemp("shared_motion")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("METAMODELS_PATH", str(METAMODELS))
-        metamodel = motion_spec_metamodel()
-        model = metamodel.model_from_file(MODEL / "shared_motion.robmot")
-        _gen_graph(metamodel, model, tmp_path, overwrite=True, debug=False)
-
-    return generate_ir(tmp_path / "shared_motion-app.ld.json")
+        return generate_ir(*load_model(MODEL / "shared_motion.robmot", tmp_path))
 
 
 def _shared_units(ir: dict) -> dict[str, list]:

@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 import rdflib
 from rdf_utils.models.vocab import URI_GEOM_PRED_X, URI_GEOM_TYPE_VECTOR_XYZ
-from rdflib.namespace import PROV
-from support import _source_tree
+from rdflib.namespace import PROV, SDO
+from support import _schema, _source_tree
 
-from motion_spec.introspection import runner
-from motion_spec.introspection.archive import verify_manifest
-from motion_spec.introspection.provenance import (
+from motion_spec.generation.artifacts import build_frame_log_header_record
+from motion_spec.runs import runner
+from motion_spec.runs.archive import verify_manifest
+from motion_spec.runs.provenance import (
+    CONTROLLER_PROCESS,
     EXECUTION_DOCUMENT,
     _slug,
     prov_uri,
@@ -23,8 +25,9 @@ from motion_spec.introspection.provenance import (
     rec_run_lifecycle_from_file,
     run_entity_uri,
 )
-from motion_spec.introspection.ros_video import real_camera_recordings
-from motion_spec.introspection.runner import run_cataloged
+from motion_spec.runs.ros_video import real_camera_recordings
+from motion_spec.runs.runner import run_cataloged
+from motion_spec.telemetry import frame_log_pb
 from rec import State, Verdict
 
 REC = rdflib.Namespace("https://secorolab.github.io/metamodels/rec#")
@@ -101,7 +104,7 @@ def test_runner_catalogs_run_from_start_and_archives_outputs(tmp_path: Path) -> 
     assert manifest["run_id"] == "run-001"
     # Archiving packs the log, so the manifest names it as it now is on disk.
     assert manifest["files"]["frame_log"] == "logs/frame_log.pb.zst"
-    assert manifest["files"]["log_producer_executable"] == "controller/executable/log-copy"
+    assert manifest["files"]["log_producer_executable"] == "../log-copy"
     assert "runtime_ttl" not in manifest["files"]
 
     assert manifest["files"]["rec"] == "run-001.ld.json"
@@ -134,12 +137,14 @@ def test_the_run_is_an_execution_of_the_executable_and_its_arguments(tmp_path: P
     execution = read_generation_dataset(run_dir / EXECUTION_DOCUMENT)
     run = rdflib.URIRef(prov_uri("run:run-006"))
     assert (run, rdflib.RDF.type, PROV_EXT.Execution) in rec_graph
-    assert (run, PROV.wasAssociatedWith, rdflib.URIRef(prov_uri("agent:motion_spec"))) in execution
-    # The controller process acts for the runtime the model named, and every modelled robot
+    associated = set(execution.objects(run, PROV.wasAssociatedWith))
+    assert "motion_spec" in {str(execution.value(agent, SDO.name)) for agent in associated}
+    # This run's controller process acts for the simulator it stepped, and every modelled robot
     # the generation declared is an agent of the run.
-    controller = rdflib.URIRef(prov_uri("agent:controller_process"))
-    runtime = rdflib.URIRef(prov_uri("agent:runtime_mujoco"))
-    assert (controller, PROV.actedOnBehalfOf, runtime) in execution
+    controller = rdflib.URIRef(CONTROLLER_PROCESS.format(run_id="run-006"))
+    assert controller in associated
+    runtime = execution.value(controller, PROV.actedOnBehalfOf)
+    assert str(execution.value(runtime, SDO.name)) == "mj-kdl-wrapper"
     assert (rdflib.URIRef(prov_uri("agent:modelled:arm1")), rdflib.RDF.type, AGN.ModelledAgent) in (
         execution
     )
@@ -183,17 +188,17 @@ def test_a_draw_is_a_generalization_of_the_quantity_it_sampled(tmp_path: Path) -
     quantity = "https://example.test/spec/start-pose"
 
     def sampling(*args, **kwargs):
+        # The runtime writes its draw as the record right after the header.
+        record = frame_log_pb.record_class()()
+        record.sampling.seed = 7
+        record.sampling.drawn_at_ns = 1_758_276_000_000_000_000
+        draw = record.sampling.draws.add()
+        draw.quantity = quantity
+        draw.values.extend([0.1, 0.2, 0.3])
         (run_dir / "logs").mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source / "frame_log.pb", run_dir / "logs" / "frame_log.pb")
-        (run_dir / "logs" / "sampling.json").write_text(
-            json.dumps(
-                {
-                    "seed": 7,
-                    "drawn_at": "2026-09-19T10:00:00.000000Z",
-                    "draws": {quantity: {"distribution": "d", "values": [0.1, 0.2, 0.3]}},
-                }
-            )
-        )
+        with (run_dir / "logs" / "frame_log.pb").open("wb") as fh:
+            frame_log_pb.write_delimited(fh, build_frame_log_header_record(_schema()))
+            frame_log_pb.write_delimited(fh, record.SerializeToString())
         return 0
 
     monkeypatch_run = pytest.MonkeyPatch()
@@ -243,7 +248,8 @@ def test_console_is_captured_and_mirrored(tmp_path: Path, capfd) -> None:
     assert "hello from the run" in console
     assert "boom" in console
     # The runtime's blocks are named for this run, so a second run beside it shares nothing.
-    schema_hash = json.loads((source / "frame_layout.json").read_text())["schema_hash"][:16]
+    layout = source / "contract" / "frame_layout.json"
+    schema_hash = json.loads(layout.read_text())["schema_hash"][:16]
     assert f"blocks: /motion_spec_{schema_hash}_run-003 /motion_spec_ctrl_{schema_hash}_run-003" in (
         console
     )

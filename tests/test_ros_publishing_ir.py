@@ -20,7 +20,7 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_POSE,
 )
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
-from rdflib import Graph, Literal, URIRef
+from rdflib import Dataset, Graph, Literal, URIRef
 from rdflib.namespace import RDF, RDFS, SOSA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
@@ -53,8 +53,9 @@ UNKNOWN = URIRef(f"{NS}some-other-constraint")
 
 
 def _model(graph: Graph) -> Model:
+    # Over the graph's own store, so what a test adds after this is in the model too.
     return Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+        graph=Dataset(store=graph.store, default_union=True), app_path=Path("model-app.ld.json")
     )
 
 
@@ -162,14 +163,14 @@ def test_a_rows_condition_gives_it_its_polarity():
     assert ros.on_violated == [
         {"path": "status", "cpp_value": "action_msgs::msg::GoalStatus::STATUS_ABORTED"}
     ]
-    assert (ros.has_satisfied, ros.has_violated) == (True, True)
+    assert (bool(ros.on_satisfied), bool(ros.on_violated)) == (True, True)
     assert ros.auto_time == ["goal_info.stamp"]
     assert ros.auto_context_id == []
 
 
 def test_a_satisfied_only_publish_leaves_the_violated_branch_empty():
     ros = _status((WATCHED, "status", "STATUS_SUCCEEDED"))
-    assert (ros.has_satisfied, ros.has_violated) == (True, False)
+    assert (bool(ros.on_satisfied), bool(ros.on_violated)) == (True, False)
     assert ros.on_violated == []
 
 
@@ -762,7 +763,7 @@ def test_an_occurrence_resolves_its_field_off_the_message_type():
     assert ros.occurrence_path == "data"
     assert ros.occurrence_events == [str(EVENT)]
     assert (ros.on_satisfied, ros.on_violated) == ([], [])
-    assert (ros.has_satisfied, ros.has_violated) == (False, False)
+    assert (bool(ros.on_satisfied), bool(ros.on_violated)) == (False, False)
     assert ros.auto_time == []
     assert ros.auto_context_id == []
 

@@ -22,9 +22,7 @@ def test_guarded_motion_without_a_name_raises() -> None:
     graph = Dataset(default_union=True)
     motion = URIRef(EX["motion"])
     graph.add((motion, RDF.type, MOT["GuardedMotion"]))
-    model = Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+    model = Model(graph=graph, app_path=Path("model-app.ld.json"))
 
     with pytest.raises(ConstraintViolation, match="schema:name"):
         guarded_motion(model, motion)

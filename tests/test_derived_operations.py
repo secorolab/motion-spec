@@ -60,9 +60,7 @@ def _u(name: str) -> URIRef:
 
 
 def _model(g: Graph) -> Model:
-    return Model(
-        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+    return Model(graph=g, app_path=Path("model-app.ld.json"))
 
 
 def _frame(g: Graph, name: str) -> URIRef:

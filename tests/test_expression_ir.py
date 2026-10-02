@@ -20,9 +20,7 @@ NS = "https://example.test/"
 
 
 def _model(g: Graph) -> Model:
-    return Model(
-        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+    return Model(graph=g, app_path=Path("model-app.ld.json"))
 
 
 def _quantity(g: Graph, name: str, value: float | None = None) -> URIRef:

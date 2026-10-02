@@ -15,9 +15,8 @@ from pathlib import Path
 
 import pytest
 from conftest import requires_workspace
-from motion_spec_dsl.gens import _gen_graph
 from motion_spec_dsl.langs import motion_spec_metamodel
-from support import DSL_MODELS, example
+from support import DSL_MODELS, example, load_authored
 
 from motion_spec.rdf_parser.ir import generate_ir
 
@@ -31,21 +30,15 @@ pytestmark = requires_workspace(MODELS, METAMODELS)
 # the orientation hold already owns -- hence dropping that hold as well, or the solve is rejected
 # for repeating an acceleration axis.
 WHILE_ORI = (
-    "        comply-ori: keeping <shared.world.pose-ee-base>.orientation equal to "
+    "        comply-ori:       keeping <shared.world.pose-ee-base>.orientation equal to "
     "<spec.hold-orientation>.orientation within <shared.spec.satisfied-band-rot>,\n"
 )
 CTRL_ORI = (
-    "        pid ctrl-comply-ori {\n"
-    "            constraint: <compliance.comply-ori>,\n"
-    "            measured-derivative: <shared.world.twist-ee-base>.angvel,\n"
-    "            output-saturation: saturation { max: <compliance.spec.comply-angular-accel-max> },\n"
-    "            Kp: 240,\n"
-    "            Ki: 0,\n"
-    "            Kd: 160,\n"
-    "            decay: 0\n"
-    "        },\n"
+    "        pid ctrl-compliance-comply-ori { constraint: <compliance.comply-ori>, "
+    "measured-derivative: <shared.world.twist-ee-base>.angvel, output-saturation: saturation "
+    "{ max: <compliance.spec.comply-angular-accel-max> }, Kp: 240, Ki: 0, Kd: 160, decay: 0 },\n"
 )
-ELBOW_CTRL = "        pid ctrl-comply-elbow {"
+ELBOW_CTRL = "        pid ctrl-compliance-hold-elbow-angle {"
 ROW_ALIGN = (
     "        pid ctrl-comply-align-forearm { constraint: <compliance.align-forearm>, "
     "measured-derivative: <shared.world.twist-ee-base>.angvel, "
@@ -69,13 +62,9 @@ def test_alignment_pid_declares_its_measured_derivative(
     monkeypatch.setenv("METAMODELS_PATH", str(METAMODELS))
     metamodel = motion_spec_metamodel()
     path, text = _model_driving_alignment_with_a_pid()
-    generated = tmp_path / "gen"
-    generated.mkdir()
     # Parsed as if it were the model's own file, so its imports resolve where the model's do.
-    model = metamodel.model_from_str(text, file_name=str(path))
-    _gen_graph(metamodel, model, generated, overwrite=True, debug=False)
-
-    ir = generate_ir(generated / "arc_tracing_with_admittance-app.ld.json")
+    authored = metamodel.model_from_str(text, file_name=str(path))
+    ir = generate_ir(*load_authored(authored, tmp_path / "gen"))
     declared = {item.id for item in ir["computation"]["shared_data"] if getattr(item, "id", None)}
 
     # One per controlled axis, and only those: the reference direction is the base's z, so the

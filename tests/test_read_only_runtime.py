@@ -6,7 +6,11 @@ from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
 from motion_spec.classes.motion import MotionSolverSlice, MotionUnit
-from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
+from motion_spec.classes.solvers import (
+    CartesianAccelerationDriven,
+    MotionDrivers,
+    SolverWithInputAndOutput,
+)
 from motion_spec.rdf_parser.resources import annotate_runtime
 
 
@@ -18,12 +22,17 @@ def solver(sid, chain_end, driven):
                 id=f"{sid}_drivers",
                 acceleration_constraint=["c"] if driven else [],
                 cartesian_force=[],
+                handler="handler",
             )
         ],
         output=[],
-        chain=ChainBinding(root="base", end=chain_end, tip="", tree="", name="", joints=[]),
+        chain=ChainBinding(
+            root="base", end=chain_end, tip="", tree="", namespace="", name="", joints=[]
+        ),
         hardware=HardwareBinding(urdf="arm.urdf", model="arm", tool_body="", tcp_frame=""),
         runtime=RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
+        # A dynamics family is what torque-streams a runtime; without one it is only read.
+        algorithm=CartesianAccelerationDriven if driven else None,
     )
 
 
@@ -59,7 +68,7 @@ def test_read_only_on_commanded_runtime_is_rejected() -> None:
         motion("m1", [slice_("a", read_only=False)]),
         motion("m2", [slice_("b", read_only=True)]),
     ]
-    with pytest.raises(ConstraintViolation, match="torque-commanded"):
+    with pytest.raises(ConstraintViolation, match="drives it with torque"):
         annotate_runtime(chain, motions, "mj_kdl")
 
 

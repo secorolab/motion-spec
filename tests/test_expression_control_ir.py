@@ -36,9 +36,7 @@ NS = "https://example.test/"
 
 
 def _model(graph: Graph) -> Model:
-    return Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+    return Model(graph=graph, app_path=Path("model-app.ld.json"))
 
 
 def _scene(graph: Graph) -> URIRef:

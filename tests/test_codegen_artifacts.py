@@ -13,7 +13,7 @@ from motion_spec.setup import find_stst
 from rdf_utils.namespace import NS_MM_PROV_EXT as PROV_EXT
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import Dataset, Graph, URIRef
-from rdflib.namespace import PROV, RDF
+from rdflib.namespace import PROV, RDF, SDO
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.geometry import Axis, Frame, Point, Subspace, View, Wrench
@@ -22,15 +22,13 @@ from motion_spec.classes.motion import BlackboardValue, ComponentRef, PoseCompon
 from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 from motion_spec.generation import codegen
 from motion_spec.generation.artifacts import (
-    PROTO_FIELD_BASES,
     build_frame_layout,
-    build_frame_log_proto_fields,
-    build_introspection_model,
     build_schema,
+    build_telemetry_model,
     fields_with_offsets,
 )
-from motion_spec.introspection import provenance
-from motion_spec.introspection.provenance import build_derivation_document
+from motion_spec.runs import provenance
+from motion_spec.runs.provenance import build_derivation_document
 from motion_spec.rdf_parser import communication, constraint_handler, quantities
 from motion_spec.rdf_parser.model import Model
 from rdf_utils.constraints import ConstraintViolation
@@ -57,7 +55,9 @@ def _model(**authored: str) -> Model:
     for uri in authored.values():
         graph.add((URIRef(uri), RDF.type, PROV.Entity))
     return Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+        graph=graph,
+        app_path=Path("model-app.ld.json"),
+        namespaces=tuple({uri.rsplit("/", 1)[0] + "/" for uri in authored.values()}),
     )
 
 
@@ -117,7 +117,7 @@ def _sample_ir() -> dict:
             ]
         },
         "communication": {
-            "introspection": {
+            "telemetry": {
                 "control_period_ns": 2_000_000,
                 "uris": [
                     {"id": "move", "uri": "https://example.test/move"},
@@ -220,8 +220,6 @@ def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
     layout = build_frame_layout(schema)
     fields, size = fields_with_offsets(schema["pools"])
 
-    assert schema["schema_version"] == 1
-    assert schema["runtime_rdf_contract_version"] == 1
     # The contract describes the program, never the run: no agent or activity travels in it.
     assert "runtime_provenance" not in schema and "runtime_provenance" not in layout
     assert schema["fsm"]["states"][1]["motion"] == "move"
@@ -231,66 +229,6 @@ def test_schema_and_frame_layout_are_consistent(tmp_path: Path) -> None:
     assert layout["fields"] == fields
     assert layout["frame_size_bytes"] == size
     assert layout["pools"] == schema["pools"]
-    # The wire field mapping is folded into the schema before hashing.
-    assert schema["protobuf"]["runtime_frame"] == "RuntimeFrame"
-    assert schema["protobuf"]["fields"]["constraints"][0] == {
-        "index": 0,
-        "id": "constraint_0",
-        "name": "constraint_0",
-        "number": 1000,
-    }
-
-
-def test_frame_log_proto_field_naming_and_numbering() -> None:
-    schema = {
-        "pools": {"constraints": 2, "monitors": 1, "quantities": 4, "triggers": 3},
-        "quantities": [
-            {"index": 0, "id": "direction_ctrl_cg_support_z.x"},  # dots -> underscores
-            {"index": 1, "id": "home_pose"},
-            {"index": 2, "id": "home.pose"},  # sanitizes to a duplicate -> suffixed
-            {"index": 3, "id": "3dof"},  # leading digit -> field_ prefix
-        ],
-        "spatial": {
-            "poses": [{"index": 0, "id": "pose_ee_base"}],
-            "twists": [],
-            "wrenches": [{"index": 0, "id": "wrench force"}],
-        },
-    }
-    proto = build_frame_log_proto_fields(schema)
-    fields = proto["fields"]
-
-    quantity_names = {q["id"]: q["name"] for q in fields["quantities"]}
-    assert quantity_names["direction_ctrl_cg_support_z.x"] == "direction_ctrl_cg_support_z_x"
-    assert quantity_names["home_pose"] == "home_pose"
-    assert quantity_names["home.pose"] == "home_pose_2"  # deterministic de-dup suffix
-    assert quantity_names["3dof"] == "field_3dof"  # numeric-leading gets field_ prefix
-
-    # Constraint/monitor/trigger slots are reused per state -> slot-stable names, never model ids.
-    assert [c["name"] for c in fields["constraints"]] == ["constraint_0", "constraint_1"]
-    assert [m["name"] for m in fields["monitors"]] == ["monitor_0"]
-    assert [t["name"] for t in fields["triggers"]] == ["trigger_0", "trigger_1", "trigger_2"]
-
-    # Every field number sits in its category's range, and all numbers/names are unique.
-    for category, base in PROTO_FIELD_BASES.items():
-        for entry in fields.get(category, []):
-            assert entry["number"] == base + entry["index"]
-    all_numbers = [e["number"] for cat in fields.values() for e in cat]
-    all_names = [e["name"] for cat in fields.values() for e in cat]
-    assert len(all_numbers) == len(set(all_numbers))
-    assert len(all_names) == len(set(all_names))
-
-
-def test_frame_log_proto_fields_advance_past_large_categories() -> None:
-    schema = {
-        "pools": {"constraints": 0, "monitors": 0, "quantities": 1001, "triggers": 1},
-        "quantities": [{"index": index, "id": f"q_{index}"} for index in range(1001)],
-        "spatial": {"poses": [], "twists": [], "wrenches": []},
-    }
-
-    fields = build_frame_log_proto_fields(schema)["fields"]
-
-    assert fields["quantities"][-1]["number"] == 4000
-    assert fields["triggers"][0]["number"] == 4001
 
 
 def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch) -> None:
@@ -329,6 +267,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     }
     shared_data = [
         BlackboardValue(id="err_x", type="Quantity"),
+        BlackboardValue(id="out_x", type="Quantity"),
         BlackboardValue(id="pose_ee", type="Pose"),
         BlackboardValue(id="twist_ee", type="VelocityTwist"),
         BlackboardValue(id="wrench_ee", type="Wrench"),
@@ -341,8 +280,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     ]
     ir["computation"].update({"closures": closures, "views": views})
 
-    introspection = ir["communication"]["introspection"]
-    introspection["quantities"].extend(
+    telemetry = ir["communication"]["telemetry"]
+    telemetry["quantities"].extend(
         [
             {"id": "pose_ee", "type": "Pose", "reference_frame": "world"},
             {"id": "twist_ee", "type": "VelocityTwist", "reference_frame": "base"},
@@ -352,8 +291,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         ]
     )
 
-    # Run the introspection-piece derivations the way `build_introspection` now does (this
-    # synthetic ir is assembled by hand, so drive the pieces directly).
+    # Run the telemetry-piece derivations the way `build_telemetry` does (this synthetic ir is
+    # assembled by hand, so drive the pieces directly).
     ctrl_x = PIDController(
         id="ctrl_x",
         control_signal=_quantity("out_x"),
@@ -363,8 +302,9 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
         derivative_gain=0.1,
     )
     constraint_handler.annotate_controller_signals([ctrl_x], closures)
+    telemetry["controllers"] = [communication._controller_rows(ctrl_x, "move", {})[0]]
     model = _model(ctrl_x="https://example.org/model/ctrl_x")
-    rows = introspection["quantities"]
+    rows = telemetry["quantities"]
     seen = {
         "shared": {item.id for item in shared_data if item.id},
         "rows": {row["id"] for row in rows if row.get("id")},
@@ -372,8 +312,8 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     communication._add_controller_state(
         model, closures, shared_data, rows, seen, [SimpleNamespace(controllers=[ctrl_x])]
     )
-    communication.add_quantity_samples(introspection, shared_data, views)
-    communication.add_spatial_samples(introspection, shared_data)
+    communication.add_quantity_samples(telemetry, shared_data, views)
+    communication.add_spatial_samples(telemetry, shared_data)
 
     # Cross the derivation-stage records into the plain-dict shape the published IR carries.
     ir["computation"]["shared_data"] = json.loads(json.dumps(shared_data, cls=DataclassJSONEncoder))
@@ -383,10 +323,16 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
 
     ir_path = tmp_path / "ir.json"
     ir_path.write_text(json.dumps(ir, cls=DataclassJSONEncoder))
-    monkeypatch.setattr(codegen, "render_template", lambda *args, **kwargs: None)
-    monkeypatch.setattr(codegen, "compile_frame_log_proto", lambda *args, **kwargs: None)
+    # The stst payload lives in a scratch directory only while generation runs.
+    payloads = {}
 
-    codegen.generate_code(ir_path, tmp_path, "stst")
+    def render(_stst, _template, payload_path, output_path, *_args, **_kwargs):
+        payloads.setdefault(Path(payload_path).name, json.loads(Path(payload_path).read_text()))
+        return output_path
+
+    monkeypatch.setattr(codegen, "render_template", render)
+
+    codegen.generate_code(ir_path, tmp_path, tmp_path / "contract", "stst", _sample_fsm())
 
     # schema.json is not an artifact any more -- the contract lives in the log header.
     schema = build_schema(
@@ -423,16 +369,17 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert quantities_by_id["ctrl_x_first_sample"]["source_type"] == "Bool"
     assert schema["pools"]["quantities"] == len(schema["quantities"])
 
-    payload = json.loads((tmp_path / ".stst" / "ir.json").read_text())
+    payload = payloads["ir.json"]
     assert not [
         sample
-        for sample in payload["communication"]["introspection_artifacts"]["model"]["quantities"]
+        for sample in payload["communication"]["telemetry_artifacts"]["model"]["quantities"]
         if sample["desc"].get("kind") in {"pose_pos", "pose_orient"}
     ]
     controller = next(
         controller
-        for case in payload["communication"]["introspection_artifacts"]["model"]["motions"]
-        for controller in case["controllers"]
+        for case in payload["communication"]["telemetry_artifacts"]["model"]["motions"]
+        # Empty lists reach StringTemplate as null.
+        for controller in case["controllers"] or ()
         if controller["error_signal"] == "err_x"
     )
     # Every signal reaches the template as an abstract id; the C++ access is rendered there
@@ -441,7 +388,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
     assert controller["setpoint_signal"] == "setpoint_x"
     monitors = [
         monitor
-        for case in build_introspection_model(schema, ir)["motions"]
+        for case in build_telemetry_model(schema, ir)["motions"]
         for monitor in case["monitors"]
         if not monitor["has_active"]
     ]
@@ -451,7 +398,7 @@ def test_codegen_samples_logged_quantity_components(tmp_path: Path, monkeypatch)
 
     # Spatial samples: one pose/twist/wrench per data object, serialized into the frame
     # record's pose/twist/wrench fields.
-    model_payload = payload["communication"]["introspection_artifacts"]["model"]
+    model_payload = payload["communication"]["telemetry_artifacts"]["model"]
     assert (schema["pools"]["poses"], schema["pools"]["twists"], schema["pools"]["wrenches"]) == (
         1,
         1,
@@ -468,7 +415,7 @@ def test_codegen_refuses_a_model_that_declares_no_fsm(tmp_path: Path) -> None:
     ir_path.write_text(json.dumps(_sample_ir(), cls=DataclassJSONEncoder))
 
     with pytest.raises(RuntimeError, match="declares no FSM"):
-        codegen.generate_code(ir_path, tmp_path, "stst")
+        codegen.generate_code(ir_path, tmp_path, tmp_path / "contract", "stst", None)
 
 
 def _generation_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -486,7 +433,16 @@ def _generation_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     executable.parent.mkdir()
     executable.write_text("binary")
     now = datetime.now(UTC)
-    provenance.record_code_generation(generated, ir_path, written, started=now, ended=now)
+    graph = Graph()
+    provenance.record_code_generation(graph, generated, ir_path, written, started=now, ended=now)
+    provenance.write_generation_document(
+        generated / provenance.GENERATION_DOCUMENT,
+        {
+            provenance.GRAPH_DSL: Graph(),
+            provenance.GRAPH_COORD_DSL: Graph(),
+            provenance.GRAPH_MOTION_SPEC: graph,
+        },
+    )
     provenance.record_build(generated, controller, executable, started=now, ended=now)
     return generated, controller, executable
 
@@ -517,15 +473,16 @@ def test_the_build_transforms_the_generated_sources_into_the_executable(tmp_path
     generated, controller, executable = _generation_tree(tmp_path)
     dataset = provenance.read_generation_dataset(generated / provenance.GENERATION_DOCUMENT)
     graph = dataset.graph(provenance.GRAPH_MOTION_SPEC)
-    build = provenance.uri("activity:build")
+    scope = provenance.generation_scope(tmp_path)
+    build = scope["activity/build"]
     assert (build, RDF.type, PROV_EXT.Transformation) in graph
-    assert (build, PROV.wasAssociatedWith, provenance.uri("agent:cmake")) in graph
+    assert str(graph.value(graph.value(build, PROV.wasAssociatedWith), SDO.name)) == "cmake"
     # Every source it used is one code generation declared, and only those.
     assert set(graph.objects(build, PROV.used)) == {
-        provenance.uri(f"entity:generated_{name}")
+        scope[f"entity/generated/controller/{name}"]
         for name in ("CMakeLists.txt", "main.cpp", "headers/r.hpp")
     }
-    binary = provenance.uri("entity:controller_executable")
+    binary = scope["entity/build/main"]
     assert (binary, PROV.wasGeneratedBy, build) in graph
     assert graph.value(binary, PROV.atLocation) == URIRef(executable.resolve().as_uri())
     assert graph.value(binary, PROV.generatedAtTime) is not None
@@ -596,14 +553,14 @@ def test_repeated_identical_registration_is_a_no_op():
 
 
 def test_totality_assertion_lists_every_unresolved_id():
-    introspection = {
+    telemetry = {
         "uris": [{"id": "ctrl_x", "uri": "https://example.org/m/ctrl-x"}],
         "controllers": [{"id": "ctrl_x"}, {"id": "ctrl_y"}],
         "quantities": [{"id": "q_missing"}],
         "dataflow": {"member_a": {"producer": {"kind": "closure", "id": "producer_missing"}}},
     }
     with pytest.raises(RuntimeError) as excinfo:
-        communication._check_every_id_resolves(introspection)
+        communication._check_every_id_resolves(telemetry)
     message = str(excinfo.value)
     # Every gap in one build, not just the first.
     for missing in ("ctrl_y", "q_missing", "member_a", "producer_missing"):
@@ -612,17 +569,17 @@ def test_totality_assertion_lists_every_unresolved_id():
 
 
 def test_a_row_carrying_its_own_uri_needs_no_table_entry():
-    introspection = {
+    telemetry = {
         "uris": [],
         "quantities": [{"id": "q_a", "uri": "https://example.org/m/q-a"}],
         "signals": [
             {"id": "ctrl_x.error_signal", "quantity": "q_a", "uri": "https://example.org/m/q-a"}
         ],
     }
-    communication._check_every_id_resolves(introspection)
+    communication._check_every_id_resolves(telemetry)
 
 
-def test_derivation_document_links_each_node_to_its_parent():
+def test_derivation_document_links_each_node_to_its_parent(tmp_path: Path):
     model = _model(ctrl_x="https://example.org/m/ctrl-x")
     model.register_derived(
         "ctrl_x_lin_x", "https://example.org/m/ctrl-x", "lin_x", PROV.specializationOf
@@ -633,9 +590,12 @@ def test_derivation_document_links_each_node_to_its_parent():
         "error_integral",
         PROV.wasDerivedFrom,
     )
-    document = build_derivation_document(
-        {"communication": {"introspection": {"derivations": model.derivation_nodes()}}}
-    )
+    # Only the ids the IR uses outside its own tables are declared.
+    ir = {
+        "communication": {"telemetry": {"derivations": model.derivation_nodes()}},
+        "coordination": {"uses": ["ctrl_x_lin_x", "ctrl_x_error_integral"]},
+    }
+    document = build_derivation_document(ir, Graph(), [], tmp_path / "generated")
     graph = Graph().parse(data=json.dumps(document), format="json-ld")
     prov = "http://www.w3.org/ns/prov#"
     links = {

@@ -40,6 +40,7 @@ def _chain() -> ChainBinding:
         end="tip",
         tip="tip",
         tree="tree",
+        namespace="scene",
         name="chain",
         joints=[],
         frames={
@@ -106,7 +107,7 @@ def test_which_reads_move_to_the_world_model_is_decided_once() -> None:
     twist = _spatial(VelocityTwist, of=None, with_respect_to=None)
     assert _placed_on_chain(twist) == (("of", True), ("as_seen_by", True))
     # f_ext is indexed chain-relative; the frame that segment stands at is a world read.
-    force = CartesianForceSpecification("f", force=None, attached_to=None)
+    force = CartesianForceSpecification("f", force=None, attached_to=None, controller="ctrl")
     assert _placed_on_chain(force) == (("attached_to", False), ("attached_to", True))
     constraint = AccelerationConstraint("c", subspace=Subspace.Linear, axis=None)
     assert _placed_on_chain(constraint) == (("as_seen_by", True),)
@@ -127,6 +128,7 @@ def _solver(prefix: str, joint_forces=()) -> SolverWithInputAndOutput:
                 id="drivers",
                 acceleration_constraint=[],
                 cartesian_force=[],
+                handler="handler",
                 joint_force=list(joint_forces),
             )
         ],
@@ -136,6 +138,7 @@ def _solver(prefix: str, joint_forces=()) -> SolverWithInputAndOutput:
             end="tip",
             tip="tip",
             tree="tree",
+            namespace="scene",
             name="chain",
             joints=["joint_1", "joint_2", "joint_3"],
         ),

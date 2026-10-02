@@ -3,35 +3,16 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
-import pytest
-
-from motion_spec.generation.artifacts import (
-    build_frame_log_header_record,
-    build_frame_log_proto_fields,
-    field_names_and_format,
-)
-from motion_spec.generation.codegen import render_template
-from motion_spec.introspection import frame_log_pb
+from motion_spec.generation.artifacts import build_frame_log_header_record, field_names_and_format
+from motion_spec.telemetry import frame_log_pb
 
 
 def write_frame_log_proto(path: Path, schema: dict) -> None:
-    """Render the semantic ``frame_log.proto`` for a fixture through the real codegen template,
-    so archive fixtures exercise the same StringTemplate render production uses (not a copy)."""
-    if shutil.which("stst") is None:
-        pytest.skip("requires stst to render frame_log.proto")
-    protobuf = schema.get("protobuf") or build_frame_log_proto_fields(schema)
-    payload = path.parent / ".frame_log_proto_payload.json"
-    payload.write_text(
-        json.dumps(
-            {"communication": {"introspection_artifacts": {"frame_layout": {"protobuf": protobuf}}}}
-        )
-    )
-    render_template("stst", "frame_log_proto", payload, path)
-    payload.unlink()
+    """The shipped ``frame_log.proto``, as codegen copies it into a generation's contract."""
+    shutil.copyfile(frame_log_pb.PROTO, path)
 
 
 def flat_frame(schema: dict, **values) -> dict:

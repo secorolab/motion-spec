@@ -11,12 +11,12 @@ import pytest
 import rdflib
 from support import _source_tree, _start_run
 
-from motion_spec.introspection.archive import (
+from motion_spec.runs.archive import (
     ArchiveError,
     create_archive_manifest,
     verify_manifest,
 )
-from motion_spec.introspection.provenance import (
+from motion_spec.runs.provenance import (
     prov_uri,
     rec_document,
     rec_run_lifecycle_from_file,
@@ -34,7 +34,11 @@ def _archive(tmp_path: Path) -> Path:
     run_dir = tmp_path / RUN_ID
     _start_run(run_dir, source, executable, RUN_ID)
     create_archive_manifest(
-        run_dir, source_dir=source, run_id=RUN_ID, log_producer_executable=executable
+        run_dir,
+        source_dir=source,
+        run_id=RUN_ID,
+        frame_log=source / "frame_log.pb",
+        log_producer_executable=executable,
     )
     return run_dir
 

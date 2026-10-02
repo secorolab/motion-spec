@@ -20,6 +20,7 @@ def fsm(states, transitions, reactions, events=("E_STEP", "E_HELD")):
         "states": states,
         "state_uris": {state: f"{NS}{state}" for state in states},
         "events": list(events),
+        "event_uris": {event: f"{NS}{event}" for event in events},
         "transitions_table": [
             {"id": tid, "uri": f"{NS}{tid}", "from_state": source, "to_state": target}
             for tid, source, target in transitions

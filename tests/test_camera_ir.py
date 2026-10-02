@@ -9,19 +9,18 @@ publisher for a camera the compiled scene cannot render.
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 from conftest import requires_workspace
-from support import DSL_MODELS, example
+from support import DSL_MODELS, example, load_model
 from textx.exceptions import TextXSemanticError
 
 from motion_spec.rdf_parser.ir import generate_ir
 
 MODELS = DSL_MODELS
 SUBSCRIPTION = """        wrist-view: topic "/wrist/color" message "sensor_msgs/msg/Image" {
-            observes { <pick_place_scene_mjc.wrist> }
+            observes { <pick_and_place_scene_mjc.wrist> }
         },
 """
 
@@ -33,13 +32,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def _cameras(name, tmp_path, model_dir=None):
     """`composition.scene.cameras` for a model, lowered through the real IR pipeline."""
-    outdir = tmp_path / "generated" / "model"
-    subprocess.run(
-        ["textx", "generate", f"{name}.robmot", "--target", "jsonld", "-o", str(outdir)],
-        cwd=model_dir or example(name),
-        check=True,
-    )
-    return generate_ir(outdir / f"{name}-app.ld.json")["composition"]["scene"].cameras
+    robmot = (model_dir or example(name)) / f"{name}.robmot"
+    model, fsm = load_model(robmot, tmp_path / "generated" / "model")
+    return generate_ir(model, fsm)["composition"]["scene"].cameras
 
 
 def test_declared_camera_lowers_with_its_authored_render_settings(tmp_path):
@@ -104,8 +99,8 @@ def test_a_camera_subscription_stating_a_pose_path_is_rejected():
     """An image holds no pose, so the clause that says where a pose sits has nothing to point
     at -- and the grammar tells the two kinds of channel apart by exactly that clause."""
     source = _fixture_source().replace(
-        "            observes { <pick_place_scene_mjc.wrist> }\n",
-        "            observes { <pick_place_scene_mjc.wrist> }\n            pose from results\n",
+        "            observes { <pick_and_place_scene_mjc.wrist> }\n",
+        "            observes { <pick_and_place_scene_mjc.wrist> }\n            pose from results\n",
         1,
     )
     # The clause sends it down the pose alternative, where a camera is not a world quantity.

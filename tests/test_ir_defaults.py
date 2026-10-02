@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,7 +29,7 @@ from rdf_utils.models.vocab import URI_KC_TYPE_SERIAL
 from rdf_utils.namespace import NS_MM_GEOM, NS_MM_KC_EXT
 from rdflib import Dataset, Literal, URIRef
 from rdflib.namespace import RDF, XSD, Namespace
-from support import example
+from support import example, load_model
 
 from motion_spec.classes.handlers import PIDController
 from motion_spec.classes.motion import MotionUnit
@@ -50,9 +49,7 @@ from motion_spec.rdf_parser.quantities import LINEAR_AXES
 
 
 def _model(graph: Dataset) -> Model:
-    return Model(
-        graph=graph, app_path=Path("/tmp/app.json"), imported_models=[], imported_provenance=[]
-    )
+    return Model(graph=graph, app_path=Path("/tmp/app.json"))
 
 
 def test_chain_attachments_follow_root_to_tip_order() -> None:
@@ -149,56 +146,42 @@ def _quantity(graph: Dataset, name: str) -> URIRef:
     return node
 
 
-def test_parser_scopes_repeated_nested_reference_ids() -> None:
+def test_an_id_is_the_iri_below_the_namespace_that_declares_it() -> None:
     graph = Dataset(default_union=True)
-    graph.bind("example", "https://example.test/")
+    graph.bind("scene", "https://example.test/scene/")
     first = URIRef("https://example.test/motion/spec/path1/reference")
     second = URIRef("https://example.test/motion/spec/path2/reference")
-    graph.add((first, RDF.type, RDF.Property))
-    graph.add((second, RDF.type, RDF.Property))
+    home_position = URIRef("https://example.test/motion/handler-home/hold-position")
+    hold_position = URIRef("https://example.test/motion/handler-hold/hold-position")
+    joint = URIRef("https://example.test/scene/joint-1")
+    for node in (first, second, home_position, hold_position, joint):
+        graph.add((node, RDF.type, RDF.Property))
 
-    model = _model(graph)
+    model = Model(
+        graph=graph,
+        app_path=Path("/tmp/app.json"),
+        namespaces=("https://example.test/", "https://example.test/motion/"),
+    )
 
-    assert model.id(first) == "motion_path1_reference"
-    assert model.id(second) == "motion_path2_reference"
-
-
-def test_parser_scopes_names_two_handlers_share() -> None:
-    graph = Dataset(default_union=True)
-    graph.bind("example", "https://example.test/")
-    home = URIRef("https://example.test/handler-home")
-    hold = URIRef("https://example.test/handler-hold")
-    home_position = URIRef("https://example.test/handler-home/hold-position")
-    hold_position = URIRef("https://example.test/handler-hold/hold-position")
-    home_limit = URIRef("https://example.test/handler-home/sat-output-hold-position")
-    hold_limit = URIRef("https://example.test/handler-hold/sat-output-hold-position")
-    # A node the model hangs under the controller rather than beside it, one level deeper.
-    home_profile = URIRef(f"{home_position}/profile-tangent-hold-position")
-    hold_profile = URIRef(f"{hold_position}/profile-tangent-hold-position")
-    aliased = URIRef("https://example.test/handler-home/turn")
-    for handler in (home, hold):
-        graph.add((handler, RDF.type, CSTR_HDL.ConstraintHandler))
-    for handler, controller in ((home, home_position), (hold, hold_position), (hold, aliased)):
-        graph.add((handler, CSTR_HDL.controllers, controller))
-        graph.add((controller, RDF.type, CSTR_HDL.Controller))
-    for node in (home_limit, hold_limit):
-        graph.add((node, RDF.type, ALGO_EXT.Saturation))
-    for node in (home_profile, hold_profile):
-        graph.add((node, RDF.type, ALGO_EXT.VelocityProfile))
-
-    model = _model(graph)
-
+    # The longest declaring namespace wins, so the scope a name is written in stays in it.
+    assert model.id(first) == "spec_path1_reference"
+    assert model.id(second) == "spec_path2_reference"
     assert model.id(home_position) == "handler_home_hold_position"
     assert model.id(hold_position) == "handler_hold_hold_position"
-    # The nodes a handler owns beside a controller carry its name and split the same way.
-    assert model.id(home_limit) == "handler_home_sat_output_hold_position"
-    assert model.id(hold_limit) == "handler_hold_sat_output_hold_position"
-    # Anywhere below the handler is handler-scoped, not just directly under it: a node under
-    # the controller took the controller's name, so it splits with it.
-    assert model.id(home_profile) == "handler_home_profile_tangent_hold_position"
-    assert model.id(hold_profile) == "handler_hold_profile_tangent_hold_position"
-    # One controller a second handler lists is an alias, not a second controller: one id.
-    assert model.id(aliased) == "turn"
+    # A node no declared namespace owns keeps its own local name.
+    assert Model(graph=graph, app_path=Path("/tmp/app.json")).id(joint) == "joint_1"
+
+
+def test_two_of_the_models_own_nodes_folding_onto_one_id_are_rejected() -> None:
+    from rdf_utils.constraints import ConstraintViolation
+
+    graph = Dataset(default_union=True)
+    model = Model(
+        graph=graph, app_path=Path("/tmp/app.json"), namespaces=("https://example.test/",)
+    )
+    model.id(URIRef("https://example.test/hold-position"))
+    with pytest.raises(ConstraintViolation, match="both name the id 'hold_position'"):
+        model.id(URIRef("https://example.test/hold_position"))
 
 
 def _pid_graph(*, kp: float | None = 1.0) -> tuple[Dataset, URIRef]:
@@ -264,16 +247,26 @@ def test_agent_model_may_bind_the_assembled_kinematic_tree() -> None:
 
 
 def _serial_chain(name: str):
-    return SimpleNamespace(id=name, kind="serial_chain", devices=[], sensors=[], world_output=[])
+    return SimpleNamespace(
+        id=name,
+        kind="serial_chain",
+        devices=[],
+        sensors=[],
+        world_output=[],
+        runtime=SimpleNamespace(owner_id=name),
+    )
+
+
+_SCENE = {"namespace": "scene", "header": "scene.kdl.hpp"}
 
 
 @pytest.mark.parametrize(
     "trees",
     [
-        [{"name": "world_tree", "cpp_name": "world_tree"}],
+        [{"name": "world_tree", "cpp_name": "world_tree", **_SCENE}],
         [
-            {"name": "world_tree", "cpp_name": "world_tree"},
-            {"name": "ft_tree", "cpp_name": "ft_tree"},
+            {"name": "world_tree", "cpp_name": "world_tree", **_SCENE},
+            {"name": "ft_tree", "cpp_name": "ft_tree", **_SCENE},
         ],
     ],
 )
@@ -283,12 +276,10 @@ def test_the_world_model_holds_every_distinct_tree_once_however_many_robots(tree
     robots = resources.Robots([_serial_chain("arm1"), _serial_chain("arm2")], [], [], [])
     section = _resources_section(robots, trees, [], [], {})
 
-    assert section["world_trees"] == [
-        {"name": tree["name"], "cpp_name": tree["cpp_name"], "sampled_frames": []} for tree in trees
-    ]
+    assert section["world_trees"] == [{**tree, "sampled_frames": []} for tree in trees]
 
 
-def test_introspection_contract_carries_control_and_provenance() -> None:
+def test_telemetry_contract_carries_control_and_provenance() -> None:
     graph, controller_node = _pid_graph(kp=2.0)
     graph.add((controller_node, CSTR_HDL["integral-gain"], Literal(0.1, datatype=XSD.double)))
     graph.add((controller_node, CSTR_HDL["derivative-gain"], Literal(0.3, datatype=XSD.double)))
@@ -307,10 +298,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     graph.add((URIRef("https://example.test/move"), RDF.type, MOT.GuardedMotion))
 
     model = Model(
-        graph=graph,
-        app_path=Path("/tmp/app.json"),
-        imported_models=["https://example.test/imported.json"],
-        imported_provenance=["/tmp/generated/provenance/dsl.ld.json"],
+        graph=graph, app_path=Path("/tmp/app.json"), namespaces=("https://example.test/",)
     )
     controller = PIDController(
         id=model.id(controller_node),
@@ -364,7 +352,7 @@ def test_introspection_contract_carries_control_and_provenance() -> None:
     robots = resources.Robots(
         serial_chains=[], platform_velocity=[], platform_force=[], schedule_steps=[]
     )
-    introspection = communication.build_introspection(
+    introspection = communication.build_telemetry(
         model, [motion], computation, [], robots, 2_000_000, "mj_kdl"
     )
 
@@ -403,6 +391,7 @@ def test_velocity_profile_operator_closure_exposes_codegen_fields() -> None:
     graph.add((constraint, CSTR["reference-value"], URIRef("https://example.test/reference")))
     # The value the profile starts from is the constraint's own quantity.
     graph.add((constraint, CSTR.quantity, URIRef("https://example.test/measured")))
+    graph.add((controller, RDF.type, CSTR_HDL.Controller))
     graph.add((controller, CSTR_HDL.constraint, constraint))
     graph.add((op, ALGO_EXT["shape"], ALGO_EXT["s-curve"]))
 
@@ -448,6 +437,7 @@ def test_path_velocity_profile_carries_geometry_and_profile_shape() -> None:
     controller = URIRef("https://example.test/controller")
     graph.add((constraint, CSTR["reference-value"], URIRef("https://example.test/reference")))
     graph.add((constraint, CSTR.quantity, URIRef("https://example.test/measured")))
+    graph.add((controller, RDF.type, CSTR_HDL.Controller))
     graph.add((controller, CSTR_HDL.constraint, constraint))
     graph.add((op, ALGO_EXT.shape, ALGO_EXT.trapezoidal))
 
@@ -528,7 +518,6 @@ def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
             controllers_by_handler={handler: (plan,)},
             controllers_by_solver={solver: (plan,)},
             algorithm_by_solver={solver: constraint_handler.solver_algorithm(model, solver)},
-            shared_constraints=frozenset(),
         )
         return (
             constraint_handler._derived_controllers(model, context, plan)[0].control_signal,
@@ -549,7 +538,7 @@ def test_rne_uses_acceleration_while_achd_uses_acceleration_energy() -> None:
     assert achd_drivers.acceleration_constraint[0].acceleration_energy == achd_signal
 
 
-def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
+def test_edge_monitor_carries_full_event_uri() -> None:
     graph = Dataset(default_union=True)
     monitor = URIRef("https://example.test/mon")
     event_uri = "http://example.org/coord/E_OBJ_REACHED"
@@ -561,8 +550,8 @@ def test_edge_monitor_carries_full_event_uri_and_enum_token() -> None:
     entry = coordination.monitor_entry(_model(graph), monitor)
 
     assert entry.event_uri == event_uri
-    # event_name is the coord-dsl FSM enum token (local name, upper-cased, '-' -> '_').
-    assert entry.event_name == "E_OBJ_REACHED"
+    # The enum token is the FSM's to name; coordination stamps it from coord-dsl's table later.
+    assert entry.event_name is None
 
 
 # --- real-world execution (plan 019) ---------------------------------------------------------
@@ -681,7 +670,7 @@ def _real_source(tmp_path, *devices: dict, config_poses: list | None = None) -> 
 
 
 def test_robot_config_must_cover_every_bound_device(tmp_path) -> None:
-    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+    from motion_spec.runs.runner import RunnerError, _validate_robot_config
 
     source = _real_source(
         tmp_path,
@@ -717,7 +706,7 @@ def test_robot_config_must_cover_every_bound_device(tmp_path) -> None:
 def test_a_pose_the_model_reads_binds_its_section(tmp_path) -> None:
     """`config_poses` refuses to generate a model whose pose section is absent, so the run must
     not refuse it for being present -- between them, no real-world model could run at all."""
-    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+    from motion_spec.runs.runner import RunnerError, _validate_robot_config
 
     source = _real_source(
         tmp_path,
@@ -753,7 +742,7 @@ def test_a_pose_the_model_reads_binds_its_section(tmp_path) -> None:
 def test_a_home_is_rejected_on_a_real_device(tmp_path) -> None:
     """`agent_home_positions` reads homes only for a simulated platform, so a home stated for a
     real run is a number the deployment believes in and nothing acts on."""
-    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+    from motion_spec.runs.runner import RunnerError, _validate_robot_config
 
     source = _real_source(
         tmp_path, {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""}
@@ -773,7 +762,7 @@ def test_a_home_is_rejected_on_a_real_device(tmp_path) -> None:
 def test_the_authored_device_decides_which_sections_the_config_needs(tmp_path) -> None:
     """The gripper's route is authored, not inferred: one section under the arm's device, two
     under separate ones. A section the run cannot reach is as wrong as a missing one."""
-    from motion_spec.introspection.runner import RunnerError, _validate_robot_config
+    from motion_spec.runs.runner import RunnerError, _validate_robot_config
 
     ft = {"kind": "RobotiqFT300s", "config_key": "arm1.wrist_ft", "drives": "wrist_ft"}
     config = tmp_path / "robot.toml"
@@ -800,7 +789,7 @@ def test_the_authored_device_decides_which_sections_the_config_needs(tmp_path) -
 
 
 def test_a_simulated_run_needs_no_robot_config(tmp_path) -> None:
-    from motion_spec.introspection.runner import _validate_robot_config
+    from motion_spec.runs.runner import _validate_robot_config
 
     source = tmp_path / "generated"
     (source / "model").mkdir(parents=True)
@@ -860,12 +849,7 @@ def dual_ir(tmp_path_factory) -> dict:
     if not model.exists():
         pytest.skip("motion-spec-dsl is not in this checkout")
     outdir = tmp_path_factory.mktemp("dual_arm_pick_and_place") / "generated" / "model"
-    subprocess.run(
-        ["textx", "generate", "dual_arm_pick_and_place.robmot", "--target", "jsonld", "-o", str(outdir)],
-        cwd=model,
-        check=True,
-    )
-    return generate_ir(outdir / "dual_arm_pick_and_place-app.ld.json")
+    return generate_ir(*load_model(model / "dual_arm_pick_and_place.robmot", outdir))
 
 
 def test_chain_joints_are_unprefixed_and_the_runtime_prefix_is_published(dual_ir: dict) -> None:
@@ -883,6 +867,7 @@ def test_chain_joints_are_unprefixed_and_the_runtime_prefix_is_published(dual_ir
         assert solver.chain.name.endswith("_tree_chain")
 
 
-def test_configuration_publishes_the_model_name(dual_ir: dict) -> None:
-    """One scalar the backends name their generated artifacts from, instead of one per solver."""
-    assert dual_ir["configuration"]["model_name"] == "dual_arm_pick_and_place"
+def test_each_chain_names_the_scene_header_that_declares_it(dual_ir: dict) -> None:
+    """scene-dsl names a scene's KDL header and namespace after the scene file."""
+    solvers = dual_ir["resources"]["by_kind"]["serial_chain"]
+    assert {solver.chain.namespace for solver in solvers} == {"dual_arm_pick_and_place"}

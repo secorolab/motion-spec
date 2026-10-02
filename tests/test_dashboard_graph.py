@@ -7,17 +7,13 @@ import json
 
 import rdflib
 from dashboard_fixture import CTRL, ERROR_SIGNAL, model_jsonld, schema
-from frame_log_fixture import flat_frame, write_frame_log_pb
 from rdflib.namespace import split_uri
 
 from motion_spec.dashboard.catalog import graph_name, provenance_graph, rdf_name
 from motion_spec.dashboard.graph import GraphService
 from motion_spec.dashboard.queries import model_lint
-from motion_spec.dashboard.store import RunStore
 from motion_spec.generation.artifacts import build_frame_layout
-from motion_spec.introspection import frame_log_pb
 
-ERROR_VALUE = 0.125
 # What the model declares a controller drives, which is what the Explore page is asked for.
 SIGNALS = """
 PREFIX cstr-hdl: <https://comp-rob2b.github.io/metamodels/task/constraint-handler#>
@@ -36,45 +32,8 @@ def _generation(tmp_path, doc):
     return gen
 
 
-def _frames(doc, count=101):
-    """`count` ticks at 100 Hz -- 10 s of sim time, with one satisfaction edge in the middle."""
-    return [
-        flat_frame(
-            doc,
-            t=step * 0.1,
-            step=step,
-            fsm_state=0,
-            active_motion=0,
-            last_event=-1,
-            wall_ns=1_000_000_000 + step,
-            period_ns=1_000_000,
-            **{
-                "c0.active": 1,
-                "c0.error": ERROR_VALUE,
-                "c0.output": -3.5,
-                "c0.satisfied": 1 if step > 50 else 0,
-                "m0.active": 1,
-                "m0.value": 0.004,
-                "q0": 42.5,
-                "pose0.active": 1,
-            },
-        )
-        for step in range(count)
-    ]
-
-
-def _store(tmp_path, doc):
-    log = tmp_path / "frame_log.pb"
-    write_frame_log_pb(log, doc, _frames(doc))
-    contract = frame_log_pb.read_contract(log)
-    store = RunStore("run-1", contract)
-    store.add_frames(frame_log_pb.frame_records(log, contract))
-    return store
-
-
 def _service(tmp_path, **kwargs):
-    doc = schema()
-    return GraphService(_generation(tmp_path, doc), _store(tmp_path, doc), **kwargs)
+    return GraphService(_generation(tmp_path, schema()), **kwargs)
 
 
 def test_the_service_answers_from_the_model_graph_alone(tmp_path):

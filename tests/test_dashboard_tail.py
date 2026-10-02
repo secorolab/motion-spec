@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.generation.artifacts import build_frame_log_header_record
-from motion_spec.introspection import frame_log_pb
+from motion_spec.telemetry import frame_log_pb
 
 from dashboard_fixture import schema
 from frame_log_fixture import flat_frame

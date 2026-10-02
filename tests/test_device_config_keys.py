@@ -5,11 +5,10 @@ from the graph instead of reading it -- these pin the derivation against the che
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 import pytest
-from support import DSL_MODELS, example
+from support import DSL_MODELS, example, load_model
 
 from motion_spec.rdf_parser.ir import generate_ir
 
@@ -22,14 +21,8 @@ REAL_WORLD_MODELS = ["real_arm_pose_hold", "real_gripper_cycle_ft_monitoring"]
 
 
 def _generate_ir(name: str, tmp_path: Path) -> dict:
-    model_dir = example(name)
-    outdir = tmp_path / "generated" / "model"
-    subprocess.run(
-        ["textx", "generate", f"{name}.robmot", "--target", "jsonld", "-o", str(outdir)],
-        cwd=model_dir,
-        check=True,
-    )
-    return generate_ir(outdir / f"{name}-app.ld.json")
+    model, fsm = load_model(example(name) / f"{name}.robmot", tmp_path / "generated" / "model")
+    return generate_ir(model, fsm)
 
 
 def _config_keys(ir: dict) -> set[str]:

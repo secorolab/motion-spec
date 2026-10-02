@@ -20,7 +20,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdflib import Dataset, Graph
 from rdflib.namespace import PROV, RDF
-from support import DSL_MODELS, example
+from support import DSL_MODELS, example, load_authored
 
 from motion_spec.rdf_parser.ir import generate_ir
 
@@ -114,13 +114,13 @@ def test_authored_output_limit_binds_to_derived_signal(
     controller = next(
         node
         for node in graph.subjects(RDF.type, CSTR_HDL.Controller)
-        if str(node).endswith("/ctrl-pk-hold-x")
+        if str(node).endswith("/ctrl-pick-hold-x")
     )
     saturation = next(graph.objects(controller, ALGO_EXT.limits))
     authored_output = graph.value(saturation, ALGO_EXT["in"])
     assert QUDT_QKIND.LinearVelocity in graph[authored_output : QUDT_SCHEMA.hasQuantityKind]
 
-    ir = generate_ir(tmp_path / "pick_and_place-app.ld.json")
+    ir = generate_ir(*load_authored(model, tmp_path / "loaded"))
     shared_ids = {item.id for item in ir["computation"]["shared_data"]}
     # Handlers are no longer published: a motion carries the controllers derived for it.
     controllers = [
@@ -136,6 +136,6 @@ def test_authored_output_limit_binds_to_derived_signal(
     assert {
         constraint.acceleration_energy.id for constraint in acceleration_constraints
     } <= shared_ids
-    derived = next(controller for controller in controllers if controller.id == "ctrl_pk_hold_x")
+    derived = next(controller for controller in controllers if controller.id.endswith("ctrl_pick_hold_x"))
     assert derived.output_saturation.maximum.value == 10.0
     assert derived.output_saturation.input_signal is derived.control_signal

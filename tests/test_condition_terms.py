@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """A condition that lowers to no terms renders as a constant, and the constant is the opposite of
-what the model asked for in both directions: a monitor that can never fire, a precondition that is
-always open. Neither may reach the generated program."""
+what the model asked for: a monitor that can never fire. It may not reach the generated program."""
 
 from __future__ import annotations
 
@@ -44,19 +43,6 @@ def motion(**kwargs) -> MotionUnit:
     )
     fields.update(kwargs)
     return MotionUnit(**fields)
-
-
-def test_a_when_precondition_that_evaluates_to_nothing_is_rejected() -> None:
-    # can_start would return a constant true and the motion would run as if the precondition
-    # had been met.
-    with pytest.raises(ConstraintViolation, match="start unconditionally"):
-        _set_motion_conditions(motion(when_evaluators=[evaluator("c_ready")]))
-
-
-def test_stating_no_when_precondition_still_means_always_ready() -> None:
-    unit = motion()
-    _set_motion_conditions(unit)
-    assert unit.when_terms_present is False
 
 
 def test_a_monitor_watching_nothing_evaluable_is_rejected() -> None:

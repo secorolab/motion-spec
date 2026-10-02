@@ -31,9 +31,7 @@ def _model(with_position_limit: bool) -> Model:
     g.add((EX.cstr, CSTR["quantity"], EX.q))
     g.add((EX.cstr, CSTR["reference-value"], EX.ref))
     g.add((EX.q, KC_STAT["of-joint"], EX.joint_1))
-    return Model(
-        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+    return Model(graph=g, app_path=Path("model-app.ld.json"))
 
 
 def test_continuous_joint_equality_error_wraps() -> None:

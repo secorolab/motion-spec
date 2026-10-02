@@ -29,9 +29,7 @@ NS = "https://example.test/"
 def test_unimplemented_mobile_platform_algorithm_is_rejected(rdf_type, label) -> None:
     graph = Dataset(default_union=True)
     graph.add((URIRef(f"{NS}bad-solver"), RDF.type, rdf_type))
-    model = Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+    model = Model(graph=graph, app_path=Path("model-app.ld.json"))
     derivation = constraint_handler.solver_derivation_context(model)
 
     with pytest.raises(ConstraintViolation, match=label):

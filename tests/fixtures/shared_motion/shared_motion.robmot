@@ -89,7 +89,7 @@ constraint-handler (ns=app) handler-first {
     }
     solvers {
         arm-solver: serial-chain {
-            agent: <agents.kinova_ft_2f85>,
+            agent: <agents.arm1>,
             algorithm: achd,
             gravity: (0.0, 0.0, 9.81) m/s^2
         }

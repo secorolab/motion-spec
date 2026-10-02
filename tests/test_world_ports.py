@@ -86,7 +86,7 @@ def test_a_free_body_the_scene_places_becomes_a_measured_port(trees) -> None:
     ports = world_ports(_NO_AGENTS, trees, _scene(_cube_iri(trees)), [], [], [], [], "mj_kdl")
     [free_root] = ports["free_roots"]
     assert (free_root.segment, free_root.mapping, free_root.slot) == (
-        "pick_place_graph/cube",
+        "pick_and_place_graph/cube",
         "cube",
         0,
     )
@@ -105,7 +105,7 @@ def test_a_free_body_only_the_scene_places_has_no_provider_on_hardware(trees) ->
 def test_a_perception_channel_placing_the_root_is_its_provider(trees) -> None:
     # The subscription binds that base itself, so the table owes it no row and no scene object.
     subscription = {
-        "written_poses": [{"reframed": True, "observed_body_segment": "pick_place_graph/cube"}]
+        "written_poses": [{"reframed": True, "observed_body_segment": "pick_and_place_graph/cube"}]
     }
     ports = world_ports(_NO_AGENTS, trees, MjcfSceneSpec(), [], [], [], [subscription], "robif2b")
     assert ports["free_roots"] == []
@@ -148,7 +148,7 @@ def test_a_perturbation_on_hardware_fails_while_generating(trees) -> None:
     bodies = [{"body": "cube", "members": []}]
     # Perception places the cube, so the push is the only thing hardware has no provider for.
     placed = {
-        "written_poses": [{"reframed": True, "observed_body_segment": "pick_place_graph/cube"}]
+        "written_poses": [{"reframed": True, "observed_body_segment": "pick_and_place_graph/cube"}]
     }
     with pytest.raises(ConstraintViolation, match="no actuator on robif2b"):
         world_ports(_NO_AGENTS, trees, MjcfSceneSpec(), [], [], bodies, [placed], "robif2b")

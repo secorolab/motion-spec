@@ -2,7 +2,7 @@ import io
 from pathlib import Path
 from types import SimpleNamespace
 
-from motion_spec.introspection.ros_video import (
+from motion_spec.runs.ros_video import (
     CameraRecording,
     RosImageRecorder,
     frame_slot,

@@ -12,16 +12,13 @@ resources._agent_bindings/_agent_assemblies, covered by the three-model behaviou
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT
 from rdflib.namespace import RDF
 from scene_dsl.rdf_parser.kinematics import body_of_frame
-from support import DSL_MODELS, example
+from support import DSL_MODELS, example, load_model
 
 from motion_spec.rdf_parser.ir import generate_ir
-from motion_spec.rdf_parser.model import load_model
 from motion_spec.rdf_parser.resources import kinematic_adjacency, mapped_targets
 
 MODELS = DSL_MODELS
@@ -33,17 +30,9 @@ MODEL_NAMES = ["pick_and_place", "dual_arm_pick_and_place", "arc_tracing_with_ad
 
 
 def _characterize(name, tmp_path):
-    """DSL-compile <name>.robmot to JSON-LD, run the current IR pipeline once, and record what
+    """Load <name>.robmot, run the current IR pipeline once, and record what
     body_of_frame/mapped_targets/kinematic_adjacency produce for it today."""
-    model_dir = example(name)
-    outdir = tmp_path / "generated" / "model"
-    subprocess.run(
-        ["textx", "generate", f"{name}.robmot", "--target", "jsonld", "-o", str(outdir)],
-        cwd=model_dir,
-        check=True,
-    )
-    manifest = outdir / f"{name}-app.ld.json"
-    model = load_model(manifest)
+    model, fsm = load_model(example(name) / f"{name}.robmot", tmp_path / "generated" / "model")
     g = model.graph
 
     frames = sorted(g.subjects(RDF.type, GEOM_ENT.Frame), key=str)
@@ -51,7 +40,7 @@ def _characterize(name, tmp_path):
 
     targets = {str(t) for t in mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)}
 
-    adjacency, _fixed = kinematic_adjacency(model)
+    adjacency = kinematic_adjacency(model)
     edges = sorted(
         {
             tuple(sorted((str(body), str(neighbor))))
@@ -60,7 +49,7 @@ def _characterize(name, tmp_path):
         }
     )
 
-    generate_ir(manifest)
+    generate_ir(model, fsm)
 
     return body_of, targets, edges
 

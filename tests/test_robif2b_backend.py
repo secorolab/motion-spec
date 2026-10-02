@@ -44,10 +44,10 @@ def test_a_commanded_joint_position_reaches_each_route_as_that_devices_units(tmp
         pytest.skip("no C++ compiler")
     helper = re.search(
         r"inline double gripper_closed_fraction.*?\n\}",
-        (TEMPLATES / "runtime.stg").read_text(),
+        (TEMPLATES / "backend_robif2b.stg").read_text(),
         re.DOTALL,
     )
-    assert helper, "gripper_closed_fraction is no longer in runtime.stg"
+    assert helper, "gripper_closed_fraction is no longer in backend_robif2b.stg"
     travel = _gripper_travel()
     source = tmp_path / "gripper.cpp"
     source.write_text(
@@ -145,7 +145,7 @@ def _check_sensor_readings_have_one_writer(generated: Path) -> None:
     external wrench at zero for whole runs on both backends.
     """
     introspection = json.loads((generated / "model" / "ir.json").read_text())["communication"][
-        "introspection"
+        "telemetry"
     ]
     dataflow = introspection["dataflow"]
     # The wrenches a sensor produces: the reading and the tare it is measured against. A

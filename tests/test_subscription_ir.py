@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 from rdf_utils.constraints import ConstraintViolation
-from rdflib import Graph, Literal, URIRef
+from rdflib import Dataset, Graph, Literal, URIRef
 from rdflib.namespace import RDF, SOSA, split_uri
 from scene_dsl.rdf.sensors import URI_SENS_TYPE_CAMERA
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
@@ -38,8 +38,9 @@ SCENE = example("arc_tracing_with_admittance")
 
 
 def _model(graph: Graph) -> Model:
+    # Over the graph's own store, so what a test adds after this is in the model too.
     return Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
+        graph=Dataset(store=graph.store, default_union=True), app_path=Path("model-app.ld.json")
     )
 
 
@@ -140,7 +141,7 @@ def test_the_subscription_names_the_poses_it_writes_and_the_frame_they_must_arri
     assert subscription["channel"] == "/recognized_objects"
     assert subscription["cpp_type"] == "vision_msgs::msg::Detection3DArray"
     written = subscription["written_poses"]
-    assert {row["pose_id"] for row in written} == {"pose_table_cam"}
+    assert {row["pose_id"] for row in written} == {"shared_world_pose_table_cam"}
     # The frame the pose is stated against. What frame a detection arrives in is the sender's to
     # say, so it is read off the header at run time and is not here.
     assert {row["frame_id"] for row in written} == {"wrist_ft_site"}
@@ -175,9 +176,12 @@ def test_no_chain_computes_a_pose_the_subscription_writes(subscription_ir):
         for solver in subscription_ir["resources"]["by_kind"]["serial_chain"]
         for out in solver["output"]
     }
-    assert "pose_table_cam" not in outputs
-    dataflow = subscription_ir["communication"]["introspection"]["dataflow"]
-    assert dataflow["pose_table_cam"]["producer"] == {"kind": "subscription", "id": "table_top"}
+    assert "shared_world_pose_table_cam" not in outputs
+    dataflow = subscription_ir["communication"]["telemetry"]["dataflow"]
+    assert dataflow["shared_world_pose_table_cam"]["producer"] == {
+        "kind": "subscription",
+        "id": "ros_subscribers_table_top",
+    }
 
 
 @requires_interfaces(TYPE_NAME)
@@ -191,10 +195,10 @@ def test_the_subscription_stamps_the_instant_its_pose_was_last_observed(subscrip
     members = {member["id"]: member for member in subscription_ir["computation"]["shared_data"]}
     assert members["pose_table_cam_observed"]["type"] == "Quantity"
     assert members["pose_table_cam_observed"]["unset"] is True
-    dataflow = subscription_ir["communication"]["introspection"]["dataflow"]
+    dataflow = subscription_ir["communication"]["telemetry"]["dataflow"]
     assert dataflow["pose_table_cam_observed"]["producer"] == {
         "kind": "subscription",
-        "id": "table_top",
+        "id": "ros_subscribers_table_top",
     }
 
 

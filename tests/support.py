@@ -10,7 +10,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from motion_spec.generation.artifacts import fields_with_offsets
-from motion_spec.introspection.provenance import (
+from motion_spec.runs.provenance import (
     GENERATION_DOCUMENT,
     GRAPH_MOTION_SPEC,
     PROV_CONTEXT,
@@ -27,6 +27,45 @@ DSL_MODELS = Path(str(files("motion_spec_dsl") / "models"))
 def example(name: str) -> Path:
     """The shipped example directory holding NAME.robmot, whatever its order number."""
     return next(DSL_MODELS.glob(f"[0-9][0-9]_{name}"), DSL_MODELS / name)
+
+
+def load_model(robmot: Path, out: Path):
+    """ROBMOT loaded as generation loads it, in memory: `(Model, framed FSM or None)`."""
+    from textx import metamodel_for_file
+
+    return load_authored(metamodel_for_file(str(robmot)).model_from_file(str(robmot)), out)
+
+
+def load_authored(authored, out: Path):
+    """A parsed robmot loaded as generation loads it: `(Model, framed FSM or None)`."""
+    import rdflib
+    from coord_dsl.generators.fsm import gen_json
+    from coord_dsl.rdf.fsm import get_fsm_graph
+    from motion_spec_dsl.gens import generate
+    from scene_dsl.rdf.scenex import create_scenex_model_graph
+
+    from motion_spec.rdf_parser.model import Model
+
+    dataset, _provenance = generate(authored, out)
+    fsm = None
+    for imported in authored.imports:
+        for document in imported._tx_loaded_models:
+            source = Path(document._tx_filename).resolve()
+            if source.suffix == ".scenex":
+                graph = create_scenex_model_graph(document)
+            elif source.suffix == ".fsm":
+                graph, fsm_ref = get_fsm_graph(document)
+                fsm = {**gen_json(graph, fsm_ref), "namespace_uri": document.fsm.ns.uri}
+            else:
+                continue
+            named = dataset.graph(rdflib.URIRef(source.as_uri()))
+            named += graph
+    model = Model(
+        graph=dataset,
+        app_path=(out / f"{Path(authored._tx_filename).stem}-app.ld.json").resolve(),
+        namespaces=tuple(namespace.uri for namespace in authored.namespaces),
+    )
+    return model, fsm
 
 
 def _hash_doc(doc: dict) -> str:
@@ -129,26 +168,29 @@ def _write_frame_log(path: Path, schema: dict) -> None:
 
 def _start_run(run_dir: Path, source: Path, executable: Path, run_id: str = "run-test") -> None:
     """Catalogue a run the way the runner does before it launches the executable."""
-    from motion_spec.introspection.runner import _start_rec_run
+    from motion_spec.runs.runner import _start_rec_run
 
     run_dir.mkdir(parents=True, exist_ok=True)
-    schema = json.loads((source / "frame_layout.json").read_text())
+    schema = json.loads((source / "contract" / "frame_layout.json").read_text())
     _start_rec_run(run_dir, run_id, source, executable, schema, [])
 
 
 def _source_tree(path: Path) -> Path:
+    """A generated/ tree as generation lays it out, plus the log a run of it would write."""
     schema = _schema()
     layout = _layout(schema)
-    path.mkdir()
-    (path / "schema.json").write_text(json.dumps(schema, indent=4))
-    (path / "frame_layout.json").write_text(json.dumps(layout, indent=4))
-    write_frame_log_proto(path / "frame_log.proto", schema)
+    (path / "contract").mkdir(parents=True)
+    (path / "contract" / "frame_layout.json").write_text(json.dumps(layout, indent=4))
+    write_frame_log_proto(path / "contract" / "frame_log.proto", schema)
     (path / GENERATION_DOCUMENT).write_text(json.dumps(_provenance(), indent=4))
-    (path / "model.ld.json").write_text(json.dumps(_provenance(), indent=4))
-    (path / "ir.json").write_text(json.dumps({"id": "test-ir"}))
-    (path / "headers").mkdir()
-    (path / "headers" / "runtime.hpp").write_text("// generated\n")
-    (path / "main.cpp").write_text("// generated\n")
+    (path / "model").mkdir()
+    (path / "model" / "model-app.ld.json").write_text(json.dumps(_provenance(), indent=4))
+    (path / "model" / "ir.json").write_text(
+        json.dumps({"configuration": {"platform": {"simulated": True}}})
+    )
+    (path / "controller" / "headers").mkdir(parents=True)
+    (path / "controller" / "headers" / "runtime.hpp").write_text("// generated\n")
+    (path / "controller" / "main.cpp").write_text("// generated\n")
     _write_frame_log(path / "frame_log.pb", schema)
     (path / "frame_log.pb.health.json").write_text(
         json.dumps(

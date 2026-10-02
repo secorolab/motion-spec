@@ -31,7 +31,11 @@ def _scene(asset: Path, frame: str) -> MjcfSceneSpec:
     )
     scene.robots.append(
         MjcfSceneRobot(
-            id="kinova", path="arm.xml", attach_kind="Site", attach_name=f"robot-table-body_{frame}"
+            id="kinova",
+            agent="https://example.test/agents/kinova",
+            path="arm.xml",
+            attach_kind="Site",
+            attach_name=f"robot-table-body_{frame}",
         )
     )
     return scene

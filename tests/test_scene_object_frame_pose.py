@@ -11,7 +11,6 @@ frame, a second frame the table carries, and a frame on the arm.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,7 @@ from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.rdf_parser.ir import generate_ir
 
 from conftest import requires_workspace
-from support import example
+from support import example, load_model
 
 MODEL = Path(__file__).parent / "fixtures" / "shared_motion"
 SCENE = example("arc_tracing_with_admittance")
@@ -32,13 +31,8 @@ pytestmark = requires_workspace(SCENE)
 def generated(tmp_path_factory) -> dict:
     """The lowered IR of the shared-motion fixture."""
     outdir = tmp_path_factory.mktemp("shared_motion") / "generated" / "model"
-    subprocess.run(
-        ["textx", "generate", "shared_motion.robmot", "--target", "jsonld", "-o", str(outdir)],
-        cwd=MODEL,
-        check=True,
-    )
-    manifest = outdir / "shared_motion-app.ld.json"
-    return json.loads(json.dumps(generate_ir(manifest), cls=DataclassJSONEncoder))
+    ir = generate_ir(*load_model(MODEL / "shared_motion.robmot", outdir))
+    return json.loads(json.dumps(ir, cls=DataclassJSONEncoder))
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +45,7 @@ def world_output(generated) -> dict:
 def test_a_pose_of_a_scene_object_is_a_frame_of_the_world_model(world_output):
     """A pose of the object's root frame is a pose of the segment the body stands at, which the
     world tree names after the body."""
-    of = world_output["pose_table_top"]["of"]
+    of = world_output["shared_world_pose_table_top"]["of"]
     assert of["type"] == "Frame"
     assert of["id"] == "table"
 
@@ -59,7 +53,7 @@ def test_a_pose_of_a_scene_object_is_a_frame_of_the_world_model(world_output):
 def test_a_pose_of_a_frame_the_object_carries_is_that_frames_own_segment(world_output):
     """The centre of mass is a frame the scene places on the table, so it is a segment of the
     world tree and resolves to itself -- not to a marker minted for it."""
-    of = world_output["pose_table_com"]["of"]
+    of = world_output["shared_world_pose_table_com"]["of"]
     assert of["type"] == "Frame"
     assert of["id"] == "table_com"
 

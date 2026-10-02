@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from motion_spec.dashboard import replay
-from motion_spec.introspection import frame_log_pb
+from motion_spec.telemetry import frame_log_pb
 
 from dashboard_fixture import CONSTRAINT, CTRL, schema
 from frame_log_fixture import flat_frame, write_frame_log_pb
@@ -69,6 +69,8 @@ def _log(tmp_path):
             active_motion=motion,
             last_event=-1,
             **{"c0.satisfied": c0, "c1.satisfied": c1, "m0.satisfied": m0},
+            # The writer emits a sample only for the slots the active motion drives.
+            **{"c0.active": 1, "c1.active": int(motion == 0), "m0.active": int(motion == 0)},
         )
         for index, (state, motion, c0, c1, m0) in enumerate(FRAMES)
     ]

@@ -9,8 +9,8 @@ import shutil
 from motion_spec.dashboard import catalog, replay, roots
 from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo, RunInfo
 from motion_spec.generation.artifacts import build_frame_layout
-from motion_spec.introspection.provenance import rec_document
-from motion_spec.introspection.replay import resolve_archive
+from motion_spec.runs.provenance import rec_document
+from motion_spec.runs.replay import resolve_archive
 from rec import State, Verdict, jsonld
 
 from dashboard_fixture import CONSTRAINT, CTRL, MONITOR, QUANTITY, model_jsonld, schema

@@ -384,9 +384,9 @@ def test_a_message_holding_an_array_reports_one_quantity_per_entry():
         "camera_optical",
     )
     assert first["auto_time"] == ["detections[0].header.stamp"]
-    # The array's own header, and the packages the entries reach into.
+    # The array's own header, and the one package the build finds.
     assert (publish["frame_path"], publish["frame_id"]) == ("header.frame_id", "camera_optical")
-    assert "geometry_msgs" in publish["packages"]
+    assert publish["pkg"] == "vision_msgs"
 
 
 def test_a_tf_message_carries_a_pose_as_a_transform():
@@ -654,7 +654,7 @@ def test_the_server_carries_the_fsms_own_event_tokens():
 
 
 def test_the_server_reads_its_whole_shape_off_the_action_it_names():
-    """Nothing about the action is assumed: the C++ type, the header, the packages and the
+    """Nothing about the action is assumed: the C++ type, the header, the package and the
     node-owned result fields all come from the type the model stated."""
     server = action_server(_model(_served()), FSM)
     assert server["cpp_type"] == "control_msgs::action::GripperCommand"
@@ -666,7 +666,7 @@ def test_the_server_reads_its_whole_shape_off_the_action_it_names():
     assert server["result_auto_time"] == []
     assert server["result_auto_context_id"] == []
     assert server["ignored_goal_fields"] == []
-    assert "control_msgs" in server["packages"]
+    assert server["pkg"] == "control_msgs"
 
 
 def test_the_monitor_that_answers_states_the_status_and_the_fields():

@@ -108,8 +108,8 @@ def test_a_subscription_reads_every_path_off_the_message_it_names():
     assert "targets_path" not in shape
     assert shape["cpp_type"] == "vision_msgs::msg::Detection3DArray"
     assert shape["include"] == "vision_msgs/msg/detection3_d_array.hpp"
-    # What the build has to find, not merely the package the model named.
-    assert "vision_msgs" in shape["packages"]
+    # The package the build finds; it exports what the message's fields reach into.
+    assert shape["package"] == "vision_msgs"
 
 
 def test_a_subscribed_pose_names_the_subscription_as_its_producer():

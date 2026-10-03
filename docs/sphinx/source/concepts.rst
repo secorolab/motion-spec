@@ -41,14 +41,16 @@ instead of copying them.
    generation/<generation-id>/
      generated/
        source/       authored DSL snapshot
-       model/        application JSON-LD, imported graphs, FSM IR, motion IR
+       model/        application JSON-LD, imported graphs, scene and FSM graphs, motion IR
        controller/   generated C++ and CMake project
        contract/     schema, frame layout, and frame-log protocol
        provenance.ld.json  one document, one named graph per tool
      build/           reusable compiled controller
      logs/            gen.log and build.log: what the DSL, stst and cmake said
      runs/<run-id>/
-       logs/          frame_log.pb, console.log and health information
+       logs/          frame_log.pb (zstd-packed to frame_log.pb.zst once archived),
+                      console.log and health information
+       files/         the environment file the run was given
        <run-id>.ld.json    REC record: lifecycle, host, files, metrics
        execution.ld.json   who ran it, the command line, sampling draws
        manifest.json consumer-facing paths into the run and generation

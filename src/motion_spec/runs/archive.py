@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
 
 MANIFEST_VERSION = 1
+COMPRESSION_LEVEL = 10
 PROV_SHAPES = (("prov.shacl.ttl",), ("prov-extension.shacl.ttl",))
 
 
@@ -106,6 +107,14 @@ def create_archive_manifest(
         from motion_spec.telemetry import frame_log_pb
 
         schema = frame_log_pb.read_contract(frame_log_path).summary()
+        # Nothing appends to the log any more; neighbouring frames nearly repeat, so it packs.
+        if frame_log_path.is_file():
+            import zstandard
+
+            packed = frame_log_path.with_name(frame_log_path.name + frame_log_pb.LOG_SUFFIX)
+            with frame_log_path.open("rb") as raw, packed.open("wb") as out:
+                zstandard.ZstdCompressor(level=COMPRESSION_LEVEL).copy_stream(raw, out)
+            frame_log_path.unlink()
     else:
         # No log to state the contract, so read the one it would have carried -- the same
         # frame_layout.json the runner records the run from before any frame exists.
@@ -138,7 +147,7 @@ def create_archive_manifest(
         "log_producer_executable": (
             relative(Path(log_producer_executable)) if log_producer_executable else None
         ),
-        "frame_log": "logs/frame_log.pb" if recorded else None,
+        "frame_log": "logs/frame_log.pb.zst" if recorded else None,
         "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "console": _existing(run_dir, "logs/console.log"),

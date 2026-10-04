@@ -12,60 +12,56 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from motion_spec_dsl.langs import motion_spec_metamodel
+from support import METAMODELS, load_model
 
 from motion_spec.rdf_parser.ir import generate_ir
 
-from conftest import requires_workspace
-from support import example, load_model
+MODEL = Path(__file__).parent / "fixtures" / "shared_motion" / "shared_motion.robmot"
 
-MODEL = Path(__file__).parent / "fixtures" / "shared_motion"
-SCENE = example("arc_tracing_with_admittance")
-METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
-
-pytestmark = requires_workspace(SCENE, METAMODELS)
+pytestmark = pytest.mark.skipif(not METAMODELS.exists(), reason="metamodels is not in this checkout")
 
 
 @pytest.fixture(scope="module")
-def shared_motion_ir(tmp_path_factory: pytest.TempPathFactory) -> dict:
-    """The IR of a model whose S_FIRST and S_SECOND states realize the same hold.
+def shared_units(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list]:
+    """The motion units of a model whose S_FIRST and S_SECOND states realize the same hold,
+    grouped by the specification they realize, keeping only the shared ones.
 
     A fixture of its own rather than a demo model: the invariant is about the lowering, and a
     demo restructured for reasons of its own has twice left it untested.
     """
-    tmp_path = tmp_path_factory.mktemp("shared_motion")
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("METAMODELS_PATH", str(METAMODELS))
-        return generate_ir(*load_model(MODEL / "shared_motion.robmot", tmp_path))
-
-
-def _shared_units(ir: dict) -> dict[str, list]:
-    """The units grouped by the specification they realize, keeping only the shared ones."""
+        ir = generate_ir(
+            *load_model(
+                motion_spec_metamodel().model_from_file(str(MODEL)),
+                tmp_path_factory.mktemp("shared_motion"),
+            )
+        )
     by_specification: dict[str, list] = {}
     for unit in ir["coordination"]["motions"]:
         by_specification.setdefault(unit.motion_id, []).append(unit)
-
     return {spec: units for spec, units in by_specification.items() if len(units) > 1}
 
 
-def test_each_handler_realizing_one_motion_is_its_own_unit(shared_motion_ir: dict) -> None:
+def test_each_handler_realizing_one_motion_is_its_own_unit(shared_units: dict) -> None:
     """A unit is named by its handler, so two of them never collapse onto one state struct."""
-    shared = _shared_units(shared_motion_ir)
-    assert shared, "the model no longer gives any motion two handlers"
-    handlers = {unit.id for units in shared.values() for unit in units}
-    assert len(handlers) == sum(len(units) for units in shared.values())
-    for units in shared.values():
+    assert shared_units, "the model no longer gives any motion two handlers"
+    handlers = {unit.id for units in shared_units.values() for unit in units}
+    assert len(handlers) == sum(len(units) for units in shared_units.values())
+    for units in shared_units.values():
         # Each runs in its own coordination state: that is what makes them distinct realizations
         # rather than two names for one.
         assert len({unit.fsm_state for unit in units}) == len(units)
 
 
-def test_units_sharing_a_motion_share_nothing_they_command_with(shared_motion_ir: dict) -> None:
+def test_units_sharing_a_motion_share_nothing_they_command_with(shared_units: dict) -> None:
     """Controllers, solver slices and drivers are the handler's, not the specification's.
 
     One driver carrying both handlers' rows would feed the solver constraints whose signals the
     inactive handler never writes.
     """
-    for units in _shared_units(shared_motion_ir).values():
+    for units in shared_units.values():
         for attribute, ids in (
             ("controllers", [c.id for unit in units for c in unit.controllers]),
             ("solvers", [s.id for unit in units for s in unit.serial_chain_solvers]),

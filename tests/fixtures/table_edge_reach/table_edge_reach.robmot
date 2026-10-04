@@ -1,0 +1,90 @@
+// Table II of Borghesan et al., "Introducing Geometric Constraint Expressions Into Robot Constrained Motion Specification and Control", IEEE RA-L 1(2), 2016.
+import "table_edge_reach.fsm"
+import "../../../../motion-spec-dsl/src/motion_spec_dsl/models/common/table_arm_sim.scenex"
+ns app = "https://secorolab.github.io/models/table-edge-reach/"
+ns fsm = "https://secorolab.github.io/models/table-edge-reach/fsm/"
+
+exec-context (ns=app) table-edge-reach-exec {
+    runs-scene: <table_arm_sim_scene_mjc>
+    platform:   simulation { name: "MuJoCo" }
+    config:     "table_edge_reach.toml"
+    timestep:   1.0 ms
+}
+
+context (ns=app) shared {
+    world {
+        pose pose-ee-base {
+            of:         <gripper.g_base.g_pinch>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        },
+        pose pose-table-base {
+            of:         <world_tree.table.table_top>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        }
+    },
+    spec {
+        direction approach-axis { as-seen-by: <gripper.g_base.g_pinch> } = (0, 0, 1),
+        direction closing-axis { as-seen-by: <gripper.g_base.g_pinch> } = (0, 1, 0),
+        direction down { as-seen-by: <kinova.base_link.base_link_origin> } = (0, 0, -1),
+        direction up { as-seen-by: <kinova.base_link.base_link_origin> } = (0, 0, 1),
+        direction edge-x { as-seen-by: <kinova.base_link.base_link_origin> } = (1, 0, 0),
+        plane table-top { of: <world_tree.table.table_top>, normal: <shared.spec.up> },
+        line table-edge { of: <world_tree.table.table_top>, along: <shared.spec.edge-x> },
+        // Riding the tool, square to the edge: parallel lines have no unique common normal.
+        line tool-line { of: <gripper.g_base.g_pinch>, along: <shared.spec.down> },
+        length clearance = 0.10 m,
+        length on-edge = 0.0 m,
+        length reach-band = 0.01 m,
+        length watch-band = 0.30 m,
+        angle square = 1.5708 rad,
+        angle square-band = 0.2 rad
+    }
+}
+
+guarded-motion (ns=app) reach-edge {
+    description: "Point down, fingers across the edge, and hover at a clearance above the table, level with its edge"
+
+    context {}
+
+    when {}
+
+    while {
+        hover: keeping distance of <shared.world.pose-ee-base> from <shared.spec.table-top> equal to <shared.spec.clearance> within <shared.spec.reach-band>,
+        level-with-edge: keeping projection of <shared.world.pose-ee-base> on <shared.spec.table-edge> equal to <shared.spec.on-edge> within <shared.spec.reach-band>,
+        point-down: keeping angle between <shared.spec.approach-axis> and <shared.spec.down> equal to 0 rad within <shared.spec.square-band>,
+        fingers-across-edge: keeping angle between <shared.spec.closing-axis> and <shared.spec.edge-x> equal to <shared.spec.square> within <shared.spec.square-band>
+    }
+
+    // Watched, not driven: the reach is done once the tool stands over the edge, square to the top.
+    until all {
+        near-edge: distance of <shared.world.pose-ee-base> from <shared.spec.table-edge> equal to <shared.spec.clearance> within <shared.spec.watch-band>,
+        tool-gap: distance of <shared.spec.tool-line> from <shared.spec.table-edge> equal to <shared.spec.on-edge> within <shared.spec.watch-band>,
+        tool-along: projection of <shared.spec.tool-line> on <shared.spec.table-edge> equal to <shared.spec.on-edge> within <shared.spec.watch-band>,
+        square-to-top: angle between <shared.spec.approach-axis> and <shared.spec.table-top> equal to <shared.spec.square> within <shared.spec.square-band>
+    }
+}
+
+constraint-handler (ns=app) handler-reach-edge {
+    handles: <reach-edge>
+    runs-in: <fsm.S_REACH>
+    monitors {
+        mon-reached: monitor <reach-edge.until> {
+            satisfied for 0.2 s { trigger: event <fsm.E_REACHED> },
+        }
+    }
+    controllers {
+        pid ctrl-hover { constraint: <reach-edge.hover>, Kp: 60, Ki: 10, Kd: 20, decay: 0 },
+        pid ctrl-level-with-edge { constraint: <reach-edge.level-with-edge>, Kp: 60, Ki: 10, Kd: 20, decay: 0 },
+        pid ctrl-point-down { constraint: <reach-edge.point-down>, Kp: 40, Ki: 5, Kd: 10, decay: 0 },
+        pid ctrl-fingers-across-edge { constraint: <reach-edge.fingers-across-edge>, Kp: 40, Ki: 5, Kd: 10, decay: 0 }
+    }
+    solvers {
+        arm-solver: serial-chain {
+            agent: <agents.arm1>,
+            algorithm: achd,
+            gravity: (0.0, 0.0, 9.81) m/s^2
+        }
+    }
+}

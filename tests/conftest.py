@@ -1,53 +1,59 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
-"""Shared guards for tests that need more than this repository provides."""
+"""The on-disk generated tree a run is catalogued and archived against."""
 
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 
 import pytest
+from support import FRAME, PROVENANCE, SCHEMA
+
+from motion_spec.generation.artifacts import (
+    build_frame_layout,
+    build_frame_log_header_record,
+    field_names_and_format,
+)
+from motion_spec.runs.provenance import GENERATION_DOCUMENT
+from motion_spec.telemetry import frame_log_pb
 
 
-def requires_interfaces(*type_names: str):
-    """Skip a module whose cases read real ROS message shapes.
-
-    Lowering a publish or an action resolves its type through rosidl, so these cases need a
-    sourced distribution and the workspace's own interface packages on AMENT_PREFIX_PATH.
-    """
-    try:
-        from rosidl_runtime_py.utilities import get_action, get_message
-    except ImportError:
-        return pytest.mark.skip(reason="no rosidl_runtime_py; source the ROS distribution")
-    for type_name in type_names:
-        resolve = get_action if "/action/" in type_name else get_message
-        try:
-            resolve(type_name)
-        except Exception:
-            return pytest.mark.skip(reason=f"'{type_name}' does not resolve on AMENT_PREFIX_PATH")
-
-    return pytest.mark.skipif(False, reason="")
-
-
-def requires_workspace(*paths: Path):
-    """Skip a module whose cases read files from a sibling checkout.
-
-    A model, a scene and the metamodels live in repositories beside this one, so a bare checkout
-    of motion-spec alone cannot run these.
-    """
-    missing = [str(path) for path in paths if not path.exists()]
-    if missing:
-        return pytest.mark.skip(reason=f"not in this checkout: {', '.join(missing)}")
-
-    return pytest.mark.skipif(False, reason="")
-
-
-def requires_stst():
-    """Skip a module whose cases render a template through the StringTemplate runner."""
-    from motion_spec.setup import find_stst
-
-    if find_stst() is None:
-        return pytest.mark.skip(reason="no stst; run `motion-spec setup`")
-
-    return pytest.mark.skipif(False, reason="")
+@pytest.fixture
+def source_tree(tmp_path: Path) -> Path:
+    """A generated/ tree as generation lays it out, plus the log a run of it would write."""
+    path = tmp_path / "source"
+    (path / "contract").mkdir(parents=True)
+    (path / "contract" / "frame_layout.json").write_text(
+        json.dumps(build_frame_layout(SCHEMA), indent=4)
+    )
+    shutil.copyfile(frame_log_pb.PROTO, path / "contract" / "frame_log.proto")
+    (path / GENERATION_DOCUMENT).write_text(json.dumps(PROVENANCE, indent=4))
+    (path / "model").mkdir()
+    (path / "model" / "model-app.ld.json").write_text(json.dumps(PROVENANCE, indent=4))
+    (path / "model" / "ir.json").write_text(
+        json.dumps({"configuration": {"platform": {"simulated": True}}})
+    )
+    (path / "controller" / "headers").mkdir(parents=True)
+    (path / "controller" / "headers" / "runtime.hpp").write_text("// generated\n")
+    (path / "controller" / "main.cpp").write_text("// generated\n")
+    flat = {name: 0 for name in field_names_and_format(SCHEMA["pools"])[1]} | FRAME
+    with (path / "frame_log.pb").open("wb") as log:
+        frame_log_pb.write_delimited(log, build_frame_log_header_record(SCHEMA))
+        frame_log_pb.write_delimited(log, frame_log_pb.frame_record(flat, SCHEMA))
+    (path / "frame_log.pb.health.json").write_text(
+        json.dumps(
+            {
+                "attempted_frames": 1,
+                "accepted_frames": 1,
+                "written_frames": 1,
+                "write_errors": 0,
+                "dropped_frames": 0,
+                "complete": True,
+            },
+            indent=4,
+        )
+    )
+    return path

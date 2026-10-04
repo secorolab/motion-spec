@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from motion_spec.generation.codegen import render_template
 from motion_spec.setup import find_stst
-from conftest import requires_stst
 
-pytestmark = requires_stst()
+pytestmark = pytest.mark.skipif(find_stst() is None, reason="no stst; run `motion-spec setup`")
 
 MOTION = {
     "motion": {

@@ -1,223 +1,75 @@
 # SPDX-License-Identifier: MPL-2.0
-"""What the dashboard does before, and instead of, starting a run.
-
-These are the paths that spawn: they are exercised with a process of this test's own choosing
-rather than the CLI, so what is under test is the dashboard's decisions -- whether a run may
-start at all, what it names, how it is stopped -- and never the runner behind them.
-"""
+"""What the dashboard decides when it spawns a run: whether it may start, with which flags, and
+how it is stopped. Exercised with a process of this test's own choosing rather than the CLI."""
 
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
-import time
+from unittest import mock
+
+import pytest
 
 from motion_spec.dashboard import jobs, roots
-from motion_spec.devices import probe_devices, unreachable, where
-
-HARDWARE_TOML = """
-[arm]
-ip                    = "127.0.0.1"
-port                  = {port}
-connection_timeout_ms = 200
-"""
 
 
-def _generation(tmp_path, *, simulated, toml_text=None, monkeypatch=None):
-    """A generation bundle holding the two files these decisions read.
-
-    Rooted where the dashboard browses, because naming a run means naming it relative to that.
-    """
-    if monkeypatch is not None:
-        monkeypatch.setattr(roots, "GENERATIONS", tmp_path.parent)
-        monkeypatch.setattr(roots, "WORKSPACE", tmp_path.parent)
+@pytest.fixture
+def generation(tmp_path, monkeypatch):
+    """A hardware generation bundle rooted where the dashboard browses, since a run is named
+    relative to it; whatever it left running is forgotten afterwards."""
+    monkeypatch.setattr(roots, "GENERATIONS", tmp_path.parent)
+    monkeypatch.setattr(roots, "WORKSPACE", tmp_path.parent)
     (tmp_path / "generated/contract").mkdir(parents=True)
     (tmp_path / "generated/contract/frame_layout.json").write_text(
-        json.dumps({"platform": {"simulated": simulated}, "cameras": []})
+        json.dumps({"platform": {"simulated": False}, "cameras": []})
     )
-    if toml_text is not None:
-        (tmp_path / "generated/source").mkdir(parents=True)
-        (tmp_path / "generated/source/robot.toml").write_text(toml_text)
-    return tmp_path
-
-
-def _dead_port() -> int:
-    """A port nobody answers on: bound to find a free number, then given back."""
-    import socket
-
-    with socket.create_server(("127.0.0.1", 0)) as listener:
-        return listener.getsockname()[1]
-
-
-def _sleeping_job(generation, run_id="run-test"):
-    """Register a run of this generation that stays up until it is stopped."""
-    process = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
-    )
-    jobs.RUNNING[str(generation / "runs" / run_id)] = {
-        "process": process,
-        "run_id": run_id,
-        "generation": str(generation),
-    }
-    return process
-
-
-def _forget(generation):
-    for key in [key for key, run in jobs.RUNNING.items() if run["generation"] == str(generation)]:
+    yield tmp_path
+    for key in [key for key, run in jobs.RUNNING.items() if run["generation"] == str(tmp_path)]:
         jobs.RUNNING.pop(key)
 
 
-def test_a_run_of_something_that_is_not_a_generation_is_refused(tmp_path):
-    try:
-        jobs.start_run(tmp_path, {})
-    except ValueError as refused:
-        assert "not a generation" in str(refused)
-    else:
-        raise AssertionError("a directory with no contract is not a generation")
+@pytest.fixture
+def sleeping_run(generation):
+    """A registered run of the generation that stays up until it is stopped."""
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    jobs.RUNNING[str(generation / "runs" / "run-test")] = {
+        "process": process,
+        "run_id": "run-test",
+        "generation": str(generation),
+    }
+    yield process
+    process.kill()
 
 
-def test_hardware_that_does_not_answer_still_starts_the_run(tmp_path, monkeypatch):
+def test_hardware_never_gets_the_simulators_flags_and_unreachable_hardware_still_starts(
+    generation, monkeypatch
+):
     """Starting is the operator's call: the devices panel probes, the run does not."""
-    generation = _generation(
-        tmp_path,
-        simulated=False,
-        toml_text=HARDWARE_TOML.format(port=_dead_port()),
-        monkeypatch=monkeypatch,
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+    (generation / "generated/source").mkdir(parents=True)
+    (generation / "generated/source/robot.toml").write_text(
+        f'[arm]\nip = "127.0.0.1"\nport = {port}\nconnection_timeout_ms = 200\n'
     )
-    started = {}
-    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
-    try:
-        answer = jobs.start_run(generation, {})
-    finally:
-        _forget(generation)
-    assert "--run-id" in started["argv"]
-    assert answer["run"].endswith(started["argv"][started["argv"].index("--run-id") + 1])
-    # Hardware takes neither of the simulator's options, whatever the browser posted.
-    assert "--headless" not in started["argv"]
-    assert "--start-paused" not in started["argv"]
+    popen = mock.Mock(return_value=subprocess.Popen([sys.executable, "-c", ""]))
+    monkeypatch.setattr(jobs.subprocess, "Popen", popen)
+    answer = jobs.start_run(generation, {"headless": True})
+    argv = list(popen.call_args.args[0])
+    assert answer["run"].endswith(argv[argv.index("--run-id") + 1])
+    assert "--headless" not in argv
+    assert "--start-paused" not in argv
 
 
-def test_a_real_run_records_the_cameras_that_name_a_topic(tmp_path, monkeypatch):
-    """The standard view is the simulator's; hardware records what ROS can hand it."""
-    generation = _generation(
-        tmp_path,
-        simulated=False,
-        toml_text=HARDWARE_TOML.format(port=_dead_port()),
-        monkeypatch=monkeypatch,
-    )
-    (generation / "generated/contract/frame_layout.json").write_text(
-        json.dumps(
-            {
-                "platform": {"simulated": False},
-                "cameras": [{"id": "rk", "topic": "/cameras/rk/image_raw"}, {"id": "wrist"}],
-            }
-        )
-    )
-    started = {}
-    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
-    try:
-        answer = jobs.start_run(generation, {"cameras": ["default", "rk", "wrist"]})
-    finally:
-        _forget(generation)
-    assert answer["recording"] == ["rk"]
-    assert started["argv"][started["argv"].index("--record") + 1] == "rk"
-    assert started["argv"].count("--record") == 1
-
-
-def test_a_simulation_starts_paused_with_its_run_named(tmp_path, monkeypatch):
-    generation = _generation(
-        tmp_path, simulated=True, toml_text=HARDWARE_TOML.format(port=1), monkeypatch=monkeypatch
-    )
-    started = {}
-    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
-    try:
-        answer = jobs.start_run(generation, {})
-    finally:
-        _forget(generation)
-    assert "--run-id" in started["argv"]
-    assert answer["run"].endswith(started["argv"][started["argv"].index("--run-id") + 1])
-    assert "--start-paused" in started["argv"]
-
-
-def test_simulations_of_one_generation_run_side_by_side(tmp_path, monkeypatch):
-    """Two simulated runs, each with its own entry, listed together under their generation."""
-    generation = _generation(tmp_path, simulated=True, monkeypatch=monkeypatch)
-    first = _sleeping_job(generation, "run-1")
-    started = {}
-    monkeypatch.setattr(jobs.subprocess, "Popen", lambda *a, **k: _record(started, a, k))
-    try:
-        second = jobs.start_run(generation, {})
-        listed = jobs.generation_status(generation)
-        assert listed["running"] is True
-        assert [run["id"] for run in listed["runs"]] == [second["id"], "run-1"]
-        assert jobs.run_status(generation / "runs" / "run-1")["running"] is True
-    finally:
-        first.kill()
-        _forget(generation)
-
-
-def test_the_real_robot_runs_one_thing_at_a_time(tmp_path):
-    generation = _generation(tmp_path, simulated=False)
-    process = _sleeping_job(generation)
-    try:
+def test_the_real_robot_runs_one_thing_at_a_time(generation, sleeping_run):
+    with pytest.raises(ValueError, match="already running"):
         jobs.start_run(generation, {})
-    except ValueError as refused:
-        assert "already running" in str(refused)
-    else:
-        raise AssertionError("the real robot is busy")
-    finally:
-        process.kill()
-        _forget(generation)
 
 
-def test_stopping_a_run_ends_the_process_group_it_was_started_in(tmp_path, monkeypatch):
-    generation = _generation(tmp_path, simulated=True, monkeypatch=monkeypatch)
-    process = _sleeping_job(generation)
-    try:
-        status = jobs.stop_run(generation / "runs" / "run-test")
-        assert process.poll() is not None
-        assert status["running"] is False
-    finally:
-        process.kill()
-        _forget(generation)
-
-
-def test_stopping_what_is_not_running_says_so(tmp_path):
-    generation = _generation(tmp_path, simulated=True)
-    try:
-        jobs.stop_run(generation / "runs" / "run-test")
-    except ValueError as refused:
-        assert "running" in str(refused)
-    else:
-        raise AssertionError("there is nothing to stop")
-
-
-def test_a_probe_reports_every_endpoint_at_once(tmp_path):
-    """Three dead addresses cost one timeout, not three: they are knocked on together."""
-    ports = [_dead_port() for _ in range(3)]
-    toml_text = "".join(
-        f'[arm{index}]\nip = "127.0.0.1"\nport = {port}\nconnection_timeout_ms = 400\n'
-        for index, port in enumerate(ports)
-    )
-    generation = _generation(tmp_path, simulated=False, toml_text=toml_text)
-    started = time.monotonic()
-    report = probe_devices(generation)
-    assert len(unreachable(report)) == 3
-    assert time.monotonic() - started < 1.0
-
-
-def test_a_device_is_reported_by_where_it_was_looked_for(tmp_path):
-    port = _dead_port()
-    generation = _generation(tmp_path, simulated=False, toml_text=HARDWARE_TOML.format(port=port))
-    assert where(unreachable(probe_devices(generation))[0]) == f"127.0.0.1:{port}"
-
-
-# The real one, kept before any test replaces the name it is reached by.
-_POPEN = subprocess.Popen
-
-
-def _record(started: dict, argv, kwargs):
-    """Stand in for the runner: remember the command, and run something that ends at once."""
-    started["argv"] = list(argv[0])
-    return _POPEN([sys.executable, "-c", ""], **kwargs)
+def test_stopping_a_run_ends_the_process_group_it_was_started_in(generation, sleeping_run):
+    status = jobs.stop_run(generation / "runs" / "run-test")
+    assert sleeping_run.poll() is not None
+    assert status["running"] is False

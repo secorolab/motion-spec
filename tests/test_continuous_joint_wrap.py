@@ -3,6 +3,7 @@
 
 from pathlib import Path
 
+import pytest
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_HDL, KC_STAT
 from rdf_utils.models.vocab import (
     URI_KC_EXT_PRED_OF_JOINT,
@@ -11,40 +12,37 @@ from rdf_utils.models.vocab import (
     URI_KC_TYPE_REVOLUTE_JOINT,
 )
 from rdflib import Dataset, Namespace
-from rdflib.namespace import RDF
 
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.operations import ErrorEvaluator, continuous_joint_leaves
 
 EX = Namespace("https://example.org/")
 
+JOINT_EQUALITY = f"""
+@prefix ex: <{EX}> .
+@prefix cstr: <{CSTR}> .
+ex:joint_1 a <{URI_KC_TYPE_REVOLUTE_JOINT}> .
+ex:eval <{CSTR_HDL["constraint"]}> ex:cstr .
+ex:cstr a cstr:EqualityConstraint ; cstr:quantity ex:q ; cstr:reference-value ex:ref .
+ex:q <{KC_STAT["of-joint"]}> ex:joint_1 .
+"""
 
-def _model(with_position_limit: bool) -> Model:
-    g = Dataset(default_union=True)
-    g.add((EX.joint_1, RDF.type, URI_KC_TYPE_REVOLUTE_JOINT))
-    if with_position_limit:
-        g.add((EX.limit, RDF.type, URI_KC_EXT_TYPE_JOINT_LIMIT))
-        g.add((EX.limit, RDF.type, URI_KC_STAT_JNT_POSITION))
-        g.add((EX.limit, URI_KC_EXT_PRED_OF_JOINT, EX.joint_1))
-    g.add((EX.eval, CSTR_HDL["constraint"], EX.cstr))
-    g.add((EX.cstr, RDF.type, CSTR["EqualityConstraint"]))
-    g.add((EX.cstr, CSTR["quantity"], EX.q))
-    g.add((EX.cstr, CSTR["reference-value"], EX.ref))
-    g.add((EX.q, KC_STAT["of-joint"], EX.joint_1))
-    return Model(graph=g, app_path=Path("model-app.ld.json"))
+POSITION_LIMIT = f"""
+ex:limit a <{URI_KC_EXT_TYPE_JOINT_LIMIT}>, <{URI_KC_STAT_JNT_POSITION}> ;
+    <{URI_KC_EXT_PRED_OF_JOINT}> ex:joint_1 .
+"""
 
 
-def test_continuous_joint_equality_error_wraps() -> None:
-    model = _model(with_position_limit=False)
-    assert continuous_joint_leaves(model) == {"joint_1"}
+@pytest.mark.parametrize(
+    ("limit", "leaves", "wraps"),
+    [("", {"joint_1"}, True), (POSITION_LIMIT, set(), None)],
+    ids=["continuous", "position-limited"],
+)
+def test_only_a_continuous_joint_equality_error_wraps(limit: str, leaves: set, wraps) -> None:
+    graph = Dataset(default_union=True)
+    graph.default_graph.parse(data=JOINT_EQUALITY + limit, format="turtle")
+    model = Model(graph=graph, app_path=Path("model-app.ld.json"))
+    assert continuous_joint_leaves(model) == leaves
     closure = ErrorEvaluator().closure_step(model, EX.eval)
     assert closure is not None
-    assert closure["angular_wrap"] is True
-
-
-def test_position_limited_joint_error_does_not_wrap() -> None:
-    model = _model(with_position_limit=True)
-    assert continuous_joint_leaves(model) == set()
-    closure = ErrorEvaluator().closure_step(model, EX.eval)
-    assert closure is not None
-    assert "angular_wrap" not in closure
+    assert closure.get("angular_wrap") is wraps

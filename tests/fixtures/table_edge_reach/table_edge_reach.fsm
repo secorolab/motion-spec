@@ -1,0 +1,22 @@
+ns fsm = "https://secorolab.github.io/models/table-edge-reach/fsm/"
+
+evt loop (ns=fsm) table_edge_reach_events {
+    evt E_STEP,
+    evt E_REACHED
+}
+
+fsm (ns=fsm) table_edge_reach_fsm {
+    description: "Reach over the table edge, then stop."
+    states { S_START, S_REACH, S_DONE }
+    evt loop: <table_edge_reach_events>
+    start: <S_START>
+    end: <S_DONE>
+    transitions {
+        T_START_REACH { from: <S_START>, to: <S_REACH> },
+        T_REACH_DONE  { from: <S_REACH>, to: <S_DONE> }
+    }
+    reactions {
+        R_START   { when: <table_edge_reach_events.E_STEP>,    do: <T_START_REACH> },
+        R_REACHED { when: <table_edge_reach_events.E_REACHED>, do: <T_REACH_DONE> }
+    }
+}

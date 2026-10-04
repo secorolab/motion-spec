@@ -443,20 +443,17 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             }
         )
     # A model with no arm has no serial chain.
-    devices = sorted(
-        (
-            {
-                "index": device["health_index"],
-                "id": device["config_key"],
-                "required_by_motion": device["required_by_motion"],
-            }
-            for solver in ir["resources"]["by_kind"].get("serial_chain", [])
-            if solver["runtime"]["owner"]
-            for device in solver["devices"]
-            if device["health_index"] is not None
-        ),
-        key=lambda device: device["index"],
-    )
+    devices = [
+        {
+            "index": device["health_index"],
+            "id": device["config_key"],
+            "required_by_motion": device["required_by_motion"],
+        }
+        for solver in ir["resources"]["by_kind"].get("serial_chain", [])
+        if solver["runtime"]["owner"]
+        for device in solver["devices"]
+        if device["health_index"] is not None
+    ]
     # What this program can record, named as the runtime names it. A reader of the run -- the
     # dashboard, a script -- asks the contract what the cameras are; the model behind them is
     # the generator's to read, not theirs.
@@ -764,7 +761,7 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         ("wrenches", spatial["wrenches"]),
         ("devices", schema["devices"]),
     ):
-        for entry in sorted(entries, key=lambda e: e["index"]):
+        for entry in entries:
             slot = getattr(header, category).add()
             slot.number, slot.id = entry["index"], entry["id"]
             slot.iri = entry.get("uri") or ""

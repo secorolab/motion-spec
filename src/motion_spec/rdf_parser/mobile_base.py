@@ -259,7 +259,7 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
             rows.append(
                 {
                     "index": motion.index,
-                    "terms": sorted(terms, key=lambda t: t["coordinate"]),
+                    "terms": terms,
                     "rotations": rotations,
                 }
             )

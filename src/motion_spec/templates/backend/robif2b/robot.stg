@@ -36,31 +36,29 @@ solver-state-extra-ACHD(solver) ::= <<
     std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
 >>
 
-solver-init-extra-ACHD(solver, chain_solver, motion_driver) ::= <<
-<if(motion_driver.has_cartesian_force)>
-        state.<solver.id>.jac = KDL::Jacobian(state.<solver.id>.num_joints);
-        state.<solver.id>.tau_fext = KDL::JntArray(state.<solver.id>.num_joints);
-        state.<solver.id>.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
-<endif>
+solver-init-extra-ACHD(solver) ::= <<
+    robot.<solver.id>_state.jac = KDL::Jacobian(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.tau_fext = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
 >>
 
 // The constraint torque is blind to a wrench it lets through, so J^T f_ext is added per segment.
 solver-run-finalize(solver, motion_driver) ::= <<
 <if(motion_driver.has_cartesian_force)>
-    KDL::SetToZero(state.<solver.id>.tau_fext);
-    for (int i = 0; i \< state.<solver.id>.num_segments; ++i) {
-        if (KDL::Equal(state.<solver.id>.f_ext[i], KDL::Wrench::Zero())) {
+    KDL::SetToZero(robot.<solver.id>_state.tau_fext);
+    for (int i = 0; i \< robot.<solver.id>_state.num_segments; ++i) {
+        if (KDL::Equal(robot.<solver.id>_state.f_ext[i], KDL::Wrench::Zero())) {
             continue;
         \}
-        state.<solver.id>.jac_solver->JntToJac(state.<solver.id>.q, state.<solver.id>.jac, i + 1);
+        robot.<solver.id>_state.jac_solver->JntToJac(robot.<solver.id>_state.q, robot.<solver.id>_state.jac, i + 1);
         Eigen::Matrix\<double, 6, 1\> wrench_<solver.id>;
-        wrench_<solver.id> \<\< state.<solver.id>.f_ext[i](0), state.<solver.id>.f_ext[i](1), state.<solver.id>.f_ext[i](2),
-                             state.<solver.id>.f_ext[i](3), state.<solver.id>.f_ext[i](4), state.<solver.id>.f_ext[i](5);
-        state.<solver.id>.tau_fext.data.noalias() += state.<solver.id>.jac.data.transpose() * wrench_<solver.id>;
+        wrench_<solver.id> \<\< robot.<solver.id>_state.f_ext[i](0), robot.<solver.id>_state.f_ext[i](1), robot.<solver.id>_state.f_ext[i](2),
+                             robot.<solver.id>_state.f_ext[i](3), robot.<solver.id>_state.f_ext[i](4), robot.<solver.id>_state.f_ext[i](5);
+        robot.<solver.id>_state.tau_fext.data.noalias() += robot.<solver.id>_state.jac.data.transpose() * wrench_<solver.id>;
     \}
-    KDL::Add(state.<solver.id>.tau_fext, state.<solver.id>.tau_ctrl_acc, state.<solver.id>.tau_ctrl);
+    KDL::Add(robot.<solver.id>_state.tau_fext, robot.<solver.id>_state.tau_ctrl_acc, robot.<solver.id>_state.tau_ctrl);
 <else>
-    state.<solver.id>.tau_ctrl = state.<solver.id>.tau_ctrl_acc;
+    robot.<solver.id>_state.tau_ctrl = robot.<solver.id>_state.tau_ctrl_acc;
 <endif>
 >>
 

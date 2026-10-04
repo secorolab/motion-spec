@@ -1268,6 +1268,13 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
                     constraint.as_seen_by is None
                     or _body_name(constraint.as_seen_by.id) == root_body
                 )
+        solver.constraint_rows = max(
+            (
+                len(driver.acceleration_constraint) + len(driver.cartesian_acceleration)
+                for driver in solver.motion_drivers
+            ),
+            default=0,
+        )
         serial_chains.append(solver)
         driven = graph[node : SLV["motion-drivers"] / (SLV["cartesian-force"] | SLV["joint-force"])]
         steps.extend(schedule.of(driven, OPS_GENERIC + OPS_SOLVER))

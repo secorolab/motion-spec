@@ -75,6 +75,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 
 <if(resources.by_kind.serial_chain)>
 <app-chain-post-setup(resources.by_kind.serial_chain, coordination.motions, configuration.agent_homes)>
+<resources.by_kind.serial_chain:{solver | <solver-init(solver)>}; separator="\n">
 <endif>
 <if(communication.ros)>
 <ros-joint-states-setup(communication.ros)>

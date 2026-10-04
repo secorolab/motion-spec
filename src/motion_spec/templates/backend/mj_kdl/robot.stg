@@ -57,20 +57,20 @@ solver-state-extra-ACHD(solver) ::= <<
 
 // The one place a sign is not the author's: this pass gravity-compensates the ACHD command, so
 // it is built with the field itself rather than with the root acceleration ACHD was given.
-solver-init-extra-ACHD(solver, chain_solver, motion_driver) ::= <<
-        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity_compensation)><chain_solver.gravity_compensation; separator=", "><else>0.0, 0.0, 0.0<endif>));
+solver-init-extra-ACHD(solver) ::= <<
+    robot.<solver.id>_state.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.gravity_compensation)><solver.gravity_compensation; separator=", "><else>0.0, 0.0, 0.0<endif>));
 >>
 
 // ACHD's constraint torque lives in the gravity-absorbed ABA frame (~ M*qdd - c); MuJoCo's
 // qfrc_applied needs M*qdd + c, so RNEA re-prices the resolved qdd. Zero wrench here, always:
 // qdd already carries the wrench, so the re-priced torque holds J^T f_ext without RNEA seeing it.
 solver-run-finalize(solver, motion_driver) ::= <<
-    state.<solver.id>.rnea->CartToJnt(
-        state.<solver.id>.q,
-        state.<solver.id>.qd,
-        state.<solver.id>.qdd,
-        state.<solver.id>.f_ext_zero,
-        state.<solver.id>.tau_ctrl);
+    robot.<solver.id>_state.rnea->CartToJnt(
+        robot.<solver.id>_state.q,
+        robot.<solver.id>_state.qd,
+        robot.<solver.id>_state.qdd,
+        robot.<solver.id>_state.f_ext_zero,
+        robot.<solver.id>_state.tau_ctrl);
 >>
 
 // The drive torque the torque actuators actually produced (qfrc_actuator), after MuJoCo's clamp.

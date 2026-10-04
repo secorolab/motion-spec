@@ -149,6 +149,8 @@ class SolverWithInputAndOutput:
     # says which recorded constant they came from.
     gravity_source: str | None = field(default=None, metadata=INTERNAL)
     torque_saturation: Saturation | None = None
+    # The widest motion's row count; the motions share one state and zero the rows they leave.
+    constraint_rows: int = 0
     # Frame-log mirrors of this runtime's joint-space signals; the two lists render at
     # two different hook sites -- the run block and the command-stage block.
     # `output` split by what each observation reads. A world output is answered by the one world

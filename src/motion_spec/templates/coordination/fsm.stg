@@ -111,7 +111,7 @@ fsm-dispatch(motions, fsm) ::= <<
 // same command array.
 fsm-dispatch-start(motions, fsm) ::= <<
 <if(first(motions).serial_chain_solvers)>        case <fsm.cpp_namespace>::<fsm.start_state>:
-            hold_gravity_<first(motions).id>(<first(motions).id>_state_instance, robot);
+            hold_gravity_<first(motions).id>(robot);
             break;
 <endif>
 >>

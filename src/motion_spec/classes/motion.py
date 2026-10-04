@@ -122,7 +122,7 @@ class MotionSolverSlice:
     is reached through `solver_id` into `resources.by_id`.
     """
 
-    id: str  # the solver's id, so `state.<id>` keeps working
+    id: str  # the solver's id, so `robot.<id>_state` names the shared state
     solver_id: str  # what to look up for everything the solver owns
     output: list
     motion_driver: MotionDrivers

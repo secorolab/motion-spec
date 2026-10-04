@@ -26,7 +26,7 @@ sig-params(mid, needs_state, needs_data, needs_robot, needs_events=false) ::= <<
 <if(needs_state)>
     <mid>_state &state<endif><if(needs_data)><if(needs_state)>,<endif>
     algorithm_data &data<endif><if(needs_robot)><if(needs_state||needs_data)>,<endif>
-    const robot_io &robot<endif><if(needs_events)><if(needs_state||needs_data||needs_robot)>,<endif>
+    robot_io &robot<endif><if(needs_events)><if(needs_state||needs_data||needs_robot)>,<endif>
     motion_spec_event_buffer &events<endif><if(needs_state||needs_data||needs_robot||needs_events)>
 <endif>
 >>
@@ -37,6 +37,7 @@ sig-args(mid, needs_state, needs_data, needs_robot, needs_events=false) ::= <<
 
 chain-robot-member(solver) ::= <<
     manipulator_robot <solver.id>;
+    <solver.id>_solver_state <solver.id>_state;
 >>
 
 motion-state-member(motion) ::= <<
@@ -45,14 +46,6 @@ motion-state-member(motion) ::= <<
 
 motion-include(motion) ::= <<
 #include "<motion.id>.hpp"
->>
-
-chain-state-members(serial_chain_solvers) ::= <<
-<serial_chain_solvers:{solver |     <solver.id>_solver_state <solver.id>;}; separator="\n">
->>
-
-chain-init-block(serial_chain_solvers, solvers) ::= <<
-<serial_chain_solvers:{solver |     <solver-init(solver, solvers.(solver.solver_id), solver.motion_driver)>}; separator="\n">
 >>
 
 // The motion mirrors the measurements its own solve reads, and reads what only that mirror can

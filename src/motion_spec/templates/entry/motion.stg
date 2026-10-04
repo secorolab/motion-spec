@@ -26,7 +26,6 @@ struct <motion.id>_state {
 <endif>
 <if(motion.has_when_gate)>    bool when_gate_open = false;
 <endif>
-<chain-state-members(motion.serial_chain_solvers)>
 <if(motion.entry_snapshots)>    bool snapshot_taken = false;
 <endif>
 <motion.controllers:{controller | <controller-member(controller)>}; separator="\n">
@@ -40,17 +39,10 @@ inline void reset_<motion.id>(<motion.id>_state &state) {
     state = <motion.id>_state{};
 }
 
-inline void init_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
-<if(motion.serial_chain_solvers)>
-<chain-init-block(motion.serial_chain_solvers, solvers)>
-<endif>
-}
-
 inline void update_<motion.id>(
-    <motion.id>_state &state,
+    [[maybe_unused]] <motion.id>_state &state,
     [[maybe_unused]] algorithm_data &data,
-    const robot_io &robot) {
-    init_<motion.id>(state, robot);
+    robot_io &robot) {
 <if(motion.active_elapsed_ids)>    if (state.motion_start_time \< 0.0) {
         state.motion_start_time = data.clock_time_s;
     }
@@ -96,7 +88,7 @@ inline void monitor_until_<motion.id>(<sig-params(motion.id, motion.until_needs_
 inline void control_<motion.id>(
     <motion.id>_state &state,
     algorithm_data &data,
-    [[maybe_unused]] const robot_io &robot<if(motion.control_needs_events)>,
+    [[maybe_unused]] robot_io &robot<if(motion.control_needs_events)>,
     motion_spec_event_buffer &events<endif>) {
 <schedule-block(motion.while_pre_schedule, functions, views)>
 <motion.pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
@@ -123,7 +115,7 @@ inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, m
 <if(motion.serial_chain_solvers)>
 
 // Holds this motion's chains where they stand, for the coordinator states that select no motion.
-inline void hold_gravity_<motion.id>(<motion.id>_state &state, const robot_io &robot) {
+inline void hold_gravity_<motion.id>(robot_io &robot) {
 <chain-gravity-block(motion.serial_chain_solvers, solvers)>
 }
 <endif>

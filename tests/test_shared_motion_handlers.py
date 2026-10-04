@@ -12,9 +12,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.langs import motion_spec_metamodel
-from support import METAMODELS, load_model
+from support import METAMODELS
 
+from motion_spec.generation.pipeline import load_model
 from motion_spec.rdf_parser.ir import generate_ir
 
 MODEL = Path(__file__).parent / "fixtures" / "shared_motion" / "shared_motion.robmot"
@@ -32,12 +32,8 @@ def shared_units(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list]:
     """
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("METAMODELS_PATH", str(METAMODELS))
-        ir = generate_ir(
-            *load_model(
-                motion_spec_metamodel().model_from_file(str(MODEL)),
-                tmp_path_factory.mktemp("shared_motion"),
-            )
-        )
+        loaded = load_model(MODEL, tmp_path_factory.mktemp("shared_motion"))
+        ir = generate_ir(loaded.model, loaded.fsm)
     by_specification: dict[str, list] = {}
     for unit in ir["coordination"]["motions"]:
         by_specification.setdefault(unit.motion_id, []).append(unit)

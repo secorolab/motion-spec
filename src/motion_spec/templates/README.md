@@ -38,7 +38,7 @@ emit something need a rule.
 | L4 entry | `entry_program.stg` | `main_source`, `shared_state_header` |
 | | `entry_motion.stg` | `motion_header` |
 | | `entry_telemetry.stg` | `frame_layout.h`, the frame-log and shared-memory writer, model samples |
-| | `entry_build.stg` | `cmake_mj_kdl`, `cmake_robif2b`, `robot_config.hpp` |
+| | `entry_build.stg` | `cmake_project` (both backends), `robot_config.hpp` |
 | | `runtime.stg` | `runtime_header`: the loop core, then each domain's runtime section the spec uses |
 | L3 assembly | `assembly_loop.stg` | the import anchor for every backend leaf |
 | | `assembly_coordination.stg` | FSM dispatch and per-state step functions |

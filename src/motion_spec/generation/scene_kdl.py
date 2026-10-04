@@ -1,11 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""The solver chain, taken from the scene model rather than re-derived from the MJCF.
-
-`scene-dsl` lowers the scene graph into KDL segments and renders them as C++ (plan 012);
-this module is the seam where `motion-spec` picks that up: it names the chain each robot
-assembly should build and lists that chain's joints as MuJoCo knows them.
-See `plans/013-kdl-chain-from-scenex.md`.
-"""
+"""The solver chain each robot assembly builds, taken from scene-dsl's KDL trees."""
 
 from __future__ import annotations
 
@@ -40,7 +34,7 @@ def _joint_segments(tree: dict, chain: dict) -> list[str]:
 def _world_segments(tree: dict, chain: dict) -> dict[str, str]:
     """Every scene element this chain reaches, by IRI, named as the built tree names it.
 
-    Plan 04 gives every posed frame its own KDL leaf, so a frame the chain slice can only reach
+    Every posed frame has its own KDL leaf, so a frame the chain slice can only reach
     as "a parent plus a constant offset" is an exact segment of the tree. A body's own root frame
     is where the body's segment already is, and carries no segment of its own -- it resolves
     through the body the chain placement points at.

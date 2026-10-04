@@ -52,7 +52,6 @@ GRAPH_MOTION_SPEC = URIRef(f"{MSPROV}graph/motion-spec")
 GRAPH_EXECUTION = URIRef(f"{MSPROV}graph/execution")
 # What rec is told to mint run nodes under, so its record and these graphs share the node.
 RUN_IRI_BASE = f"{MSPROV}run/"
-SCHEMA_VERSION = 1
 
 
 def _slug(value: str) -> str:
@@ -162,7 +161,7 @@ def append_generation_graph(document: Path, graph_id: URIRef, nodes: list[dict])
     data = (
         json.loads(document.read_text())
         if document.is_file()
-        else {"schema_version": SCHEMA_VERSION, "@context": PROV_CONTEXT, "@graph": []}
+        else {"@context": PROV_CONTEXT, "@graph": []}
     )
     for entry in data["@graph"]:
         if entry.get("@id") == str(graph_id):
@@ -192,7 +191,6 @@ def read_generation_dataset(document: Path) -> Dataset:
 def write_generation_document(document: Path, graphs: dict[URIRef, Graph]) -> None:
     """The generation's provenance, written once: each tool's graph a named graph of it."""
     data = {
-        "schema_version": SCHEMA_VERSION,
         "@context": PROV_CONTEXT,
         "@graph": [
             {"@id": str(graph_id), "@graph": _document_nodes(graph)}
@@ -370,7 +368,6 @@ def build_derivation_document(
             graph.add((subject, PROV.wasGeneratedBy, activity))
 
     return {
-        "schema_version": SCHEMA_VERSION,
         "@context": PROV_CONTEXT,
         "@graph": _document_nodes(graph),
     }

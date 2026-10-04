@@ -23,7 +23,12 @@ from typing import ClassVar
 
 import click
 
-from motion_spec.setup import BUILD_TYPE, BUILD_TYPE_VARIABLE, WORKSPACE_VARIABLE
+from motion_spec.setup import (
+    BUILD_TYPE,
+    BUILD_TYPE_VARIABLE,
+    GENERATION_VARIABLE,
+    WORKSPACE_VARIABLE,
+)
 from motion_spec.utils import (
     LEVEL_LABELS,
     LOG_DATEFMT,
@@ -64,9 +69,6 @@ def _internal_failure(what: str, exc: Exception) -> click.ClickException:
     traceback.print_exception(exc, file=sys.stderr)
 
     return click.ClickException(f"{what}: {exc}")
-
-
-GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
 
 
 # Every line the CLI says about its own progress, so one command reads like the next. Results
@@ -167,7 +169,7 @@ def _latest_generation() -> Path:
         raise click.ClickException(
             f"{link}: nothing generated here to rerun. `gen` and `run` point it at what they "
             f"make, so generate once, or name a generation directory. Generations go under "
-            f"${GENERATION_DIR_ENV} when it is set, else ${{{WORKSPACE_VARIABLE}}}/generations."
+            f"${GENERATION_VARIABLE} when it is set, else ${{{WORKSPACE_VARIABLE}}}/generations."
         )
     generation = link.resolve()
     if not (generation / "build" / "main").is_file():
@@ -242,14 +244,14 @@ class MotionSpecGroup(click.Group):
                     ("generated/provenance.ld.json", "DSL, coordinate and motion-spec provenance."),
                     ("build/", "Reusable compiled controller."),
                     ("runs/RUN/", "Run-owned logs, REC graph, and manifest."),
-                    ("latest", f"Symlink to the newest generation, under ${GENERATION_DIR_ENV}."),
+                    ("latest", f"Symlink to the newest generation, under ${GENERATION_VARIABLE}."),
                 ]
             )
         with _manual_section(formatter, "ENVIRONMENT"):
             formatter.write_dl(
                 [
                     (
-                        GENERATION_DIR_ENV,
+                        GENERATION_VARIABLE,
                         (
                             "Where 'gen' and 'run' put a new generation when given no -o. "
                             "Unset, they use the workspace's generations directory. "
@@ -484,7 +486,7 @@ def _environment(
 @click.option(
     "--logs",
     type=click.Path(file_okay=False, path_type=Path),
-    help=f"Generation root to browse. Default: ${GENERATION_DIR_ENV}, else the working directory.",
+    help=f"Generation root to browse. Default: ${GENERATION_VARIABLE}, else the working directory.",
 )
 @click.option(
     "--sources",

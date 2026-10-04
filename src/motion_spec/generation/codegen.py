@@ -384,21 +384,18 @@ def generate_code(
     written.append(
         render_template(stst_bin, "main_source", ir_payload_path, output_dir / "main.cpp")
     )
-    cmake = "cmake_mj_kdl" if ir["configuration"]["backend"] == "mj_kdl" else "cmake_robif2b"
-    written.append(render_template(stst_bin, cmake, ir_payload_path, output_dir / "CMakeLists.txt"))
+    written.append(
+        render_template(stst_bin, "cmake_project", ir_payload_path, output_dir / "CMakeLists.txt")
+    )
     # Both backends read deployment properties (the FT tare length) from the same config.
     written.append(
         render_template(
             stst_bin, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
         )
     )
-    # Only real hardware has serial devices the loop must not block on: the simulator's are
-    # function calls. Which kinds those are is the backend template's decision
-    # (backend_robif2b_io.stg); this mirror only decides whether the file exists at all.
-    serial_device_kinds = {"Robotiq2F85", "RobotiqFT300s"}
-    if ir["configuration"]["backend"] == "robif2b" and serial_device_kinds & set(
-        ir["resources"]["device_kinds"]
-    ):
+    # Only real hardware has serial devices the loop must not block on; whether anything includes
+    # this header is the backend template's decision.
+    if ir["configuration"]["backend"] == "robif2b":
         written.append(
             render_template(
                 stst_bin, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"

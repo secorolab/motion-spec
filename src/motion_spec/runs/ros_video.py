@@ -59,14 +59,63 @@ def rgb_rows(message) -> bytes:
     """The image as tightly packed rows, the only layout rawvideo accepts."""
     row_size = message.width * 3
     data = bytes(message.data)
-    if message.step == row_size:
+    if not message.step or message.step == row_size:
         return data
     return b"".join(
         data[row * message.step : row * message.step + row_size] for row in range(message.height)
     )
 
 
-class RosImageRecorder:
+class RosImageSubscription:
+    """A ROS image topic spun on a thread of its own, each message handed to `_absorb`.
+
+    rclpy is imported inside the thread, so a process without a ROS environment still runs and
+    reports the missing environment as its error.
+    """
+
+    def __init__(self, topic: str, node_name: str):
+        self.topic = topic
+        self.node_name = node_name
+        self.error: str | None = None
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._spin, name=node_name, daemon=True)
+
+    def _spin(self) -> None:
+        try:
+            import rclpy
+            from rclpy.executors import SingleThreadedExecutor
+            from rclpy.qos import qos_profile_sensor_data
+            from sensor_msgs.msg import Image
+        except ImportError as exc:
+            self.error = f"no ROS environment: {exc}"
+            return self._ready.set()
+        # Its own context, so it never disturbs an rclpy anyone else in this process initialised.
+        context = rclpy.Context()
+        node = executor = None
+        try:
+            rclpy.init(context=context)
+            node = rclpy.create_node(self.node_name, context=context)
+            # Sensor QoS: best-effort still matches a reliable publisher, the reverse does not.
+            node.create_subscription(Image, self.topic, self._absorb, qos_profile_sensor_data)
+            executor = SingleThreadedExecutor(context=context)
+            executor.add_node(node)
+            self._ready.set()
+            while not self._stop.is_set():
+                executor.spin_once(timeout_sec=0.1)
+        except Exception as exc:  # noqa: BLE001 - ROS middleware exceptions are implementation-defined.
+            self.error = str(exc)
+        finally:
+            self._ready.set()
+            if executor is not None:
+                executor.shutdown()
+            if node is not None:
+                node.destroy_node()
+            if context.ok():
+                rclpy.shutdown(context=context)
+
+
+class RosImageRecorder(RosImageSubscription):
     """Write one RGB ROS image stream to MP4 without delaying the control process.
 
     Frames are placed in constant-rate slots by capture time, repeating the last
@@ -75,15 +124,12 @@ class RosImageRecorder:
     """
 
     def __init__(self, recording: CameraRecording, output: Path, queue_depth: int = 8):
+        super().__init__(recording.topic, f"motion_spec_video_{recording.id}")
         self.recording = recording
         self.output = output
-        self.error: str | None = None
         self.dropped = 0
-        self._stop = threading.Event()
-        self._ready = threading.Event()
         self._frames: queue.Queue = queue.Queue(maxsize=queue_depth)
         self._ffmpeg: subprocess.Popen[bytes] | None = None
-        self._thread = threading.Thread(target=self._spin, name=f"motion-spec-video-{recording.id}")
         self._writer = threading.Thread(
             target=self._write, name=f"motion-spec-video-{recording.id}-encode"
         )
@@ -195,36 +241,3 @@ class RosImageRecorder:
                 except subprocess.TimeoutExpired:
                     self._ffmpeg.terminate()
                     self._ffmpeg.wait()
-
-    def _spin(self) -> None:
-        try:
-            import rclpy
-            from rclpy.executors import SingleThreadedExecutor
-            from rclpy.qos import qos_profile_sensor_data
-            from sensor_msgs.msg import Image
-        except ImportError as exc:
-            self.error = f"no ROS image recorder: {exc}"
-            return self._ready.set()
-        context = rclpy.Context()
-        node = executor = None
-        try:
-            rclpy.init(context=context)
-            node = rclpy.create_node(f"motion_spec_video_{self.recording.id}", context=context)
-            node.create_subscription(
-                Image, self.recording.topic, self._absorb, qos_profile_sensor_data
-            )
-            executor = SingleThreadedExecutor(context=context)
-            executor.add_node(node)
-            self._ready.set()
-            while not self._stop.is_set():
-                executor.spin_once(timeout_sec=0.1)
-        except Exception as exc:  # noqa: BLE001 - ROS middleware exceptions are implementation-defined.
-            self.error = str(exc)
-        finally:
-            self._ready.set()
-            if executor is not None:
-                executor.shutdown()
-            if node is not None:
-                node.destroy_node()
-            if context.ok():
-                rclpy.shutdown(context=context)

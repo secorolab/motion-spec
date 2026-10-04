@@ -300,7 +300,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(
                     [
                         generation_info(generation.dir)
-                        for generation in GenerationCatalog([roots.GENERATIONS]).generations()
+                        for generation in GenerationCatalog(roots.GENERATIONS).generations()
                     ]
                 )
             if parsed.path == "/api/storage":
@@ -328,7 +328,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     model = generation.relative_to(roots.GENERATIONS).parts[0]
                     runs = [
                         run_info(run.dir) | {"generation_label": annotations(g.dir)["label"]}
-                        for g in GenerationCatalog([roots.GENERATIONS]).generations()
+                        for g in GenerationCatalog(roots.GENERATIONS).generations()
                         if g.model == model
                         for run in g.runs
                     ]

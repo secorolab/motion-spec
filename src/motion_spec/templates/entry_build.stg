@@ -2,9 +2,9 @@
 // L4 entry — the build: CMake projects and the robot config header.
 
 import "backend_robif2b.stg"
-cmake_mj_kdl(coordination, communication, composition, resources) ::= <<
+cmake_project(configuration, communication, composition, resources) ::= <<
 cmake_minimum_required(VERSION 3.16)
-project(motion_spec_mj_kdl_target LANGUAGES CXX)
+project(motion_spec_<configuration.backend>_target LANGUAGES <({cmake-languages-<configuration.backend>})()>)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,10 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Eigen3 REQUIRED)
 find_package(orocos_kdl REQUIRED CONFIG)
-<if(coordination.fsm)>
 find_package(coord2b REQUIRED)
-<endif>
-find_package(mj_kdl_wrapper 0.4.1 REQUIRED CONFIG)
+<({cmake-find-<configuration.backend>})()>
 find_package(tomlplusplus REQUIRED CONFIG)
 find_package(Threads REQUIRED)
 <if(resources.by_kind.mobile_base)>
@@ -35,15 +33,7 @@ find_package(action_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
 <endif>
 <communication.ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
-<if(composition.scene.cameras)>
-# The camera publisher is an optional target of the wrapper, so ask for the target rather than a
-# version: a wrapper built without ROS satisfies the find_package above and still lacks it.
-if(NOT TARGET mj_kdl_wrapper::camera_ros)
-    message(FATAL_ERROR
-      "the installed mj_kdl_wrapper has no camera_ros target; "
-      "rebuild mj_kdl_wrapper with ROS on PATH (MJ_KDL_WITH_ROS defaults to AUTO)")
-endif()
-<endif>
+<if(composition.scene.cameras)><({cmake-camera-check-<configuration.backend>})()><endif>
 <endif>
 
 add_executable(main
@@ -53,26 +43,21 @@ target_include_directories(main PRIVATE
     ${EIGEN3_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/headers
-<if(coordination.fsm)>
     ${coord2b_INCLUDE_DIRS}
-<endif>
 )
 target_link_libraries(main PRIVATE
-    mj_kdl_wrapper::mj_kdl_wrapper
     orocos-kdl
     tomlplusplus::tomlplusplus
+    Threads::Threads
+<({cmake-link-<configuration.backend>})(resources)>
 <if(resources.by_kind.mobile_base)>
     hddc2b::hddc2b
     LAPACK::LAPACK
     BLAS::BLAS
 <endif>
-<if(coordination.fsm)>
     ${coord2b_LIBRARIES}
-<endif>
 <if(communication.ros)>
-<if(composition.scene.cameras)>
-    mj_kdl_wrapper::camera_ros
-<endif>
+<if(composition.scene.cameras)><({cmake-camera-link-<configuration.backend>})()><endif>
     rclcpp::rclcpp
     realtime_tools::realtime_tools
 <if(communication.ros.action_clients)>
@@ -91,6 +76,32 @@ target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
 target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
 target_compile_options(main PRIVATE -Wall -Wextra -ftemplate-depth=2048)
 >>
+
+cmake-languages-mj_kdl() ::= "CXX"
+cmake-languages-robif2b() ::= "C CXX"
+cmake-find-mj_kdl() ::= "find_package(mj_kdl_wrapper 0.4.1 REQUIRED CONFIG)"
+cmake-find-robif2b() ::= "find_package(robif2b REQUIRED CONFIG)"
+cmake-link-mj_kdl(resources) ::= "    mj_kdl_wrapper::mj_kdl_wrapper"
+cmake-link-robif2b(resources) ::= <<
+<resources.by_kind.serial_chain:{solver | <if(solver.runtime.owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
+<if(resources.by_kind.mobile_base)>
+    robif2b::kelo
+    robif2b::ethercat
+<endif>
+>>
+
+// The camera publisher is an optional target of the wrapper, so ask for the target rather than a
+// version: a wrapper built without ROS satisfies the find_package above and still lacks it.
+cmake-camera-check-mj_kdl() ::= <<
+if(NOT TARGET mj_kdl_wrapper::camera_ros)
+    message(FATAL_ERROR
+      "the installed mj_kdl_wrapper has no camera_ros target; "
+      "rebuild mj_kdl_wrapper with ROS on PATH (MJ_KDL_WITH_ROS defaults to AUTO)")
+endif()
+>>
+cmake-camera-check-robif2b() ::= ""
+cmake-camera-link-mj_kdl() ::= "    mj_kdl_wrapper::camera_ros"
+cmake-camera-link-robif2b() ::= ""
 
 // Only the readers the bound devices and sensors need are emitted: the platform block and the
 // scene decide what this header can parse, exactly as they decide what the controller drives.
@@ -362,87 +373,6 @@ inline Device device(const toml::table &config, const std::string &key) {
     out.connection_timeout_ms = required_int(entry, "connection_timeout_ms", key);
     return out;
 \}
->>
-
-cmake_robif2b(coordination, communication, resources) ::= <<
-cmake_minimum_required(VERSION 3.16)
-project(motion_spec_robif2b_target LANGUAGES C CXX)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-find_package(Eigen3 REQUIRED)
-find_package(orocos_kdl REQUIRED CONFIG)
-find_package(robif2b REQUIRED CONFIG)
-find_package(tomlplusplus REQUIRED CONFIG)
-<if(coordination.fsm)>
-find_package(coord2b REQUIRED)
-<endif>
-find_package(Threads REQUIRED)
-<if(resources.by_kind.mobile_base)>
-# The platform's force distribution and its damped-least-squares twist composition; the solve
-# goes through LAPACK, which hddc2b does not carry itself.
-find_package(hddc2b REQUIRED)
-find_package(BLAS REQUIRED)
-find_package(LAPACK REQUIRED)
-<endif>
-<if(communication.ros)>
-find_package(rclcpp REQUIRED)
-find_package(realtime_tools REQUIRED)
-<if(communication.ros.action_clients)>
-find_package(action_msgs REQUIRED)
-<endif>
-<if(communication.ros.action_clients || communication.ros.action_server)>
-find_package(rclcpp_action REQUIRED)
-<endif>
-<communication.ros.packages:{pkg | find_package(<pkg> REQUIRED)}; separator="\n">
-<endif>
-
-add_executable(main
-    main.cpp
-)
-target_include_directories(main PRIVATE
-    ${EIGEN3_INCLUDE_DIRS}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/headers
-<if(coordination.fsm)>
-    ${coord2b_INCLUDE_DIRS}
-<endif>
-)
-target_link_libraries(main PRIVATE
-    orocos-kdl
-    tomlplusplus::tomlplusplus
-    Threads::Threads
-<resources.by_kind.serial_chain:{solver | <if(solver.runtime.owner)><solver.devices:{device | <({cmake-device-link-<device.kind>})()>}; separator="\n"><endif>}; separator="\n">
-<if(resources.by_kind.mobile_base)>
-    robif2b::kelo
-    robif2b::ethercat
-    hddc2b::hddc2b
-    LAPACK::LAPACK
-    BLAS::BLAS
-<endif>
-<if(coordination.fsm)>
-    ${coord2b_LIBRARIES}
-<endif>
-<if(communication.ros)>
-    rclcpp::rclcpp
-    realtime_tools::realtime_tools
-<if(communication.ros.action_clients)>
-    ${action_msgs_TARGETS\}
-<endif>
-<if(communication.ros.action_clients || communication.ros.action_server)>
-    rclcpp_action::rclcpp_action
-<endif>
-    Threads::Threads
-<communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
-<endif>
-)
-find_package(Protobuf REQUIRED)
-target_sources(main PRIVATE frame_log.pb.cc)
-target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
-target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
-target_compile_options(main PRIVATE -Wall -Wextra -ftemplate-depth=2048)
 >>
 
 // Only the drivers a binding actually needs: a deployment without a gripper must not have to

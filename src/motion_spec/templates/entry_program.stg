@@ -25,10 +25,8 @@ main_source(configuration, resources, composition, computation, coordination, co
 #include \<cstdint\>
 #include \<random\>
 <endif>
-<if(coordination.fsm)>
 
 <coordination.motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
-<endif>
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
     motion_spec::runtime::install_stop_handlers();
@@ -86,7 +84,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <ros-publish-tick-locals(communication.ros)>
 <endif>
 
-<if(coordination.fsm)>
     struct fsm_nbx *fsm = <coordination.fsm.cpp_namespace>::create_fsm();
     if (!fsm) {
 <if(communication.ros)>
@@ -99,11 +96,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <fsm-active-motion(coordination.motions, coordination.fsm)>
 <fsm-dispatch(coordination.motions, coordination.fsm)>
 
-<endif>
     int _step = 0;
-<if(coordination.fsm)>
     int _fsm_prev_state = -1;
-<endif>
 <if(composition.sampling)>
 <sampling-record(composition.sampling)>
     motion_spec::telemetry::RunPublisher _telemetry(&_sampling_record);
@@ -156,7 +150,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <if(resources.by_kind.serial_chain)>
 <({app-chain-loop-reset-<configuration.backend>})(resources.by_kind.serial_chain, coordination.fsm)>
 <endif>
-<if(coordination.fsm)>
         if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
             _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
             std::cerr \<\< "[fsm] state   " \<\< <coordination.fsm.cpp_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
@@ -212,7 +205,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <if(coordination.perturbations)>
 <perturbation-write-block(coordination.perturbation_bodies)>
 <endif>
-<endif>
 <if(communication.ros)>
 <ros-publish-tick(coordination, communication, computation.views)>
 <endif>
@@ -226,7 +218,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <if(resources.base_owns_runtime)>
 <({<base-runtime-step-impl.(configuration.backend)>})()>
 <endif>
-<if(coordination.fsm)>
         const unsigned int _fsm_state_before = fsm->currentStateIndex;
         fsm_step_nbx(fsm);
         reconfig_event_buffers(fsm->eventData);
@@ -245,7 +236,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
             events.record(static_cast\<int\>(<coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>));
         \}}; separator="\n">
         static_cast\<void\>(_fsm_state_before);
-<endif>
 <if(resources.by_kind.serial_chain)>
 <({app-chain-camera-publish-<configuration.backend>})(composition.scene.cameras, communication.ros)>
 <endif>
@@ -294,9 +284,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 <if(resources.by_kind.mobile_base)>
 <({<app-main-base-stop-impl.(configuration.backend)>})()>
 <endif>
-<if(coordination.fsm)>
     <coordination.fsm.cpp_namespace>::destroy_fsm(fsm);
-<endif>
 <if(communication.ros)>
 
 <ros-shutdown(communication.ros)>
@@ -500,11 +488,9 @@ shared_state_header(configuration, resources, computation, coordination, communi
 
 #include "frame_layout.h"
 #include "runtime.hpp"
-<if(coordination.fsm)>
 #include "coord2b/functions/event_loop.h"
 #include "coord2b/functions/fsm.h"
 #include "<coordination.fsm.header>"
-<endif>
 
 #include \<limits\>
 #include \<memory\>
@@ -512,13 +498,17 @@ shared_state_header(configuration, resources, computation, coordination, communi
 <ros-includes(communication.ros)>
 <endif>
 #include \<kdl/frames.hpp\>
+<if(resources.by_kind.serial_chain)>
 #include \<kdl/chain.hpp\>
 #include \<kdl/jacobian.hpp\>
 #include \<kdl/jntarray.hpp\>
 #include \<kdl/chainfksolverpos_recursive.hpp\>
 #include \<kdl/chainfksolvervel_recursive.hpp\>
+<if(computation.uses.("SolverACHD"))>
 #include \<kdl/chainhdsolver_vereshchagin.hpp\>
+<endif>
 #include \<kdl/chainjnttojacsolver.hpp\>
+<endif>
 <if(resources.by_kind.serial_chain)><solver-rnea-include()><endif>
 <if(resources.by_kind.serial_chain)><({robot-driver-include-<configuration.backend>})(first(resources.by_kind.serial_chain), resources)><endif>
 <if(resources.by_kind.mobile_base)>
@@ -554,9 +544,7 @@ struct robot_io {
 <if(resources.by_kind.mobile_base)>
     mobile_base_robot mobile_base;
 <endif>
-<if(coordination.fsm)>
     struct events *fsm_events = nullptr;
-<endif>
 <if(communication.ros)>
 <ros-io-members(communication.ros)>
 <endif>

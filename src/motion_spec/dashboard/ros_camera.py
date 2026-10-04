@@ -3,8 +3,8 @@
 
 A simulated run records mp4 and replays it; hardware has no recording, so the pane shows what
 the camera publishes right now. Latest-frame slot only, like the shm reader: a dropped frame is
-a frame the viewer never needed. rclpy is imported inside the spin thread -- a dashboard without
-a ROS environment must still serve every other page, and say so in the pane instead.
+a frame the viewer never needed. A dashboard without a ROS environment still serves every other
+page, and says so in the pane instead.
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import threading
 import time
+
+from motion_spec.runs.ros_video import RosImageSubscription, rgb_rows
 
 DEFAULT_TOPIC = "/camera/color/image_raw"
 NODE_NAME = "motion_spec_dashboard_camera"
@@ -25,35 +27,22 @@ def bgr_to_rgb(data: bytes) -> bytes:
     return bytes(swapped)
 
 
-def _packed(msg) -> bytes:
-    """The message's pixels with any row padding dropped, so step never has to be carried on."""
-    data = bytes(msg.data)
-    stride = msg.width * 3
-    if not msg.step or msg.step == stride:
-        return data
-    return b"".join(data[row * msg.step : row * msg.step + stride] for row in range(msg.height))
-
-
 def rgb_frame(msg) -> tuple[int, int, bytes]:
     """(width, height, rgb8 pixels) of one sensor_msgs/Image; bgr8 is swapped on the way through."""
     if msg.encoding not in ("rgb8", "bgr8"):
         raise ValueError(f"unsupported encoding: {msg.encoding}")
-    data = _packed(msg)
+    data = rgb_rows(msg)
     return msg.width, msg.height, bgr_to_rgb(data) if msg.encoding == "bgr8" else data
 
 
-class RosCameraSource:
+class RosCameraSource(RosImageSubscription):
     """One rclpy node spinning in a background thread, holding the newest frame it received."""
 
     def __init__(self, topic: str = DEFAULT_TOPIC):
-        self.topic = topic or DEFAULT_TOPIC
-        self.error: str | None = None
+        super().__init__(topic or DEFAULT_TOPIC, NODE_NAME)
         self._frame: tuple[int, int, int, bytes] | None = None  # seq, width, height, rgb8
         self._seq = 0
         self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._spin, name=NODE_NAME, daemon=True)
         self._thread.start()
 
     def alive(self) -> bool:
@@ -78,40 +67,6 @@ class RosCameraSource:
         with self._lock:
             self._seq += 1
             self._frame = (self._seq, width, height, rgb)
-
-    def _spin(self) -> None:
-        try:
-            import rclpy
-            from rclpy.executors import SingleThreadedExecutor
-            from rclpy.qos import qos_profile_sensor_data
-            from sensor_msgs.msg import Image
-        except ImportError as exc:
-            self.error = f"no ROS env: {exc}"
-            return self._ready.set()
-        # Our own context, so the dashboard never disturbs an rclpy anyone else in this process
-        # initialised.
-        context = rclpy.Context()
-        node = executor = None
-        try:
-            rclpy.init(context=context)
-            node = rclpy.create_node(NODE_NAME, context=context)
-            # Sensor QoS: best-effort still matches a reliable publisher, the reverse does not.
-            node.create_subscription(Image, self.topic, self._absorb, qos_profile_sensor_data)
-            executor = SingleThreadedExecutor(context=context)
-            executor.add_node(node)
-            self._ready.set()
-            while not self._stop.is_set():
-                executor.spin_once(timeout_sec=0.1)
-        except Exception as exc:  # a topic that cannot be subscribed is a pane message, not a crash
-            self.error = str(exc)
-        finally:
-            self._ready.set()
-            if executor is not None:
-                executor.shutdown()
-            if node is not None:
-                node.destroy_node()
-            if context.ok():
-                rclpy.shutdown(context=context)
 
 
 _SOURCE: RosCameraSource | None = None

@@ -9,7 +9,7 @@ import pytest
 from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
-from motion_spec.classes.dynamics import JointPosition
+from motion_spec.classes.dynamics import JointQuantity
 from motion_spec.classes.geometry import Frame, SimplicialComplex
 from motion_spec.classes.solvers import (
     JointForceSpecification,
@@ -90,7 +90,7 @@ def test_a_joint_resolves_to_its_chain_index_or_fails_while_generating(
                 joint_force=joint_forces,
             )
         ],
-        output=[JointPosition("q_wrist", f"{prefix}joint_2")],
+        output=[JointQuantity("q_wrist", f"{prefix}joint_2", "JointPosition")],
         chain=ChainBinding(
             root="base_link",
             end="tip",

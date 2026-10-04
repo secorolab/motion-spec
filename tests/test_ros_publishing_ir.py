@@ -17,7 +17,7 @@ from rdf_utils.namespace import NS_MM_QUDT_QTY
 from rdflib import Dataset, URIRef
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
-from motion_spec.classes.dynamics import JointPosition
+from motion_spec.classes.dynamics import JointQuantity
 from motion_spec.classes.handlers import LevelMonitor
 from motion_spec.rdf_parser.communication import annotate_publish_rates, ros_standing
 from motion_spec.rdf_parser.coordination import _ros_publication
@@ -71,7 +71,11 @@ def test_a_monitor_rate_becomes_the_cycles_between_messages(rate, divider):
     ros = _ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)["ros"]
     motion = SimpleNamespace(
         when_monitors=[],
-        while_monitors=[LevelMonitor("mon-x", "LevelTriggeredMonitor", None, None, ros=ros)],
+        while_monitors=[
+            LevelMonitor(
+                id="mon-x", monitor_type="LevelTriggeredMonitor", error=None, flag=None, ros=ros
+            )
+        ],
         until_monitors=[],
     )
     annotate_publish_rates([motion], 1_000_000)
@@ -217,7 +221,7 @@ def test_a_joint_the_chain_does_not_articulate_is_still_published(reporter: str)
     """A gripper's driver joint is a mimic the chain never articulates, so whoever answers for it
     -- the bound device on hardware, the simulator otherwise -- is the only route to it, and
     iterating the chain alone drops it from the message it belongs in."""
-    driver = [JointPosition("gripper_pos", "r1_g_left_driver_joint")]
+    driver = [JointQuantity("gripper_pos", "r1_g_left_driver_joint", "JointPosition")]
     # A serial chain whose joint-space channels are already mirrored onto the blackboard.
     chain = SimpleNamespace(
         id="r1_solver",

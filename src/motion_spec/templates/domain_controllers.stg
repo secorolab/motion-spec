@@ -7,13 +7,14 @@ import "expr_values.stg"
 
 // Its own generated header rather than part of runtime.hpp, so runtime stays a leaf both in the
 // template import graph and in the generated include graph.
-controller_runtime_header(resources, configuration) ::= <<
+controller_runtime_header(resources, configuration, computation) ::= <<
 #pragma once
 
 #include "runtime.hpp"
 
 namespace motion_spec::runtime {
 
+<if(computation.uses.("Admittance"))>
 // Virtual mass-damper(-spring) admittance filter: turns a measured external-force
 // axis into a per-axis velocity setpoint. vel_/offset_ integrate across control
 // steps (persistent state), so the filter must outlive a single step -- it lives
@@ -80,6 +81,7 @@ class AdmittanceFilter {
     double offset_ = 0.0;
 };
 
+<endif>
 // The tuning a step applies, handed in per call like dt. Kept out of the controller so the
 // numbers stay blackboard values a run artifact can report rather than construction-time state.
 struct PIDGains {
@@ -144,17 +146,25 @@ class PIDControl {
         }
         err_last = 0.0;
         first_sample = true;
+<if(computation.uses.("VelocityProfile"))>
         vp_init = false;
+<endif>
+<if(computation.uses.("Admittance"))>
         adm_filter = AdmittanceFilter{};
+<endif>
     }
 
+<if(computation.uses.("VelocityProfile"))>
     double vp_setpoint = 0.0;
     double vp_velocity = 0.0;
     double vp_accel = 0.0;
     bool vp_init = false;
 
+<endif>
+<if(computation.uses.("Admittance"))>
     AdmittanceFilter adm_filter;
 
+<endif>
   private:
     double err_integ = 0.0;
     double err_last = 0.0;

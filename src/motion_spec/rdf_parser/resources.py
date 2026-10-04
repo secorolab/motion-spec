@@ -27,7 +27,6 @@ from xml.etree import ElementTree
 
 import tomllib
 from motion_spec_dsl.rdf_parser.vocab import (
-    ACT,
     AGN,
     ALGO_EXT,
     APP,
@@ -126,7 +125,7 @@ from motion_spec.classes.solvers import (
     VelocityCompositionSolver,
 )
 from motion_spec.rdf_parser import constraint_handler, quantities
-from motion_spec.rdf_parser.model import local_name, seconds
+from motion_spec.rdf_parser.model import local_name, reader, seconds
 from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER
 from motion_spec.rdf_parser.sampling import unplaced_frames
 
@@ -774,6 +773,7 @@ _ROBOT_MODEL_HINTS = (("kinova_gen3", "KinovaGen3"), ("gen3", "KinovaGen3"))
 _ROBOT_MODEL_BY_DEVICE = {"KinovaGen3-2F85": "KinovaGen3"}
 
 
+@reader
 def scene_graph(model):
     """The imported scene documents on their own, which is what a KDL tree is built from.
 
@@ -782,14 +782,10 @@ def scene_graph(model):
     coordinates at all, so handing the builder the merged graph makes it demand numbers of a
     reading the run has yet to take.
     """
-    cached = model.cache.get("scene_graph")
-    if cached is not None:
-        return cached
     graph = Graph()
     for document in model.graph.graphs():
         if (None, RDF["type"], GEOM_ENT.KinematicTree) in document:
             graph += document
-    model.cache["scene_graph"] = graph
     return graph
 
 
@@ -1065,17 +1061,8 @@ def _runtime_frame(model, frame_node, runtime_prefix, owned_trees):
 _WORLD_OUTPUTS = (
     (GEOM_COORD.PoseCoordinate, quantities.pose),
     (GEOM_COORD.VelocityTwistCoordinate, quantities.velocity_twist),
-    (KC_STAT.JointPositionCoordinate, quantities.joint_position),
-    (KC_STAT.JointVelocityCoordinate, quantities.joint_velocity),
-    (ACT.JointCurrent, quantities.joint_current),
+    *((rdf_type, quantities.joint_quantity) for rdf_type in quantities.JOINT_QUANTITY_TYPES),
     (RBDYN_COORD.WrenchCoordinate, quantities.wrench),
-)
-
-# Every joint-referenced scalar: found by its joint, never by a frame.
-_JOINT_OUTPUT_TYPES = (
-    KC_STAT.JointPositionCoordinate,
-    KC_STAT.JointVelocityCoordinate,
-    ACT.JointCurrent,
 )
 
 
@@ -1084,7 +1071,7 @@ def _observes_in_frame(
 ):
     """Whether an observation is stated in this solver's reference frame, and in which frame node."""
     graph = model.graph
-    if type_ in _JOINT_OUTPUT_TYPES:
+    if type_ in quantities.JOINT_QUANTITY_TYPES:
         joint = graph.value(node, KC_STAT["of-joint"])
         owned = joint is not None and any(iri_is_descendant(t, joint) for t in owned_trees)
 
@@ -1182,7 +1169,7 @@ def _pose_wrt_node(model, node):
 
 def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     """One observation with its frames and names rewritten the way the runtime knows them."""
-    if type_ in _JOINT_OUTPUT_TYPES:
+    if type_ in quantities.JOINT_QUANTITY_TYPES:
         return replace(output, joint_name=f"{setup.runtime.prefix}{output.joint_name}")
     if type_ == GEOM_COORD.VelocityTwistCoordinate:
         seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
@@ -1402,9 +1389,7 @@ def _solver_nodes(model, derivation) -> list:
 _SOLVER_OUTPUTS = (
     (GEOM_COORD["PoseCoordinate"], quantities.pose),
     (GEOM_COORD["VelocityTwistCoordinate"], quantities.velocity_twist),
-    (KC_STAT["JointPositionCoordinate"], quantities.joint_position),
-    (KC_STAT["JointVelocityCoordinate"], quantities.joint_velocity),
-    (ACT["JointCurrent"], quantities.joint_current),
+    *((rdf_type, quantities.joint_quantity) for rdf_type in quantities.JOINT_QUANTITY_TYPES),
     (RBDYN_COORD["WrenchCoordinate"], quantities.wrench),
 )
 
@@ -1784,6 +1769,7 @@ def _placement_of(model, attachment, anchor):
     return _placement(model, body_of_frame(frame, model.graph) if is_frame else frame, anchor)
 
 
+@reader
 def _placement_graph(model):
     """The poses that place something, which is not every pose the graph relates.
 
@@ -1792,9 +1778,6 @@ def _placement_graph(model):
     so a search left to walk them answers where a body sits with a target the arm is moving to,
     or with a coordinate that holds no value until the first cycle.
     """
-    graph = model.cache.get("placement_graph")
-    if graph is not None:
-        return graph
     graph = Graph()
     for triple in model.graph.triples((None, None, None)):
         graph.add(triple)
@@ -1812,7 +1795,6 @@ def _placement_graph(model):
     for relation in list(graph.subjects(RDF["type"], URI_GEOM_TYPE_POSE)):
         if next(graph.subjects(URI_GEOM_PRED_OF_POSE, relation), None) is None:
             graph.remove((relation, None, None))
-    model.cache["placement_graph"] = graph
 
     return graph
 

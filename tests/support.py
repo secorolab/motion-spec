@@ -7,7 +7,7 @@ from __future__ import annotations
 from importlib.resources import files
 from pathlib import Path
 
-from motion_spec.runs.provenance import GRAPH_MOTION_SPEC, PROV_CONTEXT, SCHEMA_VERSION, prov_uri
+from motion_spec.runs.provenance import GRAPH_MOTION_SPEC, PROV_CONTEXT, prov_uri
 
 # Where the installed DSL ships its example models, as `motion-spec examples` reads them.
 DSL_MODELS = Path(str(files("motion_spec_dsl") / "models"))
@@ -19,21 +19,37 @@ METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
 # Nothing recomputes a schema hash after generation; it only has to agree across the files.
 SCHEMA = {
-    "schema_version": 1,
     "frame_layout_version": 1,
     "runtime_rdf_contract_version": 1,
     "generated_by": "test",
     "ir_path": "ir.json",
-    "pools": {"constraints": 1, "monitors": 1, "quantities": 1, "triggers": 2},
+    "pools": {
+        "constraints": 1,
+        "monitors": 1,
+        "quantities": 1,
+        "devices": 0,
+        "triggers": 2,
+        "poses": 0,
+        "twists": 0,
+        "wrenches": 0,
+    },
     "timing": {"nominal_period_ns": 1_000_000},
+    "control_period_ns": 1_000_000,
     "fsm": {
+        "namespace": "https://example.test/",
+        "start": 0,
+        "end": 0,
         "states": [{"index": 0, "id": "S_START", "uri": "https://example.test/S_START"}],
         "events": [],
-        "end": 0,
+        "transitions": [],
     },
     "by_motion": {},
     "platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"},
     "quantities": [{"index": 0, "id": "q0"}],
+    "devices": [],
+    "cameras": [],
+    "constants": [],
+    "spatial": {"poses": [], "twists": [], "wrenches": []},
     "schema_hash": "0123456789abcdef",
 }
 
@@ -58,10 +74,22 @@ FRAME = {
 
 # A schema with constraint, monitor, quantity, trigger and spatial slots, for the dashboard.
 DASHBOARD_SCHEMA = {
-    "schema_version": 1,
     "frame_layout_version": 1,
     "runtime_rdf_contract_version": 1,
-    "pools": {"constraints": 1, "monitors": 1, "quantities": 1, "triggers": 2, "poses": 1},
+    "pools": {
+        "constraints": 1,
+        "monitors": 1,
+        "quantities": 1,
+        "devices": 0,
+        "triggers": 2,
+        "poses": 1,
+        "twists": 0,
+        "wrenches": 0,
+    },
+    "control_period_ns": 1_000_000,
+    "devices": [],
+    "cameras": [],
+    "constants": [],
     "spatial": {
         "poses": [{"index": 0, "id": "tcp_pose", "uri": "https://example.test/tcp_pose"}],
         "twists": [],
@@ -69,24 +97,37 @@ DASHBOARD_SCHEMA = {
     },
     "quantities": [{"index": 0, "id": "dist", "uri": "https://example.test/dist"}],
     "fsm": {
+        "namespace": "https://example.test/",
+        "start": 0,
+        "end": 0,
         "states": [{"index": 0, "id": "S_MOVE", "uri": "https://example.test/S_MOVE"}],
         "events": [],
         "transitions": [],
-        "end": 0,
     },
     "by_motion": {
         "move": {
             "index": 0,
-            "id": "move",
+            "uri": "https://example.test/move",
+            "fsm_state": "S_MOVE",
             "controllers": [
                 {
                     "index": 0,
                     "id": "ctrl_x",
                     "uri": "https://example.test/ctrl_x",
                     "constraint_uri": "https://example.test/constraint_x",
+                    "gains": {},
                 }
             ],
-            "monitors": [{"index": 0, "id": "done_mon", "uri": "https://example.test/done_mon"}],
+            "monitors": [
+                {
+                    "index": 0,
+                    "id": "done_mon",
+                    "uri": "https://example.test/done_mon",
+                    "event_uri": None,
+                    "phase": "until",
+                    "watched": [],
+                }
+            ],
         }
     },
     "platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"},
@@ -95,7 +136,6 @@ DASHBOARD_SCHEMA = {
 
 # The generation document in miniature: one named graph holding one transformation.
 PROVENANCE = {
-    "schema_version": SCHEMA_VERSION,
     "@context": PROV_CONTEXT,
     "@graph": [
         {
@@ -127,35 +167,3 @@ PROVENANCE = {
         }
     ],
 }
-
-
-def load_model(authored, out: Path):
-    """A parsed robmot loaded as generation loads it, in memory: `(Model, framed FSM or None)`."""
-    import rdflib
-    from coord_dsl.generators.fsm import gen_json
-    from coord_dsl.rdf.fsm import get_fsm_graph
-    from motion_spec_dsl.gens import generate
-    from scene_dsl.rdf.scenex import create_scenex_model_graph
-
-    from motion_spec.rdf_parser.model import Model
-
-    dataset, _provenance = generate(authored, out)
-    fsm = None
-    for imported in authored.imports:
-        for document in imported._tx_loaded_models:
-            source = Path(document._tx_filename).resolve()
-            if source.suffix == ".scenex":
-                graph = create_scenex_model_graph(document)
-            elif source.suffix == ".fsm":
-                graph, fsm_ref = get_fsm_graph(document)
-                fsm = {**gen_json(graph, fsm_ref), "namespace_uri": document.fsm.ns.uri}
-            else:
-                continue
-            named = dataset.graph(rdflib.URIRef(source.as_uri()))
-            named += graph
-    model = Model(
-        graph=dataset,
-        app_path=(out / f"{Path(authored._tx_filename).stem}-app.ld.json").resolve(),
-        namespaces=tuple(namespace.uri for namespace in authored.namespaces),
-    )
-    return model, fsm

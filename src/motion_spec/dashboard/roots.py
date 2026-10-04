@@ -20,13 +20,12 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
+from motion_spec.runs.provenance import artifact_size
 from motion_spec.setup import ENVIRONMENT_FILES
 
 # Re-exported: the dashboard's callers ask roots for it, and it is the same removal every
 # other part of motion-spec uses.
 from motion_spec.utils import trash as trash
-
-GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
 
 
 def pidfile(port: int | str, role: str = "dashboard") -> Path:
@@ -174,10 +173,8 @@ def _parsed_json(path: Path, _mtime_ns: int, _size: int) -> dict:
     return json.loads(path.read_text())
 
 
-@lru_cache(maxsize=256)
-def directory_size(path: Path) -> int:
-    """Byte size of one generation bundle, cached for the dashboard session."""
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+# Byte size of one generation bundle, cached for the dashboard session.
+directory_size = lru_cache(maxsize=256)(artifact_size)
 
 
 @lru_cache(maxsize=1)

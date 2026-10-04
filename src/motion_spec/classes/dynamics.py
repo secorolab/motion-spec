@@ -11,11 +11,13 @@ from motion_spec.classes.qudt import Quantity
 
 
 @dataclass
-class JointPosition:
-    """A joint-position quantity for a named joint."""
+class JointQuantity:
+    """A joint position, velocity or motor current for a named joint."""
 
     id: str
     joint_name: str
+    # JointPosition, JointVelocity or JointCurrent.
+    type: str
     # The scene joint itself, so a segment resolves by identity: two grippers on two arms
     # carry the same local joint name and must not resolve to one segment.
     joint_uri: str = field(default="", metadata=INTERNAL)
@@ -29,41 +31,6 @@ class JointPosition:
     # The interval this measurement is read into, as its world block states it; None when the
     # block states none and the reading is taken as the backend reports it.
     normalization: dict | None = None
-    type: str = field(default="JointPosition")
-
-
-@dataclass
-class JointVelocity:
-    """A joint-velocity quantity for a named joint."""
-
-    id: str
-    joint_name: str
-    # The scene joint itself, so a segment resolves by identity: two grippers on two arms
-    # carry the same local joint name and must not resolve to one segment.
-    joint_uri: str = field(default="", metadata=INTERNAL)
-    # Where the joint sits in the chain's joint array, resolved while generating. None for a
-    # joint the chain does not articulate, which is read through its own world port instead.
-    joint_index: int | None = None
-    on_chain: bool = False
-    world_slot: int = 0
-    type: str = field(default="JointVelocity")
-
-
-@dataclass
-class JointCurrent:
-    """A joint motor-current quantity for a named joint."""
-
-    id: str
-    joint_name: str
-    # The scene joint itself, so a segment resolves by identity: two grippers on two arms
-    # carry the same local joint name and must not resolve to one segment.
-    joint_uri: str = field(default="", metadata=INTERNAL)
-    # Where the joint sits in the chain's joint array, resolved while generating. None for a
-    # joint the chain does not articulate, which is read through its own world port instead.
-    joint_index: int | None = None
-    on_chain: bool = False
-    world_slot: int = 0
-    type: str = field(default="JointCurrent")
 
 
 @dataclass

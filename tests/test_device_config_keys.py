@@ -7,9 +7,9 @@ from __future__ import annotations
 import re
 
 import pytest
-from motion_spec_dsl.langs import motion_spec_metamodel
-from support import EXAMPLES, load_model
+from support import EXAMPLES
 
+from motion_spec.generation.pipeline import load_model
 from motion_spec.rdf_parser.ir import generate_ir
 
 
@@ -17,12 +17,8 @@ from motion_spec.rdf_parser.ir import generate_ir
 def test_every_derived_key_matches_the_configs_sections(name: str, tmp_path) -> None:
     """The runner fails a run in both directions, a missing section and an unbound one, so this
     must be an exact set match. [ros.*] configures publishers, not a device the run binds."""
-    ir = generate_ir(
-        *load_model(
-            motion_spec_metamodel().model_from_file(str(EXAMPLES[name] / f"{name}.robmot")),
-            tmp_path / "generated" / "model",
-        )
-    )
+    loaded = load_model(EXAMPLES[name] / f"{name}.robmot", tmp_path / "generated" / "model")
+    ir = generate_ir(loaded.model, loaded.fsm)
     keys = {
         device.config_key
         for solver in ir["resources"]["by_kind"]["serial_chain"]

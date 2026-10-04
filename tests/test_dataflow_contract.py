@@ -117,6 +117,9 @@ def two_motions() -> tuple[dict, list, dict, list, list, dict]:
         ],
         "spatial_samples": {"poses": [{"id": "pose_ee", "index": 0}], "twists": [], "wrenches": []},
         "control_period_ns": 1_000_000,
+        "uris": [],
+        "motions": [],
+        "signals": [],
     }
     return introspection, shared_data, closures, motions, [solver], {}
 
@@ -132,8 +135,20 @@ def schema(two_motions) -> dict:
         # build_schema reads the published IR, so the motions cross as the JSON they serialize to.
         "coordination": {"motions": json.loads(json.dumps(motions, cls=DataclassJSONEncoder))},
         "computation": {"shared_data": [], "closures": {}},
+        "resources": {"by_kind": {}},
+        "composition": {"scene": {"cameras": []}},
     }
-    fsm_ir = {"states": ["S_HOME", "S_ARC"], "events": [], "start_state": "S_HOME"}
+    fsm_ir = {
+        "namespace_uri": "https://example.test/",
+        "states": ["S_HOME", "S_ARC"],
+        "events": [],
+        "start_state": "S_HOME",
+        "end_state": "S_ARC",
+        "state_uris": {},
+        "event_uris": {},
+        "reactions_table": [],
+        "transitions_table": [],
+    }
     return build_schema(ir, ir_path=Path("ir.json"), output_dir=Path("."), fsm_ir=fsm_ir)
 
 

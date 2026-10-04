@@ -344,13 +344,3 @@ def trashed_location(original: Path) -> Path | None:
         return None
     newest = max(records, key=lambda info: info.stat().st_mtime)
     return home / "files" / newest.name.removesuffix(".trashinfo")
-
-
-def trash_if_present(path: Path) -> bool:
-    """Move PATH to the trash when it is there at all, saying whether anything moved."""
-    if not (path.exists() or path.is_symlink()):
-        return False
-    trash(path)
-    return True
-
-

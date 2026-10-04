@@ -17,6 +17,7 @@ from typing import NamedTuple
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
+    ACT,
     AGN,
     ALGO_EXT,
     CSTR,
@@ -102,7 +103,7 @@ from motion_spec.classes.constraints import (
     UnilateralConstraint,
     UnilateralConstraintType,
 )
-from motion_spec.classes.dynamics import JointCurrent, JointPosition, JointVelocity
+from motion_spec.classes.dynamics import JointQuantity
 from motion_spec.classes.geometry import (
     AccelerationTwist,
     Axis,
@@ -1044,40 +1045,28 @@ def duration_quantity(model, node) -> Quantity:
     )
 
 
+# The joint-space coordinates, by the IR type each reads as.
+JOINT_QUANTITY_TYPES = {
+    KC_STAT.JointPositionCoordinate: "JointPosition",
+    KC_STAT.JointVelocityCoordinate: "JointVelocity",
+    ACT.JointCurrent: "JointCurrent",
+}
+
+
 @reader
-def joint_position(model, node) -> JointPosition:
-    """A JointPosition quantity, named by the joint it reads."""
+def joint_quantity(model, node) -> JointQuantity:
+    """A joint position, velocity or motor current, named by the joint it reads."""
     joint = model.graph.value(node, KC_STAT["of-joint"])
     if not isinstance(joint, URIRef):
-        raise ConstraintViolation(
-            "kinematic-chain", f"JointPositionCoordinate '{node}' has no of-joint URI"
-        )
-    return JointPosition(
+        raise ConstraintViolation("kinematic-chain", f"joint quantity '{node}' has no of-joint URI")
+    types = get_node_types(model.graph, node)
+    return JointQuantity(
         model.id(node),
         model.label(joint),
+        next(kind for rdf_type, kind in JOINT_QUANTITY_TYPES.items() if rdf_type in types),
         joint_uri=str(joint),
         normalization=_normalization(model, node),
     )
-
-
-@reader
-def joint_velocity(model, node) -> JointVelocity:
-    """A JointVelocity quantity, named by the joint it reads."""
-    joint = model.graph.value(node, KC_STAT["of-joint"])
-    if not isinstance(joint, URIRef):
-        raise ConstraintViolation(
-            "kinematic-chain", f"JointVelocityCoordinate '{node}' has no of-joint URI"
-        )
-    return JointVelocity(model.id(node), model.label(joint), joint_uri=str(joint))
-
-
-@reader
-def joint_current(model, node) -> JointCurrent:
-    """A JointCurrent quantity, named by the joint whose motor draws it."""
-    joint = model.graph.value(node, KC_STAT["of-joint"])
-    if not isinstance(joint, URIRef):
-        raise ConstraintViolation("actuation", f"JointCurrent '{node}' has no of-joint URI")
-    return JointCurrent(model.id(node), model.label(joint), joint_uri=str(joint))
 
 
 def _normalization(model, node) -> dict | None:

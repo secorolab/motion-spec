@@ -4,8 +4,7 @@ Sim/real parity
 ===============
 
 Where the mj_kdl (simulation) and robif2b (hardware) paths are allowed to differ, where they
-are not, and the external-wrench law. Established 2026-08-06; the empirical record behind the
-wrench law is in ``plans/codegen-architecture/1g-*`` and branch ``plan/1g``. The authoritative
+are not, and the external-wrench law. Established 2026-08-06. The authoritative
 background for the simulation torque path is mj_kdl_wrapper's
 ``docs/howto/torque_control.md`` — read it before touching any of this.
 
@@ -79,7 +78,7 @@ Why the two shapes are each correct for their platform (from the torque_control 
   constraint-torque quantities — same kind, firmware completes — and carries the wrench with
   the dedicated per-segment ``ACHD_fext`` solve.
 
-Compositions that were tried and rejected (2026-08-06, ``plan/1g``) — kept so they are not
+Compositions that were tried and rejected (2026-08-06) — kept so they are not
 re-invented:
 
 - ``RNEA(qdd, 0) + tau_w`` in sim: QACC blow-up at the elbow — a constraint-only torque summed

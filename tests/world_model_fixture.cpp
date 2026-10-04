@@ -55,7 +55,7 @@ void add_arm(KDL::Tree &tree, const std::string &prefix, const std::string &pare
     tree.addSegment(KDL::Segment(prefix + "3", KDL::Joint(prefix + "j3", KDL::Joint::RotX),
                                  KDL::Frame(KDL::Vector(0.02, 0.0, 0.21))),
                     prefix + "2");
-    // The leaf plan 04 gives a posed frame: a constant offset the tree composes itself.
+    // A posed frame's leaf: a constant offset the tree composes itself.
     tree.addSegment(KDL::Segment(prefix + "site", KDL::Joint(KDL::Joint::None),
                                  KDL::Frame(KDL::Rotation::RotY(0.7), KDL::Vector(0.0, 0.03, 0.07))),
                     prefix + "3");

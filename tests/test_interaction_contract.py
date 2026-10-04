@@ -10,12 +10,13 @@ recomputing another motion's state.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.langs import motion_spec_metamodel
-from support import EXAMPLES, load_model
+from support import EXAMPLES
 
+from motion_spec.generation.pipeline import load_model
 from motion_spec.rdf_parser.ir import generate_ir
 
 ARC = EXAMPLES["arc_tracing_with_admittance"] / "arc_tracing_with_admittance.robmot"
@@ -25,18 +26,16 @@ TABLE_EDGE_REACH = Path(__file__).parent / "fixtures" / "table_edge_reach" / "ta
 @pytest.fixture
 def interaction_ir(tmp_path: Path) -> dict:
     """The force-interaction model: admittance, arc re-entry, until groups."""
-    return generate_ir(
-        *load_model(motion_spec_metamodel().model_from_file(str(ARC)), tmp_path)
-    )
+    loaded = load_model(ARC, tmp_path)
+    return generate_ir(loaded.model, loaded.fsm)
 
 
 @pytest.fixture
 def geometric_operators_ir(tmp_path: Path) -> dict:
     """A table-edge reach over Table II of Borghesan et al., "Introducing Geometric Constraint
     Expressions Into Robot Constrained Motion Specification and Control", IEEE RA-L 1(2), 2016."""
-    return generate_ir(
-        *load_model(motion_spec_metamodel().model_from_file(str(TABLE_EDGE_REACH)), tmp_path)
-    )
+    loaded = load_model(TABLE_EDGE_REACH, tmp_path)
+    return generate_ir(loaded.model, loaded.fsm)
 
 
 @pytest.mark.parametrize(
@@ -87,10 +86,14 @@ def test_a_wrench_reaches_the_ir_in_the_frames_its_source_states(
 ) -> None:
     """A measured wrench with no frames stated defaults to its physical sensor frame; one from the
     momentum observer carries the observer's tuning and none of the sensor path."""
-    source = ARC.read_text()
+    # A copy of the examples, so the edited model still finds the scene its example shares.
+    models = shutil.copytree(ARC.parents[1], tmp_path / "models")
+    edited = models / ARC.relative_to(ARC.parents[1])
+    source = edited.read_text()
     assert old in source
-    model = motion_spec_metamodel().model_from_str(source.replace(old, new, 1), file_name=str(ARC))
-    ir = generate_ir(*load_model(model, tmp_path))
+    edited.write_text(source.replace(old, new, 1))
+    loaded = load_model(edited, tmp_path / "model")
+    ir = generate_ir(loaded.model, loaded.fsm)
     outputs = [
         output
         for solver in ir["resources"]["by_kind"]["serial_chain"]

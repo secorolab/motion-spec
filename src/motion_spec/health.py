@@ -121,21 +121,11 @@ _REMEDIES = {
     "ament_package": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "yaml": "uv venv --python /usr/bin/python3 --system-site-packages <venv>",
 }
-# A dependency this checks, and the manifest entry `motion-spec setup` provides it from.
-SETUP_PROVIDES = {
-    "rdf_utils": "rdf-utils",
-    "rec": "rec",
-    "motion_spec_dsl": "motion-spec-dsl",
-    "coord_dsl": "coord-dsl",
-    "scene_dsl": "scene-dsl",
-    "stst": "STSTv4",
-    "coord2b": "coord2b",
-    "orocos_kdl": "orocos_kinematics_dynamics",
-    "mj_kdl_wrapper": "mj_kdl_wrapper",
-    "robif2b": "robif2b",
-    "serial": "serial",
-    "robotiq_driver_noros": "robotiq_driver_noros",
-}
+# Manifest entries whose dependency name is neither the entry's name nor its import name.
+_PROVIDED_AS = {"STSTv4": "stst", "orocos_kinematics_dynamics": "orocos_kdl"}
+# A dependency this checks, and the manifest entry `motion-spec setup` provides it from; filled
+# in from the manifests.
+SETUP_PROVIDES: dict[str, str] = {}
 # In motion_spec.real.repos, filled in from it: only a model that binds them needs them.
 _DEVICE_PACKAGES: set[str] = set()
 # robif2b builds a device wrapper only when told to. Missing here means the flag was off, not
@@ -434,11 +424,12 @@ def _manifest_sources() -> None:
         shipped,
     )
 
-    by_name = {r.name: r for r in manifest_in_force(manifest_files(real=True))}
     real = {r.name for r in read_manifest(shipped(REAL_MANIFEST))}
-    for dependency, name in SETUP_PROVIDES.items():
-        DETAILS[dependency]["source"] = by_name[name].url.removesuffix(".git")
-        if name in real:
+    for repository in manifest_in_force(manifest_files(real=True)):
+        dependency = _PROVIDED_AS.get(repository.name, repository.name.replace("-", "_"))
+        SETUP_PROVIDES[dependency] = repository.name
+        DETAILS[dependency]["source"] = repository.url.removesuffix(".git")
+        if repository.name in real:
             _DEVICE_PACKAGES.add(dependency)
 
 

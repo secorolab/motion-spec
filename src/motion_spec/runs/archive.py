@@ -17,6 +17,7 @@ from motion_spec_dsl.rdf_parser.manifest import (
     metamodels_root,
 )
 from pyshacl import validate
+from rdflib.namespace import PROV
 from rec import State
 
 from motion_spec.runs.provenance import (
@@ -38,19 +39,12 @@ from motion_spec.runs.provenance import (
 
 log = logging.getLogger(__name__)
 
-PROV = rdflib.Namespace("http://www.w3.org/ns/prov#")
-
-MANIFEST_VERSION = 1
 COMPRESSION_LEVEL = 10
 PROV_SHAPES = (("prov.shacl.ttl",), ("prov-extension.shacl.ttl",))
 
 
 class ArchiveError(ValueError):
     """Archive verification failed."""
-
-
-def sha256_file(path: Path) -> str:
-    return artifact_sha256(path)
 
 
 def _copy_file(src: Path, dst: Path) -> None:
@@ -161,7 +155,6 @@ def create_archive_manifest(
     }
     files = {key: value for key, value in files.items() if value is not None}
     manifest = {
-        "manifest_version": MANIFEST_VERSION,
         "run_id": run_id or run_dir.name,
         "files": files,
     }

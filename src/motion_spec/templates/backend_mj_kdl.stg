@@ -597,9 +597,7 @@ app-chain-post-setup-mj_kdl(serial_chain_solvers, motions, agent_homes) ::= <<
 app-chain-loop-reset-mj_kdl(serial_chain_solvers, fsm) ::= <<
         if (_mj_reset_seen) {
             _mj_reset_seen = false;
-<if(fsm)>
             fsm->currentStateIndex = fsm->startStateIndex;
-<endif>
         }
 >>
 

@@ -303,10 +303,10 @@ def monitor_entry(model, node):
     if CSTR_HDL["EdgeTriggeredMonitor"] not in types:
         flag_node = graph.value(node, CSTR_HDL["flag"])
         return LevelMonitor(
-            model.id(node),
-            "LevelTriggeredMonitor",
-            error,
-            model.id(flag_node) if flag_node is not None else None,
+            id=model.id(node),
+            monitor_type="LevelTriggeredMonitor",
+            error=error,
+            flag=model.id(flag_node) if flag_node is not None else None,
             **shared,
             **publication,
         )
@@ -317,11 +317,11 @@ def monitor_entry(model, node):
     debounce = graph.value(node, CSTR_HDL_EXT["debounce-duration"])
 
     return EdgeMonitor(
-        model.id(node),
-        "EdgeTriggeredMonitor",
-        error,
-        event,
-        None,
+        id=model.id(node),
+        monitor_type="EdgeTriggeredMonitor",
+        error=error,
+        event=event,
+        event_idx=None,
         **shared,
         event_uri=str(event_node),
         fallback_motion=model.id(fallback) if fallback is not None else None,

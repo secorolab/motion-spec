@@ -81,7 +81,7 @@ def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
         names.extend(f"m{idx}.{name}" for name, _ in MSLOT)
     fmt += "d" * pools["quantities"]
     names.extend(f"q{idx}" for idx in range(pools["quantities"]))
-    for idx in range(pools.get("devices", 0)):
+    for idx in range(pools["devices"]):
         fmt += "".join(code for _, code in DSLOT)
         names.extend(f"device{idx}.{name}" for name, _ in DSLOT)
     for idx in range(pools["triggers"]):
@@ -94,7 +94,7 @@ def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
         ("twist", VSLOT, "twists"),
         ("wrench", KSLOT, "wrenches"),
     ):
-        for idx in range(pools.get(key, 0)):
+        for idx in range(pools[key]):
             fmt += "".join(code for _, code in slot)
             names.extend(f"{prefix}{idx}.{name}" for name, _ in slot)
     return fmt, names
@@ -112,17 +112,13 @@ def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
 
 def _uri_by_id(ir: dict) -> dict:
     """Map every telemetry id to its canonical URI."""
-    return {
-        row["id"]: row["uri"]
-        for row in ir["communication"]["telemetry"].get("uris", [])
-        if isinstance(row, dict) and row.get("id") and row.get("uri")
-    }
+    return {row["id"]: row["uri"] for row in ir["communication"]["telemetry"]["uris"] if row["uri"]}
 
 
 def _signal_id(value) -> str | None:
     """Id of a signal value (a dict with 'id', a str, or None)."""
     if isinstance(value, dict):
-        return value.get("id")
+        return value["id"]
     if isinstance(value, str):
         return value
     return None
@@ -145,7 +141,8 @@ _EVALUATOR_OPERANDS = {
 def _evaluator_by_error(ir: dict) -> dict:
     """Evaluator closure keyed by every error signal it produces: what computes that error."""
     index: dict = {}
-    for closure in (ir.get("computation", {}).get("closures") or {}).values():
+    # Closure records differ by type, so their keys stay optional.
+    for closure in ir["computation"]["closures"].values():
         if not isinstance(closure, dict) or not str(closure.get("type", "")).endswith("Evaluator"):
             continue
         for error in (closure.get("error"), *(closure.get("errors") or ())):
@@ -179,19 +176,16 @@ def _evaluator_terms(evaluators: dict, error_id: str | None) -> dict:
     }
 
 
-def _controller_slot(
-    row: dict, controller: dict, index: int, uri_by_id: dict, evaluators: dict
-) -> dict:
+def _controller_slot(row: dict, index: int, uri_by_id: dict, evaluators: dict) -> dict:
     """Telemetry slot for a controller: its published row, indexed, with signal URIs.
 
-    `controller` is the coordination record, read only for the measured quantity and the
-    reference value a row names no signal for.
+    A row drops every key it leaves unset, so its signals are read as optional.
     """
     error_id = row.get("error_signal")
     output_id = row.get("output_signal")
     reference_id = row.get("reference_signal")
-    measured_id = row.get("measured_signal") or controller.get("quantity")
-    setpoint_id = reference_id or row.get("setpoint_signal") or controller.get("reference_value")
+    measured_id = row.get("measured_signal")
+    setpoint_id = reference_id or row.get("setpoint_signal")
     measured_derivative_id = row.get("measured_derivative")
     tolerance_id = row.get("tolerance_signal")
     return {
@@ -244,23 +238,24 @@ def _monitor_slot(
     """Telemetry slot for a monitor: trigger, event/flag and active-condition terms.
 
     `row` is the monitor's published telemetry row: it carries the watched constraints, which
-    are construction-only on the coordination record.
+    are construction-only on the coordination record. A row drops the keys it leaves unset; on
+    the record, the event fields exist only on an edge monitor and `flag` only on a level one.
     """
-    error = monitor.get("error")
-    error_id = _signal_id(error) or monitor.get("error_signal")
-    tolerance_id = _signal_id(monitor.get("tolerance")) or monitor.get("tolerance_signal")
+    error = monitor["error"]
+    error_id = _signal_id(error)
+    tolerance_id = _signal_id(monitor["tolerance"])
     event_id = monitor.get("event")
     return {
         "index": index,
-        "id": monitor.get("id"),
-        "uri": uri_by_id.get(monitor.get("id")),
-        "motion": motion.get("id"),
+        "id": monitor["id"],
+        "uri": uri_by_id.get(monitor["id"]),
+        "motion": motion["id"],
         "phase": phase,
         "constraint_ids": row.get("constraint_ids") or [],
         "constraint_uris": row.get("constraint_uris") or [],
         "watched": row.get("watched") or [],
-        "type": monitor.get("monitor_type") or monitor.get("type"),
-        "trigger": "edge" if monitor.get("is_edge_triggered") else "level",
+        "type": monitor["monitor_type"],
+        "trigger": "edge" if monitor["is_edge_triggered"] else "level",
         "event": event_id,
         "event_uri": monitor.get("event_uri") or uri_by_id.get(event_id),
         "event_name": monitor.get("event_name"),
@@ -269,11 +264,10 @@ def _monitor_slot(
         "error_signal_uri": uri_by_id.get(error_id),
         # Only when authored: an always-present key would move every schema hash.
         **({"tolerance_signal": tolerance_id} if tolerance_id else {}),
-        "composite_error": isinstance(error, dict)
-        and error.get("type") in {"Pose", "VelocityTwist"},
-        "has_active": monitor.get("has_active", False),
-        "active_terms": monitor.get("active_terms"),
-        "active_any": monitor.get("active_any", False),
+        "composite_error": isinstance(error, dict) and error["type"] in {"Pose", "VelocityTwist"},
+        "has_active": monitor["has_active"],
+        "active_terms": monitor["active_terms"],
+        "active_any": monitor["active_any"],
         "fallback_motion": monitor.get("fallback_motion"),
         **_evaluator_terms(evaluators, error_id),
     }
@@ -290,55 +284,44 @@ def _fsm_meta(fsm_ir: dict | None) -> dict:
             "events": [],
             "transitions": [],
         }
-    state_index = {state: idx for idx, state in enumerate(fsm_ir.get("states", []))}
-    event_index = {event: idx for idx, event in enumerate(fsm_ir.get("events", []))}
+    state_index = {state: idx for idx, state in enumerate(fsm_ir["states"])}
+    event_index = {event: idx for idx, event in enumerate(fsm_ir["events"])}
     # A transition can be driven by more than one event, so collect them all rather than let the
     # last reaction win. `event`/`event_index` stay singular and are only filled when the answer is
     # unambiguous; a reader that needs the full picture uses `events`/`event_indices`.
     transition_events: dict[str, list] = {}
-    for reaction in fsm_ir.get("reactions_table", []):
-        transition_events.setdefault(reaction.get("do_transition"), []).append(
-            reaction.get("when_event")
+    for reaction in fsm_ir["reactions_table"]:
+        transition_events.setdefault(reaction["do_transition"], []).append(reaction["when_event"])
+    transitions = []
+    for transition in fsm_ir["transitions_table"]:
+        events = transition_events.get(transition["id"]) or []
+        sole_event = events[0] if len(events) == 1 else None
+        transitions.append(
+            {
+                "id": transition["id"],
+                "uri": transition["uri"],
+                "from": state_index.get(transition["from_state"]),
+                "to": state_index.get(transition["to_state"]),
+                "event": sole_event,
+                "event_index": event_index.get(sole_event),
+                "events": events,
+                "event_indices": [event_index[event] for event in events if event in event_index],
+            }
         )
 
-    def _sole_event(transition_id):
-        events = transition_events.get(transition_id) or []
-        return events[0] if len(events) == 1 else None
-
     return {
-        "namespace": fsm_ir.get("namespace_uri"),
-        "start": state_index.get(fsm_ir.get("start_state")),
-        "end": state_index.get(fsm_ir.get("end_state")),
+        "namespace": fsm_ir["namespace_uri"],
+        "start": state_index.get(fsm_ir["start_state"]),
+        "end": state_index.get(fsm_ir["end_state"]),
         "states": [
-            {
-                "index": idx,
-                "id": state,
-                "uri": (fsm_ir.get("state_uris") or {}).get(state),
-                "motion": None,
-            }
+            {"index": idx, "id": state, "uri": fsm_ir["state_uris"].get(state), "motion": None}
             for state, idx in state_index.items()
         ],
         "events": [
-            {"index": idx, "id": event, "uri": (fsm_ir.get("event_uris") or {}).get(event)}
+            {"index": idx, "id": event, "uri": fsm_ir["event_uris"].get(event)}
             for event, idx in event_index.items()
         ],
-        "transitions": [
-            {
-                "id": transition.get("id"),
-                "uri": transition.get("uri"),
-                "from": state_index.get(transition.get("from_state")),
-                "to": state_index.get(transition.get("to_state")),
-                "event": _sole_event(transition.get("id")),
-                "event_index": event_index.get(_sole_event(transition.get("id"))),
-                "events": transition_events.get(transition.get("id")) or [],
-                "event_indices": [
-                    event_index[event]
-                    for event in transition_events.get(transition.get("id")) or []
-                    if event in event_index
-                ],
-            }
-            for transition in fsm_ir.get("transitions_table", [])
-        ],
+        "transitions": transitions,
     }
 
 
@@ -349,9 +332,9 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     evaluators = _evaluator_by_error(ir)
     fsm = _fsm_meta(fsm_ir)
     motions = ir["coordination"]["motions"]
-    motion_by_id = {motion.get("id"): motion for motion in motions}
-    monitor_rows = {row.get("id"): row for row in telemetry.get("monitors") or ()}
-    controller_rows = {row.get("id"): row for row in telemetry.get("controllers") or ()}
+    motion_by_id = {motion["id"]: motion for motion in motions}
+    monitor_rows = {row["id"]: row for row in telemetry["monitors"]}
+    controller_rows = {row["id"]: row for row in telemetry["controllers"]}
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
     # Slots are keyed by the motion that computes them, not by the coordinator state that happens
@@ -360,81 +343,73 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     # so nothing downstream has to agree with a second generator about what index 3 means.
     by_motion = {}
     # ir_gen owns this index (add_motion_function_interfaces); read it, never re-derive it.
-    motion_index = {motion.get("id"): motion.get("index", -1) for motion in motions}
+    motion_index = {motion["id"]: motion["index"] for motion in motions}
     if -1 in motion_index.values():
         raise RuntimeError(f"motions without an telemetry index: {list(motion_index)}")
 
     for motion in motions:
-        state_id = motion.get("fsm_state") or motion.get("id")
+        state_id = motion["fsm_state"] or motion["id"]
         if state_id in state_by_id:
-            state_by_id[state_id]["motion"] = motion.get("id")
+            state_by_id[state_id]["motion"] = motion["id"]
         elif not fsm_ir:
             states.append(
                 {
                     "index": len(states),
                     "id": state_id,
-                    "uri": uri_by_id.get(motion.get("id")),
-                    "motion": motion.get("id"),
+                    "uri": uri_by_id.get(motion["id"]),
+                    "motion": motion["id"],
                 }
             )
 
         controller_slots = [
-            _controller_slot(controller_rows[controller["id"]], controller, idx, uri_by_id, evaluators)
-            for idx, controller in enumerate(motion.get("controllers", []))
+            _controller_slot(controller_rows[controller["id"]], idx, uri_by_id, evaluators)
+            for idx, controller in enumerate(motion["controllers"])
         ]
         monitor_sources = []
         for phase in ("while", "until"):
             monitor_sources.extend(
-                (phase, monitor, motion) for monitor in motion.get(f"{phase}_monitors", [])
+                (phase, monitor, motion) for monitor in motion[f"{phase}_monitors"]
             )
-        for gate_motion_id in motion.get("fsm_when_gate_motions", []):
+        for gate_motion_id in motion["fsm_when_gate_motions"]:
             gate_motion = motion_by_id.get(gate_motion_id)
             if gate_motion is None:
                 continue
             monitor_sources.extend(
-                ("when", monitor, gate_motion) for monitor in gate_motion.get("when_monitors", [])
+                ("when", monitor, gate_motion) for monitor in gate_motion["when_monitors"]
             )
         monitor_slots = [
             _monitor_slot(
-                monitor,
-                idx,
-                owner,
-                uri_by_id,
-                phase,
-                monitor_rows.get(monitor.get("id"), {}),
-                evaluators,
+                monitor, idx, owner, uri_by_id, phase, monitor_rows[monitor["id"]], evaluators
             )
             for idx, (phase, monitor, owner) in enumerate(monitor_sources)
         ]
         by_motion[motion["id"]] = {
             "index": motion_index[motion["id"]],
-            "uri": uri_by_id.get(motion.get("id")),
+            "uri": uri_by_id.get(motion["id"]),
             "fsm_state": state_id if state_id in state_by_id else None,
             "controllers": controller_slots,
             "monitors": monitor_slots,
         }
 
     quantities = [
-        {"index": idx, **quantity}
-        for idx, quantity in enumerate(
-            telemetry.get("quantity_samples") or telemetry.get("quantities", [])
-        )
+        {"index": idx, **quantity} for idx, quantity in enumerate(telemetry["quantity_samples"])
     ]
     # A gated slot keeps its global index for the whole run -- only the set_ call is gated -- so a
     # decoder resolves "unset" against the writing motions here rather than guessing from absence.
-    spatial = telemetry.get("spatial_samples") or {"poses": [], "twists": [], "wrenches": []}
-    dataflow = telemetry.get("dataflow") or {}
+    spatial = telemetry["spatial_samples"]
+    dataflow = telemetry["dataflow"]
+    # A model with no arm has no serial chain.
     devices = sorted(
         (
             {
                 "index": device["health_index"],
                 "id": device["config_key"],
-                "required_by_motion": device.get("required_by_motion") or [],
+                "required_by_motion": device["required_by_motion"],
             }
-            for solver in ir.get("resources", {}).get("by_kind", {}).get("serial_chain", [])
-            if solver.get("runtime", {}).get("owner")
-            for device in solver.get("devices", [])
-            if device.get("health_index") is not None
+            for solver in ir["resources"]["by_kind"].get("serial_chain", [])
+            if solver["runtime"]["owner"]
+            for device in solver["devices"]
+            if device["health_index"] is not None
         ),
         key=lambda device: device["index"],
     )
@@ -446,21 +421,22 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
             key: camera[key]
             for key in ("id", "width", "height", "rate_hz", "uri", "topic", "message")
         }
-        for camera in ir.get("composition", {}).get("scene", {}).get("cameras") or []
+        for camera in ir["composition"]["scene"]["cameras"]
     ]
 
-    def gate(category: str, slot_index: int, cadence) -> None:
-        # cadence is already expressed in motions (plan 011 §2b) -- no coordinator in between.
+    gated_slots = [
+        ("quantities", quantity["index"], quantity.get("cadence")) for quantity in quantities
+    ] + [
+        (category, row["index"], (dataflow.get(row["id"]) or {}).get("cadence"))
+        for category, rows in spatial.items()
+        for row in rows
+    ]
+    # A cadence is already expressed in motions -- no coordinator in between.
+    for category, slot_index, cadence in gated_slots:
         for motion_id in cadence["motions"] if isinstance(cadence, dict) else ():
             entry = by_motion.get(motion_id)
             if entry is not None:
                 entry.setdefault(category, []).append(slot_index)
-
-    for quantity in quantities:
-        gate("quantities", quantity["index"], quantity.get("cadence"))
-    for category, rows in spatial.items():
-        for row in rows:
-            gate(category, row["index"], (dataflow.get(row["id"]) or {}).get("cadence"))
     max_controllers = max((len(entry["controllers"]) for entry in by_motion.values()), default=0)
     max_monitors = max((len(entry["monitors"]) for entry in by_motion.values()), default=0)
     pools = {
@@ -470,7 +446,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "devices": len(devices),
         # Sized for the events one tick can produce; the heartbeat is not recorded, so it
         # needs no slot.
-        "triggers": max(TRIGGER_POOL_SIZE, len(fsm.get("events", [])), max_monitors),
+        "triggers": max(TRIGGER_POOL_SIZE, len(fsm["events"]), max_monitors),
         "poses": len(spatial["poses"]),
         "twists": len(spatial["twists"]),
         "wrenches": len(spatial["wrenches"]),
@@ -485,27 +461,27 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         # validator read one fact rather than sniffing a derived agent id.
         "platform": ir["configuration"]["platform"],
         "pools": pools,
-        "timing": {"nominal_period_ns": telemetry.get("control_period_ns")},
-        "control_period_ns": telemetry.get("control_period_ns"),
+        "timing": {"nominal_period_ns": telemetry["control_period_ns"]},
+        "control_period_ns": telemetry["control_period_ns"],
         "fsm": fsm,
         "by_motion": by_motion,
-        "motions": telemetry.get("motions", []),
-        "controllers": telemetry.get("controllers", []),
-        "monitors": telemetry.get("monitors", []),
+        "motions": telemetry["motions"],
+        "controllers": telemetry["controllers"],
+        "monitors": telemetry["monitors"],
         "quantities": quantities,
         "devices": devices,
         "cameras": cameras,
         # Written once at init: one copy in the header says everything repeating it per tick would.
-        "constants": telemetry.get("constants", []),
+        "constants": telemetry["constants"],
         # The dataflow contract for everything that survives into the layout, so a reader can see
         # who writes each value and when without re-deriving it from the model graph.
         "catalogue": [
             {"id": member_id, **entry}
-            for member_id, entry in (telemetry.get("dataflow") or {}).items()
+            for member_id, entry in dataflow.items()
             if entry["storage"] != "absent"
         ],
         "spatial": spatial,
-        "signals": telemetry.get("signals", []),
+        "signals": telemetry["signals"],
     }
     schema["schema_hash"] = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[
         :16
@@ -524,9 +500,9 @@ def build_frame_layout(schema: dict) -> dict:
         "schema_hash": schema["schema_hash"],
         # The runner records the run before any log exists, so this one fact cannot
         # come from the log's own header.
-        "platform": schema.get("platform") or {},
+        "platform": schema["platform"],
         # Recording is chosen before a run starts, so the choice is offered from here.
-        "cameras": schema.get("cameras") or [],
+        "cameras": schema["cameras"],
         "fields": fields,
     }
     layout["frame_layout_hash"] = hashlib.sha256(
@@ -542,30 +518,25 @@ def _uri_comment(uri: str | None) -> str:
 
 def build_telemetry_model(schema: dict, ir: dict) -> dict:
     """Per-FSM-state sample model (controller/monitor exprs, quantity/spatial ids) that the telemetry_model template renders."""
-    shared_ids = {
-        item.get("id")
-        for item in ir["computation"]["shared_data"]
-        if isinstance(item, dict) and item.get("id")
-    }
+    shared_ids = {item["id"] for item in ir["computation"]["shared_data"]}
     # A value only its own motion recomputes is stale whenever another motion is active, so its
     # sample call moves into that motion's case; one written by the global schedule stays
     # unconditional.
-    spatial = schema.get("spatial", {"poses": [], "twists": [], "wrenches": []})
+    spatial = schema["spatial"]
     slots = {
         "quantities": {
             q["index"]: {"index": q["index"], "desc": q.get("sample_desc")}
-            for q in schema.get("quantities", [])
+            for q in schema["quantities"]
         },
         **{
             category: {row["index"]: {"index": row["index"], "id": row["id"]} for row in rows}
             for category, rows in spatial.items()
         },
     }
+    # A motion entry carries a category only when one of its slots is gated to it.
     gated = {
         category: {
-            index
-            for entry in schema.get("by_motion", {}).values()
-            for index in entry.get(category, [])
+            index for entry in schema["by_motion"].values() for index in entry.get(category, [])
         }
         for category in slots
     }
@@ -574,39 +545,39 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
         for category, by_index in slots.items()
     }
     cases = []
-    for entry in schema.get("by_motion", {}).values():
+    for entry in schema["by_motion"].values():
         controllers = []
-        for slot in entry.get("controllers", []):
+        for slot in entry["controllers"]:
             # error/output are the controller's own dedicated shared fields (never views), so the
             # template reads them with shared-sig. measured/setpoint may reference a view, so they
-            # go through access-expr(id, views) instead.
+            # go through access-expr(id, views) instead. A slot names a tolerance only when authored.
             for role in ("error_signal", "tolerance_signal", "output_signal"):
                 if slot.get(role) and slot[role] not in shared_ids:
                     raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
             controllers.append(
                 {
-                    "index": slot.get("index", 0),
-                    "uri_comment": _uri_comment(slot.get("uri")),
-                    "error_signal": slot.get("error_signal") or None,
+                    "index": slot["index"],
+                    "uri_comment": _uri_comment(slot["uri"]),
+                    "error_signal": slot["error_signal"] or None,
                     "tolerance_signal": slot.get("tolerance_signal") or None,
-                    "output_signal": slot.get("output_signal") or None,
-                    "measured_signal": slot.get("measured_signal"),
-                    "setpoint_signal": slot.get("setpoint_signal"),
+                    "output_signal": slot["output_signal"] or None,
+                    "measured_signal": slot["measured_signal"],
+                    "setpoint_signal": slot["setpoint_signal"],
                 }
             )
         monitors = []
-        for slot in entry.get("monitors", []):
+        for slot in entry["monitors"]:
             # Active (aggregate/elapsed) monitors: the boolean value/satisfied condition is
             # rendered from the structured terms by the bool-condition template. Plain error
             # monitors: sample the error value + constraint_satisfied (a plain shared field).
-            if slot.get("has_active"):
+            if slot["has_active"]:
                 monitors.append(
                     {
-                        "index": slot.get("index", 0),
-                        "uri_comment": _uri_comment(slot.get("uri")),
+                        "index": slot["index"],
+                        "uri_comment": _uri_comment(slot["uri"]),
                         "has_active": True,
-                        "active_terms": slot.get("active_terms"),
-                        "active_any": slot.get("active_any", False),
+                        "active_terms": slot["active_terms"],
+                        "active_any": slot["active_any"],
                     }
                 )
             else:
@@ -615,17 +586,17 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
                         raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
                 monitors.append(
                     {
-                        "index": slot.get("index", 0),
-                        "uri_comment": _uri_comment(slot.get("uri")),
+                        "index": slot["index"],
+                        "uri_comment": _uri_comment(slot["uri"]),
                         "has_active": False,
-                        "value_signal": slot.get("error_signal") or None,
-                        "composite_error": slot.get("composite_error", False),
+                        "value_signal": slot["error_signal"] or None,
+                        "composite_error": slot["composite_error"],
                         "tolerance_signal": slot.get("tolerance_signal") or None,
                     }
                 )
         cases.append(
             {
-                "index": entry.get("index", -1),
+                "index": entry["index"],
                 "controllers": controllers,
                 "monitors": monitors,
                 **{
@@ -646,7 +617,7 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
     """
     schema = build_schema(ir, ir_path=ir_path, output_dir=output_dir, fsm_ir=fsm_ir)
     layout = build_frame_layout(schema)
-    end_state = schema.get("fsm", {}).get("end")
+    end_state = schema["fsm"]["end"]
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
     header_record = build_frame_log_header_record(schema)
@@ -665,7 +636,7 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
             "schema_hash": schema["schema_hash"],
             "frame_layout_hash": layout["frame_layout_hash"],
             "end_state": end_state if end_state is not None else -1,
-            "nominal_period_ns": schema.get("control_period_ns") or 0,
+            "nominal_period_ns": schema["control_period_ns"] or 0,
             "header_record_rows": _hex_rows(header_record),
         },
         "model": build_telemetry_model(schema, ir),
@@ -702,8 +673,10 @@ def _constraint_iris(slot_entry: dict) -> list:
 
 def _fill_slot(slot, slot_entry: dict) -> None:
     """The fields a controller and a monitor share, and the signal ids this message carries."""
-    slot.number, slot.id = slot_entry["index"], slot_entry.get("id") or ""
-    slot.iri = slot_entry.get("uri") or ""
+    slot.number, slot.id = slot_entry["index"], slot_entry["id"]
+    slot.iri = slot_entry["uri"] or ""
+    # A controller slot names one constraint, a monitor slot a list; the signal ids and the
+    # evaluator terms are there only when the slot has them.
     # The scalar only when it is unambiguous: an aggregate monitor watches several.
     iris = _constraint_iris(slot_entry)
     if len(iris) == 1:
@@ -732,93 +705,92 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header.format_version = frame_log_pb.FORMAT_VERSION
     header.schema_hash = schema["schema_hash"]
     header.descriptor_set = frame_log_pb.descriptor_set()
-    header.trigger_pool = schema["pools"].get("triggers", 0)
-    platform = schema.get("platform") or {}
-    header.platform_name = platform.get("name") or ""
-    header.simulated = bool(platform.get("simulated"))
-    fsm = schema.get("fsm") or {}
-    end_state = fsm.get("end")
+    header.trigger_pool = schema["pools"]["triggers"]
+    platform = schema["platform"]
+    # A real platform has no name; a simulator does.
+    header.platform_name = platform["name"] or ""
+    header.simulated = bool(platform["simulated"])
+    fsm = schema["fsm"]
+    end_state = fsm["end"]
     header.end_state = end_state if end_state is not None else -1
-    header.nominal_period_ns = schema.get("control_period_ns") or 0
-    header.fsm_namespace = fsm.get("namespace") or ""
+    header.nominal_period_ns = schema["control_period_ns"] or 0
+    header.fsm_namespace = fsm["namespace"] or ""
 
-    spatial = schema.get("spatial") or {}
+    spatial = schema["spatial"]
+    # A quantity row carries the IRI it was registered under; a spatial or device row may not.
     for category, entries in (
-        ("quantities", schema.get("quantities") or ()),
-        ("poses", spatial.get("poses") or ()),
-        ("twists", spatial.get("twists") or ()),
-        ("wrenches", spatial.get("wrenches") or ()),
-        ("devices", schema.get("devices") or ()),
+        ("quantities", schema["quantities"]),
+        ("poses", spatial["poses"]),
+        ("twists", spatial["twists"]),
+        ("wrenches", spatial["wrenches"]),
+        ("devices", schema["devices"]),
     ):
-        for position, entry in enumerate(sorted(entries, key=lambda e: e.get("index", 0))):
+        for entry in sorted(entries, key=lambda e: e["index"]):
             slot = getattr(header, category).add()
-            slot.number, slot.id = entry.get("index", position), entry.get("id") or ""
+            slot.number, slot.id = entry["index"], entry["id"]
             slot.iri = entry.get("uri") or ""
 
-    state_index = {
-        row["id"]: row["index"] for row in (fsm.get("states") or ()) if isinstance(row, dict)
-    }
-    for motion_id, entry in (schema.get("by_motion") or {}).items():
+    state_index = {row["id"]: row["index"] for row in fsm["states"]}
+    for motion_id, entry in schema["by_motion"].items():
         gate = header.motions.add()
         gate.index, gate.id = entry["index"], motion_id
-        gate.iri = entry.get("uri") or ""
-        gate.fsm_state = state_index.get(entry.get("fsm_state"), -1)
+        gate.iri = entry["uri"] or ""
+        gate.fsm_state = state_index.get(entry["fsm_state"], -1)
         for category in ("quantities", "poses", "twists", "wrenches"):
             getattr(gate, category).extend(entry.get(category, ()))
-        for slot_entry in entry.get("controllers", ()):
+        for slot_entry in entry["controllers"]:
             slot = gate.controllers.add()
             _fill_slot(slot, slot_entry)
-            for role, value in (slot_entry.get("gains") or {}).items():
+            for role, value in slot_entry["gains"].items():
                 gain = slot.gains.add()
                 gain.role, gain.value = role, float(value)
-        for slot_entry in entry.get("monitors", ()):
+        for slot_entry in entry["monitors"]:
             slot = gate.monitors.add()
             _fill_slot(slot, slot_entry)
             # The event it fires: runtime.ttl attributes an occurrence to it, not to the slot.
-            slot.event_iri = slot_entry.get("event_uri") or ""
-            slot.phase = slot_entry.get("phase") or ""
+            slot.event_iri = slot_entry["event_uri"] or ""
+            slot.phase = slot_entry["phase"]
             slot.constraint_iris.extend(_constraint_iris(slot_entry))
-            # An aggregate monitor's members, each with the error it is judged by.
-            for member in slot_entry.get("watched") or ():
+            # An aggregate monitor's members, each with the error it is judged by; a member's
+            # signals are dropped when unset.
+            for member in slot_entry["watched"]:
                 watched = slot.watched.add()
-                watched.id = member.get("id") or ""
-                watched.iri = member.get("uri") or member.get("iri") or ""
-                watched.error_id = member.get("error_signal") or member.get("error_id") or ""
-                watched.tolerance_id = (
-                    member.get("tolerance_signal") or member.get("tolerance_id") or ""
-                )
+                watched.id = member["id"]
+                watched.iri = member["uri"] or ""
+                watched.error_id = member.get("error_signal") or ""
+                watched.tolerance_id = member.get("tolerance_signal") or ""
 
     for key, target in (("states", header.fsm_states), ("events", header.fsm_events)):
-        for index, row in enumerate(fsm.get(key) or ()):
-            row = row if isinstance(row, dict) else {"id": row}
+        for row in fsm[key]:
             named = target.add()
-            named.number = row.get("index", index)
-            named.id = str(row.get("id") or "")
-            named.iri = row.get("uri") or ""
+            named.number = row["index"]
+            named.id = str(row["id"])
+            named.iri = row["uri"] or ""
 
-    for index, row in enumerate(fsm.get("transitions") or ()):
+    for index, row in enumerate(fsm["transitions"]):
         transition = header.fsm_transitions.add()
-        transition.index, transition.id = index, str(row.get("id") or "")
-        transition.iri = row.get("uri") or ""
+        transition.index, transition.id = index, str(row["id"])
+        transition.iri = row["uri"] or ""
         # -1, not 0: 0 is a real state index, so a missing endpoint must not read as one.
-        transition.from_state = row["from"] if row.get("from") is not None else -1
-        transition.to_state = row["to"] if row.get("to") is not None else -1
-        event_index = row.get("event_index")
+        transition.from_state = row["from"] if row["from"] is not None else -1
+        transition.to_state = row["to"] if row["to"] is not None else -1
+        event_index = row["event_index"]
         transition.event_index = event_index if event_index is not None else -1
-        transition.event_indices.extend(row.get("event_indices") or ())
+        transition.event_indices.extend(row["event_indices"])
 
-    for entry in schema.get("constants") or ():
+    for entry in schema["constants"]:
         constant = header.constants.add()
         constant.id = entry["id"]
-        constant.source_id = entry.get("source_id") or ""
-        constant.value = float(entry.get("value") or 0.0)
+        constant.source_id = entry["source_id"]
+        constant.value = float(entry["value"])
+        # A constant drops the IRI and the readers it has none of.
         constant.uri = entry.get("uri") or ""
         # Empty means the deriver looked and found nobody, not that it did not look: scene
         # geometry is baked into poses at generation time and no reader binds it.
         for reader in entry.get("consumers") or ():
             consumer = constant.consumers.add()
-            consumer.id = reader.get("id") or ""
-            consumer.kind = reader.get("kind") or ""
-            consumer.role = reader.get("role") or ""
+            consumer.id = reader["id"]
+            consumer.kind = reader["kind"]
+            consumer.role = reader["role"]
 
     return rec.SerializeToString()

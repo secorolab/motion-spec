@@ -229,7 +229,10 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
         _require_rec_provenance(
             rec_graph, recorded_files, rec_rel, prov_uri(f"run:{manifest['run_id']}")
         )
-        _validate_shacl(recorded_files, rec_rel, *PROV_SHAPES, ("rec", "rec.shacl.ttl"))
+        # What the run used was generated, so the generation's provenance describes it.
+        _validate_shacl(
+            recorded_files + provenance_graph, rec_rel, *PROV_SHAPES, ("rec", "rec.shacl.ttl")
+        )
     return manifest
 
 

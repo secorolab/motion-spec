@@ -3,7 +3,7 @@
 """What is computed, and in what order.
 
 Sections, in order: ``normalize`` · the operator protocol · the operator tables ·
-``build_closures`` · ``Schedule`` · the closure indexes.
+``build_functions`` · ``Schedule`` · the function indexes.
 
 This module never asks what a value *is* -- that is ``quantities.py``'s question. It asks which
 computations the model implies, what each call reads and writes, and in what order they run.
@@ -65,10 +65,12 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_M,
     URI_QUDT_UNIT_RAD,
 )
-from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
 from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, SOSA
+from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
 
+from motion_spec.classes.geometry import Direction, Orientation, Pose, Position, SpatialCoordinate
+from motion_spec.classes.qudt import FreeVector, Quantity, SetpointQuantity
 from motion_spec.rdf_parser.model import identifier, local_name, reader
 
 
@@ -83,8 +85,8 @@ def normalize(model) -> None:
     Pose reference transforms run first: they rewrite the reference a distance may then be taken
     between.
     """
-    _materialize_pose_reference_transforms(model)
-    _materialize_linear_distance_operations(model)
+    materialize_pose_reference_transforms(model)
+    materialize_linear_distance_operations(model)
     _materialize_link_pair_poses(model)
 
 
@@ -251,7 +253,7 @@ def _recorded_distance_operand(graph, distance, role):
     return graph.value(usage, PROV.entity) if usage is not None else None
 
 
-def _materialize_linear_distance_operations(model) -> None:
+def materialize_linear_distance_operations(model) -> None:
     """Expand authored linear-distance relations into codegen operations.
 
     The DSL graph states only the two pose endpoints; the inverse/composition path between their
@@ -340,7 +342,7 @@ def _materialize_linear_distance_operations(model) -> None:
                 model.derived.add((direction_op, GEOM_OP.pose, relative_pose))
 
 
-def _materialize_pose_reference_transforms(model) -> None:
+def materialize_pose_reference_transforms(model) -> None:
     """Re-express a full-pose equality reference into the constrained pose's frame.
 
     A full-pose EqualityConstraint states its reference in whatever frame it was authored; when
@@ -412,7 +414,7 @@ def _materialize_link_pair_poses(model) -> None:
     one link with respect to another has no producer. When both links are also stated in one
     common frame C, the link-pair pose is their composition:
     ``X_wrt_of = Inverse(X_C_wrt) * X_C_of``. With no such pair the pose stays unwritten, which
-    the dataflow check reports -- and authoring the two common-frame poses is the fix.
+    the data access check reports -- and authoring the two common-frame poses is the fix.
     """
     graph = model.graph
     frames = {}
@@ -440,36 +442,38 @@ def _materialize_link_pair_poses(model) -> None:
         _compose(model, node, "compose-link-pair", inverted, of_in_shared, node)
 
 
-# Every operator answers three questions, and each answers all three: what closure one of its
-# calls renders to (`closure_step`), what data its inputs read (`operand_inputs`), and what calls
+# Every operator answers three questions, and each answers all three: what function one of its
+# calls renders to (`function_step`), what data its inputs read (`operand_inputs`), and what calls
 # produce a given output (`scheduler_step`). An operator with nothing to say returns None or an
 # empty step rather than omitting the method, so `Schedule` never probes for one.
 
 
-def _parse_argument(graph, closure_id, argument, to_id):
-    """Resolve a closure argument (input/output/parameter) to id(s); a lone one collapses to a
-    scalar. An authored bound is named, never copied: the closure carries the quantity's id and
-    the call site reads it off the blackboard, so the model's number has one source of truth.
+def _parse_argument(graph, function_id, argument, to_id):
+    """Resolve a function argument (input/output/parameter) to id(s); a lone one collapses to a
+    scalar. An authored bound is named, never copied: the function carries the quantity's id and
+    the call site reads it off the algorithm data, so the model's number has one source of truth.
     """
-    unique = list({to_id(node) for node in graph[closure_id:argument]})
+    unique = list({to_id(node) for node in graph[function_id:argument]})
     if not unique:
         return None
 
     return unique[0] if len(unique) == 1 else unique
 
 
-def _fill_closure_args(graph, closure, to_id, op, closure_id, input_subject) -> None:
-    """Fill a closure's input/output/parameter slots; inputs may hang off another subject.
+def _fill_function_args(graph, function, to_id, op, function_id, input_subject) -> None:
+    """Fill a function's input/output/parameter slots; inputs may hang off another subject.
     Insertion order is the emitted JSON key order.
     """
     for input_ in op.input:
-        closure[identifier(local_name(input_))] = _parse_argument(
+        function[identifier(local_name(input_))] = _parse_argument(
             graph, input_subject, input_, to_id
         )
     for output in op.output:
-        closure[identifier(local_name(output))] = _parse_argument(graph, closure_id, output, to_id)
+        function[identifier(local_name(output))] = _parse_argument(
+            graph, function_id, output, to_id
+        )
     for param in op.parameters:
-        closure[identifier(local_name(param))] = _parse_argument(graph, closure_id, param, to_id)
+        function[identifier(local_name(param))] = _parse_argument(graph, function_id, param, to_id)
 
 
 def _operator_inputs(graph, operator_id, inputs) -> set:
@@ -505,7 +509,7 @@ def _constraint_inputs(graph, operator_id, inputs) -> set:
 
 class Operator:
     """A schedulable RDF computation: it maps a call's graph inputs, outputs and parameters to a
-    closure, and participates in the output-to-input scheduling walk.
+    function, and participates in the output-to-input scheduling walk.
     """
 
     schedulable = True
@@ -518,11 +522,11 @@ class Operator:
         self.output = list(output)
         self.parameters = list(parameters)
 
-    def closure_step(self, model, node):
-        """The closure this operator's call at `node` renders to."""
-        closure = {"id": model.id(node), "type": self.keyword}
-        _fill_closure_args(model.graph, closure, model.id, self, node, node)
-        return closure
+    def function_step(self, model, node):
+        """The function this operator's call at `node` renders to."""
+        function = {"id": model.id(node), "type": self.keyword}
+        _fill_function_args(model.graph, function, model.id, self, node, node)
+        return function
 
     def operand_inputs(self, model, node):
         """Data-structure nodes feeding this call's inputs."""
@@ -555,20 +559,18 @@ class VelocityProfileOperator(Operator):
         inputs = super().operand_inputs(model, node)
         reference = graph.value(node, ALGO_EXT.out)
         constraint = graph.value(predicate=CSTR["reference-value"], object=reference)
-        measured = (
-            graph.value(constraint, CSTR.quantity) if constraint is not None else None
-        )
+        measured = graph.value(constraint, CSTR.quantity) if constraint is not None else None
         return inputs | {measured} if measured is not None else inputs
 
 
 class Specification(Operator):
-    """Not a computation: no closure and no schedule entry, but it propagates outputs to inputs so
+    """Not a computation: no function and no schedule entry, but it propagates outputs to inputs so
     further computations are found.
     """
 
     schedulable = False
 
-    def closure_step(self, model, node):
+    def function_step(self, model, node):
         """None: a specification states a fact, so there is nothing to call."""
         return
 
@@ -660,21 +662,21 @@ class ErrorEvaluator:
             ),
         ]
 
-    def closure_step(self, model, node):
-        """The error-evaluator closure, dispatching on the constraint type."""
+    def function_step(self, model, node):
+        """The error-evaluator function, dispatching on the constraint type."""
         from motion_spec.rdf_parser.quantities import goal_status_act
 
         graph = model.graph
         constraint_id = graph.value(node, CSTR_HDL["constraint"])
         # A goal status is runtime-written, never computed: its equality is read directly by
-        # the monitor's goal-status term, so the evaluator yields no closure (elapsed precedent).
+        # the monitor's goal-status term, so the evaluator yields no function (elapsed precedent).
         quantity = graph.value(constraint_id, CSTR["quantity"])
         if goal_status_act(model, quantity) is not None:
             return None
         for operator in self.cstr_op:
             if operator.type_ not in get_node_types(graph, constraint_id):
                 continue
-            closure = {
+            function = {
                 "id": model.id(node),
                 "type": self.keyword,
                 "constraint": operator.keyword,
@@ -688,18 +690,16 @@ class ErrorEvaluator:
             if operator.type_ == CSTR["EqualityConstraint"]:
                 authored = _authored_error_normalization(model, constraint_id)
                 if authored is not None:
-                    closure["error_normalization"] = authored
+                    function["error_normalization"] = authored
                 else:
                     joint = (
-                        graph.value(quantity, KC_STAT["of-joint"])
-                        if quantity is not None
-                        else None
+                        graph.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
                     )
                     if joint is not None and local_name(joint) in continuous_joint_leaves(model):
-                        closure["angular_wrap"] = True
-            _fill_closure_args(graph, closure, model.id, operator, node, constraint_id)
+                        function["angular_wrap"] = True
+            _fill_function_args(graph, function, model.id, operator, node, constraint_id)
 
-            return closure  # first matching constraint type wins
+            return function  # first matching constraint type wins
 
         # An authored bound that reaches no evaluator is never compared anywhere in the program,
         # so say which constraint states it rather than emit a program that ignores it.
@@ -756,20 +756,16 @@ class AssignmentEvaluator:
             CSTR["EqualityConstraint"], [CSTR["quantity"], CSTR["reference-value"]], []
         )
 
-    def closure_step(self, model, node):
-        """The assignment-evaluator closure (equality constraint only)."""
+    def function_step(self, model, node):
+        """The assignment-evaluator function (equality constraint only)."""
         graph = model.graph
         constraint_id = graph.value(node, CSTR_HDL["constraint"])
         if self.cstr_op.type_ not in get_node_types(graph, constraint_id):
             return None
-        closure = {
-            "id": model.id(node),
-            "type": self.keyword,
-            "constraint": self.cstr_op.keyword,
-        }
-        _fill_closure_args(graph, closure, model.id, self.cstr_op, node, constraint_id)
+        function = {"id": model.id(node), "type": self.keyword, "constraint": self.cstr_op.keyword}
+        _fill_function_args(graph, function, model.id, self.cstr_op, node, constraint_id)
 
-        return closure
+        return function
 
     def operand_inputs(self, model, node):
         """Data-structure nodes feeding the assignment's inputs."""
@@ -794,7 +790,7 @@ def _output_predicates(op) -> set:
 
 
 # A path is geometry: data with no output, so it is never found by the output-to-input walk and
-# yields no closure of its own. The evaluator that traverses it is the computation, and folds the
+# yields no function of its own. The evaluator that traverses it is the computation, and folds the
 # path's geometry into its call.
 _OPS_PATH = [
     Specification(GEOM_PATH["LinearPath"], [GEOM_PATH["start"], GEOM_PATH["goal"]], []),
@@ -987,12 +983,12 @@ OPS_SOLVER = [
     Specification(SLV["ForceDistributionSolver"], [SLV["force"]], []),
 ]
 
-# Closure kinds no operator fully registers: "Controller" and the pose-equality
-# "PoseDiffEvaluator" closures are hand-built by
-# constraint_handler.augment_closures; AssignmentEvaluator's write is one of its *inputs*
+# Function kinds no operator fully registers: "Controller" and the pose-equality
+# "PoseDiffEvaluator" functions are hand-built by
+# constraint_handler.augment_functions; AssignmentEvaluator's write is one of its *inputs*
 # (`quantity`, the value it assigns into), not its (empty) declared output; PathEvaluator's
-# `setpoint` is folded on by the PathEvaluator closure hook, not declared as an operator output.
-_EXTRA_CLOSURE_OUTPUTS = {
+# `setpoint` is folded on by the PathEvaluator function hook, not declared as an operator output.
+_EXTRA_FUNCTION_OUTPUTS = {
     "AssignmentEvaluator": ("quantity",),
     "PathEvaluator": ("setpoint",),
     "Controller": ("control_signal",),
@@ -1000,9 +996,9 @@ _EXTRA_CLOSURE_OUTPUTS = {
 }
 
 
-def _closure_output_fields() -> dict[str, set[str]]:
-    """Per closure type, the field names it writes: derived from the operator registries' own
-    declared outputs (a Specification writes no closure at all and is skipped), plus the kinds
+def _function_output_fields() -> dict[str, set[str]]:
+    """Per function type, the field names it writes: derived from the operator registries' own
+    declared outputs (a Specification writes no function at all and is skipped), plus the kinds
     above that no operator fully accounts for.
     """
     table: dict[str, set[str]] = {}
@@ -1012,36 +1008,36 @@ def _closure_output_fields() -> dict[str, set[str]]:
         table.setdefault(op.keyword, set()).update(
             identifier(local_name(pred)) for pred in _output_predicates(op)
         )
-    for key, extra in _EXTRA_CLOSURE_OUTPUTS.items():
+    for key, extra in _EXTRA_FUNCTION_OUTPUTS.items():
         table.setdefault(key, set()).update(extra)
 
     return table
 
 
-_CLOSURE_OUTPUT_FIELDS = _closure_output_fields()
+_FUNCTION_OUTPUT_FIELDS = _function_output_fields()
 
 
-def closure_output_ids(closure: dict) -> set[str]:
-    """Data ids written by a generated closure call."""
+def function_output_ids(function: dict) -> set[str]:
+    """Data ids written by a generated function call."""
     outputs = {
         value
-        for field in _CLOSURE_OUTPUT_FIELDS.get(closure.get("type"), ())
-        if isinstance((value := closure.get(field)), str)
+        for field in _FUNCTION_OUTPUT_FIELDS.get(function.get("type"), ())
+        if isinstance((value := function.get(field)), str)
     }
     outputs.update(
         sample["id"]
-        for sample in closure.get("internal_state_samples", ())
+        for sample in function.get("internal_state_samples", ())
         if isinstance(sample, dict) and isinstance(sample.get("id"), str)
     )
-    if closure.get("assign_goal") and isinstance(closure.get("goal"), str):
-        outputs.add(closure["goal"])
+    if function.get("assign_goal") and isinstance(function.get("goal"), str):
+        outputs.add(function["goal"])
 
     return outputs
 
 
 def _path_fields(model, path_node) -> dict:
     """The path's geometry, as fields of the evaluator call that traverses it: the shape decides
-    the maths, so the closure takes the path's type and carries its parameters directly.
+    the maths, so the function takes the path's type and carries its parameters directly.
     """
     path_types = get_node_types(model.graph, path_node)
     spec = next((s for s in _OPS_PATH if s.type_ in path_types), None)
@@ -1060,19 +1056,19 @@ def _path_fields(model, path_node) -> dict:
     return fields
 
 
-def _fold_path(model, node, closure) -> None:
+def _fold_path(model, node, function) -> None:
     """The geometry decides the maths; each caller samples the same curve."""
     fields = _path_fields(model, model.graph.value(node, GEOM_OP_EXT.path))
-    closure["shape"] = fields.pop("type")
-    closure.update(fields)
+    function["shape"] = fields.pop("type")
+    function.update(fields)
 
 
-def _fold_path_evaluator(model, node, closure) -> None:
+def _fold_path_evaluator(model, node, function) -> None:
     """A path evaluator writes a setpoint as well as sampling the curve."""
     reference = model.graph.value(node, GEOM_OP.out)
     if reference is not None:
-        closure["setpoint"] = model.id(reference)
-    _fold_path(model, node, closure)
+        function["setpoint"] = model.id(reference)
+    _fold_path(model, node, function)
 
 
 class _FilterBinding(NamedTuple):
@@ -1082,7 +1078,7 @@ class _FilterBinding(NamedTuple):
     controller: object
 
 
-def _filter_controller(model, node, closure) -> _FilterBinding:
+def _filter_controller(model, node, function) -> _FilterBinding:
     """The constraint a filter's output drives, and the controller that drives it."""
     graph = model.graph
     reference = graph.value(node, ALGO_EXT.out)
@@ -1090,7 +1086,7 @@ def _filter_controller(model, node, closure) -> _FilterBinding:
     if constraint is None:
         raise ConstraintViolation(
             "computation",
-            f"{closure['type']} '{closure['id']}' output is not bound to a constraint.",
+            f"{function['type']} '{function['id']}' output is not bound to a constraint.",
         )
     # Evaluators and monitors carry cstr-hdl:constraint too; filter state belongs to the controller.
     controller = ensure_one_typed_subject_uri(
@@ -1098,31 +1094,31 @@ def _filter_controller(model, node, closure) -> _FilterBinding:
     )
     if controller is None:
         raise ConstraintViolation(
-            "computation", f"{closure['type']} '{closure['id']}' constraint has no controller."
+            "computation", f"{function['type']} '{function['id']}' constraint has no controller."
         )
 
     return _FilterBinding(constraint, controller)
 
 
-def _fold_admittance(model, node, closure) -> None:
+def _fold_admittance(model, node, function) -> None:
     """An admittance filter keeps state, so it names the controller that owns it."""
-    _constraint, controller = _filter_controller(model, node, closure)
-    closure["controller"] = model.id(controller)
+    _constraint, controller = _filter_controller(model, node, function)
+    function["controller"] = model.id(controller)
 
 
-def _fold_velocity_profile(model, node, closure) -> None:
+def _fold_velocity_profile(model, node, function) -> None:
     """A physical profile keeps state and starts from the constraint's measured quantity."""
-    constraint, controller = _filter_controller(model, node, closure)
-    closure["controller"] = model.id(controller)
-    closure["measured"] = model.id(model.graph.value(constraint, CSTR.quantity))
-    closure["profile_target"] = closure.pop("target")
-    if closure.get("path") is not None:
-        closure["profile_shape"] = closure["shape"]
-        _fold_path(model, node, closure)
+    constraint, controller = _filter_controller(model, node, function)
+    function["controller"] = model.id(controller)
+    function["measured"] = model.id(model.graph.value(constraint, CSTR.quantity))
+    function["profile_target"] = function.pop("target")
+    if function.get("path") is not None:
+        function["profile_shape"] = function["shape"]
+        _fold_path(model, node, function)
 
 
-# Per operator type, the post-processing its closure needs beyond its declared operands.
-_CLOSURE_HOOKS = {
+# Per operator type, the post-processing its function needs beyond its declared operands.
+_FUNCTION_HOOKS = {
     GEOM_OP_EXT.PathProjection: _fold_path,
     GEOM_OP_EXT.PathTangentFrame: _fold_path,
     GEOM_OP_EXT.PathEvaluator: _fold_path_evaluator,
@@ -1131,29 +1127,29 @@ _CLOSURE_HOOKS = {
 }
 
 
-def build_closures(model, operators) -> dict:
-    """The closure each call of these operators renders to.
+def build_functions(model, operators) -> dict:
+    """The function each call of these operators renders to.
 
     Parameters:
         operators: one of the operator tables, or a concatenation of them
 
     Returns:
-        one closure dict per call, keyed by the call's generated id; an operator that yields no
-        closure for a call (a specification, a goal-status evaluator the monitor reads directly)
+        one function dict per call, keyed by the call's generated id; an operator that yields no
+        function for a call (a specification, a goal-status evaluator the monitor reads directly)
         contributes nothing
     """
-    closures = {}
+    functions = {}
     for operator in operators:
         for node in model.graph.subjects(RDF["type"], operator.type_):
-            closure = operator.closure_step(model, node)
-            if not closure:
+            function = operator.function_step(model, node)
+            if not function:
                 continue
-            hook = _CLOSURE_HOOKS.get(operator.type_)
+            hook = _FUNCTION_HOOKS.get(operator.type_)
             if hook is not None:
-                hook(model, node, closure)
-            closures[model.id(node)] = closure
+                hook(model, node, function)
+            functions[model.id(node)] = function
 
-    return closures
+    return functions
 
 
 class Schedule:
@@ -1226,7 +1222,7 @@ class Schedule:
                         data_structures.add(data_in)
 
             # An inline/declared Pose is no operator's output, so follow its per-axis views to
-            # schedule the closures producing its components.
+            # schedule the functions producing its components.
             view_subobjects = (
                 graph.value(view, MAP["subobject"])
                 for view in graph.subjects(MAP["superobject"], data_out)
@@ -1262,7 +1258,7 @@ class Schedule:
                 if op.type_ not in node_types:
                     continue
                 inputs.update(op.operand_inputs(model, node))
-                for out in getattr(op, "output", ()):
+                for out in op.output if isinstance(op, Operator) else ():
                     for output in model.graph.objects(node, out):
                         producers_of.setdefault(output, set()).add(call)
             call_inputs[call] = inputs
@@ -1296,32 +1292,32 @@ class Schedule:
         return result
 
 
-class ClosureMaps(NamedTuple):
-    """Per data id: the closures that write it, and the ids they read."""
+class FunctionMaps(NamedTuple):
+    """Per data id: the functions that write it, and the ids they read."""
 
     producer: dict
     operands: dict
 
 
-def closure_maps(closures: dict) -> ClosureMaps:
+def function_maps(functions: dict) -> FunctionMaps:
     """Who writes each data id, and what its writers read.
 
     A data id several motions write has several writers; it reads what any of them reads.
     """
     output_map: dict[str, set[str]] = {}
     input_map: dict[str, set[str]] = {}
-    for closure_id, closure in closures.items():
-        outputs = closure_output_ids(closure)
+    for function_id, function in functions.items():
+        outputs = function_output_ids(function)
         inputs = {
             value
-            for key, value in closure.items()
+            for key, value in function.items()
             if key not in {"id", "type"} and isinstance(value, str) and value not in outputs
         }
         for output in outputs:
-            output_map.setdefault(output, set()).add(closure_id)
+            output_map.setdefault(output, set()).add(function_id)
             input_map.setdefault(output, set()).update(inputs)
 
-    return ClosureMaps(output_map, input_map)
+    return FunctionMaps(output_map, input_map)
 
 
 def declaring_block(model, node):
@@ -1336,11 +1332,11 @@ def declaring_block(model, node):
     return block
 
 
-def closure_owner_map(model, closures: dict) -> dict[str, str]:
-    """The motion whose context declares the quantities each closure reads.
+def function_owner_map(model, functions: dict) -> dict[str, str]:
+    """The motion whose context declares the quantities each function reads.
 
-    The backward schedule walk can reach another motion's closure, which would then run whenever
-    that unrelated motion is active. A closure reading only shared context has no owner and stays
+    The backward schedule walk can reach another motion's function, which would then run whenever
+    that unrelated motion is active. A function reading only shared context has no owner and stays
     available to all.
     """
     motions = set(model.graph.objects(None, CSTR_HDL["motion"]))
@@ -1348,8 +1344,8 @@ def closure_owner_map(model, closures: dict) -> dict[str, str]:
     for node in set(model.graph.subjects()):
         if not isinstance(node, URIRef):
             continue
-        closure_id = model.id(node)
-        if closure_id not in closures:
+        function_id = model.id(node)
+        if function_id not in functions:
             continue
         owners = {
             block
@@ -1357,12 +1353,12 @@ def closure_owner_map(model, closures: dict) -> dict[str, str]:
             if isinstance(obj, URIRef) and (block := declaring_block(model, obj)) in motions
         }
         if len(owners) == 1:
-            owner_map[closure_id] = model.id(owners.pop())
+            owner_map[function_id] = model.id(owners.pop())
 
     return owner_map
 
 
-def data_reference_map(data_structures, closures: dict) -> dict[str, str]:
+def data_reference_map(data_structures, functions: dict) -> dict[str, str]:
     """The id each data id takes its reference value from.
 
     Two sources say it: a record carrying `reference_value`, and an assignment evaluator binding
@@ -1370,81 +1366,84 @@ def data_reference_map(data_structures, closures: dict) -> dict[str, str]:
     """
     references: dict[str, str] = {}
     for item in data_structures:
-        reference = getattr(item, "reference_value", None)
-        reference_id = reference if isinstance(reference, str) else getattr(reference, "id", None)
-        if reference_id:
-            references[item.id] = reference_id
-    for closure in closures.values():
-        if closure.get("type") != "AssignmentEvaluator":
+        if isinstance(item, Quantity) and item.reference_value:
+            references[item.id] = item.reference_value
+    for function in functions.values():
+        if function.get("type") != "AssignmentEvaluator":
             continue
-        quantity_id = closure.get("quantity")
-        reference_id = closure.get("reference_value")
+        quantity_id = function.get("quantity")
+        reference_id = function.get("reference_value")
         if isinstance(quantity_id, str) and isinstance(reference_id, str):
             references[quantity_id] = reference_id
 
     return references
 
 
-def path_projections_for_motion(schedule: list, closures: dict) -> list[dict]:
+def path_projections_for_motion(schedule: list, functions: dict) -> list[dict]:
     """The path projections a motion runs, with the measurements that re-arm on entry.
 
     Returns:
         one entry per projection call, in schedule order, carrying its path parameter and the
         along-path speed measured beside it
     """
-
-    def calls_of(type_):
-        return [
-            call
-            for call in dict.fromkeys(schedule)
-            if isinstance(closures.get(call), dict) and closures[call].get("type") == type_
-        ]
-
-    speeds = [closures[call]["along_speed"] for call in calls_of("TwistToLinearVelocityAlong")]
-
+    calls = {"PathProjection": [], "TwistToLinearVelocityAlong": []}
+    for call in schedule:
+        function = functions.get(call)
+        if (
+            isinstance(function, dict)
+            and function.get("type") in calls
+            and call not in calls[function["type"]]
+        ):
+            calls[function["type"]].append(call)
     return [
-        {"id": call, "parameter": closures[call]["path_parameter"], "along_speed": speed}
-        for call, speed in zip(calls_of("PathProjection"), speeds)
+        {
+            "id": call,
+            "parameter": functions[call]["path_parameter"],
+            "along_speed": functions[speed]["along_speed"],
+        }
+        for call, speed in zip(calls["PathProjection"], calls["TwistToLinearVelocityAlong"])
     ]
 
 
 def _is_pose(item) -> bool:
     """True when a data structure is a Pose quantity, however its kind was stated."""
-    if item is None:
-        return False
-    if getattr(item, "type", None) == "Pose":
+    if isinstance(item, Pose):
         return True
-    kind = getattr(item, "quantity_kind", None)
-    kinds = kind if isinstance(kind, list) else [kind]
-    return any(getattr(entry, "id", None) == "Pose" for entry in kinds)
+    if isinstance(item, (Quantity, FreeVector, SetpointQuantity, Position, Orientation)):
+        kinds = [item.quantity_kind]
+    elif isinstance(item, (Direction, SpatialCoordinate)):
+        kinds = item.quantity_kind
+    else:
+        kinds = []
+    return any(kind.id == "Pose" for kind in kinds)
 
 
-def resolve_closure_operands(closures: dict, indexes, data_structures: list) -> None:
-    """Fold in the operands a path closure can only resolve once poses exist.
+def resolve_function_operands(functions: dict, indexes, data_structures: list) -> None:
+    """Fold in the operands a path function can only resolve once poses exist.
 
     In place. A linear goal becomes per-axis components when the pose is declared, and stays a
-    shared-signal reference otherwise; an arc's end is checked to be a pose, because the template
+    data-signal reference otherwise; an arc's end is checked to be a pose, because the template
     renders its position and its orientation.
 
     Raises:
         ConstraintViolation: an arc path ends at something that is not a pose.
     """
-    data_by_id = {item.id: item for item in data_structures if getattr(item, "id", None)}
-    for closure in closures.values():
-        shape = closure.get("shape")
+    data_by_id = {item.id: item for item in data_structures if item.id}
+    for function in functions.values():
+        shape = function.get("shape")
         if shape == "LinearPath":
-            goal = closure.get("goal")
+            goal = function.get("goal")
             if not isinstance(goal, str):
                 continue
-            if goal in indexes.pose_components and closure.get("type") == "PathProjection":
+            if goal in indexes.pose_components and function.get("type") == "PathProjection":
                 # The template builds the pose frame. Only the projection assigns: it is scheduled
                 # before the frame and the evaluator, which read the same shared goal.
-                closure["goal_components"] = indexes.pose_components[goal]
-                closure["assign_goal"] = True
+                function["goal_components"] = indexes.pose_components[goal]
+                function["assign_goal"] = True
             else:
-                # goal is a shared signal id (already on the closure as closure["goal"]).
-                closure["assign_goal"] = False
+                # goal is a shared signal id (already on the function as function["goal"]).
+                function["assign_goal"] = False
         elif shape == "Arc":
-            end = closure.get("end")
+            end = function.get("end")
             if not isinstance(end, str) or not _is_pose(data_by_id.get(end)):
                 raise ConstraintViolation("geometry", "Arc path end must be a Pose quantity.")

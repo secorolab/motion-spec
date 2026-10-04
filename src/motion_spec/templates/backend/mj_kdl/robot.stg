@@ -1,0 +1,967 @@
+// SPDX-License-Identifier: MPL-2.0
+// The MuJoCo+KDL simulation: the robot, the platform it drives, and its CMake.
+
+backend-name() ::= "mj_kdl"
+
+cmake-languages() ::= "CXX"
+cmake-find() ::= "find_package(mj_kdl_wrapper 0.4.1 REQUIRED CONFIG)"
+cmake-link(resources) ::= "    mj_kdl_wrapper::mj_kdl_wrapper"
+
+// The camera publisher is an optional target of the wrapper, so ask for the target rather than a
+// version: a wrapper built without ROS satisfies the find_package above and still lacks it.
+cmake-camera-check() ::= <<
+if(NOT TARGET mj_kdl_wrapper::camera_ros)
+    message(FATAL_ERROR
+      "the installed mj_kdl_wrapper has no camera_ros target; "
+      "rebuild mj_kdl_wrapper with ROS on PATH (MJ_KDL_WITH_ROS defaults to AUTO)")
+endif()
+>>
+cmake-camera-link() ::= "    mj_kdl_wrapper::camera_ros"
+
+// The provider address of one port of the world table; a kind the simulation provides nothing
+// for renders a null address, which startup refuses by name.
+world-port-address(kind, port) ::= <<
+<({<world-port.(kind)>})(port)>
+>>
+
+world-port ::= [
+    "free_root": "world-port-free-root",
+    "free_root_seq": "world-port-free-root-seq",
+    "joint": "world-port-joint",
+    "joint_velocity": "world-port-joint-velocity",
+    "aux_cmd": "world-port-aux-cmd",
+    "wrench_cmd": "world-port-wrench-cmd",
+    default: "world-port-none"
+]
+
+// A platform that drives no chain still needs the MuJoCo types its robot_io holds; with a chain
+// in the scene the chain's own driver include has already brought them in, and the header guard
+// makes the second include free.
+mobile-base-driver-include() ::= <<
+#include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
+>>
+
+// The platform is read and driven straight out of the simulation's model and data; there is no
+// fieldbus between them.
+mobile-base-robot-struct() ::= <<
+struct mobile_base_robot {
+    mjModel *model = nullptr;
+    mjData *data = nullptr;
+};
+>>
+
+// The simulation gravity-compensates the ACHD command with a separate RNE pass.
+solver-state-extra-ACHD(solver) ::= <<
+    std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
+>>
+
+// The one place a sign is not the author's: this pass gravity-compensates the ACHD command, so
+// it is built with the field itself rather than with the root acceleration ACHD was given.
+solver-init-extra-ACHD(solver, chain_solver, motion_driver) ::= <<
+        state.<solver.id>.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity_compensation)><chain_solver.gravity_compensation; separator=", "><else>0.0, 0.0, 0.0<endif>));
+>>
+
+// ACHD's constraint torque lives in the gravity-absorbed ABA frame (~ M*qdd - c); MuJoCo's
+// qfrc_applied needs M*qdd + c, so RNEA re-prices the resolved qdd. Zero wrench here, always:
+// qdd already carries the wrench, so the re-priced torque holds J^T f_ext without RNEA seeing it.
+solver-run-finalize(solver, motion_driver) ::= <<
+    state.<solver.id>.rnea->CartToJnt(
+        state.<solver.id>.q,
+        state.<solver.id>.qd,
+        state.<solver.id>.qdd,
+        state.<solver.id>.f_ext_zero,
+        state.<solver.id>.tau_ctrl);
+>>
+
+// The drive torque the torque actuators actually produced (qfrc_actuator), after MuJoCo's clamp.
+estimator-tau(solver) ::= "*robot.ports_<solver.runtime.id>[i].effort"
+
+// A platform that drives no chain still has to advance the simulation it runs in.
+base-runtime-step() ::= <<
+        if (!mj_kdl::step(&mj_env)) break;
+>>
+
+robot-driver-include(solver, resources) ::= <<
+#include \<mj_kdl_wrapper/mj_kdl_wrapper.hpp\>
+<resources.world_trees:{tree |#include "headers/<tree.header>"}; separator="\n">
+>>
+
+robot-state-struct(solver) ::= <<
+>>
+
+robot-manipulator-struct(solver) ::= <<
+struct manipulator_robot {
+    mj_kdl::Robot *robot = nullptr;
+    KDL::Chain *chain = nullptr;
+    // Where this chain's endpoints sit in the one world model. Per instance, though the struct
+    // type is shared: two arms sliced from one tree end at different segments.
+    int world_root = -1;
+    int world_tip = -1;
+    // This chain's root, inverted, for the cycle the world was last updated for. Held here
+    // rather than in a motion's state: it is a fact about the world, and the loop computes it
+    // whether or not a motion that reads it is running.
+    KDL::Frame world_to_root = KDL::Frame::Identity();
+};
+>>
+
+world-chain-port-address(solver, index) ::= <<
+world_ports{.position = &mj_<solver.runtime.id>.jnt_pos_msr[<index>], .velocity = &mj_<solver.runtime.id>.jnt_vel_msr[<index>], .effort = &mj_<solver.runtime.id>.jnt_trq_msr[<index>], .effort_cmd = &mj_<solver.runtime.id>.jnt_trq_cmd[<index>]\}
+>>
+
+world-port-free-root(port)     ::= "&mj_free_root_<port.slot>->pose"
+world-port-free-root-seq(port) ::= "&mj_free_root_<port.slot>->seq"
+world-port-joint(port)          ::= "&mj_scene_joint_<port.slot>->position"
+world-port-joint-velocity(port) ::= "&mj_scene_joint_<port.slot>->velocity"
+world-port-aux-cmd(port)        ::= "&mj_actuator_<port.slot>->command"
+world-port-wrench-cmd(port)     ::= "&mj_body_wrench_<port.slot>->wrench"
+
+// Every non-robot primitive the model reads or pushes, resolved once against the compiled scene.
+scene-state-setup(world_ports) ::= <<
+<world_ports.free_roots:{port |     mj_kdl::SceneFreeBodySlot *mj_free_root_<port.slot> = mj_kdl::bind_scene_free_body(&mj_env.scene, "<port.mapping>");
+    if (!mj_free_root_<port.slot>) {
+        std::cerr \<\< "bind_scene_free_body() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.joints:{port |     mj_kdl::SceneJointSlot *mj_scene_joint_<port.slot> = mj_kdl::bind_scene_joint(&mj_env.scene,"<port.mapping>");
+    if (!mj_scene_joint_<port.slot>) {
+        std::cerr \<\< "bind_scene_joint() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.aux_cmds:{port |     mj_kdl::SceneActuatorSlot *mj_actuator_<port.slot> = mj_kdl::bind_scene_actuator(&mj_env.scene,"<port.mapping>");
+    if (!mj_actuator_<port.slot>) {
+        std::cerr \<\< "bind_scene_actuator() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+<world_ports.wrench_cmds:{port |     mj_kdl::SceneWrenchSlot *mj_body_wrench_<port.slot> = mj_kdl::bind_scene_wrench(&mj_env.scene,"<port.mapping>");
+    if (!mj_body_wrench_<port.slot>) {
+        std::cerr \<\< "bind_scene_wrench() failed for '<port.mapping>'\\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}}; separator="\n">
+>>
+
+// The simulator's own gravity, turned into the chain root's axes the world poses are stated in.
+wrench-gravity(solver, chain_solver) ::= <<
+robot.<solver.id>.world_to_root.M * KDL::Vector(robot.<solver.id>.robot->model->opt.gravity[0], robot.<solver.id>.robot->model->opt.gravity[1], robot.<solver.id>.robot->model->opt.gravity[2])
+>>
+
+// The simulated sensor keeps its sample on the robot handle the scene registered it with.
+wrench-raw(solver, out) ::= <<
+    const mj_kdl::ForceTorqueSensor *ft_<out.id> = nullptr;
+    for (const auto &_sensor : robot.<solver.id>.robot->ft_sensors) {
+        if (_sensor.name == "<out.sensor_name>") {
+            ft_<out.id> = &_sensor;
+            break;
+        \}
+    \}
+    if (!ft_<out.id>) {
+        throw std::runtime_error("FT sensor '<out.sensor_name>' is unavailable");
+    \}
+    const KDL::Wrench raw_<out.id> = ft_<out.id>->wrench;
+>>
+
+// A simulated sensor exposes the one deployment property it has, under the same member name and
+// the same config key the driven sensor uses -- the tare length belongs to the sensor, not to
+// whichever platform is reading it.
+chain-device-members(solver) ::= <<
+<solver.sensors:{s | <({mj-sensor-member-<s.type>})(solver, s)>}; separator="">
+>>
+
+mj-sensor-member-ForceTorque(solver, sensor) ::= <<
+    int ft_<sensor.id>_bias_samples = 0;
+    double ft_<sensor.id>_bias_max_drift = 0.0;
+    // What hangs off the sensor, in its frame: the tare predicts this weight at every pose.
+    KDL::RigidBodyInertia ft_<sensor.id>_load = KDL::RigidBodyInertia::Zero();
+>>
+
+robot-state-init(solver) ::= <<
+>>
+
+// The wrapper prefixes the MuJoCo names itself; `name` is only what the chain looks it up by.
+mj-sensor-ForceTorque(solver, sensor) ::= <<
+    {
+        mj_kdl::ForceTorqueSensorSpec ft_spec{\};
+        ft_spec.name = "<sensor.id>";
+        ft_spec.force_sensor = "<sensor.local_id>_force";
+        ft_spec.torque_sensor = "<sensor.local_id>_torque";
+        ft_spec.frame_site = "<sensor.local_frame>";
+        mj_tool_<solver.runtime.id>.ft_sensors.push_back(ft_spec);
+    \}
+>>
+
+robot-init(solver) ::= <<
+<if(solver.runtime.owner)>    mj_kdl::Robot mj_<solver.runtime.id>{};
+<if(solver.hardware.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime.id>{};
+<solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
+}>    KDL::Chain built_chain_<solver.runtime.id>{};
+    if (!<solver.chain.namespace>::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+    if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>", &mj_tool_<solver.runtime.id>); !_s) {
+<else>    KDL::Chain built_chain_<solver.runtime.id>{};
+    if (!<solver.chain.namespace>::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
+        std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+    if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>"); !_s) {
+<endif>
+        std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime.id>: " \<\< _s.error \<\< "\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+<! An arm only read is held by its position servos, at the pose its ports were seeded with. !>
+    if (const auto _s = mj_kdl::set_control_mode(&mj_<solver.runtime.id>, mj_kdl::CtrlMode::<ctrl-mode(solver)>); !_s) {
+        std::cerr \<\< "set_control_mode(<ctrl-mode(solver)>) failed for runtime <solver.runtime.id>: " \<\< _s.error \<\< "\n";
+        mj_kdl::cleanup(&mj_env);
+        return 1;
+    \}
+<endif>
+>>
+
+ctrl-mode(solver) ::= "<if(solver.runtime.commanded)>TORQUE<else>POSITION<endif>"
+
+robot-chain(solver) ::= <<
+<if(solver.runtime.owner)>    KDL::Chain *chain_<solver.runtime.id> = &mj_<solver.runtime.id>.chain;
+<endif>
+>>
+
+robot-assign(solver) ::= <<
+    robot.<solver.id> = manipulator_robot{
+        .robot = &mj_<solver.runtime.id>,
+        .chain = chain_<solver.runtime.id>,
+    };
+>>
+
+mj-sensor-io-assign(solver) ::= <<
+<if(solver.runtime.owner)><solver.sensors:{s | <({mj-sensor-config-<s.type>})(solver, s)>}; separator=""><endif>
+>>
+
+mj-sensor-config-ForceTorque(solver, sensor) ::= <<
+    robot.ft_<sensor.id>_bias_samples = motion_spec::config::bias_samples(robot_config, "<sensor.config_key>");
+    robot.ft_<sensor.id>_bias_max_drift = motion_spec::config::bias_max_drift(robot_config, "<sensor.config_key>");
+>>
+
+robot-configure(solver) ::= <<
+>>
+
+robot-shutdown(solver) ::= <<
+<if(solver.runtime.owner)>    mj_kdl::cleanup(&mj_<solver.runtime.id>);
+<endif>
+>>
+
+app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
+<if(has_serial_chain)>
+#include \<algorithm\>
+#include \<cstring\>
+#include \<cstdlib\>
+#include \<deque\>
+#include \<filesystem\>
+#include \<iostream\>
+#include \<string\>
+#include \<vector\>
+#include "robot_config.hpp"
+<if(ros && first(cameras).id)>
+#include \<mj_kdl_wrapper/camera_ros.hpp\>
+<endif>
+<endif>
+>>
+
+app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
+    const auto robot_config = motion_spec::config::load("<config_path>");
+    bool headless = false;
+    bool steps_limited = false;
+    int headless_steps = 0;
+    // Headless runs as fast as the machine allows unless asked for a rate: the simulation clock
+    // drives dt, so wall speed changes how long the run takes and nothing about what it does.
+    double _headless_rtf = 0.0;
+    // Arm the run paused: the loop holds on its first tick until something resumes it.
+    bool _start_paused = false;
+    for (int i = 1; i \< argc; ++i) {
+        if (std::strcmp(argv[i], "--headless") == 0) {
+            headless = true;
+        } else if (std::strcmp(argv[i], "--start-paused") == 0) {
+            _start_paused = true;
+        } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 \< argc) {
+            headless_steps = std::atoi(argv[++i]);
+            steps_limited = true;
+        } else if (std::strcmp(argv[i], "--rtf") == 0 && i + 1 \< argc) {
+            _headless_rtf = std::atof(argv[++i]);
+        }
+    }
+
+    const auto cache_root = []() -> std::filesystem::path {
+        if (const char *xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+            return std::filesystem::path(xdg) / "mj_kdl_wrapper";
+        }
+        if (const char *home = std::getenv("HOME"); home && *home) {
+            return std::filesystem::path(home) / ".cache" / "mj_kdl_wrapper";
+        }
+        return {};
+    };
+
+    // A scene may name the cache outright. Nothing in std::filesystem expands a leading ~.
+    const auto expand_user = [](const std::filesystem::path &path) -> std::filesystem::path {
+        const auto text = path.generic_string();
+        if (text.rfind("~/", 0) != 0) {
+            return path;
+        }
+        const char *home = std::getenv("HOME");
+        return home && *home ? std::filesystem::path(home) / text.substr(2) : path;
+    };
+
+    const auto find_asset_path = [&cache_root, &expand_user](const std::vector\<std::filesystem::path\> &declared_paths) -> std::filesystem::path {
+        std::vector\<std::filesystem::path\> relative_paths;
+        for (const auto &declared : declared_paths) {
+            relative_paths.push_back(expand_user(declared));
+        }
+        std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
+        roots.push_back(std::filesystem::path(__FILE__).parent_path());
+        const auto cache = cache_root();
+        const auto append_cache_candidate = [&cache](std::vector\<std::filesystem::path\> &candidates,
+                                                     const std::filesystem::path &relative) {
+            if (cache.empty()) {
+                return;
+            }
+            // Whole components, from the start: `src/mj_kdl_wrapper/assets` must not match
+            // inside `mysrc/mj_kdl_wrapper/assets`. A tail opening with `..` is not below it.
+            const auto append_suffix = [&](const std::filesystem::path &marker, const std::filesystem::path &cache_subdir) {
+                const auto tail = relative.lexically_relative(marker);
+                if (!tail.empty() && *tail.begin() != "..") {
+                    candidates.push_back(cache / cache_subdir / tail);
+                }
+            };
+            append_suffix("third_party/menagerie", "menagerie");
+            append_suffix("src/mj_kdl_wrapper/assets", "assets");
+            append_suffix("src/examples/assets", "assets");
+        };
+
+        for (const auto &start : roots) {
+            for (auto root = start; !root.empty(); root = root.parent_path()) {
+                for (const auto &relative : relative_paths) {
+                    if (relative.is_absolute() && std::filesystem::exists(relative)) {
+                        return relative;
+                    }
+                    const auto candidate = root / relative;
+                    if (std::filesystem::exists(candidate)) {
+                        return candidate;
+                    }
+                }
+                if (root == root.root_path()) {
+                    break;
+                }
+            }
+        }
+        for (const auto &relative : relative_paths) {
+            std::vector\<std::filesystem::path\> cache_candidates;
+            if (const char *menagerie = std::getenv("MJ_KDL_MENAGERIE"); menagerie && *menagerie) {
+                const auto tail = relative.lexically_relative("third_party/menagerie");
+                if (!tail.empty() && *tail.begin() != "..") {
+                    cache_candidates.push_back(std::filesystem::path(menagerie) / tail);
+                }
+            }
+            append_cache_candidate(cache_candidates, relative);
+            for (const auto &candidate : cache_candidates) {
+                if (std::filesystem::exists(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+        return {};
+    };
+
+    mj_kdl::Env mj_env{};
+    mj_kdl::SceneSpec mj_scene{};
+    mj_scene.timestep = <scene.timestep_s>;
+    mj_scene.add_floor = true;
+    mj_scene.add_skybox = true;
+<scene.robots:{robot |
+    {
+        const std::filesystem::path robot_mjcf_path = find_asset_path({"<robot.path>"\});
+        if (robot_mjcf_path.empty()) {
+            std::cerr \<\< "MJCF model not found: <robot.path>\\n";
+            return 1;
+        \}
+        mj_kdl::RobotSpec mj_robot_spec{\};
+        mj_robot_spec.path = robot_mjcf_path.string();
+        mj_robot_spec.prefix = "<robot.prefix>";
+        mj_robot_spec.attach_to.kind = mj_kdl::AttachKind::<robot.attach_kind>;
+        mj_robot_spec.attach_to.name = "<robot.attach_name>";
+        mj_robot_spec.pos[0] = <robot.pos_x>;
+        mj_robot_spec.pos[1] = <robot.pos_y>;
+        mj_robot_spec.pos[2] = <robot.pos_z>;
+        mj_robot_spec.quat[0] = <robot.quat_x>;
+        mj_robot_spec.quat[1] = <robot.quat_y>;
+        mj_robot_spec.quat[2] = <robot.quat_z>;
+        mj_robot_spec.quat[3] = <robot.quat_w>;
+<robot.attachments:{attachment |
+        {
+            const std::filesystem::path attachment_path = find_asset_path({"<attachment.path>"\});
+            if (attachment_path.empty()) {
+                std::cerr \<\< "MJCF attachment not found: <attachment.path>\\n";
+                return 1;
+            \}
+            mj_kdl::AttachmentSpec attachment_spec{\};
+            attachment_spec.mjcf_path = attachment_path.string();
+            attachment_spec.attach_to.kind = mj_kdl::AttachKind::<attachment.attach_kind>;
+            attachment_spec.attach_to.name = "<attachment.attach_to>";
+            attachment_spec.prefix = "<attachment.prefix>";
+            attachment_spec.pos[0] = <attachment.pos_x>;
+            attachment_spec.pos[1] = <attachment.pos_y>;
+            attachment_spec.pos[2] = <attachment.pos_z>;
+            attachment_spec.quat[0] = <attachment.quat_x>;
+            attachment_spec.quat[1] = <attachment.quat_y>;
+            attachment_spec.quat[2] = <attachment.quat_z>;
+            attachment_spec.quat[3] = <attachment.quat_w>;
+            mj_robot_spec.attachments.push_back(attachment_spec);
+        \}
+}; separator="\n">
+        mj_scene.robots.push_back(mj_robot_spec);
+    \}
+}; separator="\n">
+<scene.objects:{object |
+    {
+        mj_kdl::SceneObject object_spec{\};
+        object_spec.name = "<object.body>";
+        // 0.4 keeps an asset's element names as authored; the scene's mappings name them as 0.3 did.
+        object_spec.prefix = "<object.body>_";
+        object_spec.attach_to.kind = mj_kdl::AttachKind::<object.attach_kind>;
+        object_spec.attach_to.name = "<object.attach_name>";
+<if(object.has_path)>        const std::filesystem::path object_path = find_asset_path({"<object.path>"\});
+        if (object_path.empty()) {
+            std::cerr \<\< "MJCF object not found: <object.path>\\n";
+            return 1;
+        \}
+        object_spec.mjcf_path = object_path.string();
+<endif>        object_spec.pos[0] = <object.pos_x>;
+        object_spec.pos[1] = <object.pos_y>;
+        object_spec.pos[2] = <object.pos_z>;
+        object_spec.quat[0] = <object.quat_x>;
+        object_spec.quat[1] = <object.quat_y>;
+        object_spec.quat[2] = <object.quat_z>;
+        object_spec.quat[3] = <object.quat_w>;
+        object_spec.fixed = <object.fixed>;
+<if(!object.has_path)>        object_spec.shape = mj_kdl::Shape::<object.shape>;
+        object_spec.size[0] = <object.size_x>;
+        object_spec.size[1] = <object.size_y>;
+        object_spec.size[2] = <object.size_z>;
+        object_spec.rgba[0] = <object.color_r>f;
+        object_spec.rgba[1] = <object.color_g>f;
+        object_spec.rgba[2] = <object.color_b>f;
+        object_spec.rgba[3] = <object.color_a>f;
+        object_spec.mass = <object.mass>;
+        object_spec.condim = mj_kdl::Condim::Rolling;
+        object_spec.friction[0] = <object.friction_slide>;
+        object_spec.friction[1] = <object.friction_torsion>;
+        object_spec.friction[2] = <object.friction_roll>;
+<endif>        mj_scene.objects.push_back(object_spec);
+    \}
+}; separator="\n">
+<scene.frames:{frame |
+    {
+        mj_kdl::SiteSpec site_spec{\};
+        site_spec.body = "<frame.body>";
+        site_spec.name = "<frame.name>";
+<if(frame.segment)>
+        // Drawn this run: read back off the tree, composed up to the body it sits on.
+        KDL::Frame site_frame = KDL::Frame::Identity();
+        for (auto it = world_tree_<frame.tree>.getSegment("<frame.segment>"); it->first != "<frame.body_segment>"; it = it->second.parent) {
+            site_frame = it->second.segment.getFrameToTip() * site_frame;
+        \}
+        site_frame.M.GetQuaternion(site_spec.quat[0], site_spec.quat[1], site_spec.quat[2], site_spec.quat[3]);
+        for (int i = 0; i \< 3; ++i) site_spec.pos[i] = site_frame.p[i];
+<else>
+        site_spec.pos[0] = <frame.pos_x>;
+        site_spec.pos[1] = <frame.pos_y>;
+        site_spec.pos[2] = <frame.pos_z>;
+        site_spec.quat[0] = <frame.quat_x>;
+        site_spec.quat[1] = <frame.quat_y>;
+        site_spec.quat[2] = <frame.quat_z>;
+        site_spec.quat[3] = <frame.quat_w>;
+<endif>
+        mj_scene.sites.push_back(site_spec);
+    \}
+}; separator="\n">
+<scene.static_cameras:{camera |
+    {
+        mj_kdl::CameraSpec camera_spec{\};
+        camera_spec.name = "<camera.name>";
+        camera_spec.body = "<camera.body>";
+        camera_spec.pos[0] = <camera.pos_x>;
+        camera_spec.pos[1] = <camera.pos_y>;
+        camera_spec.pos[2] = <camera.pos_z>;
+        camera_spec.quat[0] = <camera.quat_x>;
+        camera_spec.quat[1] = <camera.quat_y>;
+        camera_spec.quat[2] = <camera.quat_z>;
+        camera_spec.quat[3] = <camera.quat_w>;
+        camera_spec.fovy = <camera.fovy_deg>;
+        mj_scene.cameras.push_back(camera_spec);
+    \}
+}; separator="\n">
+
+    if (const auto _s = mj_kdl::init_env(&mj_env, &mj_scene); !_s) {
+        std::cerr \<\< "mj_kdl::init_env() failed: " \<\< _s.error \<\< "\\n";
+        return 1;
+    }
+
+    // Contact-solver policy: accuracy and grip fidelity bought with sim time per step.
+    constexpr int kMjSolverIterations = 100;
+    constexpr double kMjSolverTolerance = 1e-10;
+    constexpr double kMjImpratio = 20.0;
+    mj_env.model->opt.iterations = kMjSolverIterations;
+    mj_env.model->opt.tolerance  = kMjSolverTolerance;
+    mj_env.model->opt.impratio   = kMjImpratio;
+    mj_env.model->opt.cone       = mjCONE_ELLIPTIC;
+
+<scene-state-setup(world_ports)>
+<serial_chain_solvers:{solver |<robot-state-init(solver)>
+<robot-init(solver)>
+<robot-chain(solver)>
+<robot-assign(solver)>
+<mj-sensor-io-assign(solver)>}; separator="\n">
+
+    if (_headless_rtf > 0.0) mj_env.viewer.realtime_factor = _headless_rtf;
+    if (!headless) {
+        if (const auto _s = mj_kdl::open_viewer(&mj_env); !_s) {
+            std::cerr \<\< "mj_kdl::open_viewer() failed: " \<\< _s.error \<\< "\\n";
+            mj_kdl::cleanup(&mj_env);
+            return 1;
+        }
+    }
+    // Cameras this run records: a named one writes a video instead of publishing frames.
+    const auto _record_video_path = [](const std::string &id) {
+        const char *wanted = std::getenv("MOTION_SPEC_RECORD_CAMERAS");
+        if (!wanted || !*wanted) return std::string();
+        std::string list(wanted);
+        for (std::size_t start = 0; start \<= list.size();) {
+            const std::size_t end = list.find(',', start);
+            const std::string name = list.substr(start, end == std::string::npos ? end : end - start);
+            if (name == id) {
+                const char *dir = std::getenv("MOTION_SPEC_RECORD_DIR");
+                return (dir && *dir ? std::string(dir) : std::string(".")) + "/" + id + ".mp4";
+            \}
+            if (end == std::string::npos) break;
+            start = end + 1;
+        \}
+        return std::string();
+    \};
+
+    // A camera this build knows nothing about would otherwise be skipped in silence.
+    {
+        const std::vector\<std::string\> _recordable = {"default"<scene.cameras:{camera |, "<camera.id>"}>\};
+        const char *_asked = std::getenv("MOTION_SPEC_RECORD_CAMERAS");
+        const std::string _list(_asked ? _asked : "");
+        for (std::size_t _start = 0; !_list.empty() && _start \<= _list.size();) {
+            const std::size_t _end = _list.find(',', _start);
+            const std::string _name = _list.substr(_start, _end == std::string::npos ? _end : _end - _start);
+            if (!_name.empty()
+                && std::find(_recordable.begin(), _recordable.end(), _name) == _recordable.end()) {
+                std::cerr \<\< "--record " \<\< _name
+                          \<\< ": this build has no such camera; recording nothing for it\\n";
+            \}
+            if (_end == std::string::npos) break;
+            _start = _end + 1;
+        \}
+    \}
+
+    // A recorder renders on its own thread; the tick pays only for the scene snapshot.
+    // 'default' is the free-camera view a fresh window opens with; it does not follow the window.
+    mj_kdl::VideoRecorder _cam_default{};
+    bool _cam_default_on = false;
+    double _cam_default_due_s = 0.0;
+    {
+        const std::string _default_video = _record_video_path("default");
+        if (!_default_video.empty()) {
+            if (const auto _s = mj_kdl::init_video_recorder(&_cam_default, mj_env.model, _default_video.c_str(), 1280, 720, 30); _s) {
+                _cam_default_on = true;
+            \} else {
+                std::cerr \<\< "camera 'default': " \<\< _s.error \<\< "; not recorded\\n";
+            \}
+        \}
+    \}
+<if(scene.cameras)>
+    std::vector\<std::string\> _mj_camera_names;
+    for (int _i = 0; _i \< mj_env.model->ncam; ++_i) {
+        if (const char *_n = mj_id2name(mj_env.model, mjOBJ_CAMERA, _i)) _mj_camera_names.emplace_back(_n);
+    \}
+<scene.cameras:{camera |
+    mj_kdl::VideoRecorder _cam_<camera.id>{\};
+    bool _cam_<camera.id>_on = false;
+    bool _cam_<camera.id>_video = false;
+<if(ros)>
+    std::unique_ptr\<mj_kdl::CameraRosPublisher\> _cam_<camera.id>_ros;
+<endif>
+    double _cam_<camera.id>_due_s = 0.0;
+    {
+        const std::string _video = _record_video_path("<camera.id>");
+<if(ros)>
+        // A camera renders when its frames go somewhere: a recording, a ROS topic, or both.
+        if (!_video.empty() || robot.ros_node) {
+<else>
+        if (!_video.empty()) {
+<endif>
+            // The compiled scene prefixes a robot's cameras with the robot's name; the model does not.
+            const std::string _target = "<camera.id>";
+            std::string _name;
+            for (const auto &_candidate : _mj_camera_names) {
+                if (_candidate.size() \>= _target.size() && _candidate.compare(_candidate.size() - _target.size(), _target.size(), _target) == 0) {
+                    _name = _candidate;
+                    break;
+                \}
+            \}
+            if (_name.empty()) {
+<if(ros)>
+                std::cerr \<\< "camera '<camera.id>' names no camera in the compiled scene; not rendered\\n";
+<else>
+                std::cerr \<\< "camera '<camera.id>' names no camera in the compiled scene; not recorded\\n";
+<endif>
+            \} else {
+<if(ros)>
+                mj_kdl::CameraConf _conf;
+                _conf.camera = _name;
+                // The scene's own name for the camera; it must name a ROS-optical frame in TF.
+                _conf.frame_id = "<camera.frame_id>";
+                _conf.topic_ns = "<camera.id>";
+                _conf.width = <camera.width>;
+                _conf.height = <camera.height>;
+                _conf.rate_hz = <camera.rate_hz>;
+<endif>
+                _cam_<camera.id>_video = !_video.empty();
+                const auto _s = _cam_<camera.id>_video
+                    ? mj_kdl::init_video_recorder(&_cam_<camera.id>, mj_env.model, _video.c_str(), <camera.width>, <camera.height>, static_cast\<int\>(<camera.rate_hz>))
+                    : mj_kdl::init_offscreen(&_cam_<camera.id>, mj_env.model, <camera.width>, <camera.height>);
+                if (!_s) {
+                    std::cerr \<\< "camera '<camera.id>': " \<\< _s.error \<\< "; not rendered\\n";
+                \} else {
+                    _cam_<camera.id>.cam.type = mjCAMERA_FIXED;
+                    _cam_<camera.id>.cam.fixedcamid = mj_name2id(mj_env.model, mjOBJ_CAMERA, _name.c_str());
+<if(ros)>
+                    if (robot.ros_node) {
+                        _cam_<camera.id>_ros = std::make_unique\<mj_kdl::CameraRosPublisher\>(*robot.ros_node, mj_env.model, _conf);
+                    \}
+<endif>
+                    _cam_<camera.id>_on = true;
+                \}
+            \}
+        \}
+    \}
+}; separator="\n">
+<endif>
+>>
+
+app-chain-post-setup(serial_chain_solvers, motions, agent_homes) ::= <<
+    // The FSM is built after this hook, so the loop restarts it when it sees a reset happened.
+    bool _mj_reset_seen = false;
+    mj_env.on_reset = [&](mj_kdl::ResetContext *) {
+        _mj_reset_seen = true;
+<serial_chain_solvers:{solver | <if(solver.runtime.owner)>        {
+            const double _q_home[] = {<agent_homes.(solver.runtime.config_key); separator=", ">\};
+            KDL::JntArray _q(mj_<solver.runtime.id>.n_joints);
+            for (int _i = 0; _i \< mj_<solver.runtime.id>.n_joints && _i \< static_cast\<int\>(std::size(_q_home)); ++_i)
+                _q(_i) = _q_home[_i];
+            mj_kdl::set_joint_pos(&mj_<solver.runtime.id>, _q);
+        \}
+<endif>}; separator="">
+        <motions:{m | reset_<m.id>(<m.id>_state_instance);}; separator="\n        ">
+    };
+    mj_kdl::reset(&mj_env);
+>>
+
+// A reset, from the API or the viewer's button, has already re-seeded the Env and run on_reset.
+app-chain-loop-reset(serial_chain_solvers, fsm) ::= <<
+        if (_mj_reset_seen) {
+            _mj_reset_seen = false;
+            fsm->currentStateIndex = fsm->startStateIndex;
+        }
+>>
+
+app-loop-condition(has_serial_chain) ::= <<
+(!headless || !steps_limited || headless_steps-- > 0)
+>>
+
+// Sim time drives the cadence, so a paused or slowed run records at the rate the model asked
+// for in the world the camera looks at, not at the rate the wall clock ticks.
+app-chain-camera-publish(cameras, ros) ::= <<
+        // The default camera records the standard view, scene cameras or not.
+        if (_cam_default_on && data.clock_time_s \>= _cam_default_due_s) {
+            _cam_default_due_s = data.clock_time_s + 1.0 / 30.0;
+            mj_kdl::record_frame(&_cam_default, &mj_env);
+        \}
+<cameras:{camera |
+        if (_cam_<camera.id>_on && data.clock_time_s \>= _cam_<camera.id>_due_s) {
+            _cam_<camera.id>_due_s = data.clock_time_s + 1.0 / <camera.rate_hz>;
+            if (_cam_<camera.id>_video) mj_kdl::record_frame(&_cam_<camera.id>, &mj_env);
+<if(ros)>
+            // Rendered only when somebody is subscribed, so an unwatched topic costs nothing.
+            if (_cam_<camera.id>_ros && _cam_<camera.id>_ros->wants_frame(data.clock_time_s)) {
+                mj_kdl::render_rgb(&_cam_<camera.id>, &mj_env, [pub = _cam_<camera.id>_ros.get(), t = data.clock_time_s](const std::uint8_t *rgb) { pub->publish(rgb, t); \});
+            \}
+<endif>
+        \}}; separator="\n">
+>>
+
+// Drains each render thread before the publishers and the Env it snapshotted go.
+app-chain-camera-cleanup(cameras) ::= <<
+    mj_kdl::cleanup(&_cam_default);
+<cameras:{camera |
+    mj_kdl::cleanup(&_cam_<camera.id>);}; separator="\n">
+>>
+
+app-chain-cleanup(has_serial_chain) ::= <<
+<if(has_serial_chain)>    mj_kdl::cleanup(&mj_env);<endif>
+>>
+
+// One exchange, as on a fieldbus: this tick's measurements in, the previous tick's commands out.
+// So a command acts one control period after the state it was computed from, as on hardware.
+app-chain-provider-update(serial_chain_solvers) ::= <<
+        mj_kdl::update(&mj_env);
+>>
+
+// The commands this tick decides go out with the next update(); here the platform only advances.
+app-chain-runtime-step(serial_chain_solvers, active_motion) ::= <<
+        // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
+        // skips destructors, so the frame logger's writer thread never drained and the log was
+        // left with a half-written record and no health file -- break, and let teardown run.
+        if (!mj_kdl::step(&mj_env)) {
+            break;
+        }
+>>
+
+app-chain-telemetry-sample(serial_chain_solvers) ::= <<
+>>
+
+app-chain-control-apply(serial_chain_solvers) ::= <<
+        if (_ctrl.speed != _ctrl_speed_applied) {
+            // Only on change, so the viewer's own ,/. speed keys keep working in between.
+            _ctrl_speed_applied = _ctrl.speed;
+            if (!headless) mj_env.viewer.realtime_factor = _ctrl.speed;
+        \}
+>>
+
+app-chain-control-paused-step(serial_chain_solvers) ::= <<
+            // step() is the sole physics driver, so not calling it is the pause; the GUI's own
+            // render thread keeps the window drawing and responding. Only the window-close
+            // request still has to end the run, and that is readable without stepping.
+            if (!headless && !mj_kdl::is_running(&mj_env.viewer)) break;
+>>
+
+// Default-on presentation of state the model already carries: nothing is authored to get this,
+// and it renders only where there is a window to draw into. The arrow starts at the body's
+// centre of mass, which is where MuJoCo applies xfrc_applied, and its length is the magnitude.
+perturbation-arrows(perturbations, trace) ::= <<
+        if (!headless) {
+            static constexpr float  kPerturbForceRGBA[4]  = {0.95f, 0.15f, 0.15f, 1.0f};
+            static constexpr float  kPerturbTorqueRGBA[4] = {0.15f, 0.45f, 0.95f, 1.0f};
+            static constexpr double kPerturbArrowScale    = 0.03; // m per N, m per Nm
+            static constexpr double kPerturbArrowMax      = 0.6;  // m
+            static constexpr float  kPerturbGuideRGBA[4]  = {0.95f, 0.45f, 0.45f, 0.35f};
+            static constexpr double kPerturbGuideDash     = 0.05; // m drawn, then as much skipped
+<if(!trace.enabled)>            // Nothing else draws an overlay in this model, so the per-frame clear belongs here.
+            mj_kdl::clear_trace(&mj_env.viewer);
+<endif><perturbations:{p |            if (data.<p.active_id>) {
+                const mjModel *_pmodel<i0> = robot.<p.robot_id>.robot->model;
+                const mjData  *_pdata<i0>  = robot.<p.robot_id>.robot->data;
+                const int      _pbody<i0>  = mj_name2id(_pmodel<i0>, mjOBJ_BODY, "<p.body>");
+                if (_pbody<i0> >= 0) {
+                    const KDL::Vector _pat<i0>(_pdata<i0>->xipos[3 * _pbody<i0> + 0],
+                                               _pdata<i0>->xipos[3 * _pbody<i0> + 1],
+                                               _pdata<i0>->xipos[3 * _pbody<i0> + 2]);
+                    const KDL::Wrench &_pw<i0> = data.<p.applied_id>;
+                    // Tail out in free air, tip at the body: a push reads as pushing, and the
+                    // shaft is not swallowed by the mesh it acts on.
+                    KDL::Vector _pfdir<i0> = _pw<i0>.force;
+                    if (_pfdir<i0>.Normalize() > 1e-9) {
+                        const double _pflen<i0> =
+                            std::min(_pw<i0>.force.Norm() * kPerturbArrowScale, kPerturbArrowMax);
+                        mj_kdl::add_overlay_arrow(&mj_env.viewer, _pat<i0> - _pfdir<i0> * _pflen<i0>,
+                            _pfdir<i0>, _pflen<i0>, kPerturbForceRGBA);
+                    \}
+                    KDL::Vector _ptdir<i0> = _pw<i0>.torque;
+                    if (_ptdir<i0>.Normalize() > 1e-9) {
+                        const double _ptlen<i0> =
+                            std::min(_pw<i0>.torque.Norm() * kPerturbArrowScale, kPerturbArrowMax);
+                        mj_kdl::add_overlay_arrow(&mj_env.viewer, _pat<i0> - _ptdir<i0> * _ptlen<i0>,
+                            _ptdir<i0>, _ptlen<i0>, kPerturbTorqueRGBA);
+                    \}<if(p.target_pose_id)>
+                    // The direction is normalized from this pose, so the pose still says how far
+                    // the target is: dashes along it show what the push is aimed at.
+                    const KDL::Vector _pray<i0> =
+                        robot.<p.robot_id>.world_to_root.M.Inverse() * data.<p.target_pose_id>.p;
+                    const double _praylen<i0> = _pray<i0>.Norm();
+                    if (_praylen<i0> > 1e-9) {
+                        const KDL::Vector _pstep<i0> = _pray<i0> / _praylen<i0>;
+                        for (double _pd<i0> = 0.0; _pd<i0> \< _praylen<i0>;
+                             _pd<i0> += 2.0 * kPerturbGuideDash) {
+                            mj_kdl::add_trace_segment(&mj_env.viewer,
+                                _pat<i0> + _pstep<i0> * _pd<i0>,
+                                _pat<i0> + _pstep<i0> * std::min(_pd<i0> + kPerturbGuideDash, _praylen<i0>),
+                                kPerturbGuideRGBA);
+                        \}
+                    \}<endif>
+                \}
+            \}
+}>        \}
+>>
+
+app-chain-trace-update(serial_chain_solvers, trace) ::= <<
+<if(trace.enabled)>
+<if(trace.has_targets)>
+        if (!headless) {
+            // Live EE trajectory trace: one bounded polyline per referenced link,
+            // each link's world frame read straight from MuJoCo. Length and colour
+            // come from the ENVIRONMENT TRACE block in the .robmot model.
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (open_viewer)
+            static constexpr float kTraceRGBA[4] = {
+                <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
+            mj_kdl::clear_trace(&mj_env.viewer);
+<trace.targets:{target |            static std::deque\<KDL::Vector> _trace<i0>;
+            KDL::Frame _f<i0>;
+            if (mj_kdl::get_site_frame(&mj_env, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(&mj_env, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
+            if (_trace<i0>.size() > kTraceMax) _trace<i0>.pop_front();
+            for (size_t _i = 1; _i \< _trace<i0>.size(); ++_i)
+                mj_kdl::add_trace_segment(&mj_env.viewer, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
+}>        }
+<else>
+        if (!headless) {
+            // Live EE trajectory trace: bounded ring of recent EE positions in
+            // world frame, redrawn each frame as a polyline overlay. pose_ee_base
+            // is FK output in the chain-root frame, so lift it into world via the
+            // base body pose (cached once; base is fixed). Length and colour come
+            // from the ENVIRONMENT TRACE block in the .robmot model.
+            static std::deque\<KDL::Vector> _trace;
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (open_viewer)
+            static constexpr float kTraceRGBA[4] = {
+                <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
+            static bool _trace_base_ok = false;
+            static KDL::Frame _trace_world_T_base;
+            if (!_trace_base_ok) {
+                _trace_base_ok = mj_kdl::get_body_frame(
+                    &mj_env, "<first(serial_chain_solvers).chain.root>", &_trace_world_T_base);
+            }
+            _trace.push_back(_trace_world_T_base * data.pose_ee_base.p);
+            if (_trace.size() > kTraceMax) _trace.pop_front();
+            mj_kdl::clear_trace(&mj_env.viewer);
+            for (size_t _i = 1; _i \< _trace.size(); ++_i) {
+                mj_kdl::add_trace_segment(&mj_env.viewer, _trace[_i - 1], _trace[_i], kTraceRGBA);
+            }
+        }
+<endif>
+<endif>
+>>
+
+// ---------------------------------------------------------------------------
+// The mobile platform in simulation. The two ends resources/mobile_base.stg leaves
+// to a backend: read the pivot angles and hub rates out of mjData, write the hub
+// torques into mjData's actuator controls.
+
+base-state-members() ::= <<
+    // Resolved once from the compiled model, in the drive order the scene tree states.
+    int pivot_qpos[NUM_DRIVES] = {0};
+    int pivot_dof[NUM_DRIVES] = {0};
+    int wheel_dof[NUM_DRIVES * NUM_WHL_COORD] = {0};
+    int wheel_ctrl[NUM_DRIVES * NUM_WHL_COORD] = {0};
+    // Which side of the axle each wheel sits on, as the sign of its offset along its own spin
+    // axis. Reading a fixed coordinate would tie the solver to the frame the model is drawn in.
+    double wheel_side[NUM_DRIVES * NUM_WHL_COORD] = {0.0};
+>>
+
+base-resolve(resources) ::= <<
+    {
+        const mjModel *_m = robot.mobile_base.model;
+        static const char *_pivot_names[NUM_DRIVES] = {<resources.by_kind.mobile_base.drives:{drive |"<drive.pivot_joint>"}; separator=", ">};
+        static const char *_wheel_names[NUM_DRIVES * NUM_WHL_COORD] = {<resources.by_kind.mobile_base.drives:{drive |<drive.wheels:{wheel |"<wheel>"}; separator=", ">}; separator=", ">};
+        for (int i = 0; i \< NUM_DRIVES; ++i) {
+            const int _pivot = mj_name2id(_m, mjOBJ_JOINT, _pivot_names[i]);
+            if (_pivot \< 0) {
+                std::cerr \<\< "model has no joint '" \<\< _pivot_names[i] \<\< "'\\n";
+                std::exit(1);
+            \}
+            state.pivot_qpos[i] = _m->jnt_qposadr[_pivot];
+            state.pivot_dof[i] = _m->jnt_dofadr[_pivot];
+            for (int w = 0; w \< NUM_WHL_COORD; ++w) {
+                const int _channel = i * NUM_WHL_COORD + w;
+                const int _joint = mj_name2id(_m, mjOBJ_JOINT, _wheel_names[_channel]);
+                const int _act = mj_name2id(_m, mjOBJ_ACTUATOR, _wheel_names[_channel]);
+                if (_joint \< 0 || _act \< 0) {
+                    std::cerr \<\< "model has no joint/actuator '" \<\< _wheel_names[_channel] \<\< "'\\n";
+                    std::exit(1);
+                \}
+                state.wheel_dof[_channel] = _m->jnt_dofadr[_joint];
+                state.wheel_ctrl[_channel] = _act;
+                const int _body = _m->jnt_bodyid[_joint];
+                double _along = 0.0;
+                for (int k = 0; k \< 3; ++k) {
+                    _along += _m->body_pos[_body * 3 + k] * _m->jnt_axis[_joint * 3 + k];
+                \}
+                state.wheel_side[_channel] = _along > 0.0 ? 1.0 : -1.0;
+            \}
+        \}
+    \}
+>>
+
+// hddc2b runs a unit's two channels against each other, as the real drive's mirrored motors do,
+// while both MJCF wheel joints turn about one axis -- hence the alternating channel sign.
+//
+// The pivot's own rotation is removed from the rates the composition reads: a unit turning about
+// its pivot rolls its wheels while the pivot point, bolted to the platform, stays put, and
+// hddc2b composing from hub rates alone would read that as the platform moving. A wheel at
+// +-whl_dst from the pivot axis sees +-qd*whl_dst of contact velocity.
+base-read(resources) ::= <<
+    {
+        const mjData *_d = robot.mobile_base.data;
+        for (int i = 0; i \< NUM_DRIVES; ++i) {
+            state.pvt_pos[i] = _d->qpos[state.pivot_qpos[i]] + state.pivot_offset[i];
+            for (int w = 0; w \< NUM_WHL_COORD; ++w) {
+                const int _channel = i * NUM_WHL_COORD + w;
+                const double _radius = 0.5 * state.cfg.wheel_diameter[_channel];
+                const double _spin = _d->qvel[state.pivot_dof[i]]
+                                   * state.wheel_side[_channel] * state.wheel_distance[i] / _radius;
+                state.whl_vel[_channel] =
+                    state.hub_sign[_channel] * (_d->qvel[state.wheel_dof[_channel]] + _spin);
+            \}
+        \}
+    \}
+>>
+
+base-write(resources) ::= <<
+    {
+        mjData *_d = robot.mobile_base.data;
+        const mjModel *_m = robot.mobile_base.model;
+        for (int i = 0; i \< NUM_DRIVES * NUM_WHL_COORD; ++i) {
+            const int _act = state.wheel_ctrl[i];
+            double _tau = state.hub_sign[i] * state.trq[i];
+            if (_m->actuator_ctrllimited[_act]) {
+                _tau = std::clamp(_tau, _m->actuator_ctrlrange[_act * 2 + 0],
+                                        _m->actuator_ctrlrange[_act * 2 + 1]);
+            \}
+            _d->ctrl[_act] = std::isfinite(_tau) ? _tau : 0.0;
+        \}
+    \}
+>>
+
+app-main-base-setup() ::= <<
+    robot.mobile_base.model = mj_env.model;
+    robot.mobile_base.data = mj_env.data;
+>>
+
+backend-runtime(resources) ::= ""
+
+// The scene's own clock, not a chain's view of it: a platform drives no chain but runs in the
+// same simulation, and both read the one mjData the env owns.
+clock-time-source() ::= <<
+mj_env.data->time
+>>
+
+// How fast the loop should run relative to wall time. 0.0 means uncapped -- run as fast as the
+// machine allows. With a window the viewer's factor is the one setting: the dashboard writes its
+// speed into it, so reading it here picks up both that and the ,/. keys without applying either
+// twice. Headless has no viewer, so the dashboard speed scales the requested rate directly, and
+// an uncapped run stays uncapped whatever the speed says.
+loop-rtf-source() ::= <<
+(headless ? _headless_rtf * _ctrl_speed_applied : mj_env.viewer.realtime_factor)
+>>

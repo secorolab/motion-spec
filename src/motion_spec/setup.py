@@ -86,7 +86,7 @@ def read_manifest(path: Path) -> list[Repository]:
             raise ValueError(f"{path}: {key} is not a mapping")  # noqa: TRY004 -- file content
         missing = {"type", "url", "version"} - fields.keys()
         if missing:
-            raise ValueError(f"{path}: {key} declares no {', '.join(sorted(missing))}")
+            raise ValueError(f"{path}: {key} declares no {', '.join(missing)}")
         if fields["type"] != "git":
             raise ValueError(f"{path}: {key} is {fields['type']}; only git is supported")
         repositories.append(Repository(str(key), str(fields["url"]), str(fields["version"])))
@@ -190,7 +190,7 @@ def discover_packages(checkout: Path) -> list[Package]:
         return [at_root]
     found = [
         package
-        for directory in sorted(checkout.iterdir())
+        for directory in checkout.iterdir()
         if directory.is_dir() and not directory.name.startswith(".")
         if (package := _package_at(directory)) is not None
     ]
@@ -264,22 +264,17 @@ def install_prefix(root: Path) -> Path:
 
 
 def generations_root() -> Path:
-    """Where generations are written: $MOTION_SPEC_GEN, else the workspace's generations/.
+    """Where generations are written: $MOTION_SPEC_GEN, and nowhere else.
 
-    Never the working directory: `rerun` and the dashboard look in one place.
+    Never the working directory: `rerun`, the dashboard and every provenance location name one
+    place.
     """
     from motion_spec.config import setting
 
     chosen = setting("workspace.generations").value
-    if chosen is not None:
-        return Path(chosen).expanduser()
-    try:
-        return workspace() / GENERATION_DIRECTORY
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"no generation directory: set {GENERATION_VARIABLE}, or {WORKSPACE_VARIABLE} to "
-            f"use its {GENERATION_DIRECTORY}/"
-        ) from exc
+    if chosen is None:
+        raise RuntimeError(f"no generation directory: set {GENERATION_VARIABLE}")
+    return Path(chosen).expanduser()
 
 
 def generations_directory(root: Path) -> Path:
@@ -305,7 +300,7 @@ def source_directory(root: Path, repository: str) -> Path:
     return source_root(root) / repository
 
 
-def _ignore_thirdparty(root: Path) -> Path:
+def ignore_thirdparty(root: Path) -> Path:
     """Create the third-party subtree, marked so `colcon build` does not descend into it."""
     directory = thirdparty_directory(root)
     directory.mkdir(parents=True, exist_ok=True)
@@ -325,12 +320,12 @@ def required_profiles(repositories: list[Repository], ros: bool = False) -> tupl
 
     Scoped, so `setup coord2b` is not refused for want of the Ant that only STST uses.
     """
-    profiles = set()
-    if any(repository.path == STST_REPOSITORY for repository in repositories):
-        profiles.add("codegen")
+    profiles = []
     if any(not is_thirdparty(repository) for repository in repositories):
-        profiles.add("build")
-    return (*sorted(profiles), *(("ros",) if ros and profiles else ()))
+        profiles.append("build")
+    if any(repository.path == STST_REPOSITORY for repository in repositories):
+        profiles.append("codegen")
+    return (*profiles, *(("ros",) if ros and profiles else ()))
 
 
 def missing_prerequisites(
@@ -342,10 +337,10 @@ def missing_prerequisites(
     `motion-spec setup <name>` remedy instead, and is absent here by construction.
     """
     from motion_spec.health import (
-        _ros_distro,
         apt_packages,
         check_health,
         installed_ros_distros,
+        ros_distro,
         system_site_packages,
     )
 
@@ -353,7 +348,13 @@ def missing_prerequisites(
     # The ROS checks run even for a selection with no profile at all: without them a
     # Python-only `setup` in a colcon workspace fails on the distro only at the last step.
     packages = (
-        apt_packages(check_health(profiles, targets if "build" in profiles else ()))
+        apt_packages(
+            check_health(
+                profiles,
+                targets if "build" in profiles else (),
+                on_progress=lambda done, dependency: None,
+            )
+        )
         if profiles
         else []
     )
@@ -363,7 +364,7 @@ def missing_prerequisites(
     if ros:
         # The environment file is written last, so an unresolved distro would surface only
         # after everything is built -- and the build would have used whatever was sourced.
-        if _ros_distro() is None:
+        if ros_distro() is None:
             installed = ", ".join(installed_ros_distros()) or "none under /opt/ros"
             others.append(
                 f"a ROS distribution: source one, or set [ros] distro; installed: {installed}"
@@ -812,9 +813,9 @@ def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path
     using = shell()
     path = root / f"setup-motion-spec.{using}"
     if ros:
-        from motion_spec.health import _ros_distro
+        from motion_spec.health import ros_distro
 
-        distro = _ros_distro()
+        distro = ros_distro()
         if distro is None:
             raise RuntimeError(
                 "no ROS distribution: set [ros] distro, or source one, for a [ros] workspace"
@@ -843,8 +844,7 @@ def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path
         + f"export {WORKSPACE_VARIABLE}={shlex.quote(str(root))}\n"
         f"export {GENERATION_VARIABLE}={shlex.quote(str(generations_directory(root)))}\n"
         f"export {ENVIRONMENT_VARIABLE}={shlex.quote(str(path))}\n"
-        f"export MOTION_SPEC_PREFIX={shlex.quote(str(prefix))}\n"
-        + paths
+        f"export MOTION_SPEC_PREFIX={shlex.quote(str(prefix))}\n" + paths
     )
     root.mkdir(parents=True, exist_ok=True)
     path.write_text(body)

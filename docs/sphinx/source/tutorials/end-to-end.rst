@@ -53,7 +53,7 @@ The important outputs are:
      generated/model/        JSON-LD, FSM artifacts, and ir.json
      generated/controller/   generated C++ and CMake project
      generated/contract/     schema and frame-log contract
-     generated/provenance.ld.json  generation provenance, one named graph per tool
+     generated/provenance/   generation and derivation provenance
 
 To stop after RDF and IR, use a different generation directory:
 

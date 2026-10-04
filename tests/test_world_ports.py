@@ -12,11 +12,10 @@ from rdflib import Graph
 from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
-
 from support import EXAMPLES
 
 from motion_spec.classes.scene import MjcfSceneObject, MjcfSceneSpec
-from motion_spec.rdf_parser.resources import world_ports
+from motion_spec.rdf_parser.runtime import world_ports
 
 # These scenes declare no agents, so no agent model maps a tree onto an MJCF body.
 _NO_AGENTS = SimpleNamespace(graph=Graph())

@@ -1,8 +1,0 @@
-// SPDX-License-Identifier: MPL-2.0
-// L3 assembly — control-loop scaffolding: every backend leaf, dispatched by name at its call site.
-
-// The one anchor that puts every backend leaf in the render closure; call sites dispatch.
-import "backend_mj_kdl.stg"
-import "backend_robif2b.stg"
-import "backend_kelo.stg"
-import "domain_mobile_base.stg"

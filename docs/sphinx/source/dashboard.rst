@@ -14,8 +14,7 @@ everything shown is read from the files the pipeline already writes.
    $ motion-spec dashboard -b               # detached; -k stops it, -r restarts
    $ motion-spec dashboard --lan            # on the network: replay and simulated runs only
 
-``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``, else
-``$MOTION_SPEC_WS/generations``); ``--sources`` the model source root (default: the
+``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``); ``--sources`` the model source root (default: the
 logs root's parent); ``--env`` the environment file health, builds and runs use (default:
 the nearest one above the logs root, ``--no-env`` for this shell). The Health page
 can switch between the workspace's environment files itself; health rechecks under the

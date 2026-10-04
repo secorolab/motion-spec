@@ -78,11 +78,12 @@ def test_generations_go_where_named_and_never_into_the_working_directory(monkeyp
     monkeypatch.delenv(stst_setup.GENERATION_VARIABLE)
     monkeypatch.delenv(stst_setup.WORKSPACE_VARIABLE, raising=False)
     result = CliRunner().invoke(main, ["gen", "ir", str(model)])
-    assert result.exit_code != 0 and stst_setup.WORKSPACE_VARIABLE in result.output
+    assert result.exit_code != 0 and stst_setup.GENERATION_VARIABLE in result.output
     with pytest.raises(RuntimeError, match=stst_setup.GENERATION_VARIABLE):
         stst_setup.generations_root()
     monkeypatch.setenv(stst_setup.WORKSPACE_VARIABLE, str(tmp_path))
-    assert stst_setup.generations_root() == tmp_path / "generations"
+    with pytest.raises(RuntimeError, match=stst_setup.GENERATION_VARIABLE):
+        stst_setup.generations_root()
 
 
 def test_a_failing_tool_fails_the_command_that_ran_it(tmp_path) -> None:

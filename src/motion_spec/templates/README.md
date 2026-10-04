@@ -3,7 +3,7 @@
 StringTemplate v4 (`.stg`) groups that motion-spec codegen renders into the generated C++
 controller, its telemetry, and CMake.
 
-Architecture, measurements and citations: `docs/codegen-architecture/`.
+Architecture, measurements and citations: `docs/sphinx/source/architecture.md`.
 
 ## Rules
 
@@ -17,40 +17,51 @@ compute over data, compare data values, or assume types. A predicate over a coll
 **query**, and a query is solved in `ir_gen` — if a template wants `&&`, the IR is missing a
 resolved collection.
 
-**Layers are enforced by the import graph.** A group may call only what it imports; the import
-graph is acyclic and every group declares exactly what it needs. This is real enforcement, not
-convention: ST4 resolves a name against the group and its imports, and a cyclic import makes
-`stst` recurse until it stack-overflows. `main.stg` holds no rules — it imports the entry
-groups so `main.<entry>` resolves.
+**Imports are acyclic.** A shared group imports only shared groups; a cyclic import makes `stst`
+recurse until it stack-overflows. Imports are relative to the importing file and precede the
+rules.
 
-Backend leaves are reached by **dynamic** dispatch (`<({rule-<backend>})(…)>`), which ST4
-resolves at render time against the rendering group. That is why `backend_robot.stg` — the
-dispatch shim — imports no backend: a static import there would close a cycle.
+**The backend is chosen by the root, not by dispatch.** Codegen renders every artifact through
+`backend/<backend>/main.stg`. A root imports its backend's groups first and the entry groups
+after; ST4 resolves a name against the root's imports in order, so the first definition wins.
+A shared group calls a rule such as `solver-run-finalize` or `world-port-address` by its plain
+name and gets the backend's definition; a shared default in a later import applies only where
+the backend defines none.
+
+**Dictionaries are not polymorphic.** ST4 binds a dictionary to the group that defines it, so a
+table that differs per backend lives in the backend group, beside the rules it names.
 
 **Multi-variant hooks dispatch through a dictionary with a `default`**, so only variants that
 emit something need a rule.
 
+**Sections the spec does not use are not rendered.** Runtime classes and overloads are gated on
+`uses` (controller kinds, operators, `CompositeError`), which codegen derives from the IR.
+
 ## Layout
 
-| layer | group | holds |
+Folders follow the IR sections.
+
+| folder | group | holds |
 |---|---|---|
-| root | `main.stg` | imports the entry groups; no rules |
-| L4 entry | `entry_program.stg` | `main_source`, `shared_state_header` |
-| | `entry_motion.stg` | `motion_header` |
-| | `entry_telemetry.stg` | `frame_layout.h`, the frame-log and shared-memory writer, model samples |
-| | `entry_build.stg` | `cmake_project` (both backends), `robot_config.hpp` |
-| | `runtime.stg` | `runtime_header`: the loop core, then each domain's runtime section the spec uses |
-| L3 assembly | `assembly_loop.stg` | the import anchor for every backend leaf |
-| | `assembly_coordination.stg` | FSM dispatch and per-state step functions |
-| | `assembly_motion.stg` | schedules, motion cycle, chain and device members |
-| L2 domain | `domain_solver.stg` | Vereshchagin/RNE solver state, init, run stages |
-| | `domain_closures.stg` | closure library: trajectories, controllers, geometry |
-| | `domain_monitors.stg` | conditions, edges, flags, ROS publish |
-| | `domain_poses.stg` | pose composition: rotation, position, deltas |
-| | `domain_mobile_base.stg` | the mobile-base cycle and its runtime constants |
-| | `world_kinematics.stg` | the world model every chain reads its poses from |
-| L1 expression | `expr_values.stg` | access expressions, shared members, saturation, lookups |
-| L0 backend | `backend_robot.stg` | the RNE includes and the world-port address table |
-| | `backend_mj_kdl.stg` | MuJoCo+KDL robot impl |
-| | `backend_robif2b.stg` | robif2b robot impl and bound devices |
-| | `backend_kelo.stg` | KELO mobile base (nothing renders it today) |
+| `entry/` | `program.stg` | `main_source`, `algorithm_data_header`, shared hook defaults |
+| | `motion.stg` | `motion_header` |
+| | `telemetry.stg` | `frame_layout.h`, the frame-log and shared-memory writer, model samples |
+| | `build.stg` | `cmake_project`, `robot_config.hpp` |
+| | `runtime.stg` | `runtime_header`: the loop core, then each section's runtime the spec uses |
+| `resources/` | `serial_chain.stg` | Vereshchagin/RNE solver state, init, run stages, outputs |
+| | `world.stg` | the world model every chain reads its poses from |
+| | `mobile_base.stg` | the hddc2b platform cycle and its runtime constants |
+| `computation/` | `values.stg` | access expressions, data members, saturation, lookups |
+| | `functions.stg` | function library: trajectories, geometry, expression operators |
+| | `controllers.stg` | controller classes, state, tuning, per-tick call |
+| | `monitors.stg` | conditions, edges, flags |
+| | `poses.stg` | pose composition: rotation, position, deltas |
+| `coordination/` | `fsm.stg` | FSM dispatch and per-state step functions |
+| | `motion.stg` | schedules, motion cycle, chain and device members |
+| `communication/` | `ros.stg` | the ROS node, executor, publishers, per-cycle tick |
+| `backend/mj_kdl/` | `main.stg` | root: imports `robot.stg`, then the entry groups |
+| | `robot.stg` | MuJoCo+KDL robot, camera, simulated mobile base |
+| `backend/robif2b/` | `main.stg` | root: imports `robot.stg`, `kelo.stg`, then the entry groups |
+| | `robot.stg` | robif2b robot; imports `devices.stg` |
+| | `devices.stg` | bound devices |
+| | `kelo.stg` | KELO mobile base over EtherCAT |

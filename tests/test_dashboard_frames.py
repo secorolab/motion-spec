@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from support import DASHBOARD_SCHEMA
 
 from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader

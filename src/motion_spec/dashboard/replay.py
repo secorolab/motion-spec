@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import rdf_name, run_videos
 from motion_spec.dashboard.frames import slot_signals
-from motion_spec.dashboard.sources import _key, authored_lines
+from motion_spec.dashboard.sources import authored_lines
 from motion_spec.runs.archive import ArchiveError
 from motion_spec.runs.replay import read_health, resolve_archive, validate_header
 from motion_spec.telemetry import frame_log_pb
@@ -37,14 +37,19 @@ def run_source_text(run_dir: Path, manifest: dict | None) -> str:
         for rel in (manifest or {}).get("files", {}).get("sources", ())
         if rel.endswith(".robmot")
     ]
-    generated = sorted((run_dir.parent.parent / "generated/source").glob("*.robmot"))
+    generated = (run_dir.parent.parent / "generated/source").glob("*.robmot")
     source = next((path for path in (*vendored, *generated) if path.is_file()), None)
     return source.read_text() if source else ""
 
 
 def _slot_ids(slots: list, field: str) -> list[str]:
     """The ids these slots name in one role, in order, without repeats or blanks."""
-    return list(dict.fromkeys(value for slot in slots if (value := getattr(slot, field, ""))))
+    ids = []
+    for slot in slots:
+        value = getattr(slot, field)
+        if value and value not in ids:
+            ids.append(value)
+    return ids
 
 
 def _by_constraint(slots) -> dict:
@@ -68,23 +73,32 @@ def authored_key(slot, motion, name: str) -> tuple[str, str]:
     """
     # A generated conjunction has no motion in its own IRI, but it is a motion's `until`, so
     # what it watches says where it belongs.
-    for iri in (slot.constraint_iri, *(member.iri for member in getattr(slot, "watched", ()))):
+    watched = slot.watched if slot.DESCRIPTOR.name == "Monitor" else ()
+    for iri in (slot.constraint_iri, *(member.iri for member in watched)):
         segments = PurePosixPath(urlparse(iri or "").path).parts
         if len(segments) >= 3 and segments[-2] in ("while", "until", "when"):
-            return (_key(segments[-3]), _key(name))
-    return (_key(motion.id), _key(name))
+            return (segments[-3].replace("-", "_"), (name or "").replace("-", "_"))
+    return ((motion.id or "").replace("-", "_"), (name or "").replace("-", "_"))
 
 
 def _constraint_row(motion, kind: str, group: list, constants: dict, authored: dict) -> dict:
-    spelled = {_key(name): name for _, _, name in authored.values()}
     """One constraint's row: its identity and signals from the header, its line from the source."""
+    spelled = {(name or "").replace("-", "_"): name for _, _, name in authored.values()}
     first = group[0]
     name = first.constraint_id or rdf_name(first.constraint_iri) or first.id
     key = authored_key(first, motion, name)
     line, expression, authored_motion = authored.get(key, (None, None, None))
     # The header names the pair the evaluator compares; measured/setpoint only where it does not.
-    operands = list(dict.fromkeys(value for slot in group for value in slot.operand_ids))
-    compared = operands or [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
+    operands = []
+    for slot in group:
+        for value in slot.operand_ids:
+            if value not in operands:
+                operands.append(value)
+    compared = operands or (
+        [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
+        if kind == "controlled"
+        else []
+    )
     evaluator = next(iter(_slot_ids(group, "evaluator_id")), None)
     return {
         # As the source spells it, so a generated row lands in the motion's own block
@@ -94,7 +108,7 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
         "name": name,
         "expression": expression,
         "kind": kind,
-        # The closure the header names, or the slot computing the error where it names none.
+        # The function the header names, or the slot computing the error where it names none.
         "evaluator": evaluator or first.iri or first.id or None,
         "between": compared,
         "tracking": [value for value in compared if value not in constants],
@@ -108,23 +122,29 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
                     "tolerance": constants.get(member.tolerance_id),
                 }
                 for slot in group
-                for member in getattr(slot, "watched", ())
+                for member in slot.watched
                 if member.error_id
             }.values()
-        ),
+        )
+        if kind == "monitored"
+        else [],
         "error": _slot_ids(group, "error_id"),
-        "control": _slot_ids(group, "output_id"),
+        "control": _slot_ids(group, "output_id") if kind == "controlled" else [],
         "monitors": [slot.id for slot in group] if kind == "monitored" else [],
         "setpoints": [
             {"label": value, "value": constants[value]}
             for value in _slot_ids(group, "setpoint_id")
             if value in constants
-        ],
+        ]
+        if kind == "controlled"
+        else [],
         "gains": {
             GAIN_LABELS.get(gain.role, gain.role): gain.value
             for slot in group
-            for gain in getattr(slot, "gains", ())
-        },
+            for gain in slot.gains
+        }
+        if kind == "controlled"
+        else {},
         "tolerance": next(
             (constants[slot.tolerance_id] for slot in group if slot.tolerance_id in constants), None
         ),
@@ -157,13 +177,16 @@ def source_constraints(run_dir: Path, manifest: dict | None, contract) -> list[d
     ]
 
 
-SLOT_ROLES = (
-    ("error_id", "error"),
-    ("output_id", "output"),
-    ("measured_id", "measured"),
-    ("setpoint_id", "setpoint"),
-    ("tolerance_id", "tolerance"),
-)
+SLOT_ROLES = {
+    "constraints": (
+        ("error_id", "error"),
+        ("output_id", "output"),
+        ("measured_id", "measured"),
+        ("setpoint_id", "setpoint"),
+        ("tolerance_id", "tolerance"),
+    ),
+    "monitors": (("error_id", "error"), ("tolerance_id", "tolerance")),
+}
 
 
 def signal_index(contract) -> dict:
@@ -187,7 +210,7 @@ def signal_index(contract) -> dict:
                 owner = slot.constraint_id or rdf_name(slot.constraint_iri) or slot.id
                 fields = contract.fields.get(pool) or ()
                 field = fields[slot.number]["id"] if slot.number < len(fields) else None
-                named = {role for attribute, role in SLOT_ROLES if getattr(slot, attribute, "")}
+                named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
                 for key in keys:
                     where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
                     # The pooled slot mirrors a signal the header already names: offering both
@@ -196,8 +219,8 @@ def signal_index(contract) -> dict:
                         index[f"{field}.{key}"] = where
                     if pool == "monitors":
                         index[f"{slot.id}.{key}"] = where
-                for attribute, role in SLOT_ROLES:
-                    signal = getattr(slot, attribute, "")
+                for attribute, role in SLOT_ROLES[pool]:
+                    signal = getattr(slot, attribute)
                     if signal:
                         index.setdefault(
                             signal,
@@ -208,7 +231,7 @@ def signal_index(contract) -> dict:
                                 "slot": slot.id,
                             },
                         )
-                for member in getattr(slot, "watched", ()):
+                for member in slot.watched if pool == "monitors" else ():
                     if member.error_id:
                         index.setdefault(
                             member.error_id,
@@ -244,8 +267,8 @@ def replay_data(run_dir: Path) -> dict:
         for motion in contract.header.motions
         for slot in motion.controllers
         if slot.number < len(contract.fields["constraints"])
-        for attribute, role in SLOT_ROLES
-        if getattr(slot, attribute, "")
+        for attribute, role in SLOT_ROLES["constraints"]
+        if getattr(slot, attribute)
     }
     signals.extend(
         name
@@ -276,7 +299,7 @@ def replay_data(run_dir: Path) -> dict:
             constraint[key] = [
                 signal
                 for name in constraint[key]
-                for signal in ([name] if name in logged else sorted(parts.get(name, ())))
+                for signal in ([name] if name in logged else parts.get(name, ()))
             ]
         handler = constraint.pop("handler")
         spelling.setdefault(handler, constraint["motion"])
@@ -286,6 +309,11 @@ def replay_data(run_dir: Path) -> dict:
         for constraint in constraints
         for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
     )
+    # A constraint's own signals are pooled ones already listed: each is offered once.
+    offered = []
+    for signal in signals:
+        if signal not in offered:
+            offered.append(signal)
     # A run copied out of its generation has none to go back to; the log says everything else.
     generation = run_dir.parent.parent
     return {
@@ -298,7 +326,7 @@ def replay_data(run_dir: Path) -> dict:
         "duration": frame_count * contract.header.nominal_period_ns / 1e9,
         "states": [state.id for state in contract.header.fsm_states],
         "events": log_events(log, contract)["events"],
-        "signals": list(dict.fromkeys(signals)),
+        "signals": offered,
         "signal_index": {
             name: {**where, "motion": spelling.get(where["motion"], where["motion"])}
             for name, where in signal_index(contract).items()
@@ -395,7 +423,9 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
             controllers, monitors = scan["by_motion"].get(frame.active_motion, ({}, {}))
             csat = [
                 slot in controllers
-                and bool((entry := frame_log_pb.slot(frame, "constraints", slot)) and entry.satisfied)
+                and bool(
+                    (entry := frame_log_pb.slot(frame, "constraints", slot)) and entry.satisfied
+                )
                 for slot in range(constraint_pool)
             ]
             msat = [

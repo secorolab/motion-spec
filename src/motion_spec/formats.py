@@ -29,11 +29,8 @@ class Format:
 
 FORMATS = {
     "config": Format(
-        "motion-spec.config.toml",
-        current=1,
-        oldest=1,
-        changes={1: "workspace and setup settings"},
-    ),
+        "motion-spec.config.toml", current=1, oldest=1, changes={1: "workspace and setup settings"}
+    )
 }
 
 

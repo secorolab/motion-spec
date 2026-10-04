@@ -30,6 +30,7 @@ def source_tree(tmp_path: Path) -> Path:
         json.dumps(build_frame_layout(SCHEMA), indent=4)
     )
     shutil.copyfile(frame_log_pb.PROTO, path / "contract" / "frame_log.proto")
+    (path / GENERATION_DOCUMENT).parent.mkdir()
     (path / GENERATION_DOCUMENT).write_text(json.dumps(PROVENANCE, indent=4))
     (path / "model").mkdir()
     (path / "model" / "model-app.ld.json").write_text(json.dumps(PROVENANCE, indent=4))

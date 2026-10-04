@@ -13,7 +13,7 @@ from motion_spec.classes.solvers import (
     MotionDrivers,
     SolverWithInputAndOutput,
 )
-from motion_spec.rdf_parser.resources import annotate_runtime
+from motion_spec.rdf_parser.runtime import annotate_runtime
 
 
 @pytest.mark.parametrize(

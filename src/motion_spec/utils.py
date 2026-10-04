@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 STATE_DIRECTORY = ".motion-spec"
@@ -63,7 +63,7 @@ def tool_environment(env: dict[str, str] | None = None) -> dict[str, str]:
 
 def command_log(root: Path, command: str) -> Path:
     """The file one invocation of COMMAND tees its tools' output into."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
     return root / STATE_DIRECTORY / LOG_DIRECTORY / f"{stamp}Z-{command}.log"
 
 
@@ -112,14 +112,12 @@ def _indenter():
     pad = INDENT.encode()
     fresh = True
 
-    def prefix(line: bytes) -> bytes:
-        return b"" if not line or STAMPED.match(line) else pad
-
     def indent(chunk: bytes) -> bytes:
         nonlocal fresh
-        lines = chunk.split(b"\n")
-        out = [(prefix(lines[0]) if fresh else b"") + lines[0]]
-        out += [prefix(line) + line for line in lines[1:]]
+        out = []
+        for number, line in enumerate(chunk.split(b"\n")):
+            starts = fresh or number > 0
+            out.append((pad if starts and line and not STAMPED.match(line) else b"") + line)
         fresh = chunk.endswith(b"\n")
         return b"\n".join(out)
 
@@ -134,33 +132,27 @@ def _for_the_file():
     pending = bytearray()
     pad = INDENT.encode()
 
-    def clean(line: bytes) -> bytes:
-        # rstrip first: under a pty every line ends CRLF, which redraws nothing.
-        text = ANSI.sub(b"", line.rstrip(b"\r").rpartition(b"\r")[2])
-        # A redrawn line lost its indent along with everything before the last return.
-        if text and line.startswith(pad) and not text.startswith(pad):
-            text = pad + text
-        return text + b"\n"
-
     def readable(chunk: bytes = b"", *, last: bool = False) -> bytes:
         pending.extend(chunk)
+        *lines, rest = bytes(pending).split(b"\n")
+        pending[:] = b"" if last else rest
+        if last and rest:
+            lines.append(rest)
         out = bytearray()
-        while True:
-            end = pending.find(b"\n")
-            if end < 0:
-                break
-            out += clean(bytes(pending[:end]))
-            del pending[: end + 1]
-        if last and pending:
-            out += clean(bytes(pending))
-            pending.clear()
+        for line in lines:
+            # rstrip first: under a pty every line ends CRLF, which redraws nothing.
+            text = ANSI.sub(b"", line.rstrip(b"\r").rpartition(b"\r")[2])
+            # A redrawn line lost its indent along with everything before the last return.
+            if text and line.startswith(pad) and not text.startswith(pad):
+                text = pad + text
+            out += text + b"\n"
         return bytes(out)
 
     return readable
 
 
 def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%H:%M:%S")
+    return datetime.now(UTC).strftime("%H:%M:%S")
 
 
 def _outcome(returncode: int, started: float) -> str:
@@ -183,7 +175,7 @@ def log_header(log: Path | None, command: str, facts: dict[str, object]) -> None
     width = max((len(key) for key in facts), default=0)
     lines = [
         f"# motion-spec {command}",
-        f"# started    {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"# started    {datetime.now(UTC).isoformat(timespec='seconds')}",
         f"# argv       {shlex.join(sys.argv)}",
         *(f"# {key:<{width}} {value}" for key, value in facts.items()),
         "",

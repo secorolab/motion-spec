@@ -28,7 +28,7 @@ message Controller {
   string tolerance_id = 12;
   // Literals folded into the controller, so no quantity slot carries them.
   repeated SlotGain gains = 14;
-  // The two quantities the evaluator compares, the difference it writes, and the closure itself.
+  // The two quantities the evaluator compares, the difference it writes, and the function itself.
   repeated string operand_ids = 15;
   string difference_id = 16;
   string evaluator_id = 17;
@@ -99,15 +99,16 @@ message Constant {
   string id = 1;
   string source_id = 2;
   double value = 3;
-  // The model term this number projects, and who reads it.
+  // The model term this number projects, and the blocks that read it.
   string uri = 4;
-  repeated ConstantConsumer consumers = 5;
+  repeated ConstantReader readers = 5;
 }
 
-message ConstantConsumer {
+// A data access constraint reading the constant: the block, and the port it reads it through.
+message ConstantReader {
   string id = 1;
   string kind = 2;
-  string role = 3;
+  string port = 3;
 }
 
 message FrameLogHeader {

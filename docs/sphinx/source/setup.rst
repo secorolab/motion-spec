@@ -362,15 +362,15 @@ Two variables are yours to set, and sourcing the file sets the first:
    * - Variable
      - Meaning
    * - ``MOTION_SPEC_WS``
-     - The workspace. ``setup`` installs into its ``install/``, generations go
-       to its ``generations/``, and ``stst`` is looked for in its ``install/bin``
+     - The workspace. ``setup`` installs into its ``install/``, its setup script points
+       ``MOTION_SPEC_GEN`` at its ``generations/``, and ``stst`` is looked for in its ``install/bin``
        when it is not on ``PATH``. Required by ``setup`` unless ``--workspace``
        is passed.
    * - ``MOTION_SPEC_GEN``
-     - Generations somewhere other than ``$MOTION_SPEC_WS/generations``.
-       With neither this nor ``MOTION_SPEC_WS`` set, ``gen``, ``run``, ``rerun``
-       and ``dashboard`` stop and say so rather than writing to the working
-       directory, where generations accumulate unnoticed and ``rerun`` cannot
+     - Where generations are written, and the root every provenance location is a path
+       from. The setup script sets it to the workspace's ``generations/``. Unset, ``gen``,
+       ``run``, ``rerun`` and ``dashboard`` stop and say so rather than writing to the
+       working directory, where generations accumulate unnoticed and ``rerun`` cannot
        find them again.
 
 Everything else is optional: ``MOTION_SPEC_ENV`` (the file to source, below),

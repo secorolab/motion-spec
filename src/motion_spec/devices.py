@@ -13,10 +13,9 @@ from __future__ import annotations
 
 import os
 import socket
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import tomllib
 
 ROBOT_TOML_REL = "generated/source/robot.toml"
 # What a device says to wait for a connection, where its table says nothing.

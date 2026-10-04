@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """The compiler's per-motion unit and everything scoped to one motion: its slice of a solver,
-its snapshot captures, its regrouped pose errors, and the blackboard/publish records a motion's
+its snapshot captures, its regrouped pose errors, and the data and publish records a motion's
 schedule can reach.
 """
 
@@ -16,13 +16,13 @@ from motion_spec.classes.solvers import MotionDrivers
 
 
 @dataclass(eq=False)
-class BlackboardValue:
-    """A shared value the runtime writes that no model entity declares: the measured period, the
-    FT tare state, a controller's internal state, a control parameter, a joint-space mirror.
+class DataValue:
+    """A D-block of the algorithm that no model entity declares: the measured period, the FT tare
+    state, a controller's internal state, a control parameter, a joint-space mirror.
 
-    The blackboard publishes what a member is -- its id, its storage type, its initial value and
-    the role it plays. What it was derived from is the telemetry artifact's to report, so the
-    descriptive fields are construction inputs that `communication.py` reads to build the row.
+    The algorithm data states what it is -- its id, its storage type, its initial value and the
+    role it plays. What it was derived from is provenance's to report, so the descriptive fields
+    are construction inputs that `communication.py` reads to build the row.
     """
 
     id: str
@@ -31,7 +31,7 @@ class BlackboardValue:
     # A time position no reading has filled yet: minus infinity, so an age from it is infinite.
     unset: bool = False
     role: str | None = None
-    producer: dict | None = field(default=None, metadata=INTERNAL)
+    writer: dict | None = field(default=None, metadata=INTERNAL)
     quantity_kind: QuantityKind | None = field(default=None, metadata=INTERNAL)
     unit: Unit | None = field(default=None, metadata=INTERNAL)
     # Who the value belongs to, named the way its telemetry row names it.
@@ -109,7 +109,7 @@ class SnapshotCapture:
     source_id: str
     scope: str = "entry"
     captured_id: str | None = None
-    source_closure_id: str | None = None
+    source_function_id: str | None = None
     trigger_event: str | None = None
     fsm_namespace: str | None = None
     type: str = field(default="SnapshotCapture")
@@ -185,13 +185,13 @@ class MotionUnit:
     # needs). The C++ signatures/args are built from these by the sig-params/sig-args
     # templates (folded from schedules/monitors/solvers).
     when_needs_state: bool = False
-    when_needs_shared: bool = False
+    when_needs_data: bool = False
     when_needs_robot: bool = False
     until_needs_state: bool = False
-    until_needs_shared: bool = False
+    until_needs_data: bool = False
     until_needs_robot: bool = False
     apply_needs_state: bool = False
-    apply_needs_shared: bool = False
+    apply_needs_data: bool = False
     apply_needs_robot: bool = False
     # The disturbances this motion's state arms.
     perturbations: list = field(default_factory=list)

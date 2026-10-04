@@ -12,9 +12,9 @@ from motion_spec_dsl.rdf_parser.vocab import EXEC
 from rdf_utils.constraints import ConstraintViolation
 from rdflib import Dataset
 
+from motion_spec.rdf_parser.deployment import config_poses
 from motion_spec.rdf_parser.model import Model
-from motion_spec.rdf_parser.resources import config_poses
-from motion_spec.runs.runner import RunnerError, _validate_robot_config
+from motion_spec.runs.runner import RunnerError, validate_robot_config
 
 APP = "https://secorolab.github.io/models/demo/"
 
@@ -44,7 +44,9 @@ app:demo-exec.config exec:path "/somewhere/robot.toml" .
 def test_a_config_that_does_not_state_the_pose_is_rejected(config: dict, message: str) -> None:
     graph = Dataset(default_union=True)
     graph.default_graph.parse(data=CONFIG_POSE, format="turtle")
-    model = Model(graph=graph, app_path=Path("model-app.ld.json"), namespaces=(f"{APP}shared/spec/",))
+    model = Model(
+        graph=graph, app_path=Path("model-app.ld.json"), namespaces=(f"{APP}shared/spec/",)
+    )
     with pytest.raises(ConstraintViolation, match=message):
         config_poses(model, config)
 
@@ -82,27 +84,27 @@ def test_robot_config_must_cover_every_bound_device(tmp_path: Path, source: Path
     config = tmp_path / "robot.toml"
 
     with pytest.raises(RunnerError, match="robot config not found"):
-        _validate_robot_config(source, tmp_path)
+        validate_robot_config(source, tmp_path)
 
     config.write_text("[agents.arm1]\nip = '10.0.0.1'\n")
     with pytest.raises(RunnerError, match="is missing user"):
-        _validate_robot_config(source, tmp_path)
+        validate_robot_config(source, tmp_path)
 
     config.write_text(_ARM_SECTION)
     with pytest.raises(RunnerError, match=r"no \[arm1.wrist_ft\] section for the bound Robotiq"):
-        _validate_robot_config(source, tmp_path)
+        validate_robot_config(source, tmp_path)
 
     # The FT sensor is a serial device: the arm's network keys say nothing about it.
     config.write_text(_ARM_SECTION + "[arm1.wrist_ft]\nport='ttyUSB0'\n")
     with pytest.raises(RunnerError, match=r"\[arm1.wrist_ft\] is missing baudrate"):
-        _validate_robot_config(source, tmp_path)
+        validate_robot_config(source, tmp_path)
 
     config.write_text(_ARM_SECTION + _FT_SECTION)
-    _validate_robot_config(source, tmp_path)
+    validate_robot_config(source, tmp_path)
 
     config.write_text(_ARM_SECTION + _FT_SECTION + _GRIPPER_SECTION)
     with pytest.raises(RunnerError, match=r"\[agents.gripper1\] configures nothing"):
-        _validate_robot_config(source, tmp_path)
+        validate_robot_config(source, tmp_path)
 
 
 def test_a_pose_the_model_reads_binds_its_section(tmp_path: Path, source: Path) -> None:
@@ -123,18 +125,18 @@ def test_a_pose_the_model_reads_binds_its_section(tmp_path: Path, source: Path) 
     pose = "[poses.home]\nposition = [0.1, 0.2, 0.3]\norientation = [0.0, 0.0, 0.0]\n"
 
     config.write_text(_ARM_SECTION + pose)
-    _validate_robot_config(source, tmp_path)
+    validate_robot_config(source, tmp_path)
 
     # The numbers may be retuned without regenerating, so their shape is checked on the way in.
     config.write_text(
         _ARM_SECTION + "[poses.home]\nposition = [0.1, 0.2]\norientation = [0, 0, 0]\n"
     )
     with pytest.raises(RunnerError, match=r"\[poses.home\] states no three-number `position`"):
-        _validate_robot_config(source, tmp_path)
+        validate_robot_config(source, tmp_path)
 
     # A deployment may keep more poses than the model reads; an unread one is skipped.
     config.write_text(_ARM_SECTION + pose + "[poses.spare]\nposition = [0, 0, 0]\n")
-    _validate_robot_config(source, tmp_path)
+    validate_robot_config(source, tmp_path)
 
 
 def test_a_home_is_rejected_on_a_real_device(tmp_path: Path, source: Path) -> None:
@@ -151,10 +153,10 @@ def test_a_home_is_rejected_on_a_real_device(tmp_path: Path, source: Path) -> No
 
     config.write_text(_ARM_SECTION + "home = [0.0, 0.6, 3.14, -2.0, 0.0, 1.1, 1.57]\n")
     with pytest.raises(RunnerError, match=r"`home` in \[agents.arm1\]"):
-        _validate_robot_config(source, tmp_path)
+        validate_robot_config(source, tmp_path)
 
     config.write_text(_ARM_SECTION)
-    _validate_robot_config(source, tmp_path)
+    validate_robot_config(source, tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -194,6 +196,6 @@ def test_the_authored_device_decides_which_sections_the_config_needs(
         config.write_text(sections)
         if rejection:
             with pytest.raises(RunnerError, match=rejection):
-                _validate_robot_config(source, tmp_path)
+                validate_robot_config(source, tmp_path)
         else:
-            _validate_robot_config(source, tmp_path)
+            validate_robot_config(source, tmp_path)

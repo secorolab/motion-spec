@@ -68,7 +68,7 @@ def test_an_unplaced_frame_with_a_distribution_is_drawn_into_its_tree() -> None:
     assert drawn.rotation == [0.0, 0.0, 0.0, 1.0]
     assert drawn.size == 3
     # A frame joins its tree as a segment; only a scalar lands in a member of its own.
-    assert drawn.shared_member is None
+    assert drawn.data_member is None
 
 
 def test_a_scalar_is_drawn_into_a_member_of_its_own() -> None:
@@ -80,7 +80,7 @@ def test_a_scalar_is_drawn_into_a_member_of_its_own() -> None:
         [{"name": "arm", "cpp_name": "arm", "unplaced_frames": []}],
     )
 
-    assert drawn.shared_member == "stiffness"
+    assert drawn.data_member == "stiffness"
     assert drawn.size == 1
     assert drawn.segment is None
     assert drawn.tree is None

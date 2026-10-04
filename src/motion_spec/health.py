@@ -73,7 +73,7 @@ CODEGEN_EXECUTABLES = ("java", "ant", "protoc")
 ROBIF2B_BUILD_PACKAGES = ("robif2b", "urdfdom_headers", "urdfdom", "serial", "robotiq_driver_noros")
 # Present only when the workspace was built with that device wrapper enabled. A model that
 # binds none of them builds and runs regardless, so a miss here is a note, not a failure.
-OPTIONAL_BUILD_PACKAGES = frozenset({"serial", "robotiq_driver_noros"})
+OPTIONAL_BUILD_PACKAGES = {"serial", "robotiq_driver_noros"}
 # TODO: Check hddc2b only when the generated model selects an HDDC2B base solver.
 
 ROS_ROOT = Path("/opt/ros")
@@ -151,7 +151,7 @@ def installed_ros_distros() -> list[str]:
     """Every ROS distribution installed under /opt/ros, whether or not one is sourced."""
     if not ROS_ROOT.is_dir():
         return []
-    return sorted(entry.name for entry in ROS_ROOT.iterdir() if (entry / "setup.bash").is_file())
+    return [entry.name for entry in ROS_ROOT.iterdir() if (entry / "setup.bash").is_file()]
 
 
 def active_ros_distro(env: dict[str, str] | None = None) -> str | None:
@@ -160,7 +160,7 @@ def active_ros_distro(env: dict[str, str] | None = None) -> str | None:
     return distro if distro and (ROS_ROOT / distro / "setup.bash").is_file() else None
 
 
-def _ros_distro(env: dict[str, str] | None = None) -> str | None:
+def ros_distro(env: dict[str, str] | None = None) -> str | None:
     """The distribution a remedy can name: the sourced one, the configured one, or the only one."""
     active = active_ros_distro(env)
     if active:
@@ -210,11 +210,11 @@ def ros_summary(env: dict[str, str] | None = None) -> str:
     )
 
 
-def _remedy(dependency: str, env: dict[str, str] | None = None) -> str:
+def remedy(dependency: str, env: dict[str, str] | None = None) -> str:
     """The command that gets `dependency`, for a report a reader can act on."""
     if dependency in _REMEDIES:
         # `$ROS_DISTRO` is only an instruction when a shell already set it.
-        return _REMEDIES[dependency].replace("$ROS_DISTRO", _ros_distro(env) or "$ROS_DISTRO")
+        return _REMEDIES[dependency].replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
     if dependency in SETUP_PROVIDES:
         real = "--real " if dependency in _DEVICE_PACKAGES else ""
         return f"motion-spec setup {real}{SETUP_PROVIDES[dependency]}"
@@ -236,7 +236,7 @@ def _device_remedy(cmake_target: str) -> str:
     """The rebuild that turns a robif2b device wrapper on."""
     flag = _ROBIF2B_DEVICE_FLAGS.get(cmake_target)
     if flag is None:
-        return _remedy(cmake_target.partition("::")[0])
+        return remedy(cmake_target.partition("::")[0])
 
     return f'add "-D{flag}=ON" to robif2b in colcon.meta, then motion-spec setup --real --force robif2b'
 
@@ -690,7 +690,8 @@ def check_health(
     profiles: tuple[str, ...],
     targets: tuple[str, ...] = (),
     env: dict[str, str] | None = None,
-    on_progress=None,
+    *,
+    on_progress,
 ) -> list[HealthCheck]:
     """Check only the selected installation profiles and target-specific dependencies.
 
@@ -698,16 +699,15 @@ def check_health(
     ON_PROGRESS is called with (done, dependency) before each probe: configuring a CMake
     project takes seconds, and several of these do.
     """
-    selected = PROFILES if "all" in profiles else tuple(dict.fromkeys(("base", *profiles)))
+    selected = tuple(
+        profile
+        for profile in PROFILES
+        if "all" in profiles or profile == "base" or profile in profiles
+    )
     checks = []
-
-    def announce(dependency: str) -> None:
-        if on_progress:
-            on_progress(len(checks), dependency)
-
     for profile in selected:
         for module in PROFILE_IMPORTS.get(profile, ()):
-            announce(module)
+            on_progress(len(checks), module)
             path = _module_path(module, env)
             checks.append(
                 HealthCheck(
@@ -724,22 +724,17 @@ def check_health(
         if profile == "telemetry":
             # The Python module reads a recorded run; the generated C++ writes one, and links
             # the C++ library to do it.
-            announce("Protobuf")
+            on_progress(len(checks), "Protobuf")
             path = _cmake_package_path("Protobuf", env=env)
             checks.append(
                 HealthCheck(
-                    profile,
-                    "Protobuf",
-                    "CMake package",
-                    path,
-                    path is not None,
-                    _remedy("Protobuf"),
+                    profile, "Protobuf", "CMake package", path, path is not None, remedy("Protobuf")
                 )
             )
     if "codegen" in selected:
         from motion_spec.setup import find_stst
 
-        announce("stst")
+        on_progress(len(checks), "stst")
         path = (
             find_stst(path=env.get("PATH", ""), workspace=env.get("MOTION_SPEC_WS"))
             if env is not None
@@ -753,15 +748,15 @@ def check_health(
                 "executable" if runs else "executable, jar missing",
                 path,
                 runs,
-                "motion-spec setup stst --force" if path else _remedy("stst"),
+                "motion-spec setup stst --force" if path else remedy("stst"),
             )
         )
         for executable in CODEGEN_EXECUTABLES:
-            announce(executable)
+            on_progress(len(checks), executable)
             path = _which(executable, env)
             checks.append(
                 HealthCheck(
-                    "codegen", executable, "executable", path, path is not None, _remedy(executable)
+                    "codegen", executable, "executable", path, path is not None, remedy(executable)
                 )
             )
     if "ros" in selected:
@@ -782,7 +777,7 @@ def check_health(
             )
         )
         for module in ROS_IMPORTS:
-            announce(module)
+            on_progress(len(checks), module)
             path = _module_path(module, env)
             checks.append(
                 HealthCheck(
@@ -791,12 +786,12 @@ def check_health(
                     _module_what(path),
                     path,
                     path is not None,
-                    _remedy(module, env),
+                    remedy(module, env),
                     optional=True,
                 )
             )
         for alternatives in ROS_ALTERNATIVES:
-            announce(alternatives[0])
+            on_progress(len(checks), alternatives[0])
             path = next(
                 (found for name in alternatives if (found := _module_path(name, env))), None
             )
@@ -807,13 +802,13 @@ def check_health(
                     _module_what(path),
                     path,
                     path is not None,
-                    _remedy(alternatives[0], env),
+                    remedy(alternatives[0], env),
                     optional=True,
                 )
             )
         for package in ROS_BUILD_PACKAGES:
             name, version = _named(package)
-            announce(name)
+            on_progress(len(checks), name)
             path = _cmake_package_path(name, version=version, env=env)
             checks.append(
                 HealthCheck(
@@ -822,29 +817,29 @@ def check_health(
                     "CMake package",
                     path,
                     path is not None,
-                    _remedy(name, env),
+                    remedy(name, env),
                     optional=True,
                 )
             )
     if "build" in selected:
         for executable in ("cmake", "c++"):
-            announce(executable)
+            on_progress(len(checks), executable)
             path = _which(executable, env)
             checks.append(
                 HealthCheck(
-                    "build", executable, "executable", path, path is not None, _remedy(executable)
+                    "build", executable, "executable", path, path is not None, remedy(executable)
                 )
             )
         for package in GENERAL_BUILD_PACKAGES:
             name, version = _named(package)
-            announce(name)
+            on_progress(len(checks), name)
             path = _cmake_package_path(name, version=version, env=env)
             checks.append(
-                HealthCheck("build", name, "CMake package", path, path is not None, _remedy(name))
+                HealthCheck("build", name, "CMake package", path, path is not None, remedy(name))
             )
         if "mujoco" in targets:
             # mj_kdl_wrapper's own CMake asks the system for these; a miss fails its configure.
-            announce("glfw3")
+            on_progress(len(checks), "glfw3")
             path = _cmake_package_path("glfw3", env=env)
             checks.append(
                 HealthCheck(
@@ -853,11 +848,11 @@ def check_health(
                     "CMake package",
                     path,
                     path is not None,
-                    _remedy("glfw3"),
+                    remedy("glfw3"),
                 )
             )
             for name, library in (("OpenGL", "GL"), ("EGL", "EGL")):
-                announce(name)
+                on_progress(len(checks), name)
                 path = _cmake_library_path(library, env=env)
                 checks.append(
                     HealthCheck(
@@ -866,10 +861,10 @@ def check_health(
                         "shared library",
                         path,
                         path is not None,
-                        _remedy(name),
+                        remedy(name),
                     )
                 )
-            announce("ffmpeg")
+            on_progress(len(checks), "ffmpeg")
             path = _which("ffmpeg", env)
             checks.append(
                 HealthCheck(
@@ -878,7 +873,7 @@ def check_health(
                     "executable",
                     path,
                     path is not None,
-                    _remedy("ffmpeg"),
+                    remedy("ffmpeg"),
                 )
             )
         for target, packages in (
@@ -889,7 +884,7 @@ def check_health(
                 continue
             for package in packages:
                 name, version = _named(package)
-                announce(name)
+                on_progress(len(checks), name)
                 path = _cmake_package_path(name, version=version, env=env)
                 checks.append(
                     HealthCheck(
@@ -898,16 +893,16 @@ def check_health(
                         "CMake package",
                         path,
                         path is not None,
-                        _remedy(name),
+                        remedy(name),
                         optional=name in OPTIONAL_BUILD_PACKAGES,
                     )
                 )
     if "runtime" in selected:
-        announce("coord2b")
+        on_progress(len(checks), "coord2b")
         path = _cmake_package_path("coord2b", load_target="coord2b", env=env)
         checks.append(
             HealthCheck(
-                "runtime", "coord2b", "shared library", path, path is not None, _remedy("coord2b")
+                "runtime", "coord2b", "shared library", path, path is not None, remedy("coord2b")
             )
         )
         runtime_targets = {
@@ -923,7 +918,7 @@ def check_health(
         }
         for target in targets:
             for package, cmake_target in runtime_targets[target]:
-                announce(cmake_target)
+                on_progress(len(checks), cmake_target)
                 path = _cmake_package_path(package, load_target=cmake_target, env=env)
                 checks.append(
                     HealthCheck(

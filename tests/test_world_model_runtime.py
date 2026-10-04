@@ -62,7 +62,9 @@ pytestmark = [
 def test_the_world_model_fixture_passes(tmp_path: Path, mode: str, flags: tuple) -> None:
     payload = tmp_path / "ir.json"
     payload.write_text(json.dumps(PAYLOAD))
-    render_template(STST, "runtime_header", payload, tmp_path / "runtime.hpp")
+    render_template(
+        STST, "backend/mj_kdl/main", "runtime_header", payload, tmp_path / "runtime.hpp"
+    )
     binary = tmp_path / "world_model"
     subprocess.run(
         [

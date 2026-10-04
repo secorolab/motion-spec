@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """Load a .scenex in mj_kdl_wrapper and view it, without generating or building anything.
 
-The scene comes from `motion_spec.rdf_parser.resources.read_scene` -- the same reader the
+The scene comes from `motion_spec.rdf_parser.scene.read_scene` -- the same reader the
 generated C++ uses -- so what this shows is what a run of the model would compose: robots,
 attachments, objects and placement. Given a robot config, every driven chain is put at its
 start pose, which is what makes it useful for checking a mount.
@@ -20,12 +20,13 @@ from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
 
 from motion_spec.classes.scene import MjcfSceneSpec
-from motion_spec.rdf_parser import resources
+from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
+from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
 
 # Asset paths are authored relative to the workspace root; these markers say which cache
 # subdirectory holds the same file when the workspace does not (mirrors find_asset_path in
-# backend_mj_kdl.stg).
+# backend/mj_kdl/robot.stg).
 _CACHE_MARKERS = (
     ("third_party/menagerie/", "menagerie"),
     ("src/mj_kdl_wrapper/assets/", "assets"),
@@ -49,11 +50,11 @@ def home_poses(model: Model, config_path: Path):
     """
     with config_path.open("rb") as config_file:
         config = tomllib.load(config_file)
-    bound_trees = resources.mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-    attach_by_body, _root = resources.fixed_attachments(model, bound_trees)
-    resources._name_object_attachments(model, attach_by_body)
+    bound_trees = agents.mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
+    attach_by_body, _root = agents.fixed_attachments(model, bound_trees)
+    name_object_attachments(model, attach_by_body)
     poses = []
-    for assembly in resources._agent_assemblies(model, attach_by_body):
+    for assembly in agents.agent_assemblies(model, attach_by_body):
         section = config
         for key in assembly.config_key.split("."):
             section = section.get(key, {}) if isinstance(section, dict) else {}
@@ -172,7 +173,7 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
     for obj in scene.objects:
         object_spec = mjk.SceneObject()
         object_spec.name = obj.body
-        # As backend_mj_kdl.stg names it: the scene's mappings use the prefixed element names.
+        # As backend/mj_kdl/robot.stg names it: the scene's mappings use the prefixed element names.
         object_spec.prefix = f"{obj.body}_"
         object_spec.attach_to = _target(obj.attach_kind, obj.attach_name)
         object_spec.pos = [obj.pos_x, obj.pos_y, obj.pos_z]
@@ -236,8 +237,8 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     """Compose SCENEX_PATH, describe it, and open the viewer unless HEADLESS."""
     model = scenex_model(scenex_path)
     poses = home_poses(model, config) if config else []
-    _setups, _ordered, trees = resources.robot_setups(model)
-    spec = build_spec(resources.read_scene(model, trees), scenex_path)
+    _setups, _ordered, trees = agents.robot_setups(model)
+    spec = build_spec(read_scene(model, trees), scenex_path)
     env = mjk.Env.build(spec)
     try:
         _robots = apply_home_poses(env, poses)

@@ -9,6 +9,7 @@ The dashboard mints no vocabulary of its own.
 from __future__ import annotations
 
 import urllib.request
+import urllib.response
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,8 +24,7 @@ MODEL_REL = Path("generated") / "model"
 
 def model_manifest(generation_dir: Path | str) -> Path | None:
     """The generation's `-app` manifest, the root the rest of the model graph hangs off."""
-    matches = sorted((Path(generation_dir) / MODEL_REL).glob("*-app.ld.json"))
-    return matches[0] if matches else None
+    return next((Path(generation_dir) / MODEL_REL).glob("*-app.ld.json"), None)
 
 
 def resolved_file(iri: str) -> str | None:
@@ -38,7 +38,7 @@ def resolved_file(iri: str) -> str | None:
     try:
         with urllib.request.urlopen(iri) as response:
             # addinfourl names itself "<urllib response>"; the file it wraps knows its path
-            name = getattr(getattr(response, "fp", None), "name", None)
+            name = response.fp.name if isinstance(response, urllib.response.addinfourl) else None
     except OSError:
         return None
     return name if isinstance(name, str) and Path(name).is_file() else None
@@ -55,7 +55,7 @@ def graph_growth(before: dict[str, int], after: dict[str, int]) -> dict:
     grew = {name: size - before.get(name, 0) for name, size in after.items()}
     return {
         "triples": sum(grew.values()),
-        "graphs": sorted(name for name, count in grew.items() if count),
+        "graphs": [name for name, count in grew.items() if count],
     }
 
 
@@ -106,13 +106,11 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
     model = dataset.graph(MODEL_GRAPH)
     load_model_graph(manifest, dataset, model)
     return tuple(
-        sorted(
-            {
-                str(model.value(device, SDO.model))
-                for device in model.subjects(EXEC["realizes"], None)
-                if model.value(device, SDO.model)
-            }
-        )
+        {
+            str(model.value(device, SDO.model))
+            for device in model.subjects(EXEC["realizes"], None)
+            if model.value(device, SDO.model)
+        }
     )
 
 

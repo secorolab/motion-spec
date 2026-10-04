@@ -437,13 +437,13 @@ def _reap_jobs() -> None:
         return
     kept = {started["log"] for started in GENERATING.values()}
 
-    def _mtime(path: Path) -> float:
+    def mtime(path: Path) -> float:
         try:
             return os.path.getmtime(path)
         except OSError:
             return 0.0
 
-    written = sorted(log_dir.glob("gen-*.log"), key=_mtime)
+    written = sorted(log_dir.glob("gen-*.log"), key=mtime)
     for log in written[:-GENERATE_LOGS_KEPT]:
         if log not in kept:
             log.unlink(missing_ok=True)

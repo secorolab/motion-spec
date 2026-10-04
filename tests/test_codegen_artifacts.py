@@ -14,10 +14,9 @@ from rdflib.namespace import PROV, RDF
 from motion_spec.classes.geometry import Axis, Subspace, View
 from motion_spec.classes.motion import ComponentRef, PoseComponents
 from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
-from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import Model
+from motion_spec.rdf_parser.views import views_for_access
 from motion_spec.runs import provenance
-
 
 COMPONENT = Quantity("home_pose_position_z", QuantityKind("Length"), Unit("M"), None, False)
 
@@ -43,7 +42,7 @@ def test_component_bound_into_a_pose_is_not_a_reading_of_it() -> None:
         )
     }
 
-    index = quantities.views_for_access(COMPONENT_VIEWS, [], [], {}, components)
+    index = views_for_access(COMPONENT_VIEWS, [], [], {}, components)
 
     assert index["home_pose_position_z"].superobject.id == "home_pose"
 
@@ -52,7 +51,7 @@ def test_a_quantity_no_view_agrees_on_is_rejected() -> None:
     """Two readings that disagree and no direct write: nothing can compute it, and rendering
     it as its own shared field would compile to a zero."""
     with pytest.raises(ConstraintViolation, match="home_pose_position_z"):
-        quantities.views_for_access(COMPONENT_VIEWS, [], [], {}, {})
+        views_for_access(COMPONENT_VIEWS, [], [], {}, {})
 
 
 def test_the_generation_document_conforms_to_the_prov_shapes(tmp_path: Path) -> None:
@@ -112,7 +111,9 @@ def test_a_derived_id_has_one_iri_and_never_shadows_an_authored_one() -> None:
     )
 
     assert (
-        model.register_derived("ctrl_x", "https://example.org/m/other", "ctrl-x", PROV.wasDerivedFrom)
+        model.register_derived(
+            "ctrl_x", "https://example.org/m/other", "ctrl-x", PROV.wasDerivedFrom
+        )
         == authored
     )
     assert model.derivation_nodes() == []

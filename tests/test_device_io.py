@@ -14,7 +14,13 @@ from pathlib import Path
 import pytest
 
 IO_TEMPLATE = (
-    Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates" / "backend_robif2b_io.stg"
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "motion_spec"
+    / "templates"
+    / "backend"
+    / "robif2b"
+    / "devices.stg"
 ).read_text()
 
 # The C++ of the handoff buffer and of the F/T worker, with the StringTemplate escapes undone.

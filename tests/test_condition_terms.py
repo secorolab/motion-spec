@@ -18,7 +18,7 @@ from rdflib.namespace import RDF, XSD
 from motion_spec.classes.constraints import Constraint
 from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType, LevelMonitor
 from motion_spec.classes.motion import MotionUnit
-from motion_spec.rdf_parser.coordination import _set_motion_conditions, constraint_evaluator
+from motion_spec.rdf_parser.coordination import constraint_evaluator, set_motion_conditions
 from motion_spec.rdf_parser.model import Model
 
 NS = "https://example.test/"
@@ -53,7 +53,7 @@ def test_a_monitor_watching_nothing_evaluable_is_rejected() -> None:
         until_schedule=[],
     )
     with pytest.raises(ConstraintViolation, match="constant false"):
-        _set_motion_conditions(unit)
+        set_motion_conditions(unit)
 
 
 def test_an_elapsed_equality_reads_its_tolerance_in_seconds() -> None:

@@ -6,7 +6,7 @@ from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.handlers import EdgeMonitor
 from motion_spec.classes.motion import MotionUnit
-from motion_spec.rdf_parser.coordination import _apply_fsm_wiring
+from motion_spec.rdf_parser.fsm import apply_fsm_wiring
 
 NS = "https://example.org/fsm/"
 
@@ -96,4 +96,4 @@ def test_every_state_the_fsm_can_hold_in_has_a_motion(
         for mid, state, motion_id, when_monitors in motions
     ]
     with pytest.raises(ConstraintViolation, match=rejection):
-        _apply_fsm_wiring(units, document, [])
+        apply_fsm_wiring(units, document, [])

@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from google.protobuf.message import DecodeError
@@ -54,7 +54,7 @@ def generation_info(path: Path) -> dict:
         "name": GenerationInfo(path, roots.GENERATIONS).model,
         "created": stamp_iso(GenerationInfo(path).timestamp),
         "variant": (path.parent.name if path.parent.parent != roots.GENERATIONS else None),
-        "built_at": datetime.fromtimestamp(GenerationInfo(path).built_at, timezone.utc).isoformat(),
+        "built_at": datetime.fromtimestamp(GenerationInfo(path).built_at, UTC).isoformat(),
         "source": source.name if source else None,
         "backend": layout.get("platform", {}).get("backend"),
         "platform": layout.get("platform", {}).get("name"),
@@ -89,7 +89,7 @@ def build_toolchain(generation_dir: Path) -> dict:
         if version:
             toolchain["wrapper"] = version.group(1)
     # The wrapper's exported config names the MuJoCo it links; the version is in that path.
-    for exported in sorted(config_dir.glob("*.cmake")):
+    for exported in config_dir.glob("*.cmake"):
         mujoco = re.search(r"mujoco-(\d+\.\d+\.\d+)", exported.read_text())
         if mujoco:
             toolchain["mujoco"] = mujoco.group(1)
@@ -105,7 +105,7 @@ def drift_summary(generation_dir: Path) -> dict:
     """
     model_dir = generation_model_dir(generation_dir)
     files = []
-    for archived in sorted((generation_dir / "generated/source").glob("*")):
+    for archived in (generation_dir / "generated/source").glob("*"):
         if not archived.is_file():
             continue
         twin = workspace_twin(archived.name, model_dir)
@@ -202,7 +202,7 @@ def workspace_twin(name: str, model_dir: str | None) -> str | None:
 def generation_details(path: Path) -> dict:
     """Add authored motion metadata without slowing the generation sidebar."""
     details = generation_info(path)
-    source_files = sorted((path / "generated/source").glob("*"))
+    source_files = list((path / "generated/source").glob("*"))
     robmot = next((source for source in source_files if source.suffix == ".robmot"), None)
     fsm = next((source for source in source_files if source.suffix == ".fsm"), None)
     description = re.search(r'description:\s*"([^"]+)"', fsm.read_text()) if fsm else None
@@ -233,7 +233,7 @@ def generation_details(path: Path) -> dict:
     details["toolchain"] = build_toolchain(path)
     details["generated_files"] = [
         {"name": str(source.relative_to(path / "generated")), "path": str(source)}
-        for source in sorted((path / "generated").rglob("*"))
+        for source in (path / "generated").rglob("*")
         if source.is_file() and "source" not in source.relative_to(path / "generated").parts
     ]
     return details
@@ -303,7 +303,7 @@ def graph_name(context) -> str:
     that graph instead -- the whole FSM is one -- and calling those "model" too would hide the
     split from every reader downstream.
     """
-    identifier = str(getattr(context, "identifier", context))
+    identifier = str(context)
     return GRAPH_NAMES.get(identifier) or rdf_name(identifier.rstrip("/")) or identifier
 
 
@@ -346,24 +346,24 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
         if isinstance(obj, BNode) and not isinstance(subject, BNode):
             blank_ids.setdefault(str(obj), f"{subject}#{rdf_name(predicate)}")
 
-    def node(term) -> dict:
-        term_id = blank_ids.get(str(term), str(term)) if isinstance(term, BNode) else str(term)
-        entry = nodes.get(term_id)
-        if entry is None:
-            entry = nodes[term_id] = {
-                "id": term_id,
-                "label": rdf_name(term),
-                "value": str(term),
-                "types": [],
-                "attributes": {},
-                "degree": 0,
-                "kind": _term_kind(term),
-                "graphs": list(graphs.get(str(term), [])),
-            }
-        return entry
-
     for subject, predicate, obj, name in quads:
-        source = node(subject)
+        ends = []
+        linked = predicate != RDF.type and not isinstance(obj, Literal)
+        for term in (subject, obj) if linked else (subject,):
+            term_id = blank_ids.get(str(term), str(term)) if isinstance(term, BNode) else str(term)
+            if term_id not in nodes:
+                nodes[term_id] = {
+                    "id": term_id,
+                    "label": rdf_name(term),
+                    "value": str(term),
+                    "types": [],
+                    "attributes": {},
+                    "degree": 0,
+                    "kind": _term_kind(term),
+                    "graphs": list(graphs.get(str(term), [])),
+                }
+            ends.append(nodes[term_id])
+        source = ends[0]
         if predicate == RDF.type:
             short = rdf_name(obj)
             source["types"].append(short)
@@ -374,7 +374,7 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
             source["attributes"].setdefault(rdf_name(predicate), []).append(str(obj))
             hidden["literal_edges"] += 1
             continue
-        target = node(obj)
+        target = ends[1]
         kind = "provenance" if any(map(_is_prov, (subject, predicate, obj))) else "relation"
         links.append(
             {
@@ -415,7 +415,12 @@ def _run_notes(path: Path) -> list[str]:
     stored = json_file(path / "notes.json")
     notes = stored.get("notes") if isinstance(stored, dict) else None
     notes = [note for note in notes if isinstance(note, dict)] if isinstance(notes, list) else []
-    return list(dict.fromkeys(str(tag) for note in notes for tag in (note.get("tags") or [])))
+    tags = []
+    for note in notes:
+        for tag in note.get("tags") or []:
+            if str(tag) not in tags:
+                tags.append(str(tag))
+    return tags
 
 
 def run_info(path: Path) -> dict:
@@ -428,7 +433,10 @@ def run_info(path: Path) -> dict:
     except (ArchiveError, DecodeError, OSError):
         period_ns = 0
     match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)
-    tags = _run_notes(path)
+    tags = []
+    for tag in (*annotations(path)["tags"], *_run_notes(path)):
+        if tag not in tags:
+            tags.append(tag)
     return {
         **annotations(path),
         "path": str(path.relative_to(roots.GENERATIONS)),
@@ -441,7 +449,7 @@ def run_info(path: Path) -> dict:
         "written_frames": health.get("written_frames"),
         "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
-        "tags": list(dict.fromkeys([*annotations(path)["tags"], *tags])),
+        "tags": tags,
         "notes_text": "\n".join(
             note.get("text", "") for note in json_file(path / "notes.json").get("notes", [])
         ),
@@ -477,14 +485,14 @@ def run_files(run_dir: Path) -> list[dict]:
     """
     return [
         {"name": str(path.relative_to(run_dir)), "path": str(path), "size": path.stat().st_size}
-        for path in sorted(run_dir.rglob("*"))
+        for path in run_dir.rglob("*")
         if path.is_file()
     ]
 
 
 def run_videos(run_dir: Path) -> list[str]:
     """The cameras this run recorded, named by their video beside the log."""
-    return sorted(path.stem for path in (run_dir / "logs").glob("*.mp4"))
+    return [path.stem for path in (run_dir / "logs").glob("*.mp4")]
 
 
 def video_file(run_dir: Path, camera: str) -> Path:

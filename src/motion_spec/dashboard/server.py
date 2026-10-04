@@ -76,7 +76,6 @@ from motion_spec.dashboard.roots import (
     relative_path,
     set_root,
     storage_info,
-    trash,
 )
 from motion_spec.dashboard.runs import GenerationCatalog
 from motion_spec.dashboard.sources import (
@@ -91,6 +90,7 @@ from motion_spec.dashboard.sources import (
 )
 from motion_spec.devices import probe_devices
 from motion_spec.runs.lifecycle_events import socket_path
+from motion_spec.utils import trash
 
 LIFECYCLE = None
 
@@ -111,49 +111,45 @@ def lan_refusal(port: int) -> str:
     return LAN_REFUSED.format(port=port)
 
 
-LAN_GET_ALLOWED = frozenset(
-    {
-        "/api/events",
-        "/api/generations",
-        "/api/generation",
-        "/api/generation-graph",
-        "/api/generated",
-        "/api/model/lint",
-        "/api/source-drift",
-        "/api/storage",
-        "/api/runs",
-        "/api/run",
-        "/api/run/files",
-        "/api/run/verdict",
-        "/api/console",
-        "/api/notes",
-        "/api/annotations",
-        "/api/baseline",
-        "/api/queries",
-        "/api/video",
-        "/api/ros-camera",
-        "/api/replay",
-        "/api/plot",
-        "/api/roots",
-        "/api/sources",
-        "/api/source",
-        "/api/source-diff",
-        "/api/generate",
-    }
-)
+LAN_GET_ALLOWED = {
+    "/api/events",
+    "/api/generations",
+    "/api/generation",
+    "/api/generation-graph",
+    "/api/generated",
+    "/api/model/lint",
+    "/api/source-drift",
+    "/api/storage",
+    "/api/runs",
+    "/api/run",
+    "/api/run/files",
+    "/api/run/verdict",
+    "/api/console",
+    "/api/notes",
+    "/api/annotations",
+    "/api/baseline",
+    "/api/queries",
+    "/api/video",
+    "/api/ros-camera",
+    "/api/replay",
+    "/api/plot",
+    "/api/roots",
+    "/api/sources",
+    "/api/source",
+    "/api/source-diff",
+    "/api/generate",
+}
 
-LAN_POST_ALLOWED = frozenset(
-    {
-        "/api/run",
-        "/api/run/stop",
-        "/api/live",
-        "/api/control",
-        "/api/notes",
-        "/api/queries",
-        "/api/sparql",
-        "/api/generate",
-    }
-)
+LAN_POST_ALLOWED = {
+    "/api/run",
+    "/api/run/stop",
+    "/api/live",
+    "/api/control",
+    "/api/notes",
+    "/api/queries",
+    "/api/sparql",
+    "/api/generate",
+}
 
 
 class LifecycleListener:
@@ -382,7 +378,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     )
                 )
             if parsed.path == "/api/sources":
-                return self.send_json(sorted(authored_sources()))
+                return self.send_json(authored_sources())
             if parsed.path == "/api/jupyter":
                 return self.send_json(jupyter_server(self.server.server_address[1]))
             if parsed.path == "/api/source":
@@ -493,7 +489,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/notebook":
                 return self.send_json(
                     run_notebook(
-                        relative_path(roots.GENERATIONS, body["path"]), self.server.server_address[1]
+                        relative_path(roots.GENERATIONS, body["path"]),
+                        self.server.server_address[1],
                     )
                 )
             if self.path != "/api/delete":
@@ -620,5 +617,3 @@ def serve(
         )
     print(f"  runs from {roots.GENERATIONS}\n  sources from {roots.WORKSPACE}")
     server.serve_forever()
-
-

@@ -112,11 +112,11 @@ def setting(name: str, flag: object = None, start: Path | None = None) -> Settin
 def sample(root: Path | None = None, ros: bool = False) -> str:
     """Every key this file understands, at the value the run that wrote it used."""
     from motion_spec.formats import FORMATS
-    from motion_spec.health import _ros_distro
+    from motion_spec.health import ros_distro
 
     newline = "\n"
     version = FORMATS["config"].current
-    found = _ros_distro()
+    found = ros_distro()
     distro_key = f'distro = "{found}"' if found else '# distro = "jazzy"'
     ros_key = f"workspace = {'true' if ros else 'false'}"
     workspace_keys = newline.join(

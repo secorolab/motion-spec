@@ -44,15 +44,19 @@ instead of copying them.
        model/        application JSON-LD, imported graphs, scene and FSM graphs, motion IR
        controller/   generated C++ and CMake project
        contract/     schema, frame layout, and frame-log protocol
-       provenance.ld.json  one document, one named graph per tool
+       provenance/
+         generation.ld.json  one document, one named graph per tool
+         derived.ld.json     what IR generation derived, and from what
      build/           reusable compiled controller
      logs/            gen.log and build.log: what the DSL, stst and cmake said
      runs/<run-id>/
        logs/          frame_log.pb (zstd-packed to frame_log.pb.zst once archived),
                       console.log and health information
        files/         the environment file the run was given
-       <run-id>.ld.json    REC record: lifecycle, host, files, metrics
-       execution.ld.json   who ran it, the command line, sampling draws
+       provenance/
+         <run-id>.ld.json    REC record: lifecycle, host, metrics
+         execution.ld.json   who ran it, the command line, the files it used and generated,
+                             sampling draws
        manifest.json consumer-facing paths into the run and generation
 
 JSON-LD artifacts use the ``.ld.json`` suffix and are loaded as RDF datasets,
@@ -119,19 +123,22 @@ is part of a release or CI contract.
 Runtime recording
 =================
 
-``run`` creates the REC record ``<run-id>.ld.json`` before launching the executable
+``run`` creates the REC record ``provenance/<run-id>.ld.json`` before launching the executable
 and exports the frame-log path to it. The run is recorded there as a
 ``prov-ext:Execution`` with an OSLC Automation state and, once complete, a verdict;
-what REC has no word for -- the agents that ran it and its command line -- goes to
-``execution.ld.json`` on the same run node. The log starts with a header containing the schema hash;
+the agents that ran it, its command line and the files it used and generated go to
+``provenance/execution.ld.json`` on the same run node. The log starts with a header containing the schema hash;
 a model that samples follows it with the seed and every draw (``[sampling] seed`` in the robot
 config fixes the seed, otherwise the OS draws one). One protobuf frame per control tick follows. On completion, the CLI catalogs
-run-owned files, records their provenance in REC, and verifies the archive.
+run-owned files, records their provenance, and verifies the archive.
 
 The manifest is deliberately small: its ``files`` map identifies what replay and
-other consumers need. Runtime artifact hashes and lifecycle provenance live in
-the REC record. Everything generation recorded lives in one document,
-``generated/provenance.ld.json``, with a named graph per tool that wrote into it.
+other consumers need. Lifecycle provenance lives in the REC record, runtime artifact hashes in
+the execution document. Everything generation recorded lives in one document,
+``generated/provenance/generation.ld.json``, with a named graph per tool that wrote into it.
+Every ``prov:atLocation`` is a path from the generations root (``$MOTION_SPEC_GEN``), such as
+``pick_and_place/20261004T114752754313Z/generated/model/ir.json``; each document states the
+root as its ``@base``, so a reader resolves it to the file.
 
 Replay
 ======

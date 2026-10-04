@@ -43,6 +43,6 @@ def test_only_a_continuous_joint_equality_error_wraps(limit: str, leaves: set, w
     graph.default_graph.parse(data=JOINT_EQUALITY + limit, format="turtle")
     model = Model(graph=graph, app_path=Path("model-app.ld.json"))
     assert continuous_joint_leaves(model) == leaves
-    closure = ErrorEvaluator().closure_step(model, EX.eval)
-    assert closure is not None
-    assert closure.get("angular_wrap") is wraps
+    function = ErrorEvaluator().function_step(model, EX.eval)
+    assert function is not None
+    assert function.get("angular_wrap") is wraps

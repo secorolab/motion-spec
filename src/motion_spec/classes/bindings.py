@@ -156,13 +156,13 @@ class DeviceBinding:
 class JointSpaceChannel:
     """One joint-space signal a runtime mirrors into the frame log.
 
-    Declared in one place so the producer and the template's mirror expression cannot drift. All
+    Declared in one place so the writer and the template's mirror expression cannot drift. All
     chain joints are revolute, so a position is an angle. `backends` of None means every backend
     carries the signal; naming backends restricts it to those that actually measure it.
     """
 
     name: str
-    producer: str
+    writer: str
     quantity_kind: URIRef
     unit: URIRef
     backends: tuple | None = None

@@ -20,7 +20,9 @@ from motion_spec.generation.pipeline import load_model
 from motion_spec.rdf_parser.ir import generate_ir
 
 ARC = EXAMPLES["arc_tracing_with_admittance"] / "arc_tracing_with_admittance.robmot"
-TABLE_EDGE_REACH = Path(__file__).parent / "fixtures" / "table_edge_reach" / "table_edge_reach.robmot"
+TABLE_EDGE_REACH = (
+    Path(__file__).parent / "fixtures" / "table_edge_reach" / "table_edge_reach.robmot"
+)
 
 
 @pytest.fixture
@@ -73,8 +75,10 @@ _ESTIMATED_WRENCH = """        wrench ext-force-est {
     ("old", "new"),
     [
         (
-            "            ref-point:  <ft_tree.wrist_ft_body.wrist_ft_site>,\n"
-            "            as-seen-by: <kinova.base_link.base_link_origin>,\n",
+            (
+                "            ref-point:  <ft_tree.wrist_ft_body.wrist_ft_site>,\n"
+                "            as-seen-by: <kinova.base_link.base_link_origin>,\n"
+            ),
             "",
         ),
         ("        wrench ext-force {", _ESTIMATED_WRENCH),
@@ -124,8 +128,8 @@ def test_admittance_reference_is_produced_before_it_is_consumed(interaction_ir: 
     compliance = next(
         m for m in interaction_ir["coordination"]["motions"] if m.motion_id == "motion_compliance"
     )
-    closures = interaction_ir["computation"]["closures"]
-    admit = {name for name, closure in closures.items() if closure["type"] == "Admittance"}
+    functions = interaction_ir["computation"]["functions"]
+    admit = {name for name, function in functions.items() if function["type"] == "Admittance"}
     assert admit, "model declares admittance references"
     assert admit <= set(compliance.while_pre_schedule), sorted(
         admit - set(compliance.while_pre_schedule)
@@ -174,24 +178,26 @@ OPERATOR_FIELDS = {
 }
 
 
-def test_every_driven_geometric_operator_gets_its_gradient_row(geometric_operators_ir: dict) -> None:
+def test_every_driven_geometric_operator_gets_its_gradient_row(
+    geometric_operators_ir: dict,
+) -> None:
     """Nothing downstream of the controller checks this: with no row to carry its output the axis
     is uncommanded while the FSM still reaches S_DONE. A direction pair held off zero failed here.
     An angle between two directions writes no gradient of its own: the
     `AngleGradientFromDirections` over the same pair does, and the row has to find it there."""
-    closures = geometric_operators_ir["computation"]["closures"]
+    functions = geometric_operators_ir["computation"]["functions"]
     operators = {
-        closure[GEOMETRIC_SCALARS[closure["type"]][0]]: closure
-        for closure in closures.values()
-        if closure.get("type") in GEOMETRIC_SCALARS
+        function[GEOMETRIC_SCALARS[function["type"]][0]]: function
+        for function in functions.values()
+        if function.get("type") in GEOMETRIC_SCALARS
     }
     evaluators = {
-        closure["error"]: closure
-        for closure in closures.values()
-        if closure.get("type") == "ErrorEvaluator"
+        function["error"]: function
+        for function in functions.values()
+        if function.get("type") == "ErrorEvaluator"
     }
     driven = {}
-    for controller in closures.values():
+    for controller in functions.values():
         if controller.get("controller_type") != "ProportionalIntegralDerivative":
             continue
         evaluator = evaluators.get(controller["error_signal"])
@@ -212,10 +218,10 @@ def test_every_driven_geometric_operator_gets_its_gradient_row(geometric_operato
         assert row.subspace.name == GEOMETRIC_SCALARS[operator["type"]][1], operator["id"]
         assert row.direction is not None, f"{operator['id']} row names an axis, not its gradient"
         gradient = operator.get("gradient") or next(
-            closure["gradient"]
-            for closure in closures.values()
-            if closure.get("type") == "AngleGradientFromDirections"
-            and {closure["in1"], closure["in2"]} == set(operator["from_directions"])
+            function["gradient"]
+            for function in functions.values()
+            if function.get("type") == "AngleGradientFromDirections"
+            and {function["in1"], function["in2"]} == set(operator["from_directions"])
         )
         assert row.direction.id == gradient
 
@@ -224,9 +230,9 @@ def test_a_row_reads_only_a_gradient_its_own_motion_computes(geometric_operators
     """An unscheduled gradient leaves the row a zero vector every tick: the constraint is inert
     and the solver takes a degenerate row, both silently."""
     writers: dict[str, set[str]] = {}
-    for closure in geometric_operators_ir["computation"]["closures"].values():
-        if closure.get("gradient"):
-            writers.setdefault(closure["gradient"], set()).add(closure["id"])
+    for function in geometric_operators_ir["computation"]["functions"].values():
+        if function.get("gradient"):
+            writers.setdefault(function["gradient"], set()).add(function["id"])
     for motion in geometric_operators_ir["coordination"]["motions"]:
         scheduled = {*motion.while_pre_schedule, *motion.while_schedule, *motion.until_schedule}
         for solver in motion.serial_chain_solvers:
@@ -234,7 +240,7 @@ def test_a_row_reads_only_a_gradient_its_own_motion_computes(geometric_operators
                 if row.direction is not None:
                     assert writers.get(row.direction.id, set()) & scheduled, (
                         f"{motion.motion_id} commands along {row.direction.id}, "
-                        "which no closure it schedules writes"
+                        "which no function it schedules writes"
                     )
 
 
@@ -245,13 +251,13 @@ def test_every_geometric_operator_is_complete_and_called(geometric_operators_ir:
     ones that go missing: the monitor then reads a slot nobody ever wrote.
     """
     by_type: dict[str, list] = {}
-    for closure in geometric_operators_ir["computation"]["closures"].values():
-        by_type.setdefault(closure.get("type"), []).append(closure)
+    for function in geometric_operators_ir["computation"]["functions"].values():
+        by_type.setdefault(function.get("type"), []).append(function)
     assert set(OPERATOR_FIELDS) <= set(by_type), set(OPERATOR_FIELDS) - set(by_type)
     for type_, fields in OPERATOR_FIELDS.items():
-        for closure in by_type[type_]:
-            missing = [field for field in fields if not closure.get(field)]
-            assert not missing, f"{closure['id']} ({type_}) is missing {missing}"
+        for function in by_type[type_]:
+            missing = [field for field in fields if not function.get(field)]
+            assert not missing, f"{function['id']} ({type_}) is missing {missing}"
 
     scheduled = {
         step
@@ -259,9 +265,9 @@ def test_every_geometric_operator_is_complete_and_called(geometric_operators_ir:
         for step in (*motion.while_pre_schedule, *motion.while_schedule, *motion.until_schedule)
     }
     uncalled = [
-        closure["id"]
+        function["id"]
         for type_ in OPERATOR_FIELDS
-        for closure in by_type[type_]
-        if closure["id"] not in scheduled
+        for function in by_type[type_]
+        if function["id"] not in scheduled
     ]
     assert not uncalled, f"operators generated but never called: {uncalled}"

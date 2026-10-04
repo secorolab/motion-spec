@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from rdflib import Graph, URIRef
@@ -26,14 +26,15 @@ from motion_spec.runs.provenance import (
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
     GRAPH_EXECUTION,
+    PROVENANCE_DIR,
     RUN_IRI_BASE,
     parse_rec_time,
     rec_document,
     rec_run_lifecycle_from_file,
     record_draw,
     record_execution,
+    record_run_file,
     record_software,
-    record_used_file,
     write_generation_graph,
 )
 from motion_spec.runs.ros_video import RosImageRecorder, real_camera_recordings
@@ -73,7 +74,7 @@ def run_cataloged(
     # frame_layout.json, not the log: the run is recorded before the log exists.
     schema = json.loads((source_dir / "contract" / "frame_layout.json").read_text())
     run_dir.mkdir(parents=True, exist_ok=True)
-    _start_rec_run(
+    start_rec_run(
         run_dir,
         run_id,
         source_dir,
@@ -191,11 +192,11 @@ def _config_section(table: dict, key: str) -> dict | None:
     return section if isinstance(section, dict) else None
 
 
-def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
+def validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     """Check the deployment config before launching, so a typo fails here, not against hardware."""
     import tomllib
 
-    from motion_spec.rdf_parser.resources import AGENT_HOME_KEY, CONFIG_POSE_FIELDS
+    from motion_spec.rdf_parser.deployment import AGENT_HOME_KEY, CONFIG_POSE_FIELDS
 
     ir_path = source_dir / "model" / "ir.json"
     if not ir_path.exists():
@@ -227,7 +228,7 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
         for device in solver.get("devices") or ()
         if device.get("config_key")
     }
-    for key, kind in sorted(bound):
+    for key, kind in bound:
         section = _config_section(config, key)
         if section is None:
             raise RunnerError(f"{config_path}: no [{key}] section for the bound {kind}")
@@ -236,9 +237,7 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
             raise RunnerError(f"{config_path}: [{key}] is missing {', '.join(missing)}")
     # Only a simulated run resets an agent to a home; on hardware the arm is wherever it was left,
     # so a home here is a number the deployment believes in and nothing acts on.
-    homed = sorted(
-        key for key, _ in bound if AGENT_HOME_KEY in (_config_section(config, key) or {})
-    )
+    homed = [key for key, _ in bound if AGENT_HOME_KEY in (_config_section(config, key) or {})]
     if homed:
         raise RunnerError(
             f"{config_path}: `{AGENT_HOME_KEY}` in [{'], ['.join(homed)}] is read only by a "
@@ -256,23 +255,12 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
         for entry in (ir["configuration"].get("config_poses") or ())
         if entry.get("config_key")
     }
-    for key in sorted(poses):
+    for key in poses:
         section = _config_section(config, key) or {}
         for field in CONFIG_POSE_FIELDS:
             values = section.get(field)
             if not isinstance(values, list) or len(values) != 3:
                 raise RunnerError(f"{config_path}: [{key}] states no three-number `{field}`")
-
-    def offers_a_pose(key: str) -> bool:
-        """Whether a section states a pose rather than a device.
-
-        A deployment keeps as many poses as it likes and a model reads the ones it names, so an
-        unread one is a pose on offer, not a mistake. The shape of the ones actually read is
-        checked above; nothing reads this one, so nothing here has an opinion on it.
-        """
-        section = _config_section(config, key) or {}
-        return any(field in section for field in CONFIG_POSE_FIELDS)
-
     # A section for nothing bound is a mis-key or a stale device: it would connect to hardware
     # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
     # [ros.*] configures the generated publishers and [rosbag] the run's recording, not a
@@ -280,11 +268,14 @@ def _validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     sections = {
         key for key in _config_sections(config) if key.split(".")[0] not in ("ros", "rosbag")
     }
-    unbound = sorted(
-        key for key in sections - {key for key, _ in bound} - poses if not offers_a_pose(key)
-    )
+    # An unread pose section is a pose on offer, not a mistake; only the read ones are checked.
+    unbound = [
+        key
+        for key in sections - {key for key, _ in bound} - poses
+        if not any(field in (_config_section(config, key) or {}) for field in CONFIG_POSE_FIELDS)
+    ]
     if unbound:
-        binds = ", ".join(f"[{key}]" for key in sorted({key for key, _ in bound} | poses))
+        binds = ", ".join(f"[{key}]" for key in {key for key, _ in bound} | poses)
         raise RunnerError(
             f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds.\n"
             f"  This run binds {binds or 'no sections'}, and a device section is named by the "
@@ -303,7 +294,7 @@ def _validate_new_run(
             raise RunnerError(f"{path}: required generated artifact is missing")
     if not executable.exists():
         raise RunnerError(f"{executable}: executable does not exist")
-    _validate_robot_config(source_dir, cwd)
+    validate_robot_config(source_dir, cwd)
     if run_dir.exists() and rec_document(run_dir, run_id).exists():
         raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
     frame_log = run_dir / "logs" / "frame_log.pb"
@@ -311,7 +302,7 @@ def _validate_new_run(
         raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
 
 
-def _start_rec_run(
+def start_rec_run(
     run_dir: Path,
     run_id: str,
     source_dir: Path,
@@ -330,7 +321,7 @@ def _start_rec_run(
     # The environment a build and a run depend on: the host alone names no toolchain or prefix.
     run.log_host_info({**host_info(), **({"environment": environment} if environment else {})})
     record_software(run, run_dir)
-    _record_execution_inputs(run, run_dir, executable, schema, cwd, environment)
+    _record_execution_inputs(run_id, run_dir, executable, schema, cwd, environment)
     run.observers[0].close()
     # rec has already stamped the start; a second `now()` would date the same run twice.
     record_execution(
@@ -347,11 +338,16 @@ def _start_rec_run(
 def _rec_observer(run_dir: Path):
     from rec.observers.file_observer import FileObserver
 
-    return FileObserver(run_dir, base=RUN_IRI_BASE)
+    return FileObserver(run_dir / PROVENANCE_DIR, base=RUN_IRI_BASE)
 
 
 def _record_execution_inputs(
-    run, run_dir: Path, executable: Path, schema: dict, cwd: Path | None, environment: dict | None
+    run_id: str,
+    run_dir: Path,
+    executable: Path,
+    schema: dict,
+    cwd: Path | None,
+    environment: dict | None,
 ) -> None:
     """What the execution ran and under what: the executable, its deployment, its environment."""
     inputs = [(executable, "log_producer_executable")]
@@ -370,9 +366,11 @@ def _record_execution_inputs(
         kept.parent.mkdir(exist_ok=True)
         shutil.copy2(script, kept)
         inputs.append((kept, "environment"))
+    graph = Graph()
     for path, role in inputs:
         if path.exists():
-            record_used_file(run, path, role, os.path.relpath(path, run_dir))
+            record_run_file(graph, run_id, path, role, generated=False)
+    write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
 
 
 def _rosbag_settings(source_dir: Path) -> tuple[list[str], bool]:
@@ -568,7 +566,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
     """Complete the run with VERDICT: passed, or error for a run stopped early, else failed."""
     from rec.run import Run
 
-    run_dir = rec_path.parent
+    run_dir = rec_path.parent.parent
     lifecycle = rec_run_lifecycle_from_file(rec_path)
     if (
         lifecycle["state"] is State.COMPLETE
@@ -580,7 +578,7 @@ def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
     run.start_time = (
         parse_rec_time(lifecycle["started_time"])
         if lifecycle["started_time"]
-        else datetime.now(timezone.utc)
+        else datetime.now(UTC)
     )
     if verdict is Verdict.PASSED:
         run._emit_completed()
@@ -596,13 +594,13 @@ def _record_sampling(rec_path: Path, run_id: str, sampling: dict) -> None:
     """The seed as a metric of the run, and each drawn value as an entity the run generated."""
     from rec.run import Run
 
-    run_dir = rec_path.parent
+    run_dir = rec_path.parent.parent
     run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
     run.log_scalar("sampling/seed", sampling["seed"])
     run.observers[0].close()
-    drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=timezone.utc)
+    drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
     graph = Graph()
-    for quantity, values in sorted(sampling["draws"].items()):
+    for quantity, values in sampling["draws"].items():
         record_draw(
             graph,
             run_id,

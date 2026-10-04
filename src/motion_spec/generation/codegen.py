@@ -18,7 +18,6 @@ from motion_spec.generation.artifacts import write_telemetry_artifacts
 from motion_spec.telemetry import frame_log_pb
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
-MAIN_TEMPLATE = "main"
 # The templates ship inside the package, so they sit beside it however it was installed.
 TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 
@@ -50,24 +49,42 @@ def _for_templates(o):
 def runtime_uses(ir: dict) -> dict:
     """What the program calls into the runtime for, by name: runtime.hpp carries only these."""
     uses = set()
-    for closure in ir["computation"]["closures"].values():
-        kind = closure["type"]
+    for function in ir["computation"]["functions"].values():
+        kind = function["type"]
         uses.add(kind)
         if kind == "ErrorEvaluator":
-            uses.add(f"ErrorEvaluator-{closure['constraint']}")
+            uses.add(f"ErrorEvaluator-{function['constraint']}")
         if kind == "VelocityProfile":
-            uses.add("PathVelocityProfile" if closure.get("path_parameter") else "TargetVelocityProfile")
-        if closure.get("error_normalization"):
+            uses.add(
+                "PathVelocityProfile" if function.get("path_parameter") else "TargetVelocityProfile"
+            )
+        if function.get("error_normalization"):
             uses.add("JointNormalization")
+        # A control law with gains names its kind, so only the classes a model runs are emitted.
+        if function.get("controller_type"):
+            uses.add(function["controller_type"])
     solvers = (ir["resources"].get("by_id") or {}).values()
     for solver in solvers:
         if solver.get("algorithm_name"):
             uses.add(f"Solver{solver['algorithm_name']}")
         if any(out.get("normalization") for out in solver.get("output") or ()):
             uses.add("JointNormalization")
+    # A monitor whose error signal is a whole pose or twist reduces it to one value before
+    # comparing it with the tolerance.
+    composite = {
+        item["id"]
+        for item in ir["computation"].get("data") or ()
+        if item.get("type") in {"Pose", "VelocityTwist"}
+    }
     for motion in ir["coordination"]["motions"]:
         for phase in ("when", "while", "until"):
             for monitor in motion.get(f"{phase}_monitors") or ():
+                error_signals = [
+                    (monitor.get("error") or {}).get("id"),
+                    *(term.get("error_id") for term in monitor.get("active_terms") or ()),
+                ]
+                if composite.intersection(error_signals):
+                    uses.add("CompositeError")
                 if monitor.get("is_edge_triggered"):
                     uses.add("SustainedEdge" if monitor.get("debounce_id") else "RisingEdge")
                     if not monitor.get("fsm_namespace"):
@@ -83,13 +100,13 @@ def write_payload(path: Path, payload) -> None:
 
 
 def render_template(
-    stst_bin: str,
-    template_name: str,
-    payload_path: Path,
-    output_path: Path,
-    module_template: str = MAIN_TEMPLATE,
+    stst_bin: str, group: str, template_name: str, payload_path: Path, output_path: Path
 ) -> Path:
-    """Render a StringTemplate group template over a JSON payload to output_path via the STSTv4 runner."""
+    """Render GROUP's template over a JSON payload to output_path via the STSTv4 runner.
+
+    GROUP is a path under the templates, without `.stg`: a backend's root, `backend/<name>/main`,
+    for everything the program is generated from.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)
     run_cwd = stst_path.resolve().parent if stst_path.parent != Path(".") else PACKAGE_ROOT
@@ -99,7 +116,7 @@ def render_template(
         "<>",
         "-t",
         str(TEMPLATES),
-        f"{module_template}.{template_name}",
+        f"{group}.{template_name}",
         str(payload_path),
     ]
     env = os.environ.copy()
@@ -154,8 +171,6 @@ def _reject_dropped_output(template_name: str, output_path: Path, stderr: str) -
             f"{template_name}: StringTemplate emitted nothing where it meant to emit code, so "
             f"{output_path.name} would be written incomplete:\n  " + "\n  ".join(dropped)
         )
-
-
 
 
 def _collapse_blank_lines(text: str) -> str:
@@ -304,7 +319,7 @@ def generate_code(
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
     # coord-dsl's FSM header stays at the source root (like frame_layout.h); the bare
-    # include in shared_state.hpp resolves it via the root include dir, so no headers/ copy
+    # include in algorithm_data.hpp resolves it via the root include dir, so no headers/ copy
     # is needed — copying it there just duplicated the file in the tree and the archive.
 
     ir["computation"]["uses"] = runtime_uses(ir)
@@ -313,18 +328,18 @@ def generate_code(
     payload_dir = Path(scratch.name)
     ir_payload_path = payload_dir / "ir.json"
     write_payload(ir_payload_path, ir)
+    # The backend's root group: its own rules first, so it answers every hook the shared ones call.
+    root = f"backend/{ir['configuration']['backend']}/main"
 
     written.append(
         render_template(
-            stst_bin,
-            "telemetry_header",
-            ir_payload_path,
-            output_dir / "telemetry.hpp",
+            stst_bin, root, "telemetry_header", ir_payload_path, output_dir / "telemetry.hpp"
         )
     )
     written.append(
         render_template(
             stst_bin,
+            root,
             "telemetry_model_header",
             ir_payload_path,
             output_dir / "telemetry_model.hpp",
@@ -332,7 +347,7 @@ def generate_code(
     )
     written.append(
         render_template(
-            stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"
+            stst_bin, root, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"
         )
     )
     shutil.copyfile(frame_log_pb.PROTO, contract_dir / "frame_log.proto")
@@ -343,22 +358,33 @@ def generate_code(
         output_dir / "frame_log.pb.cc",
     ]
     written.append(
-        render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
-    )
-    written.append(
         render_template(
-            stst_bin, "controller_runtime_header", ir_payload_path, headers_dir / "controllers.hpp"
+            stst_bin, root, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp"
         )
     )
     written.append(
         render_template(
-            stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
+            stst_bin,
+            root,
+            "controller_runtime_header",
+            ir_payload_path,
+            headers_dir / "controllers.hpp",
+        )
+    )
+    written.append(
+        render_template(
+            stst_bin,
+            root,
+            "algorithm_data_header",
+            ir_payload_path,
+            headers_dir / "algorithm_data.hpp",
         )
     )
     if ir["resources"]["by_kind"].get("mobile_base"):
         written.append(
             render_template(
                 stst_bin,
+                root,
                 "mobile_base_cycle_header",
                 ir_payload_path,
                 headers_dir / "mobile_base_cycle.hpp",
@@ -368,29 +394,30 @@ def generate_code(
     for motion in ir["coordination"]["motions"]:
         payload = {
             "motion": motion,
-            "closures": ir["computation"]["closures"],
+            "functions": ir["computation"]["functions"],
             "views": ir["computation"]["views"],
-            "backend": ir["configuration"]["backend"],
             "solvers": ir["resources"]["by_id"],
         }
         payload_path = payload_dir / f"{motion['id']}.json"
         write_payload(payload_path, payload)
         written.append(
             render_template(
-                stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
+                stst_bin, root, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
             )
         )
 
     written.append(
-        render_template(stst_bin, "main_source", ir_payload_path, output_dir / "main.cpp")
+        render_template(stst_bin, root, "main_source", ir_payload_path, output_dir / "main.cpp")
     )
     written.append(
-        render_template(stst_bin, "cmake_project", ir_payload_path, output_dir / "CMakeLists.txt")
+        render_template(
+            stst_bin, root, "cmake_project", ir_payload_path, output_dir / "CMakeLists.txt"
+        )
     )
     # Both backends read deployment properties (the FT tare length) from the same config.
     written.append(
         render_template(
-            stst_bin, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
+            stst_bin, root, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
         )
     )
     # Only real hardware has serial devices the loop must not block on; whether anything includes
@@ -398,7 +425,7 @@ def generate_code(
     if ir["configuration"]["backend"] == "robif2b":
         written.append(
             render_template(
-                stst_bin, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"
+                stst_bin, root, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"
             )
         )
     scratch.cleanup()

@@ -18,7 +18,7 @@ from motion_spec.telemetry import frame_log_pb
 LAYOUT_REL = Path("generated") / "contract" / "frame_layout.json"
 LOG_REL = Path("logs") / "frame_log.pb"
 # The rest of rec's states -- queued, in-progress -- mean the run may still produce frames.
-ENDED = frozenset({State.COMPLETE, State.CANCELED})
+ENDED = {State.COMPLETE, State.CANCELED}
 
 # The doc only changes when the runner appends a transition, so mtime+size gates a re-read.
 _LIFECYCLE_CACHE: dict[str, tuple[tuple, dict]] = {}

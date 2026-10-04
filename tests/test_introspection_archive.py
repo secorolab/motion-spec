@@ -14,7 +14,7 @@ from motion_spec.runs import replay
 from motion_spec.runs.archive import ArchiveError, create_archive_manifest, verify_manifest
 from motion_spec.runs.provenance import prov_uri, rec_document
 from motion_spec.runs.replay import decode_frames, summarize, validate_header
-from motion_spec.runs.runner import _start_rec_run
+from motion_spec.runs.runner import start_rec_run
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def run_dir(tmp_path: Path, source_tree: Path) -> Path:
     (run_dir / "logs").mkdir(parents=True)
     (tmp_path / "main").write_text("binary\n")
     schema = json.loads((source_tree / "contract" / "frame_layout.json").read_text())
-    _start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema, [])
+    start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema, [])
     shutil.copyfile(
         source_tree / "frame_log.pb.health.json", run_dir / "logs" / "frame_log.pb.health.json"
     )

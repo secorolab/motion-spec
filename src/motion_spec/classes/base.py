@@ -50,7 +50,7 @@ def unique_by_id(items: list) -> list:
     result = []
     first_by_id: dict = {}
     for item in items:
-        key = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+        key = item.get("id") if isinstance(item, dict) else item.id
         if key is None:
             result.append(item)
             continue

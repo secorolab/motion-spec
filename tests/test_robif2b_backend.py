@@ -27,16 +27,16 @@ def test_a_commanded_joint_position_reaches_each_route_as_that_devices_units(tmp
     fingers, so the endpoints, the middle and the clamp are checked against the real code
     rather than a reimplementation of it.
     """
-    robif2b = (TEMPLATES / "backend_robif2b.stg").read_text()
+    robif2b = (TEMPLATES / "backend" / "robif2b" / "robot.stg").read_text()
     travel = re.search(r'gripper-travel-Robotiq2F85\(\) ::= "([\d.]+)"', robif2b)
-    assert travel, "the 2F-85 travel constant is no longer in backend_robif2b.stg"
+    assert travel, "the 2F-85 travel constant is no longer in backend/robif2b/robot.stg"
     # The 2F-85's driver joint opens over 0.8 rad; another value re-scales every gripper command.
     assert float(travel.group(1)) == 0.8
     compiler = shutil.which("g++") or shutil.which("c++")
     if compiler is None:
         pytest.skip("no C++ compiler")
     helper = re.search(r"inline double gripper_closed_fraction.*?\n\}", robif2b, re.DOTALL)
-    assert helper, "gripper_closed_fraction is no longer in backend_robif2b.stg"
+    assert helper, "gripper_closed_fraction is no longer in backend/robif2b/robot.stg"
     source = tmp_path / "gripper.cpp"
     source.write_text(
         "#include <algorithm>\n#include <cassert>\n#include <cmath>\n#include <cstdint>\n"
@@ -79,7 +79,7 @@ def test_a_sensor_reading_has_one_writer_and_only_its_readers_need_it(
     readings = [
         row["id"]
         for row in telemetry["spatial_samples"]["wrenches"]
-        if telemetry["dataflow"][row["id"]]["producer"]["kind"] == "sensor"
+        if ir["computation"]["data_access"][row["id"]]["write"]["kind"] == "sensor"
     ]
     assert readings, "the real-world models carry an FT sensor; this checks nothing without one"
     for header in (generated / "controller" / "headers").glob("motion_*.hpp"):

@@ -20,9 +20,9 @@ from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 from motion_spec.classes.dynamics import JointQuantity
 from motion_spec.classes.handlers import LevelMonitor
 from motion_spec.rdf_parser.communication import annotate_publish_rates, ros_standing
-from motion_spec.rdf_parser.coordination import _ros_publication
+from motion_spec.rdf_parser.deployment import ros_joint_states
 from motion_spec.rdf_parser.model import Model
-from motion_spec.rdf_parser.resources import ros_joint_states
+from motion_spec.rdf_parser.ros_messages import ros_publication
 
 pytest.importorskip("rosidl_runtime_py", reason="source the ROS distribution")
 
@@ -68,7 +68,7 @@ def test_a_monitor_rate_becomes_the_cycles_between_messages(rate, divider):
         + (RATE.format(subject="mon-x", rate=rate) if rate is not None else ""),
         format="turtle",
     )
-    ros = _ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)["ros"]
+    ros = ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)["ros"]
     motion = SimpleNamespace(
         when_monitors=[],
         while_monitors=[
@@ -95,7 +95,7 @@ ex:mon-x.f1 ros:field-path "status" ; rdf:value "STATUS_ABORTED" .
 """,
         format="turtle",
     )
-    ros = _ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)["ros"]
+    ros = ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)["ros"]
     assert ros.cpp_type == "action_msgs::msg::GoalStatus"
     assert ros.include == "action_msgs/msg/goal_status.hpp"
     assert ros.on_satisfied == [
@@ -222,7 +222,7 @@ def test_a_joint_the_chain_does_not_articulate_is_still_published(reporter: str)
     -- the bound device on hardware, the simulator otherwise -- is the only route to it, and
     iterating the chain alone drops it from the message it belongs in."""
     driver = [JointQuantity("gripper_pos", "r1_g_left_driver_joint", "JointPosition")]
-    # A serial chain whose joint-space channels are already mirrored onto the blackboard.
+    # A serial chain whose joint-space channels are already mirrored into the algorithm data.
     chain = SimpleNamespace(
         id="r1_solver",
         runtime=SimpleNamespace(owner=True, prefix="r1_"),
@@ -266,7 +266,7 @@ ex:mon-x.answer.f0 ros:field-path "position" ; rdf:value "0.5" .
 """,
         format="turtle",
     )
-    lowered = _ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)[
+    lowered = ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)[
         "answer"
     ]
     assert (lowered.satisfied, lowered.method) == (satisfied, method)

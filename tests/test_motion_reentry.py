@@ -38,11 +38,7 @@ def test_an_entry_snapshot_recaptures_when_the_motion_is_re_entered(tmp_path) ->
     payload.write_text(json.dumps(MOTION))
     rendered = tmp_path / "step.cpp"
     render_template(
-        find_stst() or "stst",
-        "fsm-step-function",
-        payload,
-        rendered,
-        module_template="assembly_coordination",
+        find_stst() or "stst", "coordination/fsm", "fsm-step-function", payload, rendered
     )
     step = rendered.read_text()
     entry = step[: step.index("update_motion_probe")]

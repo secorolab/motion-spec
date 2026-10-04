@@ -5,7 +5,8 @@ and the solvers built on top of them.
 
 `DynamicsSolverFamily` and its subclasses are never instantiated: they carry a family's
 behaviour as class-level attributes and a `payload()` factory, dispatched on with
-`issubclass()`/`hasattr()` rather than an isinstance check on a built object. The
+`issubclass()` or as keys of the family tables rather than an isinstance check on a built
+object. The
 term -> family map stays in `rdf_parser/constraint_handler.py` -- `classes/` is RDF-free.
 """
 
@@ -196,7 +197,7 @@ class SolverWithInputAndOutput:
     # the root acceleration ACHD itself takes. Nothing else derives a sign from the author.
     gravity_compensation: list[float] | None = None
     derived_root_acceleration: list[float] | None = None
-    # The shared value the gravity vector was read from; templates take the numbers above, this
+    # The D-block the gravity vector was read from; templates take the numbers above, this
     # says which recorded constant they came from.
     gravity_source: str | None = field(default=None, metadata=INTERNAL)
     torque_saturation: Saturation | None = None

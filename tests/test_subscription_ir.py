@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """Lowering a standing subscription: which poses it writes, against which frame, and that it is
-their one producer. The model cases lower the `perception` fixture, where subscription -> written
+their one writer. The model cases lower the `perception` fixture, where subscription -> written
 pose -> the chain that no longer computes it can be read at once."""
 
 from __future__ import annotations
@@ -58,15 +58,15 @@ def test_a_frame_the_tree_has_no_segment_for_is_rejected():
 
 @REQUIRES_ROS
 def test_no_chain_computes_a_pose_the_subscription_writes(subscription_ir):
-    """One producer: the topic writes it, so the per-tick scene-object sync must not."""
+    """One writer: the topic writes it, so the per-tick scene-object sync must not."""
     outputs = {
         out["id"]
         for solver in subscription_ir["resources"]["by_kind"]["serial_chain"]
         for out in solver["output"]
     }
     assert "shared_world_pose_table_cam" not in outputs
-    dataflow = subscription_ir["communication"]["telemetry"]["dataflow"]
-    assert dataflow["shared_world_pose_table_cam"]["producer"] == {
+    data_access = subscription_ir["computation"]["data_access"]
+    assert data_access["shared_world_pose_table_cam"]["write"] == {
         "kind": "subscription",
         "id": "ros_subscribers_table_top",
     }
@@ -80,10 +80,10 @@ def test_the_subscription_stamps_its_pose_and_a_freshness_gate_holds_in_state(su
     assert {row["observed_at_id"] for row in subscription["written_poses"]} == {
         "pose_table_cam_observed"
     }
-    members = {member["id"]: member for member in subscription_ir["computation"]["shared_data"]}
+    members = {member["id"]: member for member in subscription_ir["computation"]["data"]}
     assert members["pose_table_cam_observed"]["unset"] is True
-    dataflow = subscription_ir["communication"]["telemetry"]["dataflow"]
-    assert dataflow["pose_table_cam_observed"]["producer"] == {
+    data_access = subscription_ir["computation"]["data_access"]
+    assert data_access["pose_table_cam_observed"]["write"] == {
         "kind": "subscription",
         "id": "ros_subscribers_table_top",
     }

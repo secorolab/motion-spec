@@ -55,12 +55,15 @@ class Controller:
     id: str
     control_signal: Quantity
     output_saturation: Saturation | None = None
-    # Abstract signal ids folded from the error-evaluator closure; the C++ access
-    # expression is rendered backend-side by access-expr (shared_data.stg).
+    # Abstract signal ids folded from the error-evaluator function; the C++ access
+    # expression is rendered by access-expr (computation/values.stg).
     measured_signal: str | None = None
     setpoint_signal: str | None = None
     # The band its constraint is satisfied within, as the model authored it.
     tolerance_id: str = ""
+    # The shared norm of an expression's gradient: the error along the direction it drives is
+    # the expression's error divided by it.
+    gradient_norm: str | None = None
     # The constraint this controller serves; per-axis controllers share the authored one.
     constraint: str | None = None
     constraint_uri: str | None = None
@@ -156,7 +159,7 @@ class EdgeMonitor(Monitor):
     # Its satisfied edge starts the motion it guards, inside that motion's own state.
     opens_gate: bool = False
     # The authored duration the constraint must hold before the edge fires, by id: the runtime
-    # accumulates measured cycle time against that shared value, so the model's bound has one
+    # accumulates measured cycle time against that D-block, so the model's bound has one
     # source of truth. None when absent.
     debounce_id: str | None = None
     # FSM binding (folded when the monitor's event lives in the FSM namespace).
@@ -246,7 +249,7 @@ class Perturbation:
     applied_id: str
     active_id: str
     # The authored window length, by id: the runtime accumulates measured cycle time against that
-    # shared value. None when the window lasts until the state exits.
+    # D-block. None when the window lasts until the state exits.
     duration_id: str | None = None
     # The pose whose translation the force direction is normalized from, by id: the body-to-target
     # vector, which is what a guide line to the aimed-at point is drawn along. None when the

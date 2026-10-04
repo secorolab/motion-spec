@@ -12,12 +12,11 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 from rec import State, Verdict, jsonld
+from support import DASHBOARD_SCHEMA
 
 from motion_spec.dashboard import roots, server
 from motion_spec.generation.artifacts import build_frame_layout
 from motion_spec.runs.provenance import rec_document
-
-from support import DASHBOARD_SCHEMA
 
 RUN = "demo/20260821T000000Z/runs/run-1"
 
@@ -35,6 +34,7 @@ def host(tmp_path, monkeypatch):
     doc = jsonld.document(
         "https://example.test/run/r1", {"state": State.COMPLETE, "verdict": Verdict.PASSED}
     )
+    rec_document(run).parent.mkdir()
     rec_document(run).write_text(json.dumps(doc))
     monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
     monkeypatch.setattr(roots, "WORKSPACE", tmp_path)
@@ -54,7 +54,10 @@ def test_a_path_outside_the_root_is_refused(host, endpoint):
 
 @pytest.mark.parametrize(
     "headers",
-    [{"Content-Type": "text/plain"}, {"Content-Type": "application/json", "Origin": "https://evil.example"}],
+    [
+        {"Content-Type": "text/plain"},
+        {"Content-Type": "application/json", "Origin": "https://evil.example"},
+    ],
     ids=["not-json", "cross-origin"],
 )
 def test_only_a_same_origin_json_post_is_accepted(host, headers):

@@ -11,7 +11,7 @@ import os
 import re
 import subprocess
 import urllib.parse
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rdf_utils.models.prov import (
@@ -42,16 +42,21 @@ PROV_CONTEXT = [
     {"msprov": MSPROV, "dslprov": DSLPROV},
 ]
 
+# A generation's and a run's provenance documents sit in its `provenance/`. Every location in them
+# is a path from the generations root, which each document states as its `@base`.
+PROVENANCE_DIR = "provenance"
 # One generation, one provenance document: three named graphs, one per tool that wrote into it.
 # One run, one execution document beside rec's record: what rec does not say about the run.
-GENERATION_DOCUMENT = "provenance.ld.json"
-EXECUTION_DOCUMENT = "execution.ld.json"
+GENERATION_DOCUMENT = f"{PROVENANCE_DIR}/generation.ld.json"
+DERIVED_DOCUMENT = f"{PROVENANCE_DIR}/derived.ld.json"
+EXECUTION_DOCUMENT = f"{PROVENANCE_DIR}/execution.ld.json"
 GRAPH_DSL = URIRef(f"{MSPROV}graph/dsl")
 GRAPH_COORD_DSL = URIRef(f"{MSPROV}graph/coord-dsl")
 GRAPH_MOTION_SPEC = URIRef(f"{MSPROV}graph/motion-spec")
 GRAPH_EXECUTION = URIRef(f"{MSPROV}graph/execution")
 # What rec is told to mint run nodes under, so its record and these graphs share the node.
 RUN_IRI_BASE = f"{MSPROV}run/"
+SPDX = Namespace("http://spdx.org/rdf/terms#")
 
 
 def _slug(value: str) -> str:
@@ -84,8 +89,9 @@ def uri(identifier: str) -> URIRef:
 
 
 def rec_document(run_dir: Path, run_id: str | None = None) -> Path:
-    """Where rec keeps the run's record: ``<run_dir>/<run_id>.ld.json``, the run dir named after the run."""
-    return Path(run_dir) / f"{run_id or Path(run_dir).name}.ld.json"
+    """Where rec keeps the run's record: ``<run_dir>/provenance/<run_id>.ld.json``, the run dir
+    named after the run."""
+    return Path(run_dir) / PROVENANCE_DIR / f"{run_id or Path(run_dir).name}.ld.json"
 
 
 def run_entity_uri(run_id: str, slug: str) -> str:
@@ -158,10 +164,13 @@ def append_generation_graph(document: Path, graph_id: URIRef, nodes: list[dict])
     Edited as JSON rather than round-tripped through rdflib, which would resolve the relative
     `prov:atLocation` values back into absolute file IRIs.
     """
+    from motion_spec.setup import generations_root
+
+    base = os.path.relpath(generations_root().resolve(), document.parent.resolve())
     data = (
         json.loads(document.read_text())
         if document.is_file()
-        else {"@context": PROV_CONTEXT, "@graph": []}
+        else {"@context": [*PROV_CONTEXT, {"@base": f"{Path(base).as_posix()}/"}], "@graph": []}
     )
     for entry in data["@graph"]:
         if entry.get("@id") == str(graph_id):
@@ -169,6 +178,7 @@ def append_generation_graph(document: Path, graph_id: URIRef, nodes: list[dict])
             break
     else:
         data["@graph"].append({"@id": str(graph_id), "@graph": nodes})
+    document.parent.mkdir(parents=True, exist_ok=True)
     document.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -190,22 +200,27 @@ def read_generation_dataset(document: Path) -> Dataset:
 
 def write_generation_document(document: Path, graphs: dict[URIRef, Graph]) -> None:
     """The generation's provenance, written once: each tool's graph a named graph of it."""
+    from motion_spec.setup import generations_root
+
+    base = os.path.relpath(generations_root().resolve(), document.parent.resolve())
     data = {
-        "@context": PROV_CONTEXT,
+        "@context": [*PROV_CONTEXT, {"@base": f"{Path(base).as_posix()}/"}],
         "@graph": [
             {"@id": str(graph_id), "@graph": _document_nodes(graph)}
             for graph_id, graph in graphs.items()
         ],
     }
+    document.parent.mkdir(parents=True, exist_ok=True)
     document.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def generated_file(graph: Graph, generated: Path, path: Path) -> URIRef:
-    """One generation-scoped file entity, located relative to GENERATED so the tree can move."""
+    """One generation-scoped file entity, located by its path from the generations root."""
+    from motion_spec.setup import generations_root
+
     entity = generation_scope(generated.parent)[f"entity/{os.path.relpath(path, generated.parent)}"]
-    add_file_entity(
-        graph, entity, location=URIRef(os.path.relpath(path, generated)), generated_at=_mtime(path)
-    )
+    location = URIRef(os.path.relpath(Path(path).resolve(), generations_root().resolve()))
+    add_file_entity(graph, entity, location=location, generated_at=_mtime(path))
     return entity
 
 
@@ -318,14 +333,13 @@ def build_derivation_document(
     """
     # The step the generation document names as the IR's generator.
     activity = generation_scope(generated.parent)["activity/motion_spec_ir_generation"]
-    telemetry = ir["communication"]["telemetry"]
-    # The tables of every id and its derivation name each id once; that is not a use of it.
-    tables = {id(telemetry.get("uris")), id(telemetry.get("derivations"))}
+    provenance = ir["provenance"]
+    # The provenance section names every id and its derivation once; that is not a use of it.
     used: set[str] = set()
     pending = [ir]
     while pending:
         value = pending.pop()
-        if id(value) in tables:
+        if value is provenance:
             continue
         if isinstance(value, dict):
             pending.extend(value.values())
@@ -335,7 +349,7 @@ def build_derivation_document(
             used.add(value)
 
     graph = Graph()
-    for entry in telemetry.get("derivations") or ():
+    for entry in provenance["derivations"]:
         if entry["id"] not in used:
             continue
         node = URIRef(entry["uri"])
@@ -367,10 +381,7 @@ def build_derivation_document(
             add_entity(graph, subject)
             graph.add((subject, PROV.wasGeneratedBy, activity))
 
-    return {
-        "@context": PROV_CONTEXT,
-        "@graph": _document_nodes(graph),
-    }
+    return {"@context": PROV_CONTEXT, "@graph": _document_nodes(graph)}
 
 
 def rec_run_lifecycle_from_file(path) -> dict:
@@ -402,7 +413,7 @@ def rec_run_lifecycle_from_file(path) -> dict:
 def parse_rec_time(value: str) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -410,19 +421,50 @@ def parse_rec_time(value: str) -> datetime:
 CONTROLLER_PROCESS = RUN_IRI_BASE + "{run_id}/controller_process"
 
 
-def record_used_file(run, path: Path, role: str, archive_path: str) -> None:
-    """One file the execution used; rec owns its checksum, size and qualified usage.
+def record_run_file(graph: Graph, run_id: str, path: Path, role: str, *, generated: bool) -> None:
+    """One file the run used or generated, at its path from the generations root, pinned by
+    checksum and size and qualified by when the run read or wrote it.
 
-    Named by where it lands in the bundle, so the reference is portable and dedupes with the
-    archive's own record of the same file.
+    Stated as rec states a run's files, on the run node rec's record describes.
     """
-    run.add_resource(
-        archive_path,
-        usage_time=_mtime(path),
-        title=role,
-        sha256=artifact_sha256(path),
-        size_bytes=artifact_size(path),
+    from rdflib.namespace import DCAT, RDFS, XSD
+
+    from motion_spec.setup import generations_root
+
+    run = uri(f"run:{run_id}")
+    location = os.path.relpath(Path(path).resolve(), generations_root().resolve())
+    entity = URIRef(run_entity_uri(run_id, location))
+    at = _mtime(path)
+    add_file_entity(
+        graph,
+        entity,
+        location=URIRef(location),
+        generated_by=run if generated else None,
+        generated_at=at if generated else None,
     )
+    graph.add((entity, RDFS.label, Literal(role)))
+    checksum = URIRef(f"{entity}/checksum")
+    graph.add((entity, SPDX.checksum, checksum))
+    graph.add((checksum, RDF.type, SPDX.Checksum))
+    graph.add((checksum, SPDX.algorithm, SPDX.checksumAlgorithm_sha256))
+    graph.add(
+        (checksum, SPDX.checksumValue, Literal(artifact_sha256(path), datatype=XSD.hexBinary))
+    )
+    graph.add(
+        (entity, DCAT.byteSize, Literal(artifact_size(path), datatype=XSD.nonNegativeInteger))
+    )
+    if generated:
+        qualified = URIRef(f"{entity}/generation")
+        graph.add((entity, PROV.qualifiedGeneration, qualified))
+        graph.add((qualified, RDF.type, PROV.Generation))
+        graph.add((qualified, PROV.activity, run))
+    else:
+        qualified = URIRef(f"{entity}/usage")
+        graph.add((run, PROV.used, entity))
+        graph.add((run, PROV.qualifiedUsage, qualified))
+        graph.add((qualified, RDF.type, PROV.Usage))
+        graph.add((qualified, PROV.entity, entity))
+    graph.add((qualified, PROV.atTime, Literal(at)))
 
 
 def record_execution(
@@ -521,7 +563,7 @@ def record_draw(graph: Graph, run_id: str, agent: URIRef, quantity: str, values,
 GENERATED_ROLES = ("frame_log", "frame_log_health", "console", "bag", "videos")
 
 
-def record_files(run, run_dir: Path, manifest: dict) -> None:
+def record_files(graph: Graph, run_id: str, run_dir: Path, manifest: dict) -> None:
     """Record the files the run generated, with their integrity metadata, as PROV entities."""
     for role in GENERATED_ROLES:
         value = manifest.get("files", {}).get(role)
@@ -529,15 +571,8 @@ def record_files(run, run_dir: Path, manifest: dict) -> None:
             continue
         for rel in value if isinstance(value, list) else [value]:
             path = run_dir / rel
-            if not path.exists():
-                continue
-            run.add_artefact(
-                rel,
-                generated_time=_mtime(path),
-                title=role,
-                sha256=artifact_sha256(path),
-                size_bytes=artifact_size(path),
-            )
+            if path.exists():
+                record_run_file(graph, run_id, path, role, generated=True)
 
 
 def record_frame_log_health(run, run_dir: Path, manifest: dict) -> None:
@@ -596,5 +631,5 @@ def record_software(run, run_dir: Path) -> None:
 def run_tool(*command: str) -> str | None:
     try:
         return subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
-    except Exception:
+    except (OSError, subprocess.CalledProcessError):
         return None

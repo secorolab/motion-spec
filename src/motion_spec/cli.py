@@ -96,7 +96,7 @@ LATEST_LINK = "latest"
 
 
 def _generation_base(output_dir: Path | None) -> Path | None:
-    """Where a new generation goes: `-o` if given, else the workspace's generations root."""
+    """Where a new generation goes: `-o` if given, else $MOTION_SPEC_GEN."""
     if output_dir is not None:
         return output_dir
     return _generation_root()
@@ -148,7 +148,7 @@ def _point_latest(generation: Path) -> None:
 
 
 def _generation_root() -> Path:
-    """Where generations live: $MOTION_SPEC_GEN, else the workspace's generations/."""
+    """Where generations live: $MOTION_SPEC_GEN."""
     from motion_spec.setup import generations_root
 
     try:
@@ -241,9 +241,9 @@ class MotionSpecGroup(click.Group):
                     ("generated/model/", "JSON-LD graphs, FSM artifacts, and IR."),
                     ("generated/controller/", "Generated C++ and CMake project."),
                     ("generated/contract/", "Schema, frame layout, and frame-log protocol."),
-                    ("generated/provenance.ld.json", "DSL, coordinate and motion-spec provenance."),
+                    ("generated/provenance/", "Generation and derivation provenance."),
                     ("build/", "Reusable compiled controller."),
-                    ("runs/RUN/", "Run-owned logs, REC graph, and manifest."),
+                    ("runs/RUN/", "Run-owned logs, provenance/, and manifest."),
                     ("latest", f"Symlink to the newest generation, under ${GENERATION_VARIABLE}."),
                 ]
             )
@@ -254,7 +254,7 @@ class MotionSpecGroup(click.Group):
                         GENERATION_VARIABLE,
                         (
                             "Where 'gen' and 'run' put a new generation when given no -o. "
-                            "Unset, they use the workspace's generations directory. "
+                            "Unset, they stop and say so. "
                             "'latest' there names the one 'rerun' takes."
                         ),
                     )
@@ -311,7 +311,7 @@ class MotionSpecGroup(click.Group):
 
 
 def _install_features() -> tuple[str, ...]:
-    return tuple(sorted(distribution("motion_spec").metadata.get_all("Provides-Extra") or []))
+    return tuple(distribution("motion_spec").metadata.get_all("Provides-Extra") or [])
 
 
 # What arrives some other way than as a manifest entry of its own.
@@ -320,10 +320,10 @@ _INSTALLS = {"textx": "motion-spec setup motion-spec-dsl", "pyshacl": "pip insta
 
 def _requirement_box(dependency: str) -> click.ClickException | None:
     """The dependency's box, when both its details and its install command are known."""
-    from motion_spec.health import DETAILS, SETUP_PROVIDES, _remedy
+    from motion_spec.health import DETAILS, SETUP_PROVIDES, remedy
 
     spec = DETAILS.get(dependency)
-    install = _remedy(dependency) if dependency in SETUP_PROVIDES else _INSTALLS.get(dependency)
+    install = remedy(dependency) if dependency in SETUP_PROVIDES else _INSTALLS.get(dependency)
     if spec is None or install is None:
         return None
     return _missing(dependency, spec["why"], spec["source"], install)
@@ -344,7 +344,7 @@ def _requirements_reported():
     try:
         yield
     except ImportError as exc:
-        box = _requirement_box((getattr(exc, "name", "") or "").partition(".")[0])
+        box = _requirement_box((exc.name or "").partition(".")[0])
         if box is None:
             raise
         raise box from exc
@@ -579,7 +579,9 @@ def _stop_dashboards(port: int | None) -> None:
     from motion_spec.dashboard.roots import pidfile
 
     every = pidfile("*")
-    ports = [port] if port else [path.stem.rpartition("-")[2] for path in every.parent.glob(every.name)]
+    ports = (
+        [port] if port else [path.stem.rpartition("-")[2] for path in every.parent.glob(every.name)]
+    )
     stopped = []
     for each in ports:
         for path in (pidfile(each), pidfile(each, "lab")):
@@ -703,9 +705,9 @@ def setup(
     from motion_spec.config import setting
     from motion_spec.setup import (
         STST_REPOSITORY,
-        _ignore_thirdparty,
         build_jobs,
         discover_packages,
+        ignore_thirdparty,
         import_sources,
         install_package,
         install_prefix,
@@ -791,7 +793,7 @@ def setup(
         python = target_environment(root, ros, dev, log)
         _say("info", f"python packages into {python}")
         if ros:
-            _ignore_thirdparty(root)
+            ignore_thirdparty(root)
         imported = import_sources(files, listed, root, log)
         for repository in selected:
             state = source_state(repository, root, repository.path in imported)
@@ -859,7 +861,7 @@ def install(features: tuple[str, ...]) -> None:
     """Install optional FEATURES of motion-spec."""
     if not features:
         raise click.UsageError("name at least one feature")
-    requirements = [f"motion_spec[{','.join(sorted(features))}]"]
+    requirements = [f"motion_spec[{','.join(features)}]"]
     from motion_spec.setup import installer
 
     try:
@@ -889,7 +891,7 @@ def _packaged_models() -> Path | None:
 def _copy_examples(source: Path, destination: Path) -> tuple[list[str], list[str]]:
     """Copy what is not there yet, and report what was left alone."""
     copied, kept = [], []
-    for path in sorted(source.rglob("*")):
+    for path in source.rglob("*"):
         if not path.is_file() or "__pycache__" in path.parts:
             continue
         relative = path.relative_to(source)
@@ -939,9 +941,7 @@ def examples(into: Path | None) -> None:
     "--profile",
     "profiles",
     multiple=True,
-    type=click.Choice(
-        ("base", "telemetry", "dsl", "codegen", "ros", "build", "runtime", "all")
-    ),
+    type=click.Choice(("base", "telemetry", "dsl", "codegen", "ros", "build", "runtime", "all")),
     default=("all",),
     show_default=True,
 )
@@ -971,12 +971,14 @@ def health(
     # The environment a build and a run would be given, not this shell's.
     env, _ = _environment(env_script, no_env)
 
+    interactive = sys.stderr.isatty()
+
     def progress(done: int, dependency: str) -> None:
         # Overwritten in place on stderr, so the report itself stays clean on stdout.
-        click.echo(f"\r\033[2K  checking {dependency} ({done} done)", err=True, nl=False)
+        if interactive:
+            click.echo(f"\r\033[2K  checking {dependency} ({done} done)", err=True, nl=False)
 
-    interactive = sys.stderr.isatty()
-    checks = check_health(profiles, targets, env=env, on_progress=progress if interactive else None)
+    checks = check_health(profiles, targets, env=env, on_progress=progress)
     if interactive:
         click.echo("\r\033[2K", err=True, nl=False)
     requirements = {
@@ -1051,7 +1053,7 @@ def health(
     # A line each: one target being short of a driver says nothing about the other.
     for target, blocking in verdicts(checks).items():
         # By package: three missing robif2b targets are one thing to install, not three.
-        owners = sorted({dependency.split("::")[0].split()[0] for dependency in blocking})
+        owners = list({dependency.split("::")[0].split()[0] for dependency in blocking})
         named = ", ".join(owners[:3]) + (f" +{len(owners) - 3}" if len(owners) > 3 else "")
         _stamp("error" if blocking else "done", err=False)
         click.secho(
@@ -1430,6 +1432,4 @@ def rerun(ctx: click.Context, generation: Path | None, **options) -> None:
     """
     generation = (generation or _latest_generation()).resolve()
     _say("info", f"generation {generation}")
-    ctx.invoke(
-        run, input=generation, output_dir=None, prefixes=(), jobs=None, name=None, **options
-    )
+    ctx.invoke(run, input=generation, output_dir=None, prefixes=(), jobs=None, name=None, **options)

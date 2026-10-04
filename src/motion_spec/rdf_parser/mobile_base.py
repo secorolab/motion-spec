@@ -17,7 +17,7 @@ from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.geometry import Axis, Subspace
 from motion_spec.rdf_parser.model import local_name
-from motion_spec.rdf_parser.quantities import views_by_subobject
+from motion_spec.rdf_parser.views import views_by_subobject
 
 
 @dataclass
@@ -115,8 +115,7 @@ def drive_units(tree: dict, root: str) -> list[DriveUnit]:
         # hddc2b's right channel is the wheel at -y of that frame; getting this backwards leaves
         # the drive term intact and reverses the steering term.
         right, left = sorted(
-            wheels,
-            key=lambda w: float(np.asarray(w["joint"]["origin"], dtype=float) @ transverse),
+            wheels, key=lambda w: float(np.asarray(w["joint"]["origin"], dtype=float) @ transverse)
         )
 
         # hddc2b's channels counter-rotate; the model's spin axis may run either way against the
@@ -191,30 +190,31 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
     Only the running motion's controllers may contribute: an inactive handler's control signal
     keeps whatever it last wrote, and summing it would drive the platform from a state it left.
     """
-    platform_ids = {
-        solver.velocity.id for solver in velocity_solvers if getattr(solver, "velocity", None)
-    } | {solver.force.id for solver in force_solvers if getattr(solver, "force", None)}
+    platform_ids = {solver.velocity.id for solver in velocity_solvers} | {
+        solver.force.id for solver in force_solvers
+    }
     by_subobject = views_by_subobject(views)
     # Every wrench the force distributions are fed, by the controller that commands it.
     wrench_by_controller = {}
     for solver in force_solvers:
-        platform_frame = getattr(getattr(solver, "force", None), "as_seen_by", None)
-        platform_key = solver.world_keys.get(getattr(platform_frame, "uri", None))
-        for spec in getattr(solver, "forces", ()) or ():
-            wrench = getattr(getattr(spec, "force", None), "id", None)
-            if wrench:
-                frame = getattr(spec.force, "as_seen_by", None)
+        platform_frame = solver.force.as_seen_by
+        platform_key = solver.world_keys.get(
+            platform_frame.uri if platform_frame is not None else None
+        )
+        for spec in solver.forces:
+            if spec.force.id:
+                frame = spec.force.as_seen_by
                 wrench_by_controller[spec.controller] = (
-                    wrench,
-                    solver.world_keys.get(getattr(frame, "uri", None)),
+                    spec.force.id,
+                    solver.world_keys.get(frame.uri if frame is not None else None),
                     platform_key,
                 )
 
     rows = []
     for motion in motions:
         terms = []
-        for controller in getattr(motion, "controllers", ()):
-            signal = getattr(getattr(controller, "control_signal", None), "id", None)
+        for controller in motion.controllers:
+            signal = controller.control_signal.id
             if not signal:
                 continue
             commanded = wrench_by_controller.get(controller.id)
@@ -241,27 +241,21 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
                     for index, (subspace, axis) in enumerate(_PLATFORM_WRENCH_COMPONENTS)
                 )
                 continue
-            measured = by_subobject.get(getattr(controller, "measured_signal", None), ())
+            measured = by_subobject.get(controller.measured_signal, ())
             if len(measured) > 1:
                 raise ConstraintViolation(
                     "control",
                     f"controller '{controller.id}' measures a quantity {len(measured)} views read",
                 )
             view = measured[0] if measured else None
-            if view is None or getattr(view.superobject, "id", None) not in platform_ids:
+            if view is None or view.superobject.id not in platform_ids:
                 continue
             coordinate = _COORDINATE_BY_COMPONENT.get((view.subspace, view.axis))
             if coordinate is None:
                 continue
             terms.append({"signal": signal, "coordinate": coordinate})
         if terms:
-            rotations = list(
-                {
-                    term["local"]: term
-                    for term in terms
-                    if term.get("local")
-                }.values()
-            )
+            rotations = list({term["local"]: term for term in terms if term.get("local")}.values())
             rows.append(
                 {
                     "index": motion.index,

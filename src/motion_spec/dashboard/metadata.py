@@ -68,7 +68,11 @@ def save_annotations(path: Path, changes: dict) -> dict:
     with LOCK:
         result = {**annotations(path), **changes}
         result["label"] = result["label"].strip()
-        result["tags"] = list(dict.fromkeys(tag.strip() for tag in result["tags"] if tag.strip()))
+        tags = []
+        for tag in result["tags"]:
+            if tag.strip() and tag.strip() not in tags:
+                tags.append(tag.strip())
+        result["tags"] = tags
         write_document(path / "dashboard.json", result)
         return result
 

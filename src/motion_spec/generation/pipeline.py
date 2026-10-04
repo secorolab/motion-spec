@@ -15,9 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import rdflib
-from rdflib.namespace import PROV
-
 from motion_spec_dsl.rdf_parser.vocab import APP
+from rdflib.namespace import PROV
 
 from motion_spec.runs.provenance import file_path
 from motion_spec.setup import build_jobs
@@ -44,25 +43,28 @@ class LoadedModel:
     graphs_ended: datetime
 
 
-def _placed(graph: rdflib.Graph, generated: Path, sources: dict[Path, Path]) -> rdflib.Graph:
-    """A tool's provenance with each file at its place in GENERATED: a source at its kept copy."""
+def _placed(
+    graph: rdflib.Graph, generated: Path, root: Path, sources: dict[Path, Path]
+) -> rdflib.Graph:
+    """A tool's provenance with each file in GENERATED at its path from ROOT: a source at its
+    kept copy."""
     for subject, location in list(graph.subject_objects(PROV.atLocation)):
         path = file_path(location)
         if path is None:
             continue
         target = sources.get(path.resolve(), path.resolve())
         if target.is_relative_to(generated):
-            graph.set((subject, PROV.atLocation, rdflib.URIRef(os.path.relpath(target, generated))))
+            graph.set((subject, PROV.atLocation, rdflib.URIRef(os.path.relpath(target, root))))
     return graph
 
 
-def _scoped(graph: rdflib.Graph, generated: Path) -> rdflib.Graph:
+def _scoped(graph: rdflib.Graph, generated: Path, root: Path) -> rdflib.Graph:
     """A placed tool graph under this generation's names: files by place, packages by release."""
     from motion_spec.runs.provenance import generation_scope, package_agent_uri
 
     scope = generation_scope(generated.parent)
     names = {
-        node: scope[f"entity/generated/{location}"]
+        node: scope[f"entity/{os.path.relpath(root / str(location), generated.parent)}"]
         for node, location in graph.subject_objects(PROV.atLocation)
         if file_path(location) is None
     }
@@ -119,11 +121,11 @@ def load_model(model: Path, model_dir: Path) -> LoadedModel:
     each a named graph named by its source file."""
     from coord_dsl.generators.fsm import gen_json
     from coord_dsl.rdf.fsm import get_fsm_graph
+    from motion_spec_dsl.gens import generate
     from scene_dsl.rdf.scenex import create_scenex_model_graph
     from textx import metamodel_for_file
     from textx.exceptions import TextXError
 
-    from motion_spec_dsl.gens import generate
     from motion_spec.rdf_parser.model import Model
 
     try:
@@ -170,12 +172,14 @@ def generate_model(
     workspace tool is found rather than whatever this process happens to have first.
     """
     from coord_dsl.registration import gen_cpp, gen_fsm_dot_file
-    from scene_dsl.gens import scenex_kdl_gen
-
     from motion_spec_dsl.gens import IMPORT_BASE
     from motion_spec_dsl.rdf_parser.check import validate_dataset
+    from scene_dsl.gens import scenex_kdl_gen
+
     from motion_spec.classes.base import DataclassJSONEncoder
+    from motion_spec.rdf_parser.ir import generate_ir
     from motion_spec.runs.provenance import (
+        DERIVED_DOCUMENT,
         GENERATION_DOCUMENT,
         GRAPH_COORD_DSL,
         GRAPH_DSL,
@@ -186,10 +190,11 @@ def generate_model(
         record_tool_generation,
         write_generation_document,
     )
-    from motion_spec.rdf_parser.ir import generate_ir
+    from motion_spec.setup import generations_root
 
     generated = generation / "generated"
     model_dir = generated / "model"
+    root = generations_root().resolve()
     loaded = load_model(model, model_dir)
     dataset, dsl_provenance, fsm = loaded.dataset, loaded.provenance, loaded.fsm
     manifest = model_dir / f"{model.stem}-app.ld.json"
@@ -207,7 +212,7 @@ def generate_model(
         shutil.copy2(path, kept)
         sources[path.resolve()] = kept
     provenance = {
-        GRAPH_DSL: _scoped(_placed(dsl_provenance, generated, sources), generated),
+        GRAPH_DSL: _scoped(_placed(dsl_provenance, generated, root, sources), generated, root),
         GRAPH_COORD_DSL: rdflib.Graph(),
         GRAPH_MOTION_SPEC: rdflib.Graph(),
     }
@@ -227,7 +232,7 @@ def generate_model(
         written = model_dir / f"{source.name}.ld.json"
         graph.serialize(destination=written, format="json-ld")
         tool_graphs[package][0].append(
-            node_at[rdflib.URIRef(os.path.relpath(sources[source], generated))]
+            node_at[rdflib.URIRef(os.path.relpath(sources[source], root))]
         )
         tool_graphs[package][1].append(written)
     for package, (read, written) in tool_graphs.items():
@@ -252,8 +257,8 @@ def generate_model(
     ir = json.loads(json.dumps(generate_ir(loaded.model, fsm), cls=DataclassJSONEncoder))
     resolve_model_assets(ir, model.resolve().parent)
     ir_path.write_text(json.dumps(ir, indent=4))
-    # The derivation graph extends the model's own graphs, so it is written beside them.
-    derived_path = model_dir / f"{model.stem}-derived.ld.json"
+    derived_path = generated / DERIVED_DOCUMENT
+    derived_path.parent.mkdir(parents=True, exist_ok=True)
     authored = [
         document
         for document in dataset.graphs()
@@ -268,9 +273,9 @@ def generate_model(
     record_ir_generation(
         provenance[GRAPH_MOTION_SPEC],
         generated,
-        node_at[rdflib.URIRef(os.path.relpath(manifest, generated))],
+        node_at[rdflib.URIRef(os.path.relpath(manifest, root))],
         [
-            node_at[rdflib.URIRef(os.path.relpath(path, generated))]
+            node_at[rdflib.URIRef(os.path.relpath(path, root))]
             for path in (
                 *(
                     model_dir / str(location).removeprefix(IMPORT_BASE)
@@ -331,8 +336,9 @@ def generate_model(
         if record.is_file():
             # Named by place, a file coord-dsl read is the node the DSL's record gave it.
             provenance[GRAPH_COORD_DSL] += _scoped(
-                _placed(rdflib.Graph().parse(record, format="json-ld"), generated, sources),
+                _placed(rdflib.Graph().parse(record, format="json-ld"), generated, root, sources),
                 generated,
+                root,
             )
             record.unlink()
     write_generation_document(generated / GENERATION_DOCUMENT, provenance)

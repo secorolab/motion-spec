@@ -14,10 +14,9 @@ from rdflib.namespace import RDF
 
 from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType
 from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
-from motion_spec.rdf_parser import resources
+from motion_spec.rdf_parser import deployment
 from motion_spec.rdf_parser.coordination import evaluator_term
 from motion_spec.rdf_parser.model import Model
-
 
 CONSTRAINED_SCENE_OBJECT = f"""
 @prefix ex: <https://example.test/> .
@@ -62,7 +61,7 @@ def test_real_world_execution_rejects_a_constrained_scene_object() -> None:
     graph = Dataset(default_union=True)
     graph.default_graph.parse(data=CONSTRAINED_SCENE_OBJECT, format="turtle")
     with pytest.raises(ConstraintViolation, match="constrains scene object"):
-        resources._reject_scene_objects_on_hardware(
+        deployment.reject_scene_objects_on_hardware(
             Model(graph=graph, app_path=Path("/tmp/app.json")),
             URIRef("https://example.test/real-exec"),
         )

@@ -16,16 +16,12 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
 from motion_spec.runs.provenance import artifact_size
 from motion_spec.setup import ENVIRONMENT_FILES
-
-# Re-exported: the dashboard's callers ask roots for it, and it is the same removal every
-# other part of motion-spec uses.
-from motion_spec.utils import trash as trash
 
 
 def pidfile(port: int | str, role: str = "dashboard") -> Path:
@@ -81,7 +77,7 @@ NOT_AUTHORED = {"METADATA.toml", "netlify.toml", "pixi.toml", "pyproject.toml", 
 
 # Not a DSL file and not a suffix worth admitting -- every .zsh in a workspace is not a source.
 # This one is: every build and run is launched under it, so what it says is part of the result.
-AUTHORED_NAMES = frozenset(ENVIRONMENT_FILES)
+AUTHORED_NAMES = set(ENVIRONMENT_FILES)
 
 
 def current_roots() -> dict:
@@ -197,11 +193,7 @@ def stamp_iso(name: str) -> str | None:
     match = re.fullmatch(r"(\d{8}T\d{6}\d{6})Z", name)
     if not match:
         return None
-    return (
-        datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%f")
-        .replace(tzinfo=timezone.utc)
-        .isoformat()
-    )
+    return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC).isoformat()
 
 
 LAYOUT_REL = "generated/contract/frame_layout.json"

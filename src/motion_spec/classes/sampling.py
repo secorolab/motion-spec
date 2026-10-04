@@ -12,7 +12,7 @@ class SampledQuantity:
     """One draw: a scalar spec constant, or the position of a scene frame.
 
     `components` are the per-axis parameters of the C++ standard distribution `dist` names,
-    `scale` takes the authored unit to SI. A scalar lands on `shared_member`; a position becomes
+    `scale` takes the authored unit to SI. A scalar lands on `data_member`; a position becomes
     the segment `segment` under `parent` of tree `tree`, with the authored `rotation`.
     """
 
@@ -22,7 +22,7 @@ class SampledQuantity:
     components: list[dict]
     size: int
     scale: float
-    shared_member: str | None = None
+    data_member: str | None = None
     segment: str | None = None
     parent: str | None = None
     rotation: list[float] | None = None

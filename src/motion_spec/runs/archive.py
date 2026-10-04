@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import rdflib
@@ -21,8 +21,11 @@ from rdflib.namespace import PROV
 from rec import State
 
 from motion_spec.runs.provenance import (
+    DERIVED_DOCUMENT,
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
+    GRAPH_EXECUTION,
+    PROVENANCE_DIR,
     RUN_IRI_BASE,
     artifact_sha256,
     file_path,
@@ -33,8 +36,9 @@ from motion_spec.runs.provenance import (
     record_execution,
     record_files,
     record_frame_log_health,
+    record_run_file,
     record_software,
-    record_used_file,
+    write_generation_graph,
 )
 
 log = logging.getLogger(__name__)
@@ -59,7 +63,7 @@ def _existing(run_dir: Path, rel: str) -> str | None:
 
 def _camera_videos(run_dir: Path) -> list[str] | None:
     """The videos a run recorded, whichever side wrote them."""
-    videos = sorted(f"logs/{path.name}" for path in (run_dir / "logs").glob("*.mp4"))
+    videos = [f"logs/{path.name}" for path in (run_dir / "logs").glob("*.mp4")]
     return videos or None
 
 
@@ -85,10 +89,6 @@ def create_archive_manifest(
             raise ArchiveError(f"{required}: required generated artifact is missing")
     if len(model_manifests) != 1:
         raise ArchiveError(f"{generated / 'model'}: expected exactly one application manifest")
-
-    def relative(path: Path) -> str:
-        return os.path.relpath(path, run_dir)
-
     if recorded:
         frame_log_path = Path(frame_log) if frame_log else run_dir / "logs" / "frame_log.pb"
         if (
@@ -116,30 +116,32 @@ def create_archive_manifest(
     # The authored source travels with the run: it is kilobytes next to a gigabyte log, and a run
     # moved out of its generation still shows the lines its constraints were written on.
     sources = []
-    for authored in sorted((generated / "source").glob("*")):
+    for authored in (generated / "source").glob("*"):
         if authored.is_file():
             _copy_file(authored, run_dir / "source" / authored.name)
             sources.append(f"source/{authored.name}")
     files = {
-        "frame_log_proto": relative(proto_path),
-        "provenance": relative(provenance_path),
-        "model": relative(model_manifests[0]),
+        "frame_log_proto": os.path.relpath(proto_path, run_dir),
+        "provenance": os.path.relpath(provenance_path, run_dir),
+        "model": os.path.relpath(model_manifests[0], run_dir),
         # Without it the log's derived slot IRIs resolve to nothing.
-        "derived": next(
-            (relative(path) for path in (generated / "model").glob("*-derived.ld.json")), None
+        "derived": (
+            os.path.relpath(generated / DERIVED_DOCUMENT, run_dir)
+            if (generated / DERIVED_DOCUMENT).is_file()
+            else None
         ),
-        "ir": relative(generated / "model" / "ir.json"),
+        "ir": os.path.relpath(generated / "model" / "ir.json", run_dir),
         # The scene and FSM graphs as their tools built them; the IR names their nodes.
         "graphs": [
-            relative(path)
+            os.path.relpath(path, run_dir)
             for pattern in ("*.scenex.ld.json", "*.fsm.ld.json")
             for path in (generated / "model").glob(pattern)
         ]
         or None,
         "sources": sources or None,
-        "controller": relative(generated / "controller"),
+        "controller": os.path.relpath(generated / "controller", run_dir),
         "log_producer_executable": (
-            relative(Path(log_producer_executable)) if log_producer_executable else None
+            os.path.relpath(log_producer_executable, run_dir) if log_producer_executable else None
         ),
         "frame_log": "logs/frame_log.pb.zst" if recorded else None,
         "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
@@ -151,13 +153,10 @@ def create_archive_manifest(
         "videos": _camera_videos(run_dir),
         # metadata.yaml is what says rosbag2 closed the bag.
         "bag": "bag" if (run_dir / "bag" / "metadata.yaml").is_file() else None,
-        "rec": rec_document(run_dir, run_id).name,
+        "rec": os.path.relpath(rec_document(run_dir, run_id), run_dir),
     }
     files = {key: value for key, value in files.items() if value is not None}
-    manifest = {
-        "run_id": run_id or run_dir.name,
-        "files": files,
-    }
+    manifest = {"run_id": run_id or run_dir.name, "files": files}
     # The single marker for "no frame log by choice": replay, live plots and verify all read it
     # rather than guessing from a file that is merely absent.
     if not recorded:
@@ -219,6 +218,10 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     rec_rel = manifest.get("files", {}).get("rec")
     if rec_rel and (run_dir / rec_rel).exists():
         rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
+        # The run's files are in the execution document, on the run node rec's record describes.
+        execution_rel = manifest.get("files", {}).get("execution")
+        if execution_rel and (run_dir / execution_rel).exists():
+            rec_graph += _parse_rdf(run_dir / execution_rel, "json-ld")
         _verify_checksums(rec_graph, run_dir, errors)
         if errors:
             raise ArchiveError("; ".join(errors))
@@ -251,10 +254,7 @@ def _verify_model_imports(model_path: Path) -> None:
     """
     from motion_spec_dsl.rdf_parser.vocab import APP
 
-    try:
-        install_metamodel_resolver()
-    except Exception:
-        return
+    install_metamodel_resolver()
     dataset = rdflib.Dataset()
     try:
         dataset.parse(str(model_path), format="json-ld")
@@ -264,7 +264,7 @@ def _verify_model_imports(model_path: Path) -> None:
     if not imports:
         return
     install_metamodel_resolver(build_url_map(dataset, model_path))
-    for iri in sorted(imports):
+    for iri in imports:
         try:
             rdflib.Graph().parse(location=iri, format="json-ld")
         except Exception as exc:
@@ -279,10 +279,7 @@ def _parse_rdf(path: Path, fmt: str) -> rdflib.Graph:
     The generation provenance is written as one named graph per tool, and a plain Graph parse
     of it comes back empty -- every triple belongs to a graph.
     """
-    try:
-        install_metamodel_resolver()
-    except Exception:
-        pass
+    install_metamodel_resolver()
     try:
         dataset = rdflib.Dataset(default_union=True).parse(path, format=fmt)
     except Exception as exc:
@@ -324,7 +321,7 @@ def _write_rec_snapshot(
         raise ArchiveError("REC is required to archive a run: `motion-spec setup rec`.") from exc
 
     run_id = manifest["run_id"]
-    observer = FileObserver(run_dir, base=RUN_IRI_BASE)
+    observer = FileObserver(run_dir / PROVENANCE_DIR, base=RUN_IRI_BASE)
     run = Run(observers=[observer], run_id=run_id)
     lifecycle = rec_run_lifecycle_from_file(rec_document(run_dir, run_id))
     started_time = lifecycle["started_time"]
@@ -342,14 +339,18 @@ def _write_rec_snapshot(
         )
     run.log_host_info(host_info())
     record_software(run, run_dir)
+    files = rdflib.Graph()
     executable = manifest.get("files", {}).get("log_producer_executable")
     if executable and (run_dir / executable).exists():
-        record_used_file(run, run_dir / executable, "log_producer_executable", executable)
-    record_files(run, run_dir, manifest)
+        record_run_file(
+            files, run_id, run_dir / executable, "log_producer_executable", generated=False
+        )
+    record_files(files, run_id, run_dir, manifest)
+    write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, files)
     record_frame_log_health(run, run_dir, manifest)
     if complete_lifecycle and not completed_time and not terminal_status:
         if run.start_time is None:
-            run.start_time = datetime.now(timezone.utc)
+            run.start_time = datetime.now(UTC)
         run._emit_completed()
     observer.close()
 

@@ -111,8 +111,30 @@ def fields_with_offsets(pools: dict) -> tuple[list[dict], int]:
 
 
 def _uri_by_id(ir: dict) -> dict:
-    """Map every telemetry id to its canonical URI."""
-    return {row["id"]: row["uri"] for row in ir["communication"]["telemetry"]["uris"] if row["uri"]}
+    """Map every published id to its canonical URI."""
+    return {row["id"]: row["uri"] for row in ir["provenance"]["uris"] if row["uri"]}
+
+
+# The field holding the numbers a `vec` header slot reads, per D-block type.
+_VECTOR_FIELDS = {
+    "Position": "position",
+    "Pose": "position",
+    "Direction": "direction",
+    "FreeVector": "vector",
+}
+
+
+def _constant_value(item: dict, desc: dict):
+    """The number a header slot records: its literal, or the authored value it samples."""
+    kind = desc["kind"]
+    if kind == "literal":
+        return float(desc["value"])
+    if kind in {"data", "access", "bool", "int"}:
+        return item.get("value")
+    if kind == "vec":
+        values = item.get(_VECTOR_FIELDS.get(item["type"], ""))
+        return values[desc["axis"]] if values is not None else None
+    return None
 
 
 def _signal_id(value) -> str | None:
@@ -124,7 +146,7 @@ def _signal_id(value) -> str | None:
     return None
 
 
-# What an evaluator compares, by closure type: the operand keys, in the order the closure reads
+# What an evaluator compares, by function type: the operand keys, in the order the function reads
 # them. A numeric literal in one of these slots is a value, not an id, so only strings travel.
 _EVALUATOR_OPERANDS = {
     "PoseDiffEvaluator": ("in1", "in2"),
@@ -139,18 +161,20 @@ _EVALUATOR_OPERANDS = {
 
 
 def _evaluator_by_error(ir: dict) -> dict:
-    """Evaluator closure keyed by every error signal it produces: what computes that error."""
+    """Evaluator function keyed by every error signal it produces: what computes that error."""
     index: dict = {}
-    # Closure records differ by type, so their keys stay optional.
-    for closure in ir["computation"]["closures"].values():
-        if not isinstance(closure, dict) or not str(closure.get("type", "")).endswith("Evaluator"):
+    # Function records differ by type, so their keys stay optional.
+    for function in ir["computation"]["functions"].values():
+        if not isinstance(function, dict) or not str(function.get("type", "")).endswith(
+            "Evaluator"
+        ):
             continue
-        for error in (closure.get("error"), *(closure.get("errors") or ())):
+        for error in (function.get("error"), *(function.get("errors") or ())):
             error_id = _signal_id(error)
-            if error_id and index.setdefault(error_id, closure) != closure:
+            if error_id and index.setdefault(error_id, function) != function:
                 raise ValueError(
                     f"error '{error_id}' is computed by both '{index[error_id].get('id')}' and "
-                    f"'{closure.get('id')}' -- one evaluator writes an error"
+                    f"'{function.get('id')}' -- one evaluator writes an error"
                 )
     return index
 
@@ -158,19 +182,19 @@ def _evaluator_by_error(ir: dict) -> dict:
 def _evaluator_terms(evaluators: dict, error_id: str | None) -> dict:
     """The slot's evaluator, the quantities it compares and the difference it writes.
 
-    Empty when no closure produces this error: a slot says what the run computes, never a guess.
+    Empty when no function produces this error: a slot says what the run computes, never a guess.
     """
-    closure = evaluators.get(error_id) if error_id else None
-    if closure is None:
+    function = evaluators.get(error_id) if error_id else None
+    if function is None:
         return {}
     operands = [
         value
-        for key in _EVALUATOR_OPERANDS.get(closure.get("type"), ())
-        if isinstance(value := closure.get(key), str)
+        for key in _EVALUATOR_OPERANDS.get(function.get("type"), ())
+        if isinstance(value := function.get(key), str)
     ]
-    difference_id = _signal_id(closure.get("out"))
+    difference_id = _signal_id(function.get("out"))
     return {
-        "evaluator_id": closure.get("id"),
+        "evaluator_id": function.get("id"),
         **({"operand_ids": operands} if operands else {}),
         **({"difference_id": difference_id} if difference_id else {}),
     }
@@ -338,7 +362,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
     # Slots are keyed by the motion that computes them, not by the coordinator state that happens
-    # to select it: a motion owns the closures and solvers that write its values under an FSM, a
+    # to select it: a motion owns the functions and solvers that write its values under an FSM, a
     # behaviour tree or a plain sequencer alike. The index space is ir_gen's motion order,
     # so nothing downstream has to agree with a second generator about what index 3 means.
     by_motion = {}
@@ -397,7 +421,27 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     # A gated slot keeps its global index for the whole run -- only the set_ call is gated -- so a
     # decoder resolves "unset" against the writing motions here rather than guessing from absence.
     spatial = telemetry["spatial_samples"]
-    dataflow = telemetry["dataflow"]
+    data_access = ir["computation"]["data_access"]
+    data_by_id = {item["id"]: item for item in ir["computation"]["data"]}
+    constants = []
+    for row in telemetry["constants"]:
+        value = _constant_value(data_by_id[row["source_id"]], row["sample_desc"])
+        if value is None:
+            raise ValueError(f"header slot '{row['id']}' records a value with no number to record")
+        constants.append(
+            {
+                "id": row["id"],
+                "source_id": row["source_id"],
+                "value": value,
+                **({"uri": row["uri"]} if row.get("uri") else {}),
+                # The blocks that read it, as its data access constraints state.
+                **(
+                    {"readers": readers}
+                    if (readers := data_access[row["source_id"]].get("read"))
+                    else {}
+                ),
+            }
+        )
     # A model with no arm has no serial chain.
     devices = sorted(
         (
@@ -427,7 +471,7 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
     gated_slots = [
         ("quantities", quantity["index"], quantity.get("cadence")) for quantity in quantities
     ] + [
-        (category, row["index"], (dataflow.get(row["id"]) or {}).get("cadence"))
+        (category, row["index"], row["cadence"])
         for category, rows in spatial.items()
         for row in rows
     ]
@@ -472,16 +516,11 @@ def build_schema(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict | No
         "devices": devices,
         "cameras": cameras,
         # Written once at init: one copy in the header says everything repeating it per tick would.
-        "constants": telemetry["constants"],
-        # The dataflow contract for everything that survives into the layout, so a reader can see
-        # who writes each value and when without re-deriving it from the model graph.
-        "catalogue": [
-            {"id": member_id, **entry}
-            for member_id, entry in dataflow.items()
-            if entry["storage"] != "absent"
-        ],
+        "constants": constants,
+        # The data access constraints of every D-block the program keeps, so a reader can see who
+        # writes and who reads each without re-deriving it from the model graph.
+        "catalogue": [{"id": value_id, **entry} for value_id, entry in data_access.items()],
         "spatial": spatial,
-        "signals": telemetry["signals"],
     }
     schema["schema_hash"] = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[
         :16
@@ -518,7 +557,7 @@ def _uri_comment(uri: str | None) -> str:
 
 def build_telemetry_model(schema: dict, ir: dict) -> dict:
     """Per-FSM-state sample model (controller/monitor exprs, quantity/spatial ids) that the telemetry_model template renders."""
-    shared_ids = {item["id"] for item in ir["computation"]["shared_data"]}
+    data_ids = {item["id"] for item in ir["computation"]["data"]}
     # A value only its own motion recomputes is stale whenever another motion is active, so its
     # sample call moves into that motion's case; one written by the global schedule stays
     # unconditional.
@@ -548,11 +587,11 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
     for entry in schema["by_motion"].values():
         controllers = []
         for slot in entry["controllers"]:
-            # error/output are the controller's own dedicated shared fields (never views), so the
-            # template reads them with shared-sig. measured/setpoint may reference a view, so they
+            # error/output are the controller's own dedicated data fields (never views), so the
+            # template reads them with data-sig. measured/setpoint may reference a view, so they
             # go through access-expr(id, views) instead. A slot names a tolerance only when authored.
             for role in ("error_signal", "tolerance_signal", "output_signal"):
-                if slot.get(role) and slot[role] not in shared_ids:
+                if slot.get(role) and slot[role] not in data_ids:
                     raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
             controllers.append(
                 {
@@ -582,7 +621,7 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
                 )
             else:
                 for role in ("error_signal", "tolerance_signal"):
-                    if slot.get(role) and slot[role] not in shared_ids:
+                    if slot.get(role) and slot[role] not in data_ids:
                         raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
                 monitors.append(
                     {
@@ -609,8 +648,8 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
 
 
 def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict) -> dict:
-    """Write frame_layout.json, provenance.ld.json and the derivation graph, and return the
-    frame-log header + sample model that codegen folds into the IR.
+    """Write frame_layout.json and the frame-log header record, and return the frame-log header
+    + sample model that codegen folds into the IR.
 
     The decode contract is not written here: it is serialized into the frame log's own header
     record, so a log needs no companion artifact to be read. `fsm_ir` is coord-dsl's framed FSM.
@@ -656,7 +695,7 @@ _SLOT_SIGNAL_FIELDS = (
     ("measured_id", "measured_signal"),
     ("setpoint_id", "setpoint_signal"),
     ("tolerance_id", "tolerance_signal"),
-    # The closure that evaluates the constraint, and the difference it writes.
+    # The function that evaluates the constraint, and the difference it writes.
     ("difference_id", "difference_id"),
     ("evaluator_id", "evaluator_id"),
 )
@@ -751,7 +790,7 @@ def build_frame_log_header_record(schema: dict) -> bytes:
             slot.event_iri = slot_entry["event_uri"] or ""
             slot.phase = slot_entry["phase"]
             slot.constraint_iris.extend(_constraint_iris(slot_entry))
-            # An aggregate monitor's members, each with the error it is judged by; a member's
+            # An aggregate monitor's members, each with the error it is evaluated on; a member's
             # signals are dropped when unset.
             for member in slot_entry["watched"]:
                 watched = slot.watched.add()
@@ -787,10 +826,10 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         constant.uri = entry.get("uri") or ""
         # Empty means the deriver looked and found nobody, not that it did not look: scene
         # geometry is baked into poses at generation time and no reader binds it.
-        for reader in entry.get("consumers") or ():
-            consumer = constant.consumers.add()
-            consumer.id = reader["id"]
-            consumer.kind = reader["kind"]
-            consumer.role = reader["role"]
+        for reader in entry.get("readers") or ():
+            added = constant.readers.add()
+            added.id = reader["id"]
+            added.kind = reader["kind"]
+            added.port = reader["port"]
 
     return rec.SerializeToString()

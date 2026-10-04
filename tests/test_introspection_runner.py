@@ -35,13 +35,16 @@ def test_each_run_names_its_own_shared_memory_blocks(tmp_path: Path, source_tree
 
     for run_id in ("run-a", "run-b"):
         run_dir = tmp_path / run_id
-        assert run_cataloged(
-            run_dir,
-            source_dir=source_tree,
-            executable=executable,
-            executable_args=[str(source_tree / "frame_log.pb")],
-            run_id=run_id,
-        ) == 0
+        assert (
+            run_cataloged(
+                run_dir,
+                source_dir=source_tree,
+                executable=executable,
+                executable_args=[str(source_tree / "frame_log.pb")],
+                run_id=run_id,
+            )
+            == 0
+        )
         console = (run_dir / "logs" / "console.log").read_text()
         assert (
             f"blocks: /motion_spec_{schema_hash}_{run_id} /motion_spec_ctrl_{schema_hash}_{run_id}"

@@ -68,11 +68,11 @@ POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
 TWIST_NAMES = ("lx", "ly", "lz", "ax", "ay", "az")
 WRENCH_NAMES = ("fx", "fy", "fz", "tx", "ty", "tz")
 PROTO = Path(__file__).with_name("frame_log.proto")
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 _HEADER_SLOTS = ("quantities", "poses", "twists", "wrenches", "devices")
-_CONSTRAINT_KEYS = ("active", "error", "output", "satisfied", "sat_t", "measured", "setpoint")
-_MONITOR_KEYS = ("active", "value", "satisfied", "sat_t")
-_TRIGGER_KEYS = ("kind", "idx", "fsm_state", "t", "wall_ns")
+CONSTRAINT_KEYS = ("active", "error", "output", "satisfied", "sat_t", "measured", "setpoint")
+MONITOR_KEYS = ("active", "value", "satisfied", "sat_t")
+TRIGGER_KEYS = ("kind", "idx", "fsm_state", "t", "wall_ns")
 _CLASS_CACHE: dict = {}
 
 
@@ -258,12 +258,12 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     for i in range(pools["constraints"]):
         if flat[f"c{i}.active"]:
             s = m.constraints.add()
-            for key in _CONSTRAINT_KEYS[1:]:
+            for key in CONSTRAINT_KEYS[1:]:
                 setattr(s, key, flat[f"c{i}.{key}"])
     for i in range(pools["monitors"]):
         if flat[f"m{i}.active"]:
             s = m.monitors.add()
-            for key in _MONITOR_KEYS[1:]:
+            for key in MONITOR_KEYS[1:]:
                 setattr(s, key, flat[f"m{i}.{key}"])
     for i in range(pools["quantities"]):
         if flat[f"q{i}"]:
@@ -275,7 +275,7 @@ def frame_record(flat: dict, schema: dict) -> bytes:
         s.success = bool(flat.get(f"device{i}.success", 0))
     for i in range(min(flat["trigger_count"], pools["triggers"])):
         s = m.triggers.add()
-        for key in _TRIGGER_KEYS:
+        for key in TRIGGER_KEYS:
             setattr(s, key, flat[f"tr{i}.{key}"])
     for prefix, names, category in (
         ("pose", POSE_NAMES, "poses"),
@@ -292,7 +292,7 @@ def frame_record(flat: dict, schema: dict) -> bytes:
 
 
 # --- decode ---
-_SPATIAL = (("poses", POSE_NAMES), ("twists", TWIST_NAMES), ("wrenches", WRENCH_NAMES))
+SPATIAL_CATEGORIES = (("poses", POSE_NAMES), ("twists", TWIST_NAMES), ("wrenches", WRENCH_NAMES))
 
 
 class LogContract:
@@ -315,7 +315,7 @@ class LogContract:
         self.quantity_ids = [entry["id"] for entry in fields["quantities"]]
         self.iri_by_id = {
             entry["id"]: entry["iri"]
-            for category in ("quantities", *(name for name, _ in _SPATIAL))
+            for category in ("quantities", *(name for name, _ in SPATIAL_CATEGORIES))
             for entry in fields[category]
             if entry["iri"]
         }
@@ -357,7 +357,7 @@ def _slot_gate(header, fields: dict) -> dict:
     log produced under an FSM, a behaviour tree or a plain sequencer.
     """
     gate = {}
-    for category in ("quantities", *(name for name, _ in _SPATIAL)):
+    for category in ("quantities", *(name for name, _ in SPATIAL_CATEGORIES)):
         claimed = {index for motion in header.motions for index in getattr(motion, category)}
         if not claimed:
             continue
@@ -381,7 +381,12 @@ def read_contract(path: Path | str) -> LogContract:
         raise ArchiveError(f"{path}: first record is not a frame-log header carrying its schema")
     record_cls = _record_class_of(embedded)
     record = record_cls.FromString(data)
-    version = getattr(record.header, "format_version", 0)
+    # The schema is the log's own: one written before the field existed has no version to read.
+    version = (
+        record.header.format_version
+        if "format_version" in record.header.DESCRIPTOR.fields_by_name
+        else 0
+    )
     if version != FORMAT_VERSION:
         raise ArchiveError(
             f"{path}: frame-log format {version}; this motion-spec reads format {FORMAT_VERSION}"
@@ -411,27 +416,27 @@ def _parse_frame(msg, contract: LogContract) -> dict:
     # slots the active motion drives. Slots beyond that count belong to some other motion.
     counts = contract.counts.get(msg.active_motion, {})
 
-    def slots(category: str, keys: tuple, count: int) -> list:
-        return [
+    for category, keys, counted in (
+        ("constraints", CONSTRAINT_KEYS, "controllers"),
+        ("monitors", MONITOR_KEYS, "monitors"),
+    ):
+        count = counts.get(counted, 0)
+        record[category] = [
             {
                 "active": 1 if i < count else 0,
                 **{k: getattr(s, k) if (s := slot(msg, category, i)) else 0 for k in keys[1:]},
             }
             for i in range(len(fields[category]))
         ]
-
-    record["constraints"] = slots("constraints", _CONSTRAINT_KEYS, counts.get("controllers", 0))
-    record["monitors"] = slots("monitors", _MONITOR_KEYS, counts.get("monitors", 0))
     qids = contract.quantity_ids
     values = quantities(msg, len(qids))
-    triggers = [{k: getattr(entry, k) for k in _TRIGGER_KEYS} for entry in msg.triggers]
-
-    def written(category: str, index: int) -> bool:
-        by_index = contract.gate.get(category)
-        return by_index is None or index in by_index.get(msg.active_motion, ())
-
+    triggers = [{k: getattr(entry, k) for k in TRIGGER_KEYS} for entry in msg.triggers]
+    # A gated category is written only by the motions its gate names.
+    gate = contract.gate.get("quantities")
     record["quantities"] = {
-        qid: values[idx] for idx, qid in enumerate(qids) if written("quantities", idx)
+        qid: values[idx]
+        for idx, qid in enumerate(qids)
+        if gate is None or idx in gate.get(msg.active_motion, ())
     }
     record["devices"] = {
         entry["id"]: {"seq": device.seq, "success": bool(device.success)}
@@ -447,10 +452,12 @@ def _parse_frame(msg, contract: LogContract) -> dict:
     )
     # A slot the active state does not write stays a hole in the list rather than a decoded zero;
     # the list stays positional so a slot keeps one index for the whole run.
-    for category, names in _SPATIAL:
+    for category, names in SPATIAL_CATEGORIES:
+        gate = contract.gate.get(category)
         record[category] = [
             {n: getattr(s, n) for n in names}
-            if written(category, e["index"]) and (s := slot(msg, category, e["index"]))
+            if (gate is None or e["index"] in gate.get(msg.active_motion, ()))
+            and (s := slot(msg, category, e["index"]))
             else None
             for e in fields[category]
         ]

@@ -51,6 +51,7 @@ running an existing one.
 
    setup
    concepts
+   architecture
    sim-real-parity
    loop-timing
    dashboard

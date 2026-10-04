@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: MPL-2.0
+// The MuJoCo+KDL program. Its own rules come first, so they answer every backend hook the
+// shared groups below call.
+
+import "robot.stg"
+import "../../entry/program.stg"
+import "../../entry/motion.stg"
+import "../../entry/telemetry.stg"
+import "../../entry/build.stg"

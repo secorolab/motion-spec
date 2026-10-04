@@ -16,7 +16,8 @@ from motion_spec.classes.solvers import (
     MotionDrivers,
     SolverWithInputAndOutput,
 )
-from motion_spec.rdf_parser.resources import _index_chain_joints, _place_on_chain
+from motion_spec.rdf_parser.agents import place_on_chain
+from motion_spec.rdf_parser.runtime import index_chain_joints
 
 SITE = "https://example.test/ft_tree/wrist_ft_body/wrist_ft_site"
 BODY = "https://example.test/ft_tree/wrist_ft_body"
@@ -30,10 +31,7 @@ FT_CHAIN = ChainBinding(
     namespace="scene",
     name="chain",
     joints=[],
-    frames={
-        SITE: {"index": 8, "offset": None},
-        OFFSET_SITE: {"index": 8, "offset": {"x": 0.1}},
-    },
+    frames={SITE: {"index": 8, "offset": None}, OFFSET_SITE: {"index": 8, "offset": {"x": 0.1}}},
     bodies={BODY: 8},
     world_segments={
         SITE: "wrist_ft_body/wrist_ft_site",
@@ -63,7 +61,7 @@ def test_a_frame_the_chain_cannot_index_fails_while_generating(
     element, may_be_off_chain: bool, rejection: str
 ) -> None:
     with pytest.raises(ConstraintViolation, match=rejection):
-        _place_on_chain(FT_CHAIN, element, "solver", may_be_off_chain, {})
+        place_on_chain(FT_CHAIN, element, "solver", may_be_off_chain, {})
 
 
 # An output names the joint runtime-scoped while the chain stores it bare; and nothing at run
@@ -72,7 +70,11 @@ def test_a_frame_the_chain_cannot_index_fails_while_generating(
     ("prefix", "joint_forces", "rejection"),
     [
         ("kinova1_", [], None),
-        ("", [JointForceSpecification("jf", "f_grip", "g_left_driver_joint")], "g_left_driver_joint"),
+        (
+            "",
+            [JointForceSpecification("jf", "f_grip", "g_left_driver_joint")],
+            "g_left_driver_joint",
+        ),
     ],
     ids=["scoped-read", "force-off-chain"],
 )
@@ -105,7 +107,7 @@ def test_a_joint_resolves_to_its_chain_index_or_fails_while_generating(
     )
     if rejection:
         with pytest.raises(ConstraintViolation, match=rejection):
-            _index_chain_joints(solver)
+            index_chain_joints(solver)
     else:
-        _index_chain_joints(solver)
+        index_chain_joints(solver)
         assert solver.output[0].joint_index == 1

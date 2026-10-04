@@ -38,7 +38,11 @@ def preview(paths: list[str]) -> dict:
     """Resolve and deduplicate the selection before counting or deleting anything."""
     if not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths):
         raise ValueError("select generation or run paths")
-    targets = list(dict.fromkeys(relative_path(roots.GENERATIONS, value) for value in paths))
+    targets = []
+    for value in paths:
+        target = relative_path(roots.GENERATIONS, value)
+        if target not in targets:
+            targets.append(target)
     for path in targets:
         try:
             generation_of(path)

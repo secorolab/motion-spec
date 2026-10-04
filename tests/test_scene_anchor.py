@@ -14,7 +14,7 @@ from rdf_utils.namespace import NS_MM_KC_EXT
 from rdflib.namespace import RDF
 
 from motion_spec.rdf_parser.model import Model
-from motion_spec.rdf_parser.resources import anchor_frame
+from motion_spec.rdf_parser.quantities import anchor_frame
 
 NS = rdflib.Namespace("https://example.test/")
 

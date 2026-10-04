@@ -19,7 +19,9 @@ from motion_spec.rdf_parser.ir import generate_ir
 
 MODEL = Path(__file__).parent / "fixtures" / "shared_motion" / "shared_motion.robmot"
 
-pytestmark = pytest.mark.skipif(not METAMODELS.exists(), reason="metamodels is not in this checkout")
+pytestmark = pytest.mark.skipif(
+    not METAMODELS.exists(), reason="metamodels is not in this checkout"
+)
 
 
 @pytest.fixture(scope="module")

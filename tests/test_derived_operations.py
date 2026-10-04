@@ -47,11 +47,10 @@ from scipy.spatial.transform import Rotation
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.operations import (
     ErrorEvaluator,
-    _materialize_linear_distance_operations,
-    _materialize_pose_reference_transforms,
+    materialize_linear_distance_operations,
+    materialize_pose_reference_transforms,
 )
-from motion_spec.rdf_parser.quantities import _relative_orientation
-from motion_spec.rdf_parser.resources import _placement
+from motion_spec.rdf_parser.quantities import frame_placement, relative_orientation
 
 BASE = "https://example.test/"
 
@@ -169,7 +168,7 @@ def test_each_coordinate_of_one_relation_computes_its_own_value() -> None:
     """
     g = Dataset(default_union=True)
     g.default_graph.parse(data=TWO_DISTANCE_COORDINATES, format="turtle")
-    _materialize_linear_distance_operations(Model(graph=g, app_path=Path("model-app.ld.json")))
+    materialize_linear_distance_operations(Model(graph=g, app_path=Path("model-app.ld.json")))
 
     first, second = URIRef(BASE + "dist"), URIRef(BASE + "dist-2")
     outputs = {
@@ -182,7 +181,7 @@ def test_each_coordinate_of_one_relation_computes_its_own_value() -> None:
 def test_pose_reference_cross_frame_reexpresses_reference() -> None:
     g = Dataset(default_union=True)
     g.default_graph.parse(data=CROSS_FRAME_EQUALITY, format="turtle")
-    _materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
+    materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
 
     constraint = URIRef(BASE + "c-eq")
     reexpressed = URIRef(f"{constraint}.derived-reference-in-target")
@@ -210,20 +209,24 @@ def test_pose_reference_rejects_body_mismatch() -> None:
     )
 
     with pytest.raises(ConstraintViolation, match="compares a pose"):
-        _materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
+        materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
 
 
 @pytest.mark.parametrize(
     ("operands", "order"),
     [
         (
-            "ex:delta geom-coord:as-seen-by ex:frame-ee .\n"
-            "ex:relative-orientation-composition geom-op:in1 ex:pose-ee-base ; geom-op:in2 ex:delta .\n",
+            (
+                "ex:delta geom-coord:as-seen-by ex:frame-ee .\n"
+                "ex:relative-orientation-composition geom-op:in1 ex:pose-ee-base ; geom-op:in2 ex:delta .\n"
+            ),
             ("pose", "delta"),
         ),
         (
-            "ex:delta geom-coord:as-seen-by ex:frame-base .\n"
-            "ex:relative-orientation-composition geom-op:in1 ex:delta ; geom-op:in2 ex:pose-ee-base .\n",
+            (
+                "ex:delta geom-coord:as-seen-by ex:frame-base .\n"
+                "ex:relative-orientation-composition geom-op:in1 ex:delta ; geom-op:in2 ex:pose-ee-base .\n"
+            ),
             ("delta", "pose"),
         ),
     ],
@@ -232,7 +235,7 @@ def test_pose_reference_rejects_body_mismatch() -> None:
 def test_relative_orientation_reads_operands_in_slot_order(operands: str, order: tuple) -> None:
     g = Dataset(default_union=True)
     g.default_graph.parse(data=RELATIVE_ORIENTATION + operands, format="turtle")
-    read = _relative_orientation(
+    read = relative_orientation(
         Model(graph=g, app_path=Path("model-app.ld.json")), URIRef(BASE + "relative-orientation")
     )
     assert order[0] in read[0] and order[1] in read[1]
@@ -252,35 +255,53 @@ def test_a_placement_keeps_its_quaternion_composes_to_the_anchor_and_scales_to_m
         data=PREFIXES
         + SCENE_FRAMES
         + PLACEMENT.format(
-            of="frame-world", wrt="frame-ground", x=0.0, y=0.0, z=0.72, unit=URI_QUDT_UNIT_M,
+            of="frame-world",
+            wrt="frame-ground",
+            x=0.0,
+            y=0.0,
+            z=0.72,
+            unit=URI_QUDT_UNIT_M,
             **IDENTITY,
         )
         + PLACEMENT.format(
-            of="frame-object", wrt="frame-world", x=-0.9, y=1.8, z=0.05, unit=URI_QUDT_UNIT_M,
-            qx=qx, qy=qy, qz=qz, qw=qw,
+            of="frame-object",
+            wrt="frame-world",
+            x=-0.9,
+            y=1.8,
+            z=0.05,
+            unit=URI_QUDT_UNIT_M,
+            qx=qx,
+            qy=qy,
+            qz=qz,
+            qw=qw,
         ),
         format="turtle",
     )
     model = Model(graph=g, app_path=Path("model-app.ld.json"))
     anchor = URIRef(BASE + "frame-ground")
 
-    position, orientation = _placement(model, URIRef(BASE + "frame-object"), anchor)
+    position, orientation = frame_placement(model, URIRef(BASE + "frame-object"), anchor)
     assert position == pytest.approx([-0.9, 1.8, 0.77])
     assert orientation == pytest.approx([qx, qy, qz, qw])
     # A body a joint holds is placed by the joint, not by a pose, so it composes to nothing.
-    assert _placement(model, URIRef(BASE + "frame-jointed"), anchor) == (None, None)
+    assert frame_placement(model, URIRef(BASE + "frame-jointed"), anchor) == (None, None)
 
     g = Dataset(default_union=True)
     g.default_graph.parse(
         data=PREFIXES
         + SCENE_FRAMES
         + PLACEMENT.format(
-            of="frame-object", wrt="frame-world", x=150.0, y=-50.0, z=720.0,
-            unit=URI_QUDT_UNIT_CM, **IDENTITY,
+            of="frame-object",
+            wrt="frame-world",
+            x=150.0,
+            y=-50.0,
+            z=720.0,
+            unit=URI_QUDT_UNIT_CM,
+            **IDENTITY,
         ),
         format="turtle",
     )
-    assert _placement(
+    assert frame_placement(
         Model(graph=g, app_path=Path("model-app.ld.json")),
         URIRef(BASE + "frame-object"),
         URIRef(BASE + "frame-world"),
@@ -295,7 +316,12 @@ def test_sampled_scene_placements_are_rejected() -> None:
         data=PREFIXES
         + SCENE_FRAMES
         + PLACEMENT.format(
-            of="frame-object", wrt="frame-world", x=1.0, y=2.0, z=3.0, unit=URI_QUDT_UNIT_M,
+            of="frame-object",
+            wrt="frame-world",
+            x=1.0,
+            y=2.0,
+            z=3.0,
+            unit=URI_QUDT_UNIT_M,
             **IDENTITY,
         )
         + f"ex:position-coord-frame-object a <{URI_DISTRIB_TYPE_SAMPLED_QUANTITY}> .\n",
@@ -303,7 +329,7 @@ def test_sampled_scene_placements_are_rejected() -> None:
     )
 
     with pytest.raises(ConstraintViolation, match="cannot be drawn"):
-        _placement(
+        frame_placement(
             Model(graph=g, app_path=Path("model-app.ld.json")),
             URIRef(BASE + "frame-object"),
             URIRef(BASE + "frame-world"),
@@ -326,7 +352,7 @@ ex:eval-home-while-above-table a cstr-hdl:ErrorEvaluator ;
     )
 
     with pytest.raises(ConstraintViolation, match="above_table.*AngleConstraint"):
-        ErrorEvaluator().closure_step(
+        ErrorEvaluator().function_step(
             Model(graph=g, app_path=Path("model-app.ld.json")),
             URIRef(BASE + "eval-home-while-above-table"),
         )

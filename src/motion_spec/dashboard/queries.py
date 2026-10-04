@@ -7,18 +7,13 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import rdflib
 
 from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
-from motion_spec.dashboard.graph import (
-    MODEL_GRAPH,
-    GraphService,
-    load_model_graph,
-    model_manifest,
-)
+from motion_spec.dashboard.graph import MODEL_GRAPH, GraphService, load_model_graph, model_manifest
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
@@ -124,18 +119,20 @@ def save_notes(run_dir: Path, notes: list) -> dict:
         tags = note.get("tags") or []
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise ValueError("note tags must be a list of strings")
+        named = []
+        for tag in tags:
+            if tag.strip() and tag.strip() not in named:
+                named.append(tag.strip())
         kept.append(
             {
                 "id": str(note.get("id") or secrets.token_hex(6)),
                 "created": str(
-                    note.get("created") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    note.get("created") or datetime.now(UTC).isoformat(timespec="seconds")
                 ),
                 "text": str(note.get("text") or "")[:4000],
                 "frame": frame,
                 "end_frame": end_frame,
-                "tags": list(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))[
-                    :20
-                ],
+                "tags": named[:20],
             }
         )
     payload = {"notes": kept}

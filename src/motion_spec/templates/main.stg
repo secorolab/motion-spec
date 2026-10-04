@@ -1,9 +1,0 @@
-// SPDX-License-Identifier: MPL-2.0
-// Root group. Imports every entry group so `main.<entry>` resolves; holds no rules itself.
-// Each group below declares its own dependencies, so the import graph -- not this file --
-// is what keeps the layering honest.
-
-import "entry_program.stg"
-import "entry_motion.stg"
-import "entry_telemetry.stg"
-import "entry_build.stg"

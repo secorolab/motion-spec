@@ -1224,8 +1224,8 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
             them, so no chain lists them among its outputs
 
     Raises:
-        ConstraintViolation: a mobile-platform solver names an algorithm with no codegen wiring.
-        RuntimeError: a chain runs an unsupported robot model.
+        ConstraintViolation: a mobile-platform solver names an algorithm with no codegen wiring,
+            or a chain runs an unsupported robot model.
     """
     graph = model.graph
     steps = []
@@ -1386,11 +1386,7 @@ def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWith
         sensors=setup.sensors,
         devices=setup.devices,
         algorithm=family,
-        algorithm_name=(
-            family.codegen_name
-            if family is not None
-            else constraint_handler.KINEMATICS_ALGORITHMS[graph.value(node, SLV.solver)]
-        ),
+        algorithm_name=family.name,
         derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
         if gravity_node
         else None,
@@ -1412,7 +1408,8 @@ def _validate_solvers(serial_chain_solvers, backend: str) -> None:
         if solver.hardware.model not in SUPPORTED_ROBOT_MODELS
     }
     if unsupported:
-        raise RuntimeError(
+        raise ConstraintViolation(
+            "solver",
             f"Unsupported robot model(s) for robif2b: {', '.join(unsupported)}. "
-            f"Supported: {', '.join(SUPPORTED_ROBOT_MODELS)}"
+            f"Supported: {', '.join(SUPPORTED_ROBOT_MODELS)}",
         )

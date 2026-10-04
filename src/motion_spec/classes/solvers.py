@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""The dynamics-solver family hierarchy, the one per-axis driver record both families derive,
-and the solvers built on top of them.
+"""Solver families, the per-axis driver record they derive, and the solvers built on them.
 
-`DynamicsSolverFamily` and its subclasses are never instantiated: they carry a family's
-behaviour as class-level attributes and a `payload()` factory, dispatched on with
-`issubclass()` or as keys of the family tables rather than an isinstance check on a built
-object. The
-term -> family map stays in `rdf_parser/constraint_handler.py` -- `classes/` is RDF-free.
+The term -> family table lives in `rdf_parser/constraint_handler.py`: `classes/` is RDF-free.
 """
 
 from __future__ import annotations
@@ -41,9 +36,8 @@ from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 class AccelerationConstraint:
     """An acceleration constraint (axis- or direction-aligned) on a solver.
 
-    One driver record for both solver families: `acceleration_energy` and `saturation`
-    are set only by `AccelerationEnergyDriven` (ACHD), `acceleration` only by
-    `CartesianAccelerationDriven` (RNE). Absent means the other family built this record --
+    One driver record for both driven families: `acceleration_energy` and `saturation` are set
+    only by ACHD, `acceleration` only by RNE. Absent means the other family built this record --
     no sentinel, the family that built it is the fact.
     """
 
@@ -63,62 +57,25 @@ class AccelerationConstraint:
     type: str = field(default="AccelerationConstraint")
 
 
-class DynamicsSolverFamily:
-    """Base of the solver-algorithm family hierarchy. Class attributes only; never instantiated,
-    never published.
+@dataclass(frozen=True, eq=False)
+class SolverFamily:
+    """What a solver algorithm accepts: the slot its acceleration drivers fill and their payload
+    per subspace, its axis limits, and whether it is only read or only forwards commands.
     """
 
-    codegen_name: str = ""
-    driver: type | None = None
+    name: str = ""
     driver_field: str | None = None
     payload_field: str | None = None
+    # Subspace -> the payload's QUDT quantity kind and unit local names.
+    payload_kinds: dict = field(default_factory=dict)
     max_axes: int | None = None
     axes_must_be_distinct: bool = False
+    read_only: bool = False
+    forwards_commands: bool = False
 
-
-class AccelerationEnergyDriven(DynamicsSolverFamily):
-    """slv:AccelerationConstrainedHybridDynamicsAlgorithm.
-
-    Vereshchagin's acceleration-constrained hybrid dynamics is posed as a constrained
-    optimisation over Gauss's principle, so each constrained axis is driven by an acceleration
-    energy (N-m2/s2).
-    """
-
-    codegen_name = "ACHD"
-    driver = AccelerationConstraint
-    driver_field = "acceleration_constraint"
-    payload_field = "acceleration_energy"
-    max_axes = 6
-    axes_must_be_distinct = True
-
-    @staticmethod
-    def payload(id: str, axis: Subspace) -> Quantity:
-        return Quantity(
-            id,
-            QuantityKind("AccelerationEnergy", str(NS_MM_QUDT_QTY["AccelerationEnergy"])),
-            Unit("N_M2_PER_SEC2", str(NS_MM_QUDT_UNIT["N-M2-PER-SEC2"])),
-            None,
-            False,
-        )
-
-
-class CartesianAccelerationDriven(DynamicsSolverFamily):
-    """slv:RecursiveNewtonEulerAlgorithm. Driven by the Cartesian acceleration itself, linear or
-    angular depending on which half of the subspace the axis is in.
-    """
-
-    codegen_name = "RNE"
-    driver = AccelerationConstraint
-    driver_field = "cartesian_acceleration"
-    payload_field = "acceleration"
-
-    @staticmethod
-    def payload(id: str, axis: Subspace) -> Quantity:
-        kind, unit = (
-            ("LinearAcceleration", "M-PER-SEC2")
-            if axis == Subspace.Linear
-            else ("AngularAcceleration", "RAD-PER-SEC2")
-        )
+    def payload(self, id: str, subspace: Subspace) -> Quantity:
+        """The quantity one axis's driver carries, in this family's kind and unit."""
+        kind, unit = self.payload_kinds[subspace]
         return Quantity(
             id,
             QuantityKind(kind, str(NS_MM_QUDT_QTY[kind])),
@@ -126,14 +83,6 @@ class CartesianAccelerationDriven(DynamicsSolverFamily):
             None,
             False,
         )
-
-
-class CommandForwarding(DynamicsSolverFamily):
-    """slv-ext:CommandForwardingSolver. Accepts no acceleration driver; a controller's output
-    forwards straight to a joint.
-    """
-
-    codegen_name = ""
 
 
 @dataclass
@@ -185,9 +134,8 @@ class SolverWithInputAndOutput:
     hardware: HardwareBinding
     runtime: RuntimeBinding
     # What drives this chain, resolved once from the algorithm the model names; the runtime and
-    # the templates dispatch on the name, the lowering reads the record. None for forward
-    # kinematics: nothing drives the chain, it is only read.
-    algorithm: type[DynamicsSolverFamily] | None = field(default=None, metadata=INTERNAL)
+    # the templates dispatch on the name, the lowering reads the record.
+    algorithm: SolverFamily = field(metadata=INTERNAL)
     algorithm_name: str | None = None
     # What the scene mounts on this chain, and what hardware is bound to drive it.
     sensors: list[SensorBinding] = field(default_factory=list)

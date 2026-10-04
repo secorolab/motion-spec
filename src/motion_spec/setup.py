@@ -686,7 +686,7 @@ def installer(python: Path | None = None) -> list[str]:
     return [uv, "pip", "install", "--python", interpreter]
 
 
-# mj_kdl_wrapper's bindings build with this; PyKDL must share its pybind11 to share its types.
+# mjkdl's bindings build with this; PyKDL must share its pybind11 to share its types.
 PYBIND11_REQUIREMENT = "pybind11>=2.13"
 _EXTENSION_PROBE = (
     "import pybind11, sysconfig; print(pybind11.get_cmake_dir()); "

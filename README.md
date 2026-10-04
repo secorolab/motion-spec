@@ -28,7 +28,7 @@ motion-spec examples                                             # models to run
 
 What motion-spec builds against is listed in one place: the vcstool manifest
 `src/motion_spec/motion_spec.repos` — rdf-utils, the DSL compilers and rec under `thirdparty/`,
-then Orocos KDL, coord2b, mj_kdl_wrapper and STSTv4 — with the device drivers in
+then Orocos KDL, coord2b, mjkdl and STSTv4 — with the device drivers in
 `motion_spec.real.repos`. `setup` runs `vcs import --skip-existing` on it, pip-installs the
 Python packages into the active environment (or a `.venv` it creates), builds the CMake ones
 into `install/` with the arguments in the workspace's `colcon.meta`, and writes the environment
@@ -58,16 +58,16 @@ What every model needs, whichever target it drives:
 | | Git, a JDK and Ant | building STSTv4 itself — a JRE is not enough |
 | Build | CMake and a C++20 compiler | configuring and compiling a generated controller |
 | | coord2b, Eigen, Orocos KDL, toml++ | what every generated controller links |
-| MuJoCo | mj_kdl_wrapper, GLFW, OpenGL, EGL, `ffmpeg` | the simulation, its viewer, and the video recorder |
+| MuJoCo | mjkdl, GLFW, OpenGL, EGL, `ffmpeg` | the simulation, its viewer, and the video recorder |
 
 PyPI packages arrive with `pip install`; `motion-spec setup` installs rdf-utils, the authoring
-packages and rec, and builds STSTv4, coord2b, Orocos KDL and mj_kdl_wrapper; vcstool, Eigen,
+packages and rec, and builds STSTv4, coord2b, Orocos KDL and mjkdl; vcstool, Eigen,
 toml++ and `protoc` come from apt. Orocos KDL
 must be the [secorolab fork](https://github.com/secorolab/orocos_kinematics_dynamics) —
 generated controllers call the Vereshchagin solvers with fixed joints, which
 `liborocos-kdl-dev` does not carry.
 
-Per-target and ROS dependencies are installed only when a model asks for them: mj_kdl_wrapper
+Per-target and ROS dependencies are installed only when a model asks for them: mjkdl
 for MuJoCo, robif2b and urdfdom for a real robot, `rclcpp` and friends for a model that
 publishes a topic. `motion-spec health` checks all of it and, for anything missing, names what
 it is for and the command that installs it.

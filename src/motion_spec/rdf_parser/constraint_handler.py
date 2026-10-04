@@ -57,66 +57,71 @@ from motion_spec.classes.handlers import (
 from motion_spec.classes.motion import DataValue
 from motion_spec.classes.qudt import Provenance, Quantity, QuantityKind, Unit
 from motion_spec.classes.solvers import (
-    AccelerationEnergyDriven,
-    CartesianAccelerationDriven,
+    AccelerationConstraint,
     CartesianForceSpecification,
-    CommandForwarding,
-    DynamicsSolverFamily,
     JointForceSpecification,
     MotionDrivers,
+    SolverFamily,
 )
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import identifier, kebab, local_name
 
+_MOBILE_PLATFORM = SolverFamily()
+
 # Every solver family the code generator can run, keyed by the term that identifies it -- the
 # algorithm a solver names, or the type a command-forwarding or mobile-platform solver carries.
-#
-# Vereshchagin's acceleration-constrained hybrid dynamics is posed as a constrained optimisation
-# over Gauss's principle, so each constrained direction is driven by an acceleration energy
-# (N-m2/s2) and the derived signals lead with `eacc`. Recursive Newton-Euler is driven by the
-# Cartesian acceleration itself, and leads with `acc`. A command-forwarding solver runs no
-# dynamics at all: its controller's output goes straight to the joint. A mobile-platform solver
-# takes its wrench or twist as authored, so nothing is derived for it and it keeps the base
-# family's defaults. `slv:ArticulatedBodyAlgorithm` gets no entry: an unmapped algorithm is the
-# "unsupported" answer below.
-_SOLVER_FAMILIES = {
-    SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: AccelerationEnergyDriven,
-    SLV["RecursiveNewtonEulerAlgorithm"]: CartesianAccelerationDriven,
-    SLV_EXT.CommandForwardingSolver: CommandForwarding,
-    SLV.VelocityCompositionSolver: DynamicsSolverFamily,
-    SLV.ForceDistributionSolver: DynamicsSolverFamily,
-    SLV_EXT.VelocityDistributionSolver: DynamicsSolverFamily,
-    SLV_EXT.ForceCompositionSolver: DynamicsSolverFamily,
+# ACHD (Vereshchagin) drives each constrained direction by an acceleration energy, RNE by the
+# Cartesian acceleration itself; forward kinematics only reads its chain. An unmapped algorithm
+# (`slv:ArticulatedBodyAlgorithm`) is unsupported.
+SOLVER_FAMILIES = {
+    SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: SolverFamily(
+        name="ACHD",
+        driver_field="acceleration_constraint",
+        payload_field="acceleration_energy",
+        payload_kinds={
+            Subspace.Linear: ("AccelerationEnergy", "N-M2-PER-SEC2"),
+            Subspace.Angular: ("AccelerationEnergy", "N-M2-PER-SEC2"),
+        },
+        max_axes=6,
+        axes_must_be_distinct=True,
+    ),
+    SLV["RecursiveNewtonEulerAlgorithm"]: SolverFamily(
+        name="RNE",
+        driver_field="cartesian_acceleration",
+        payload_field="acceleration",
+        payload_kinds={
+            Subspace.Linear: ("LinearAcceleration", "M-PER-SEC2"),
+            Subspace.Angular: ("AngularAcceleration", "RAD-PER-SEC2"),
+        },
+    ),
+    KC_OP.ForwardPositionKinematics: SolverFamily(name="FPK", read_only=True),
+    KC_OP_EXT.ForwardVelocityKinematics: SolverFamily(name="FVK", read_only=True),
+    SLV_EXT.CommandForwardingSolver: SolverFamily(forwards_commands=True),
+    SLV.VelocityCompositionSolver: _MOBILE_PLATFORM,
+    SLV.ForceDistributionSolver: _MOBILE_PLATFORM,
+    SLV_EXT.VelocityDistributionSolver: _MOBILE_PLATFORM,
+    SLV_EXT.ForceCompositionSolver: _MOBILE_PLATFORM,
 }
 
-# The forward-kinematics algorithms a serial chain may name instead: it is then read, never driven.
-KINEMATICS_ALGORITHMS = {
-    KC_OP.ForwardPositionKinematics: "FPK",
-    KC_OP_EXT.ForwardVelocityKinematics: "FVK",
-}
 
-
-def solver_algorithm(model, solver: URIRef) -> type[DynamicsSolverFamily] | None:
-    """The family a solver belongs to, and so what may be derived against it; None for a
-    forward-kinematics solver, which nothing drives.
+def solver_algorithm(model, solver: URIRef) -> SolverFamily:
+    """The family a solver belongs to, and so what may be derived against it.
 
     Raises:
         ConstraintViolation: the solver names an algorithm no backend implements.
     """
     for type_ in get_node_types(model.graph, solver):
-        if type_ in _SOLVER_FAMILIES:
-            return _SOLVER_FAMILIES[type_]
+        if type_ in SOLVER_FAMILIES:
+            return SOLVER_FAMILIES[type_]
     algorithm = model.graph.value(solver, SLV["solver"])
     if algorithm is None:
         raise ConstraintViolation("solver", f"solver '{solver}' names no algorithm")
-    if algorithm in KINEMATICS_ALGORITHMS:
-        return None
-    if algorithm not in _SOLVER_FAMILIES:
+    if algorithm not in SOLVER_FAMILIES:
         raise ConstraintViolation(
             "solver", f"Solver '{solver}' has unsupported algorithm '{algorithm}'."
         )
 
-    return _SOLVER_FAMILIES[algorithm]
+    return SOLVER_FAMILIES[algorithm]
 
 
 @dataclass(frozen=True)
@@ -644,7 +649,7 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
     """Enforce executable solver limits, which only hold once authored RDF has resolved to plans."""
     for solver, plans in by_solver.items():
         family = algorithms[solver]
-        if family is None:
+        if family.read_only:
             raise ConstraintViolation(
                 "solver",
                 f"Solver '{solver}' only reads its chain, but controller "
@@ -658,13 +663,13 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
                 rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
                 raise ConstraintViolation(
                     "solver",
-                    f"{family.codegen_name} solver '{solver}' repeats acceleration axis: "
+                    f"{family.name} solver '{solver}' repeats acceleration axis: "
                     f"{rendered}.",
                 )
         if family.max_axes is not None and len(axes) > family.max_axes:
             raise ConstraintViolation(
                 "solver",
-                f"{family.codegen_name} solver '{solver}' has {len(axes)} axes; at most "
+                f"{family.name} solver '{solver}' has {len(axes)} axes; at most "
                 f"{family.max_axes} are supported.",
             )
 
@@ -673,12 +678,12 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
         for plan in plans:
             command = str(model.graph.value(plan.controller, APP["command-type"]) or "")
             subspace = local_name(model.graph.value(plan.view, MAP.subspace)) if plan.view else None
-            domains[algorithms[plan.solver]].add(
+            domains[algorithms[plan.solver].name].add(
                 "force"
                 if command in {"Force", "Torque"} or subspace in {"force", "torque"}
                 else "pose"
             )
-        overlap = domains[AccelerationEnergyDriven] & domains[CartesianAccelerationDriven]
+        overlap = domains["ACHD"] & domains["RNE"]
         if overlap:
             raise ConstraintViolation(
                 "solver",
@@ -735,7 +740,7 @@ def _controller_signal_id(model, context, plan) -> str:
         model.register_derived(signal_id, str(plan.controller), "output", PROV.wasDerivedFrom)
         return signal_id
     family = context.algorithm_by_solver[plan.solver]
-    if family not in _DRIVER_ID_METHODS:
+    if family.driver_field is None:
         raise ConstraintViolation(
             "solver", f"Solver '{plan.solver}' does not accept acceleration signals."
         )
@@ -744,7 +749,7 @@ def _controller_signal_id(model, context, plan) -> str:
             "controller", f"'{plan.controller}' drives no axis for its acceleration to act along"
         )
 
-    return _DRIVER_ID_METHODS[family][1](SolverIdFactory(model, plan.controller), plan.axes[0])
+    return _DRIVER_ID_METHODS[family.name][1](SolverIdFactory(model, plan.controller), plan.axes[0])
 
 
 def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
@@ -857,7 +862,7 @@ def _whole_controller_signal(model, context, plan, types):
     if signal_id.startswith("tau_"):
         return _derived_quantity(signal_id, NS_MM_QUDT_QTY["Torque"], NS_MM_QUDT_UNIT["N-M"])
     family = context.algorithm_by_solver[plan.solver]
-    if issubclass(family, CartesianAccelerationDriven) and plan.axes:
+    if family.driver_field is not None and plan.axes:
         return family.payload(signal_id, plan.axes[0].subspace)
 
     return _derived_quantity(
@@ -893,12 +898,7 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
             )
         else:
             family = context.algorithm_by_solver[plan.solver]
-            payload_id = (
-                ids.component_energy(axis)
-                if issubclass(family, AccelerationEnergyDriven)
-                else ids.component_acceleration(axis)
-            )
-            signal = family.payload(payload_id, axis.subspace)
+            signal = family.payload(_DRIVER_ID_METHODS[family.name][1](ids, axis), axis.subspace)
         error = _axis_error(ids, axis)
         measured_derivative = _axis_derivative(ids, axis) if measured_source is not None else None
     else:
@@ -984,11 +984,11 @@ def _derived_controllers(model, context, plan) -> list:
 
 # Per family, the `SolverIdFactory` methods that mint its spec/payload ids.
 _DRIVER_ID_METHODS = {
-    AccelerationEnergyDriven: (
+    "ACHD": (
         SolverIdFactory.component_constraint,
         SolverIdFactory.component_energy,
     ),
-    CartesianAccelerationDriven: (
+    "RNE": (
         SolverIdFactory.component_acceleration_specification,
         SolverIdFactory.component_acceleration,
     ),
@@ -1005,7 +1005,7 @@ class _DriverIds(NamedTuple):
 def _acceleration_driver_ids(model, context, plan, family, axis) -> _DriverIds:
     """The two ids for one axis of a controller's acceleration driver."""
     ids = SolverIdFactory(model, plan.controller)
-    spec_id, payload_id = _DRIVER_ID_METHODS[family]
+    spec_id, payload_id = _DRIVER_ID_METHODS[family.name]
 
     return _DriverIds(spec_id(ids, axis), payload_id(ids, axis))
 
@@ -1021,7 +1021,7 @@ def _derived_acceleration_drivers(model, context, plan, family) -> list:
     for axis in plan.axes:
         spec_id, payload_id = _acceleration_driver_ids(model, context, plan, family, axis)
         records.append(
-            family.driver(
+            AccelerationConstraint(
                 id=spec_id,
                 subspace=axis.subspace,
                 axis=quantities.AXIS_BY_NAME.get(axis.frame_axis),
@@ -1052,7 +1052,7 @@ def motion_drivers(model, context, solver: URIRef) -> list:
     """
     plans = context.controllers_by_solver.get(solver, ())
     family = context.algorithm_by_solver[solver]
-    driven = family in _DRIVER_ID_METHODS
+    driven = family.driver_field is not None
     accelerations = (
         [
             record
@@ -1395,7 +1395,9 @@ def add_control_parameters(model, functions: dict, algorithm_data: list, motions
         for name, source, required in gains:
             value = getattr(controller, source)
             if value is None and required:
-                raise RuntimeError(f"control parameter: '{owner_id}' authors no '{name}'")
+                raise ConstraintViolation(
+                    "control", f"control parameter: '{owner_id}' authors no '{name}'"
+                )
             member_id = f"{owner_id}_{name}"
             if member_id not in present:
                 present.add(member_id)

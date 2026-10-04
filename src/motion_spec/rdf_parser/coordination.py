@@ -46,7 +46,6 @@ from motion_spec.classes.handlers import (
     LevelMonitor,
 )
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
-from motion_spec.classes.solvers import CommandForwarding
 from motion_spec.rdf_parser import perturbations, quantities
 from motion_spec.rdf_parser.constraint_handler import (
     SolverIdFactory,
@@ -508,7 +507,7 @@ def _handler_chain_solvers(handler, serial_chains, solver_ids) -> list:
                 solver_id=solver.id,
                 output=solver.output,
                 motion_driver=selected,
-                read_only=solver.algorithm is None,
+                read_only=solver.algorithm.read_only,
             )
         )
 
@@ -916,7 +915,7 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
     owned_trees = {solver.id: solver.runtime.owned_trees or () for solver in runtime_solvers}
     commands = []
     for plan in _active_plans(phase, derivation):
-        if not issubclass(derivation.algorithm_by_solver[plan.solver], CommandForwarding):
+        if not derivation.algorithm_by_solver[plan.solver].forwards_commands:
             continue
         controller = derivation.controllers_for(plan)[0]
         quantity = graph.value(plan.constraint, CSTR.quantity)
@@ -933,10 +932,11 @@ def _forwarded_commands(model, phase, chain_solvers, runtime_solvers, derivation
             None,
         )
         if chain_solver is None:
-            raise RuntimeError(
+            raise ConstraintViolation(
+                "coordination",
                 "command forwarding: joint "
                 f"'{model.label(target) if target is not None else target}' belongs to no "
-                "kinematic tree this handler's runtimes own"
+                "kinematic tree this handler's runtimes own",
             )
         runtime = next(s for s in runtime_solvers if s.id == chain_solver.id)
         commands.append(

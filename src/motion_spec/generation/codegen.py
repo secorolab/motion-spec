@@ -210,17 +210,16 @@ class MissingAssets(RuntimeError):
 
 # The same prefixes the generated find_asset_path maps into the wrapper's cache.
 _VENDOR_MARKERS = (
-    ("third_party/menagerie/", "menagerie"),
-    ("src/mj_kdl_wrapper/assets/", "assets"),
+    ("src/mjkdl/assets/", "assets"),
     ("src/examples/assets/", "assets"),
 )
 
 
 def _cache_root() -> Path | None:
     if xdg := os.environ.get("XDG_CACHE_HOME"):
-        return Path(xdg) / "mj_kdl_wrapper"
+        return Path(xdg) / "mjkdl"
     if home := os.environ.get("HOME"):
-        return Path(home) / ".cache" / "mj_kdl_wrapper"
+        return Path(home) / ".cache" / "mjkdl"
     return None
 
 
@@ -237,15 +236,9 @@ def asset_candidates(path: str) -> list[Path]:
         return [declared]
     candidates = [Path.cwd() / declared]
     cache = _cache_root()
-    menagerie = os.environ.get("MJ_KDL_MENAGERIE")
     for marker, subdirectory in _VENDOR_MARKERS:
-        if not declared.is_relative_to(marker):
-            continue
-        tail = declared.relative_to(marker)
-        if cache:
-            candidates.append(cache / subdirectory / tail)
-        if menagerie and subdirectory == "menagerie":
-            candidates.append(Path(menagerie) / tail)
+        if cache and declared.is_relative_to(marker):
+            candidates.append(cache / subdirectory / declared.relative_to(marker))
     return candidates
 
 

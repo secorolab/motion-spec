@@ -39,10 +39,10 @@ repositories:
     type: git
     url: https://github.com/rosym-project/coord2b.git
     version: master
-  mj_kdl_wrapper:
+  mjkdl:
     type: git
-    url: https://github.com/vamsikalagaturu/mj_kdl_wrapper.git
-    version: v0.4.1
+    url: https://github.com/vamsikalagaturu/mjkdl.git
+    version: v0.5.0
   thirdparty/STSTv4:
     type: git
     url: https://github.com/jsnyders/STSTv4.git

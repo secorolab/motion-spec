@@ -55,7 +55,7 @@ def mujoco_build_packages() -> tuple[tuple[str, str], ...]:
     """
     from motion_spec.setup import shipped_pin
 
-    return (("mj_kdl_wrapper", shipped_pin("mj_kdl_wrapper").version.lstrip("v")),)
+    return (("mjkdl", shipped_pin("mjkdl").version.lstrip("v")),)
 
 
 # Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
@@ -360,22 +360,22 @@ DETAILS: dict[str, dict[str, str]] = {
         "why": "chains, solvers and frames: the kinematics the generated control math runs on"
     },
     "glfw3": {
-        "why": "the window and input layer of mj_kdl_wrapper's MuJoCo viewer",
+        "why": "the window and input layer of mjkdl's MuJoCo viewer",
         "source": "https://www.glfw.org",
     },
     "OpenGL": {
-        "why": "mj_kdl_wrapper renders the scene through it, on screen and off",
+        "why": "mjkdl renders the scene through it, on screen and off",
         "source": "https://www.khronos.org/opengl",
     },
     "EGL": {
-        "why": "the headless context mj_kdl_wrapper's video recorder renders into",
+        "why": "the headless context mjkdl's video recorder renders into",
         "source": "https://www.khronos.org/egl",
     },
     "ffmpeg": {
         "why": "encodes the recorder's frames and the ROS camera recordings into MP4",
         "source": "https://ffmpeg.org",
     },
-    "mj_kdl_wrapper": {
+    "mjkdl": {
         "why": "the MuJoCo simulation the generated controller drives, and its camera publisher"
     },
     "rclcpp": {
@@ -439,7 +439,7 @@ _manifest_sources()
 def _enrich(check: HealthCheck) -> HealthCheck:
     """The check, carrying its dependency's why and source when DETAILS knows them.
 
-    A dependency may be named with a version ("mj_kdl_wrapper 0.3.11"), as a cmake target
+    A dependency may be named with a version ("mjkdl 0.3.11"), as a cmake target
     ("robif2b::kinova_gen3") or as alternatives ("rosidl_pycommon or rosidl_cmake"); the
     details belong to the bare name either way.
     """
@@ -636,7 +636,7 @@ def verdicts(checks: list[HealthCheck]) -> dict[str, list[str]]:
 
 
 def _cmake_library_path(name: str, env: dict[str, str] | None = None) -> str | None:
-    """Where `find_library({name})` lands, the lookup mj_kdl_wrapper's CMake makes itself."""
+    """Where `find_library({name})` lands, the lookup mjkdl's CMake makes itself."""
     cmake = _which("cmake", env)
     if not cmake:
         return None
@@ -838,7 +838,7 @@ def check_health(
                 HealthCheck("build", name, "CMake package", path, path is not None, remedy(name))
             )
         if "mujoco" in targets:
-            # mj_kdl_wrapper's own CMake asks the system for these; a miss fails its configure.
+            # mjkdl's own CMake asks the system for these; a miss fails its configure.
             on_progress(len(checks), "glfw3")
             path = _cmake_package_path("glfw3", env=env)
             checks.append(
@@ -906,7 +906,7 @@ def check_health(
             )
         )
         runtime_targets = {
-            "mujoco": (("mj_kdl_wrapper", "mj_kdl_wrapper::mj_kdl_wrapper"),),
+            "mujoco": (("mjkdl", "mjkdl::mjkdl"),),
             # One per device the robif2b backend drives: the arm, the gripper, and the
             # force-torque sensor are separate libraries, and a model binding any of them
             # links that one.

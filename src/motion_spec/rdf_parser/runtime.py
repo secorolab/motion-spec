@@ -383,7 +383,7 @@ def annotate_runtime(
     world_frames = list(claimed.values())
 
     # Runtimes a dynamics solver torque-streams; the rest are only read, so they hold position.
-    commanding = {solver.runtime.id for solver in serial_chains if solver.algorithm is not None}
+    commanding = {solver.runtime.id for solver in serial_chains if not solver.algorithm.read_only}
     for solver in serial_chains:
         solver.runtime.commanded = solver.runtime.id in commanding
         _refuse_twist_without_velocity_kinematics(solver)
@@ -494,7 +494,7 @@ def _refuse_unreportable_currents(solver, backend: str) -> None:
     for out in solver.output:
         reason = _SIMULATOR_UNREPORTED.get(out.type)
         if reason is not None:
-            raise RuntimeError(f"{_OUTPUT_KEYWORD[out.type]} '{out.id}': {reason}")
+            raise ConstraintViolation("solver", f"{_OUTPUT_KEYWORD[out.type]} '{out.id}': {reason}")
 
 
 def _split_gripper_outputs(solver, backend: str) -> None:

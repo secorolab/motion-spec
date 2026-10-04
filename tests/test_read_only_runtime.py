@@ -4,15 +4,13 @@
 import contextlib
 
 import pytest
+from motion_spec_dsl.rdf_parser.vocab import KC_OP, SLV
 from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
 from motion_spec.classes.motion import MotionSolverSlice, MotionUnit
-from motion_spec.classes.solvers import (
-    CartesianAccelerationDriven,
-    MotionDrivers,
-    SolverWithInputAndOutput,
-)
+from motion_spec.classes.solvers import MotionDrivers, SolverWithInputAndOutput
+from motion_spec.rdf_parser.constraint_handler import SOLVER_FAMILIES
 from motion_spec.rdf_parser.runtime import annotate_runtime
 
 
@@ -40,8 +38,10 @@ def test_a_read_only_slice_on_a_torque_commanded_runtime_is_rejected(read_end, r
             ),
             hardware=HardwareBinding(urdf="arm.urdf", model="arm", tool_body="", tcp_frame=""),
             runtime=RuntimeBinding(id="", owner=False, prefix="", owned_trees=[], config_key=""),
-            # A dynamics family is what torque-streams a runtime; without one it is only read.
-            algorithm=CartesianAccelerationDriven if driven else None,
+            # A dynamics family is what torque-streams a runtime; forward kinematics only reads it.
+            algorithm=SOLVER_FAMILIES[
+                SLV["RecursiveNewtonEulerAlgorithm"] if driven else KC_OP.ForwardPositionKinematics
+            ],
         )
         for sid, end, driven in (("a", "wrist", True), ("b", read_end, False))
     ]

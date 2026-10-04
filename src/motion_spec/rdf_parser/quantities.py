@@ -91,11 +91,10 @@ from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.constraints import (
-    BilateralConstraint,
+    BandConstraint,
     Constraint,
     EqualityConstraint,
     GoalStatus,
-    OutsideConstraint,
     UnilateralConstraint,
     UnilateralConstraintType,
 )
@@ -1319,10 +1318,8 @@ def constraint(model, node) -> Constraint:
         parameter = _equality_constraint(model, node)
     elif CSTR["UnilateralConstraint"] in types:
         parameter = _unilateral_constraint(model, node)
-    elif CSTR_EXT["OutsideConstraint"] in types:
-        parameter = _outside_constraint(model, node)
     else:
-        parameter = _bilateral_constraint(model, node)
+        parameter = _band_constraint(model, node)
 
     return Constraint(model.id(node), quantity(model, quantity_node), parameter)
 
@@ -1345,16 +1342,10 @@ def _unilateral_constraint(model, node) -> UnilateralConstraint:
 
 
 @reader
-def _bilateral_constraint(model, node) -> BilateralConstraint:
-    return BilateralConstraint(
+def _band_constraint(model, node) -> BandConstraint:
+    outside = CSTR_EXT["OutsideConstraint"] in get_node_types(model.graph, node)
+    return BandConstraint(
         _threshold(model, node, CSTR["lower-threshold"]),
         _threshold(model, node, CSTR["upper-threshold"]),
-    )
-
-
-@reader
-def _outside_constraint(model, node) -> OutsideConstraint:
-    return OutsideConstraint(
-        _threshold(model, node, CSTR["lower-threshold"]),
-        _threshold(model, node, CSTR["upper-threshold"]),
+        "OutsideConstraint" if outside else "BilateralConstraint",
     )

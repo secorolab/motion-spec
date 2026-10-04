@@ -37,21 +37,14 @@ class UnilateralConstraint:
 
 
 @dataclass
-class BilateralConstraint:
-    """Constraint parameter: inside a lower/upper band."""
+class BandConstraint:
+    """Constraint parameter: inside (`BilateralConstraint`) or outside (`OutsideConstraint`) a
+    lower/upper band.
+    """
 
     lower_threshold: Quantity
     upper_threshold: Quantity
-    type: str = field(default="BilateralConstraint")
-
-
-@dataclass
-class OutsideConstraint:
-    """Constraint parameter: outside a lower/upper band."""
-
-    lower_threshold: Quantity
-    upper_threshold: Quantity
-    type: str = field(default="OutsideConstraint")
+    type: str
 
 
 @dataclass
@@ -68,9 +61,7 @@ class Constraint:
 
     id: str
     quantity: Quantity | GoalStatus
-    parameter: (
-        EqualityConstraint | UnilateralConstraint | BilateralConstraint | OutsideConstraint | None
-    )
+    parameter: EqualityConstraint | UnilateralConstraint | BandConstraint | None
     type: str = field(default="Constraint")
 
 

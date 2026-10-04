@@ -1,7 +1,7 @@
 {
     "names": {
-        "mj_kdl_wrapper": {
-            "cmake-args": ["-DMJ_KDL_FETCH_MENAGERIE=ON", "-DMJ_KDL_OROCOS_KDL_FROM_PACKAGE=ON"]
+        "mjkdl": {
+            "cmake-args": ["-DMJKDL_OROCOS_KDL_FROM_PACKAGE=ON"]
         },
         "robif2b": {
             "cmake-args": ["-DENABLE_INSTALL_TARGETS=ON"]

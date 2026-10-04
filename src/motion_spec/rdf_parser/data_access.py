@@ -324,6 +324,9 @@ def _superobjects_by_view(views) -> dict[str, set]:
     several superobjects, and it is rewritten whenever any of them is."""
     superobjects_of: dict[str, set] = {}
     for view in (views or {}).values():
+        # A whole-component view of a pooled relation reads the superobject's own sampling.
+        if view.subobject.id == view.superobject.id:
+            continue
         if view.subobject.id and view.superobject.id:
             superobjects_of.setdefault(view.subobject.id, set()).add(view.superobject.id)
     return superobjects_of

@@ -18,6 +18,7 @@ from rdflib import Dataset, URIRef
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.dynamics import JointQuantity
+from motion_spec.classes.geometry import Frame, Point, Pose, Wrench
 from motion_spec.classes.handlers import LevelMonitor
 from motion_spec.rdf_parser.communication import annotate_publish_rates, ros_standing
 from motion_spec.rdf_parser.deployment import ros_joint_states
@@ -121,11 +122,14 @@ ex:wrist-ft.e0 rdf:value ex:ext-force .
         + RATE.format(subject="wrist-ft", rate=100.0),
         format="turtle",
     )
-    seen_by = SimpleNamespace(id="base_link", uri=f"{NS}frames/base_link")
+    seen_by = Frame("base_link", uri=f"{NS}frames/base_link")
+    wrench = Wrench(
+        id="ext_force", quantity_kind=[], reference_point=Point("tcp"), as_seen_by=seen_by, unit=[]
+    )
     # 1 kHz control loop, so 100 Hz is every tenth cycle.
     (publish,) = ros_standing(
         Model(graph=graph, app_path=Path("model-app.ld.json")),
-        [SimpleNamespace(id="ext_force", type="Wrench", as_seen_by=seen_by)],
+        [wrench],
         1_000_000,
         {seen_by.uri: seen_by.id},
     )
@@ -152,11 +156,11 @@ ex:wrist-ft.e1 rdf:value ex:pose-table ; sosa:hasFeatureOfInterest <https://exam
         + RATE.format(subject="wrist-ft", rate=10.0),
         format="turtle",
     )
-    camera = SimpleNamespace(id="camera_optical", uri=f"{NS}frames/camera_optical")
+    camera = Frame("camera_optical", uri=f"{NS}frames/camera_optical")
     (publish,) = ros_standing(
         Model(graph=graph, app_path=Path("model-app.ld.json")),
         [
-            SimpleNamespace(id=name, type="Pose", as_seen_by=camera)
+            Pose(name, None, None, [], camera, [], None)
             for name in ("pose_drawer", "pose_table")
         ],
         1_000_000,
@@ -188,11 +192,14 @@ ex:wrist-ft.e0 rdf:value ex:pose-ee .
         + RATE.format(subject="wrist-ft", rate=100.0),
         format="turtle",
     )
-    record = SimpleNamespace(
-        id="pose_ee",
-        type="Pose",
-        as_seen_by=SimpleNamespace(id="base_link", uri=f"{NS}scene/base_link_origin"),
-        of=SimpleNamespace(id="g_pinch", uri=f"{NS}scene/g_pinch"),
+    record = Pose(
+        "pose_ee",
+        Frame("g_pinch", uri=f"{NS}scene/g_pinch"),
+        None,
+        [],
+        Frame("base_link", uri=f"{NS}scene/base_link_origin"),
+        [],
+        None,
     )
     (publish,) = ros_standing(
         Model(graph=graph, app_path=Path("model-app.ld.json")),

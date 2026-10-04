@@ -219,14 +219,17 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     if rec_rel and (run_dir / rec_rel).exists():
         rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
         # The run's files are in the execution document, on the run node rec's record describes.
+        recorded_files = rdflib.Graph() + rec_graph
         execution_rel = manifest.get("files", {}).get("execution")
         if execution_rel and (run_dir / execution_rel).exists():
-            rec_graph += _parse_rdf(run_dir / execution_rel, "json-ld")
-        _verify_checksums(rec_graph, run_dir, errors)
+            recorded_files += _parse_rdf(run_dir / execution_rel, "json-ld")
+        _verify_checksums(recorded_files, run_dir, errors)
         if errors:
             raise ArchiveError("; ".join(errors))
-        _require_rec_provenance(rec_graph, rec_rel, prov_uri(f"run:{manifest['run_id']}"))
-        _validate_shacl(rec_graph, rec_rel, *PROV_SHAPES, ("rec", "rec.shacl.ttl"))
+        _require_rec_provenance(
+            rec_graph, recorded_files, rec_rel, prov_uri(f"run:{manifest['run_id']}")
+        )
+        _validate_shacl(recorded_files, rec_rel, *PROV_SHAPES, ("rec", "rec.shacl.ttl"))
     return manifest
 
 
@@ -298,15 +301,18 @@ def _require_provenance(graph: rdflib.Graph, label: str) -> None:
         raise ArchiveError(f"{label}: missing required PROV types {', '.join(missing)}")
 
 
-def _require_rec_provenance(graph: rdflib.Graph, label: str, run_iri: str) -> None:
+def _require_rec_provenance(
+    rec_graph: rdflib.Graph, recorded_files: rdflib.Graph, label: str, run_iri: str
+) -> None:
     prov_ext = rdflib.Namespace("https://secorolab.github.io/metamodels/prov#")
     run = rdflib.URIRef(run_iri)
+    # rec records the run itself; the files it used are recorded beside it.
     checks = {
-        "execution": (run, rdflib.RDF.type, prov_ext.Execution),
-        "activity-agent association": (run, PROV.wasAssociatedWith, None),
-        "activity resource usage": (run, PROV.used, None),
+        "execution": (rec_graph, (run, rdflib.RDF.type, prov_ext.Execution)),
+        "activity-agent association": (rec_graph, (run, PROV.wasAssociatedWith, None)),
+        "activity resource usage": (recorded_files, (run, PROV.used, None)),
     }
-    missing = [name for name, triple in checks.items() if triple not in graph]
+    missing = [name for name, (graph, triple) in checks.items() if triple not in graph]
     if missing:
         raise ArchiveError(f"{label}: missing REC provenance relationship(s): {', '.join(missing)}")
 

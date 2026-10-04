@@ -221,13 +221,14 @@ def validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     except tomllib.TOMLDecodeError as error:
         raise RunnerError(f"{config_path}: {error}") from error
     # A chain that shares another's runtime repeats its owner's devices; the pair is the fact.
-    bound = {
-        (device["config_key"], device["kind"])
-        for solver in ir.get("resources", {}).get("robots") or ()
-        if solver.get("kind") == "serial_chain"
-        for device in solver.get("devices") or ()
-        if device.get("config_key")
-    }
+    bound = []
+    for solver in ir.get("resources", {}).get("robots") or ():
+        if solver.get("kind") != "serial_chain":
+            continue
+        for device in solver.get("devices") or ():
+            pair = (device.get("config_key"), device.get("kind"))
+            if pair[0] and pair not in bound:
+                bound.append(pair)
     for key, kind in bound:
         section = _config_section(config, key)
         if section is None:
@@ -250,11 +251,10 @@ def validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     # A pose the model reads with `[config.<key>]` binds its section as much as a device does:
     # generation refuses a model whose pose section is absent, so the run must not refuse it for
     # being present. Its numbers are re-read here because they may change without regeneration.
-    poses = {
-        entry["config_key"]
-        for entry in (ir["configuration"].get("config_poses") or ())
-        if entry.get("config_key")
-    }
+    poses = []
+    for entry in ir["configuration"].get("config_poses") or ():
+        if entry.get("config_key") and entry["config_key"] not in poses:
+            poses.append(entry["config_key"])
     for key in poses:
         section = _config_section(config, key) or {}
         for field in CONFIG_POSE_FIELDS:
@@ -265,17 +265,17 @@ def validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
     # [ros.*] configures the generated publishers and [rosbag] the run's recording, not a
     # device this run binds.
-    sections = {
-        key for key in _config_sections(config) if key.split(".")[0] not in ("ros", "rosbag")
-    }
+    read = [key for key, _ in bound] + poses
     # An unread pose section is a pose on offer, not a mistake; only the read ones are checked.
     unbound = [
         key
-        for key in sections - {key for key, _ in bound} - poses
-        if not any(field in (_config_section(config, key) or {}) for field in CONFIG_POSE_FIELDS)
+        for key in _config_sections(config)
+        if key.split(".")[0] not in ("ros", "rosbag")
+        and key not in read
+        and not any(field in (_config_section(config, key) or {}) for field in CONFIG_POSE_FIELDS)
     ]
     if unbound:
-        binds = ", ".join(f"[{key}]" for key in {key for key, _ in bound} | poses)
+        binds = ", ".join(f"[{key}]" for key in read)
         raise RunnerError(
             f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds.\n"
             f"  This run binds {binds or 'no sections'}, and a device section is named by the "

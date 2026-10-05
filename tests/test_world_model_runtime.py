@@ -11,7 +11,6 @@ than split into a C++ case per accessor.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,41 +22,57 @@ from motion_spec.setup import find_stst
 
 TESTS = Path(__file__).resolve().parent
 FIXTURE = TESTS / "world_model_fixture.cpp"
-INSTALL = TESTS.parents[2] / "install"
-KDL = INSTALL / "orocos_kdl"
+KDL = TESTS.parents[2] / "install" / "orocos_kdl"
+COMPILER = shutil.which("g++") or shutil.which("c++")
+STST = find_stst()
+
+# The smallest payload that renders the shipped runtime header: the world model is rendered only
+# for a program that declares a scene tree, and the solver runtime only for one that drives a
+# chain with the algorithm it uses.
+PAYLOAD = {
+    "configuration": {"control_period_ns": 1000000, "backend": "mj_kdl"},
+    "resources": {
+        "device_kinds": {},
+        "world_trees": [{"name": "tree", "cpp_name": "tree", "sampled_frames": []}],
+        "by_kind": {"serial_chain": [{"id": "arm"}]},
+    },
+    "computation": {"uses": {"SolverRNE": True}},
+}
+
+pytestmark = [
+    pytest.mark.skipif(STST is None, reason="no stst; run `motion-spec setup`"),
+    pytest.mark.skipif(COMPILER is None, reason="no C++ compiler"),
+    pytest.mark.skipif(
+        not (KDL / "include" / "kdl" / "tree.hpp").is_file(),
+        reason="orocos_kdl is not built in this workspace",
+    ),
+]
 
 
-def _render_runtime_header(tmp_path: Path) -> Path:
-    """The shipped runtime header, over the smallest payload that renders it."""
-    stst = find_stst()
-    if stst is None:
-        pytest.skip("no stst; run `motion-spec setup`")
+# verify: two arms in one tree plus a second tree, read through one object. Every required pose
+# is compared against `ChainFkSolverPos_recursive` on the chain sliced from the same tree, and
+# every startup and freshness refusal is executed -- a safety path that cannot be triggered is
+# not a safety path. alloc: counted only after every buffer has been sized, so what is measured
+# is the cycle.
+@pytest.mark.parametrize(
+    ("mode", "flags"),
+    [("verify", ()), ("alloc", ()), ("alloc", ("-DEIGEN_RUNTIME_NO_MALLOC",))],
+    ids=["matches-chain-fk-and-refuses-a-stale-read", "allocates-nothing", "eigen-no-malloc"],
+)
+def test_the_world_model_fixture_passes(tmp_path: Path, mode: str, flags: tuple) -> None:
     payload = tmp_path / "ir.json"
-    payload.write_text(
-        json.dumps(
-            {"configuration": {"control_period_ns": 1000000}, "resources": {"device_kinds": {}}}
-        )
+    payload.write_text(json.dumps(PAYLOAD))
+    render_template(
+        STST, "backend/mj_kdl/main", "runtime_header", payload, tmp_path / "runtime.hpp"
     )
-    header = tmp_path / "runtime.hpp"
-    render_template(stst, "runtime_header", payload, header)
-    return header
-
-
-def _build(tmp_path: Path, *extra: str) -> Path:
-    compiler = shutil.which("g++") or shutil.which("c++")
-    if compiler is None:
-        pytest.skip("no C++ compiler")
-    if not (KDL / "include" / "kdl" / "tree.hpp").is_file():
-        pytest.skip("orocos_kdl is not built in this workspace")
-    _render_runtime_header(tmp_path)
     binary = tmp_path / "world_model"
     subprocess.run(
         [
-            compiler,
+            COMPILER,
             "-std=c++20",
             "-O3",
             "-DNDEBUG",
-            *extra,
+            *flags,
             f"-I{tmp_path}",
             f"-I{KDL / 'include'}",
             "-I/usr/include/eigen3",
@@ -70,39 +85,5 @@ def _build(tmp_path: Path, *extra: str) -> Path:
         ],
         check=True,
     )
-    return binary
-
-
-def _run(binary: Path, mode: str) -> str:
     done = subprocess.run([str(binary), mode], capture_output=True, text=True, check=False)
-    print(done.stdout)
     assert done.returncode == 0, done.stdout + done.stderr
-    return done.stdout
-
-
-def test_the_world_model_matches_chain_fk_and_refuses_a_stale_read(tmp_path: Path) -> None:
-    """Two arms in one tree plus a second tree, read through one object.
-
-    Every required pose is compared against `ChainFkSolverPos_recursive` on the chain sliced from
-    the same tree, and every startup and freshness refusal is executed -- a safety path that
-    cannot be triggered is not a safety path.
-    """
-    _run(_build(tmp_path), "verify")
-
-
-@pytest.mark.parametrize("eigen_guard", [(), ("-DEIGEN_RUNTIME_NO_MALLOC",)])
-def test_the_valid_hot_path_allocates_nothing(tmp_path: Path, eigen_guard: tuple) -> None:
-    """Counted only after every buffer has been sized, so what is measured is the cycle."""
-    _run(_build(tmp_path, *eigen_guard), "alloc")
-
-
-@pytest.mark.skipif(
-    os.environ.get("PLAN05_WORLD_BENCH") != "1", reason="set PLAN05_WORLD_BENCH=1 to measure"
-)
-def test_one_control_cycle_of_reads_is_cheaper_through_the_world_model(tmp_path: Path) -> None:
-    """Report-only: a wall-clock ratio is not a pass/fail a test suite should carry.
-
-    The unit is one control cycle's reads, not one read: the tree pass computes every segment
-    once, so a motion with a single low-index read can legitimately be slower in isolation.
-    """
-    _run(_build(tmp_path), "bench")

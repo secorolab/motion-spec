@@ -17,10 +17,10 @@ from motion_spec.dashboard.jobs import RUNNING, mark_stopped
 from motion_spec.dashboard.replay import log_events
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file, trace
 from motion_spec.dashboard.tail import FrameLogTail
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError
-from motion_spec.introspection.frame_log_pb import ctrl_shm_name, shm_name_for
-from motion_spec.introspection.replay import resolve_archive
+from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.replay import resolve_archive
+from motion_spec.telemetry import frame_log_pb
+from motion_spec.telemetry.frame_log_pb import ctrl_shm_name, shm_name_for
 
 _LIVE: dict[str, dict] = {}
 

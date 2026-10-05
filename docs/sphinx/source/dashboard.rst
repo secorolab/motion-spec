@@ -12,13 +12,13 @@ everything shown is read from the files the pipeline already writes.
    $ motion-spec dashboard                  # serve on :8080, browse $MOTION_SPEC_GEN
    $ motion-spec dashboard --port 8090 --logs path/to/generations
    $ motion-spec dashboard -b               # detached; -k stops it, -r restarts
+   $ motion-spec dashboard --lan            # on the network: replay and simulated runs only
 
-``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``, else
-``$MOTION_SPEC_WS/generations``); ``--sources`` the model source root (default: the
-logs root's parent); ``--env`` the environment file health reports under (default:
+``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``); ``--sources`` the model source root (default: the
+logs root's parent); ``--env`` the environment file health, builds and runs use (default:
 the nearest one above the logs root, ``--no-env`` for this shell). The Health page
-can switch between the workspace's environment files itself, and rechecks under the
-one chosen.
+can switch between the workspace's environment files itself; health rechecks under the
+one chosen, and every build and run started from the page after that uses it.
 
 The pages
 ---------
@@ -71,8 +71,8 @@ preferences are local to the browser and generation root.
 
 **Copy link to this moment** includes the replay frame. Run notes can attach the current frame
 or an optional frame range; their timestamps and transport markers return to it. Generation
-notes remain general notes. Report event times open the relevant replay position and constraint
-plots; aggregate signal reports link to the motion rather than implying an exact peak time.
+notes remain general notes. Verdict times in the Reports panel open the relevant replay position
+and constraint plots.
 
 Verification
 ------------
@@ -86,7 +86,7 @@ Chromium executable. Give pytest a fresh ``--basetemp`` directory under
 Driving a simulated run
 -----------------------
 
-A simulated, introspected run creates a control block the loop polls once per tick; the
+A simulated run creates a control block the loop polls once per tick; the
 dashboard writes it, the loop acks. Pause skips the whole tick — no FSM step, no frame, no
 control against a frozen plant. Step runs a counted number of ticks while paused. Speed sets
 the real-time factor, so it means nothing to an uncapped headless run. On a real platform the

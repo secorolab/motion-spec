@@ -12,15 +12,14 @@ import pytest
 
 from motion_spec.generation.codegen import render_template
 from motion_spec.setup import find_stst
-from conftest import requires_stst
 
-pytestmark = requires_stst()
+pytestmark = pytest.mark.skipif(find_stst() is None, reason="no stst; run `motion-spec setup`")
 
 MOTION = {
     "motion": {
         "id": "motion_probe",
         "fsm_state": "S_PROBE",
-        "relative_poses": [{"id": "rp_tool", "fk_pose_id": "pose_tool"}],
+        "entry_snapshots": [{"target_id": "pose_tool_start", "source_id": "pose_tool"}],
         "controllers": [],
         "when_monitors": [],
         "while_monitors": [],
@@ -31,20 +30,16 @@ MOTION = {
 }
 
 
-def test_a_relative_pose_recaptures_its_origin_when_the_motion_is_re_entered(tmp_path) -> None:
-    # The origin is captured once per activation, behind `_start_captured`. Left set, a re-entered
+def test_an_entry_snapshot_recaptures_when_the_motion_is_re_entered(tmp_path) -> None:
+    # The origin is captured once per activation, behind `snapshot_taken`. Left set, a re-entered
     # motion measures from where the arm was the first time it ran and the controller drives to a
     # target displaced by everything that happened in between.
     payload = tmp_path / "motion.json"
     payload.write_text(json.dumps(MOTION))
     rendered = tmp_path / "step.cpp"
     render_template(
-        find_stst() or "stst",
-        "fsm-step-function",
-        payload,
-        rendered,
-        module_template="assembly_coordination",
+        find_stst() or "stst", "coordination/fsm", "fsm-step-function", payload, rendered
     )
     step = rendered.read_text()
     entry = step[: step.index("update_motion_probe")]
-    assert "motion_probe_state_instance.rp_tool_start_captured = false;" in entry
+    assert "motion_probe_state_instance.snapshot_taken = false;" in entry

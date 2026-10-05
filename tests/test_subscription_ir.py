@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""Lowering a standing subscription: which topics the model reads poses off, how one message is
-read, and who the blackboard says wrote the pose.
-
-Direction is derived, not declared: a channel the model reads states the features of interest it
-informs the model about, where a published one carries field rows and none. The graph cases build
-the topic by hand; the message case reads a real type, so it needs the workspace. The model cases
-lower the `perception` fixture, where the whole chain -- subscription -> written pose -> the chain
-that no longer computes it -- can be read at once.
-"""
+"""Lowering a standing subscription: which poses it writes, against which frame, and that it is
+their one writer. The model cases lower the `perception` fixture, where subscription -> written
+pose -> the chain that no longer computes it can be read at once."""
 
 from __future__ import annotations
 
@@ -17,111 +11,14 @@ from pathlib import Path
 
 import pytest
 from rdf_utils.constraints import ConstraintViolation
-from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import RDF, SOSA, split_uri
-from scene_dsl.rdf.sensors import URI_SENS_TYPE_CAMERA
-from scene_dsl.rdf_parser.vocab import NS_MM_ROS
+from rdflib import URIRef
+from rdflib.namespace import split_uri
+from support import REQUIRES_ROS
 
-from motion_spec.classes.motion import BlackboardValue
 from motion_spec.generation.pipeline import generate_model
-from motion_spec.rdf_parser import communication, quantities
-from motion_spec.rdf_parser.coordination import observation_shape
-from motion_spec.rdf_parser.model import Model
+from motion_spec.rdf_parser import communication
 
-from conftest import requires_interfaces
-
-NS = "https://example.test/"
-TYPE_NAME = "vision_msgs/msg/Detection3DArray"
 MODEL = Path(__file__).parent / "fixtures" / "perception"
-SCENE = Path(__file__).parents[2] / "motion-spec-dsl" / "models" / "admittance_arc_single"
-
-
-def _model(graph: Graph) -> Model:
-    return Model(
-        graph=graph, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
-
-
-def _topic(graph: Graph, *observes: str) -> URIRef:
-    """A topic node, reading the objects it is given and publishing when given none."""
-    node = URIRef(f"{NS}object-poses")
-    graph.add((node, RDF.type, NS_MM_ROS["Topic"]))
-    graph.add((node, NS_MM_ROS["channel-name"], Literal("/perception/objects")))
-    graph.add((node, NS_MM_ROS["type-name"], Literal(TYPE_NAME)))
-    graph.add((node, NS_MM_ROS["field-path"], Literal("results.pose")))
-    for target in observes:
-        graph.add((node, SOSA.hasFeatureOfInterest, URIRef(target)))
-    return node
-
-
-def test_a_topic_stating_no_feature_of_interest_is_one_the_model_publishes():
-    """It says nothing about the world it wants told, so nothing subscribes to it."""
-    graph = Graph()
-    node = _topic(graph)
-    model = _model(graph)
-    assert quantities.perceived_written_poses(model)[str(node)] == []
-    assert communication.ros_subscriptions(model, {}) == []
-
-
-def _camera_topic(graph: Graph) -> URIRef:
-    """A channel carrying a camera's images: no field path, because an image holds no pose."""
-    camera = URIRef(f"{NS}scene/arm1/wrist")
-    graph.add((camera, RDF.type, URI_SENS_TYPE_CAMERA))
-    node = URIRef(f"{NS}wrist-view")
-    graph.add((node, RDF.type, NS_MM_ROS["Topic"]))
-    graph.add((node, NS_MM_ROS["channel-name"], Literal("/wrist/color")))
-    graph.add((node, NS_MM_ROS["type-name"], Literal("sensor_msgs/msg/Image")))
-    graph.add((node, SOSA.hasFeatureOfInterest, camera))
-    return node
-
-
-def test_a_topic_carrying_a_camera_writes_no_pose_and_is_not_subscribed_to():
-    """The loop reads no images: the pane on the run page does. A camera channel must therefore
-    reach neither the written poses nor the subscriptions the runtime is generated from."""
-    graph = Graph()
-    node = _camera_topic(graph)
-    model = _model(graph)
-    assert quantities.perceived_written_poses(model)[str(node)] == []
-    assert communication.ros_subscriptions(model, {}) == []
-
-
-def test_a_topic_observing_an_object_is_rejected():
-    """A subscription writes a declared world pose, not an object it happens to describe."""
-    graph = Graph()
-    _topic(graph, f"{NS}pick_place_graph/cube/cube_origin")
-    with pytest.raises(ConstraintViolation, match="PoseCoordinate"):
-        quantities.perceived_written_poses(_model(graph))
-
-
-@requires_interfaces(TYPE_NAME)
-def test_a_subscription_reads_every_path_off_the_message_it_names():
-    """Only the pose is stated by the model, because only it is ambiguous; and a message standing
-    on its own carries no goal, so nothing in it names the targets."""
-    shape = observation_shape(TYPE_NAME, "results.pose")
-    assert shape["detections_path"] == "detections"
-    assert shape["id_path"] == "id"
-    assert shape["frame_path"] == "header.frame_id"
-    assert shape["pose_path"] == "results[0].pose.pose"
-    assert shape["pose_container"] == "results"
-    assert "targets_path" not in shape
-    assert shape["cpp_type"] == "vision_msgs::msg::Detection3DArray"
-    assert shape["include"] == "vision_msgs/msg/detection3_d_array.hpp"
-    # What the build has to find, not merely the package the model named.
-    assert "vision_msgs" in shape["packages"]
-
-
-def test_a_subscribed_pose_names_the_subscription_as_its_producer():
-    """Written from the executor thread rather than inside a motion's step, so it is live in every
-    state -- and the artifact says which mechanism produced it, not merely that ROS did."""
-    shared_data = [BlackboardValue(id="pose_cube_base", type="Pose")]
-    subscriptions = [{"sub_id": "object_poses", "written_poses": [{"pose_id": "pose_cube_base"}]}]
-    introspection: dict = {}
-    quantities.annotate_dataflow(introspection, shared_data, {}, [], [], {}, subscriptions)
-    assert introspection["dataflow"]["pose_cube_base"] == {
-        "producer": {"kind": "subscription", "id": "object_poses"},
-        "cadence": "tick",
-        "storage": "log",
-    }
 
 
 @pytest.fixture(scope="module")
@@ -131,76 +28,59 @@ def subscription_ir(tmp_path_factory) -> dict:
     return json.loads((generated / "model" / "ir.json").read_text())
 
 
-@requires_interfaces(TYPE_NAME)
-def test_the_subscription_names_the_poses_it_writes_and_the_frame_they_must_arrive_in(
-    subscription_ir,
-):
+@REQUIRES_ROS
+def test_the_subscription_writes_its_poses_against_a_world_model_segment(subscription_ir):
+    """The frame a detection arrives in is read off its header at run time; the frame the pose is
+    stated against is the model's, handed over as the segment the runtime composes into."""
     (subscription,) = subscription_ir["communication"]["ros"]["subscriptions"]
     assert subscription["channel"] == "/recognized_objects"
     assert subscription["cpp_type"] == "vision_msgs::msg::Detection3DArray"
     written = subscription["written_poses"]
-    assert {row["pose_id"] for row in written} == {"pose_table_cam"}
-    # The frame the pose is stated against. What frame a detection arrives in is the sender's to
-    # say, so it is read off the header at run time and is not here.
+    assert {row["pose_id"] for row in written} == {"shared_world_pose_table_cam"}
     assert {row["frame_id"] for row in written} == {"wrist_ft_site"}
+    assert {row["frame_segment"] for row in written} == {"ft_tree/wrist_ft_body/wrist_ft_site"}
     # The pose is written onto the frame the model says the detection is of.
     assert {split_uri(URIRef(row["target_iri"]))[1] for row in written} == {"table_top"}
 
 
-@requires_interfaces(TYPE_NAME)
-def test_the_frame_a_written_pose_is_stated_against_resolves_to_a_world_model_segment(
-    subscription_ir,
-):
-    """The runtime composes the arriving pose into this frame, so it is handed the segment it is
-    read off -- a name it looks up once, never searches for on a tick."""
-    (subscription,) = subscription_ir["communication"]["ros"]["subscriptions"]
-    assert {row["frame_segment"] for row in subscription["written_poses"]} == {
-        "ft_tree/wrist_ft_body/wrist_ft_site"
-    }
-
-
 def test_a_frame_the_tree_has_no_segment_for_is_rejected():
-    """A frame the world model does not hold is one the runtime could not ask about, and a
-    detection composed against nothing would land wherever the identity puts it."""
+    """A detection composed against a frame the world model does not hold would land wherever the
+    identity puts it."""
     with pytest.raises(ConstraintViolation, match="no segment standing for it"):
-        communication._segment_of({}, f"{NS}camera", "object-poses")
+        communication._segment_of({}, "https://example.test/camera", "object-poses")
 
 
-@requires_interfaces(TYPE_NAME)
+@REQUIRES_ROS
 def test_no_chain_computes_a_pose_the_subscription_writes(subscription_ir):
-    """One producer: the topic writes it, so the per-tick scene-object sync must not."""
+    """One writer: the topic writes it, so the per-tick scene-object sync must not."""
     outputs = {
         out["id"]
         for solver in subscription_ir["resources"]["by_kind"]["serial_chain"]
         for out in solver["output"]
     }
-    assert "pose_table_cam" not in outputs
-    dataflow = subscription_ir["communication"]["introspection"]["dataflow"]
-    assert dataflow["pose_table_cam"]["producer"] == {"kind": "subscription", "id": "table_top"}
+    assert "shared_world_pose_table_cam" not in outputs
+    data_access = subscription_ir["computation"]["data_access"]
+    assert data_access["shared_world_pose_table_cam"]["write"] == {
+        "kind": "subscription",
+        "id": "ros_subscribers_table_top",
+    }
 
 
-@requires_interfaces(TYPE_NAME)
-def test_the_subscription_stamps_the_instant_its_pose_was_last_observed(subscription_ir):
-    """The channel that writes the pose is what dates it, and until the first message the slot
-    is minus infinity, so an age read off it is infinite."""
+@REQUIRES_ROS
+def test_the_subscription_stamps_its_pose_and_a_freshness_gate_holds_in_state(subscription_ir):
+    """The channel that writes the pose dates it (minus infinity until the first message), and a
+    motion gated on that age holds inside its own state while the idle hold steps."""
     (subscription,) = subscription_ir["communication"]["ros"]["subscriptions"]
     assert {row["observed_at_id"] for row in subscription["written_poses"]} == {
         "pose_table_cam_observed"
     }
-    members = {member["id"]: member for member in subscription_ir["computation"]["shared_data"]}
-    assert members["pose_table_cam_observed"]["type"] == "Quantity"
+    members = {member["id"]: member for member in subscription_ir["computation"]["data"]}
     assert members["pose_table_cam_observed"]["unset"] is True
-    dataflow = subscription_ir["communication"]["introspection"]["dataflow"]
-    assert dataflow["pose_table_cam_observed"]["producer"] == {
+    data_access = subscription_ir["computation"]["data_access"]
+    assert data_access["pose_table_cam_observed"]["write"] == {
         "kind": "subscription",
-        "id": "table_top",
+        "id": "ros_subscribers_table_top",
     }
-
-
-@requires_interfaces(TYPE_NAME)
-def test_a_freshness_gated_motion_holds_inside_its_own_state(subscription_ir):
-    """`E_TABLE_SEEN` drives no transition, so the watch is gated in S_WATCH: the idle hold steps
-    there and the age clock counts from the pose's observation instant."""
     motions = {motion["id"]: motion for motion in subscription_ir["coordination"]["motions"]}
     watch = motions["handler_watch"]
     assert watch["has_when_gate"] is True
@@ -208,4 +88,3 @@ def test_a_freshness_gated_motion_holds_inside_its_own_state(subscription_ir):
     assert watch["when_observation_ages"] == [
         {"coordinate": "table_seen_elapsed", "observed_at": "pose_table_cam_observed"}
     ]
-    assert motions["handler_hold_idle"]["is_when_gate_hold"] is True

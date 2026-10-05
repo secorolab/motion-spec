@@ -14,6 +14,8 @@ class QuantityKind:
     """A QUDT quantity kind."""
 
     id: str
+    # The kind as the graph names it, for provenance to state; the id is what code reads.
+    iri: str | None = field(default=None, metadata=INTERNAL)
     type: str = field(default="QuantityKind")
 
 
@@ -22,6 +24,7 @@ class Unit:
     """A QUDT unit."""
 
     id: str
+    iri: str | None = field(default=None, metadata=INTERNAL)
     type: str = field(default="Unit")
 
 

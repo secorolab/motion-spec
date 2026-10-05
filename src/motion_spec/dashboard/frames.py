@@ -12,11 +12,11 @@ import mmap
 import struct
 from pathlib import Path
 
-from motion_spec.introspection.frame_log_pb import (
-    _CONSTRAINT_KEYS,
-    _MONITOR_KEYS,
-    _SPATIAL,
-    _TRIGGER_KEYS,
+from motion_spec.telemetry.frame_log_pb import (
+    CONSTRAINT_KEYS,
+    MONITOR_KEYS,
+    SPATIAL_CATEGORIES,
+    TRIGGER_KEYS,
     shm_name_for,
 )
 
@@ -75,7 +75,6 @@ def slot_signals(contract) -> dict:
         for kind, parts in SLOT_PARTS.items()
         for field in contract.fields.get(kind, ())
         for part, attribute in parts.items()
-        if hasattr(contract.record_cls().frame, field["name"])
     }
 
 
@@ -90,6 +89,14 @@ class FrameLayout:
     """A generation's frame_layout.json as the struct that decodes its shm Frame."""
 
     def __init__(self, layout: dict):
+        from motion_spec.generation.artifacts import FRAME_LAYOUT_VERSION
+
+        version = layout.get("frame_layout_version")
+        if version != FRAME_LAYOUT_VERSION:
+            raise ValueError(
+                f"frame_layout.json is layout version {version}; this motion-spec reads "
+                f"version {FRAME_LAYOUT_VERSION}"
+            )
         self.layout = layout
         self.fields = layout["fields"]
         self.pools = layout["pools"]
@@ -177,12 +184,11 @@ class ShmFrameReader:
         record = {key: flat[key] for key in _CORE_KEYS}
         record["timing"] = {key: flat[key] for key in _TIMING_KEYS}
         record["constraints"] = [
-            {key: flat[f"c{idx}.{key}"] for key in _CONSTRAINT_KEYS}
+            {key: flat[f"c{idx}.{key}"] for key in CONSTRAINT_KEYS}
             for idx in range(pools["constraints"])
         ]
         record["monitors"] = [
-            {key: flat[f"m{idx}.{key}"] for key in _MONITOR_KEYS}
-            for idx in range(pools["monitors"])
+            {key: flat[f"m{idx}.{key}"] for key in MONITOR_KEYS} for idx in range(pools["monitors"])
         ]
         # Quantities carry no per-slot active word, so which ones the active motion writes comes
         # from the log header's gate -- the same source the protobuf decoder uses.
@@ -213,7 +219,7 @@ class ShmFrameReader:
         pool_size, count = pools["triggers"], flat["trigger_count"]
         record["triggers"] = (
             [
-                {key: flat[f"tr{idx % pool_size}.{key}"] for key in _TRIGGER_KEYS}
+                {key: flat[f"tr{idx % pool_size}.{key}"] for key in TRIGGER_KEYS}
                 for idx in range(max(0, count - pool_size), count)
             ]
             if pool_size
@@ -221,7 +227,7 @@ class ShmFrameReader:
         )
         # A slot the active motion does not write stays a hole, so a slot keeps one index for
         # the whole run. Here the slot's own active word says so; the log infers it from the gate.
-        for category, names in _SPATIAL:
+        for category, names in SPATIAL_CATEGORIES:
             prefix = _SPATIAL_PREFIX[category]
             record[category] = [
                 {name: flat[f"{prefix}{idx}.{name}"] for name in names}

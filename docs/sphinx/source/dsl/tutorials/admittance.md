@@ -1,13 +1,13 @@
 # Arc motion and admittance
 
-`ms-examples/admittance_arc_single` demonstrates force-aware motion with a wrist
+`ms-examples/06_arc_tracing_with_admittance` demonstrates force-aware motion with a wrist
 force/torque sensor.
 
 ## 1. Generate and open the simulation
 
 ```bash
 motion-spec run \
-  src/ms-examples/admittance_arc_single/admittance_arc_single.robmot \
+  src/ms-examples/06_arc_tracing_with_admittance/arc_tracing_with_admittance.robmot \
   -o /tmp/admittance-arc \
   --prefix /path/to/workspace/install \
   --run-id tutorial
@@ -32,7 +32,8 @@ wrench ext-force {
 The sensor is attached at the wrist, but `as-seen-by` requests force and torque
 components expressed in the Kinova base frame. If it were omitted, the wrench
 would remain expressed in the sensor's attached frame. `ref-point` independently
-states the point about which torque is measured.
+states the point about which torque is measured. The value is the environment's wrench
+on the tool, so a push in +y reads +y.
 
 Constraints then select scalar components such as
 `<shared.world.ext-force>.force.x`.
@@ -46,8 +47,9 @@ requires both table proximity and the target y interval.
 The path constraints command tangential speed, keep position and orientation on the
 arc, and monitor minimum measured progress. If force interrupts the motion, release
 fires `E_ARC_ENTERED` again: the start snapshot is refreshed from the current TCP pose
-and a new arc is constructed to the unchanged target pose. The robot does not return to
-the interrupted path.
+and a new arc is constructed to the unchanged target pose. Its amplitude is computed,
+`arc-height` scaled by the share of the y span still to go, so an arc begun mid-air
+does not bow out past the target. The robot does not return to the interrupted path.
 
 Force constraints use `outside` to detect either sign:
 

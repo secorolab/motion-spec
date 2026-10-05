@@ -41,6 +41,8 @@ class MjcfSceneRobot:
     """A robot placed in the scene, with its attachments."""
 
     id: str
+    # The scene's agent node, which provenance names the robot by.
+    agent: str
     path: str
     prefix: str = ""
     attach_kind: str = "World"
@@ -98,6 +100,8 @@ class MjcfSceneObject:
     # uri, named the way the composed scene names it: the object's own name and the mapped
     # body's, since only the asset's root body is renamed to the object.
     secondary_bodies: dict[str, str] = field(default_factory=dict, metadata=INTERNAL)
+    # The scene body this object is spawned as, so a world tree rooted on it finds its provider.
+    body_iri: str = field(default="", metadata=INTERNAL)
     type: str = field(default="MjcfSceneObject")
 
 

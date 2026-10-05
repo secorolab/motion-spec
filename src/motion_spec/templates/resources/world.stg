@@ -1,0 +1,362 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// The world model every serial chain and frame reads its poses from.
+
+world-kinematics-includes() ::= <<
+#include \<kdl/tree.hpp\>
+#include \<limits\>
+#include \<queue\>
+#include \<unordered_map\>
+#include \<utility\>
+>>
+
+world-kinematics() ::= <<
+// One pose authority for the whole application. Every scene tree is flattened into one set of
+// arrays, parents before children -- a forest, so any number of robots in any number of trees
+// share one object. Each cycle walks that order once and composes every body's pose from its
+// parent's already-computed one (Featherstone, Rigid Body Dynamics Algorithms, example 4.3).
+//
+// It owns no measurement: startup binds each moving segment to the address the backend already
+// writes its measured position to, so the world model and the dynamics solvers are two readers
+// of one buffer rather than two authorities.
+class WorldKinematics {
+  public:
+    // Startup. These return failure and fill `error` rather than throwing: main is still holding
+    // driver handles that its own exit paths release.
+
+    bool add_tree(const KDL::Tree &tree, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no tree can be added";
+            return false;
+        }
+        const int tree_id = trees_seen_++;
+        std::queue\<std::pair\<KDL::SegmentMap::const_iterator, int\>\> pending;
+        pending.push({tree.getRootSegment(), -1});
+        while (!pending.empty()) {
+            const auto element = pending.front();
+            pending.pop();
+            const KDL::Segment &segment = GetTreeElementSegment(element.first->second);
+            const int index = static_cast\<int\>(segments_.size());
+            if (!indexes_.emplace(segment.getName(), index).second) {
+                error = "two segments are named '" + segment.getName() + "'";
+                return false;
+            }
+            segments_.push_back(segment);
+            parents_.push_back(element.second);
+            trees_.push_back(tree_id);
+            joints_.push_back(nullptr);
+            velocities_.push_back(nullptr);
+            bases_.push_back(nullptr);
+            poses_.push_back(KDL::Frame::Identity());
+            twists_.push_back(KDL::Twist::Zero());
+            // Breadth-first, so a child is appended only once its parent holds an index.
+            for (const auto &child : GetTreeElementChildren(element.first->second)) {
+                pending.push({child, index});
+            }
+        }
+        return true;
+    }
+
+    int index_of(const std::string &name) const {
+        const auto found = indexes_.find(name);
+        return found == indexes_.end() ? -1 : found->second;
+    }
+
+    bool bind_joint(const std::string &segment, const double *position, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no joint can be bound";
+            return false;
+        }
+        if (position == nullptr) {
+            error = "segment '" + segment + "' was bound to no measurement";
+            return false;
+        }
+        const int index = index_of(segment);
+        if (index \< 0) {
+            error = "no segment is named '" + segment + "'";
+            return false;
+        }
+        if (segments_[index].getJoint().getType() == KDL::Joint::None) {
+            error = "segment '" + segment + "' is fixed, so no measurement moves it";
+            return false;
+        }
+        // Several solver records may share one runtime, so binding the same address again is the
+        // same fact stated twice. A second, different address is two authorities for one joint.
+        if (joints_[index] != nullptr && joints_[index] != position) {
+            error = "segment '" + segment + "' is already bound to another measurement";
+            return false;
+        }
+        joints_[index] = position;
+        return true;
+    }
+
+    // The rate of the same joint, so the outward pass carries the twist beside the pose. An
+    // unbound rate reads zero: the pose is still right, the twist is the arm held still.
+    bool bind_joint_velocity(const std::string &segment, const double *velocity,
+                             std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no joint can be bound";
+            return false;
+        }
+        if (velocity == nullptr) {
+            error = "segment '" + segment + "' was bound to no rate";
+            return false;
+        }
+        const int index = index_of(segment);
+        if (index \< 0) {
+            error = "no segment is named '" + segment + "'";
+            return false;
+        }
+        if (segments_[index].getJoint().getType() == KDL::Joint::None) {
+            error = "segment '" + segment + "' is fixed, so no rate moves it";
+            return false;
+        }
+        if (velocities_[index] != nullptr && velocities_[index] != velocity) {
+            error = "segment '" + segment + "' is already bound to another rate";
+            return false;
+        }
+        velocities_[index] = velocity;
+        return true;
+    }
+
+    // A forest root the scene does not place: a free body stands where something outside the
+    // model says it does, so its base is read from an address the owner writes, the way a
+    // moving segment reads its measurement. An unbound root stands at the origin.
+    bool bind_base(const std::string &segment, const KDL::Frame *base, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no base can be bound";
+            return false;
+        }
+        if (base == nullptr) {
+            error = "segment '" + segment + "' was bound to no base";
+            return false;
+        }
+        const int index = index_of(segment);
+        if (index \< 0) {
+            error = "no segment is named '" + segment + "'";
+            return false;
+        }
+        if (parents_[index] >= 0) {
+            error = "segment '" + segment + "' hangs off another, so a base does not place it";
+            return false;
+        }
+        if (bases_[index] != nullptr && bases_[index] != base) {
+            error = "segment '" + segment + "' is already bound to another base";
+            return false;
+        }
+        bases_[index] = base;
+        return true;
+    }
+
+    bool require_path(int reference, int target, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no path can be required";
+            return false;
+        }
+        const int count = static_cast\<int\>(segments_.size());
+        if (reference \< 0 || reference >= count || target \< 0 || target >= count) {
+            error = "a required path names a segment the world model does not hold";
+            return false;
+        }
+        if (trees_[reference] != trees_[target]) {
+            error = "'" + segments_[target].getName() + "' is not in the same tree as '"
+                  + segments_[reference].getName() + "', so no pose relates them";
+            return false;
+        }
+        for (int index = target; index >= 0; index = parents_[index]) {
+            if (index == reference) {
+                required_paths_.push_back({reference, target});
+                return true;
+            }
+        }
+        error = "'" + segments_[target].getName() + "' is not below '"
+              + segments_[reference].getName() + "'";
+        return false;
+    }
+
+    // A root read as a world pose rather than only through a path below it. A relative path
+    // cancels its base, so nothing else catches one that is never placed: it would stand at the
+    // origin and read as a measurement.
+    bool require_base(const std::string &segment, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no base can be required";
+            return false;
+        }
+        const int index = index_of(segment);
+        if (index \< 0) {
+            error = "no segment is named '" + segment + "'";
+            return false;
+        }
+        if (parents_[index] >= 0) {
+            error = "segment '" + segment + "' hangs off another, so nothing places it directly";
+            return false;
+        }
+        required_bases_.push_back(index);
+        return true;
+    }
+
+    // Every body hanging off the body that carries `frame`, as one rigid body in `frame` at zero
+    // joint positions. The carrying body is the sensor itself and stays out.
+    bool load_on(int frame, KDL::RigidBodyInertia &load, std::string &error) const {
+        const int count = static_cast\<int\>(segments_.size());
+        if (frame \< 0 || frame >= count) {
+            error = "a sensor frame names a segment the world model does not hold";
+            return false;
+        }
+        const int host = parents_[frame];
+        if (host \< 0) {
+            error = "'" + segments_[frame].getName() + "' is a root, so nothing hangs off it";
+            return false;
+        }
+        std::vector\<KDL::Frame\> from_host(count);
+        std::vector\<char\> below(count, 0);
+        load = KDL::RigidBodyInertia::Zero();
+        for (int i = 0; i \< count; ++i) {
+            if (parents_[i] == host) {
+                from_host[i] = segments_[i].pose(0.0);
+            } else if (parents_[i] >= 0 && below[parents_[i]]) {
+                from_host[i] = from_host[parents_[i]] * segments_[i].pose(0.0);
+            } else {
+                continue;
+            }
+            below[i] = 1;
+            if (i != frame) {
+                load = load + from_host[i] * segments_[i].getInertia();
+            }
+        }
+        load = from_host[frame].Inverse() * load;
+        return true;
+    }
+
+    bool seal(std::string &error) {
+        for (const auto &path : required_paths_) {
+            for (int index = path.second; index != path.first; index = parents_[index]) {
+                if (segments_[index].getJoint().getType() != KDL::Joint::None
+                        && joints_[index] == nullptr) {
+                    error = "'" + segments_[path.second].getName() + "' is read through joint '"
+                          + segments_[index].getJoint().getName() + "', which nothing measures";
+                    return false;
+                }
+            }
+        }
+        for (const int index : required_bases_) {
+            if (bases_[index] == nullptr) {
+                error = "'" + segments_[index].getName() + "' is read as a world pose, but "
+                        "nothing places it, so it would stand at the origin";
+                return false;
+            }
+        }
+        sealed_ = true;
+        return true;
+    }
+
+    // Read by a publisher reporting the forest whole; local_pose reads the bound joint directly.
+    int count() const { return static_cast\<int\>(segments_.size()); }
+    int parent_of(int index) const { return parents_[index]; }
+    int tree_of(int index) const { return trees_[index]; }
+    const std::string &name_of(int index) const { return segments_[index].getName(); }
+    bool moving(int index) const {
+        return segments_[index].getJoint().getType() != KDL::Joint::None;
+    \}
+    KDL::Frame local_pose(int index) const {
+        return segments_[index].pose(joints_[index] ? *joints_[index] : 0.0);
+    \}
+
+    // The hot path: one flat pass, then reads by index. No lookup, allocation, resize, recursion,
+    // lock or exception on the valid path.
+
+    void update(std::uint64_t cycle) {
+        if (!sealed_) {
+            report("updated before it was sealed");
+            return;
+        }
+        // The same token twice would traverse again for the same measurements, and a token that
+        // went backwards means the loop lost its place, so neither is a second update.
+        if (cycle_ != kNoCycle && cycle \<= cycle_) {
+            report("updated twice in one control cycle");
+            return;
+        }
+        for (std::size_t i = 0; i \< segments_.size(); ++i) {
+            if (parents_[i] \< 0) {
+                // A root the scene places stands at the origin; a free body stands where its
+                // bound base last said, which is what perception writes between cycles.
+                poses_[i] = bases_[i] ? *bases_[i] : KDL::Frame::Identity();
+                // Nothing samples a root's own motion, so the pass starts from rest.
+                twists_[i] = KDL::Twist::Zero();
+                continue;
+            }
+            // KDL owns the joint convention: an unbound moving joint reads zero, and sealing has
+            // already proved that no required path depends on one.
+            const int parent = parents_[i];
+            const double q = joints_[i] ? *joints_[i] : 0.0;
+            const double qd = velocities_[i] ? *velocities_[i] : 0.0;
+            poses_[i] = poses_[parent] * segments_[i].pose(q);
+            // The same composition KDL's recursive velocity solver performs on a FrameVel,
+            // written on Frame and Twist: the parent's twist moved to this segment's origin,
+            // plus this segment's own twist in the parent's axes (Featherstone 2008, eq. 4.5).
+            twists_[i] = twists_[parent].RefPoint(poses_[i].p - poses_[parent].p)
+                       + poses_[parent].M * segments_[i].twist(q, qd);
+        }
+        cycle_ = cycle;
+    }
+
+    // Always on, in every build: a pose from another cycle is a command against a place the robot
+    // may have left. The hardware backend suppresses its device update once stop is requested, so
+    // the identity returned here never reaches an arm.
+    const KDL::Frame &pose(int index, std::uint64_t cycle) const {
+        if (index \< 0 || index >= static_cast\<int\>(poses_.size())) {
+            report("asked for a segment it does not hold");
+            return identity_;
+        }
+        if (cycle != cycle_) {
+            report("read at a cycle it was not updated for");
+            return identity_;
+        }
+        return poses_[index];
+    }
+
+    // The twist of the same segment, from the same pass, under the same cycle guard.
+    const KDL::Twist &twist(int index, std::uint64_t cycle) const {
+        if (index \< 0 || index >= static_cast\<int\>(twists_.size())) {
+            report("asked for a segment it does not hold");
+            return zero_twist_;
+        }
+        if (cycle != cycle_) {
+            report("read at a cycle it was not updated for");
+            return zero_twist_;
+        }
+        return twists_[index];
+    }
+
+  private:
+    static constexpr std::uint64_t kNoCycle = std::numeric_limits\<std::uint64_t\>::max();
+
+    void report(const char *what) const {
+        if (!reported_) {
+            reported_ = true;
+            std::cerr \<\< "[world] the world model was " \<\< what \<\< "; stopping" \<\< std::endl;
+        }
+        request_stop(0);
+    }
+
+    std::vector\<KDL::Segment\> segments_;
+    std::vector\<int\> parents_;            // -1 for each forest root
+    std::vector\<int\> trees_;              // rejects a required path across two roots
+    std::vector\<const double *\> joints_;  // null for a fixed or unbound moving segment
+    std::vector\<const double *\> velocities_;  // null where no rate is bound; the twist reads zero
+    std::vector\<const KDL::Frame *\> bases_;  // null for a non-root, or a root nothing places
+    std::vector\<KDL::Frame\> poses_;
+    std::vector\<KDL::Twist\> twists_;
+    std::vector\<std::pair\<int, int\>\> required_paths_;
+    std::vector\<int\> required_bases_;
+    // Written only while trees are added, so after sealing it is a fixed table any thread may
+    // read -- which is how a subscription resolves the frame a message states itself in.
+    std::unordered_map\<std::string, int\> indexes_;
+    KDL::Frame identity_ = KDL::Frame::Identity();
+    KDL::Twist zero_twist_ = KDL::Twist::Zero();
+    std::uint64_t cycle_ = kNoCycle;
+    int trees_seen_ = 0;
+    bool sealed_ = false;
+    mutable bool reported_ = false;
+};
+>>

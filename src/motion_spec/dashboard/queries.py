@@ -7,24 +7,18 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import rdflib
 
 from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
-from motion_spec.dashboard.graph import (
-    MODEL_GRAPH,
-    GraphService,
-    load_model_graph,
-    model_manifest,
-)
+from motion_spec.dashboard.graph import MODEL_GRAPH, GraphService, load_model_graph, model_manifest
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
-from motion_spec.dashboard.store import RunStore
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.replay import resolve_archive
+from motion_spec.runs.replay import resolve_archive
+from motion_spec.telemetry import frame_log_pb
 
 # A picture of a hundred thousand triples is a locked browser, not an answer.
 GRAPH_MAX_TRIPLES = 20_000
@@ -45,19 +39,20 @@ def run_model_manifest(run_dir: Path) -> Path | None:
 
 def generation_graph(generation_dir: Path) -> GraphService:
     """A generation's model graph on its own."""
-    return GraphService(generation_dir, RunStore(generation_dir.name))
+    return GraphService(generation_dir)
 
 
 def run_graph(run_dir: Path) -> GraphService:
     """One run's queryable model graph. Kept per log revision, as the run list is."""
-    _, log, _manifest, contract = resolve_archive(run_dir)
+    _, log, _manifest, _contract = resolve_archive(run_dir)
     key = (str(log), log.stat().st_size, True)
     if key not in _GRAPHS:
         _GRAPHS.clear()
+        named = json_file(run_dir / "manifest.json").get("files", {}).get("graphs")
         _GRAPHS[key] = GraphService(
             run_dir.parent.parent,
-            RunStore(run_dir.name, contract),
             manifest=run_model_manifest(run_dir),
+            graphs=[(run_dir / path).resolve() for path in named] if named else None,
         )
     return _GRAPHS[key]
 
@@ -124,18 +119,20 @@ def save_notes(run_dir: Path, notes: list) -> dict:
         tags = note.get("tags") or []
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise ValueError("note tags must be a list of strings")
+        named = []
+        for tag in tags:
+            if tag.strip() and tag.strip() not in named:
+                named.append(tag.strip())
         kept.append(
             {
                 "id": str(note.get("id") or secrets.token_hex(6)),
                 "created": str(
-                    note.get("created") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    note.get("created") or datetime.now(UTC).isoformat(timespec="seconds")
                 ),
                 "text": str(note.get("text") or "")[:4000],
                 "frame": frame,
                 "end_frame": end_frame,
-                "tags": list(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))[
-                    :20
-                ],
+                "tags": named[:20],
             }
         )
     payload = {"notes": kept}

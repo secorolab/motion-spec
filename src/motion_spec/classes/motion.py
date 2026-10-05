@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 """The compiler's per-motion unit and everything scoped to one motion: its slice of a solver,
-its snapshot captures, its regrouped pose errors, and the blackboard/publish records a motion's
+its snapshot captures, its regrouped pose errors, and the data and publish records a motion's
 schedule can reach.
 """
 
@@ -16,13 +16,13 @@ from motion_spec.classes.solvers import MotionDrivers
 
 
 @dataclass(eq=False)
-class BlackboardValue:
-    """A shared value the runtime writes that no model entity declares: the measured period, the
-    FT tare state, a controller's internal state, a control parameter, a joint-space mirror.
+class DataValue:
+    """A D-block of the algorithm that no model entity declares: the measured period, the FT tare
+    state, a controller's internal state, a control parameter, a joint-space mirror.
 
-    The blackboard publishes what a member is -- its id, its storage type, its initial value and
-    the role it plays. What it was derived from is the introspection artifact's to report, so the
-    descriptive fields are construction inputs that `communication.py` reads to build the row.
+    The algorithm data states what it is -- its id, its storage type, its initial value and the
+    role it plays. What it was derived from is provenance's to report, so the descriptive fields
+    are construction inputs that `communication.py` reads to build the row.
     """
 
     id: str
@@ -31,10 +31,10 @@ class BlackboardValue:
     # A time position no reading has filled yet: minus infinity, so an age from it is infinite.
     unset: bool = False
     role: str | None = None
-    producer: dict | None = field(default=None, metadata=INTERNAL)
+    writer: dict | None = field(default=None, metadata=INTERNAL)
     quantity_kind: QuantityKind | None = field(default=None, metadata=INTERNAL)
     unit: Unit | None = field(default=None, metadata=INTERNAL)
-    # Who the value belongs to, named the way its introspection row names it.
+    # Who the value belongs to, named the way its telemetry row names it.
     owner: str | None = field(default=None, metadata=INTERNAL)
     parameter: str | None = field(default=None, metadata=INTERNAL)
     controller: str | None = field(default=None, metadata=INTERNAL)
@@ -52,6 +52,8 @@ class ForwardedCommandStep:
     control_signal: Quantity
     target: str
     robot_id: str
+    # The command port row this reaches the platform through.
+    world_slot: int = 0
     type: str = field(default="ForwardedCommandStep")
 
 
@@ -107,30 +109,10 @@ class SnapshotCapture:
     source_id: str
     scope: str = "entry"
     captured_id: str | None = None
-    source_closure_id: str | None = None
+    source_function_id: str | None = None
     trigger_event: str | None = None
     fsm_namespace: str | None = None
     type: str = field(default="SnapshotCapture")
-
-
-@dataclass
-class SceneRelativePose:
-    """Continuous relative pose of an FK frame with respect to a scene-object body."""
-
-    id: str
-    fk_pose_id: str
-    scene_pose_id: str
-    base_seen: bool = False
-    type: str = field(default="SceneRelativePose")
-
-
-@dataclass
-class RelativePoseCapture:
-    """A pose captured relative to its start frame."""
-
-    id: str
-    fk_pose_id: str
-    type: str = field(default="RelativePoseCapture")
 
 
 @dataclass
@@ -140,7 +122,7 @@ class MotionSolverSlice:
     is reached through `solver_id` into `resources.by_id`.
     """
 
-    id: str  # the solver's id, so `state.<id>` keeps working
+    id: str  # the solver's id, so `robot.<id>_state` names the shared state
     solver_id: str  # what to look up for everything the solver owns
     output: list
     motion_driver: MotionDrivers
@@ -178,7 +160,7 @@ class MotionUnit:
     when_monitors: list[Monitor]
     while_monitors: list[Monitor]
     until_monitors: list[Monitor]
-    # Schedules: when_schedule runs in can_start (own Parser). while_/until_schedule are slices of
+    # Schedules: when_schedule runs in monitor_when (own Parser). while_/until_schedule are slices of
     # one shared active graph, so they share a Parser -- common steps emit once and dedup correctly.
     when_schedule: list[str]
     while_schedule: list[str]
@@ -188,8 +170,6 @@ class MotionUnit:
     # ahead of while_schedule, so these must run before it, not with the controllers.
     while_pre_schedule: list[str] = field(default_factory=list)
     has_elapsed: bool = field(default=False, metadata=INTERNAL)
-    has_when_elapsed: bool = False
-    has_active_elapsed: bool = False
     # The elapsed-duration coordinates this motion measures, per phase: the authored shared
     # value each timing constraint compares against, filled from the phase's start time.
     active_elapsed_ids: list[str] = field(default_factory=list)
@@ -198,42 +178,26 @@ class MotionUnit:
     when_observation_ages: list[dict] = field(default_factory=list)
     active_observation_ages: list[dict] = field(default_factory=list)
     has_until_condition: bool = field(default=False, metadata=INTERNAL)
-    # Derived join: the when phase is one disjunction.
-    when_any: bool = False
-    # Structured boolean terms (folded from evaluators/monitors); rendered to C++ by the
-    # bool-condition template, joined by when_any. The *_present flag gates the
-    # empty-default (JSON empty lists are truthy in the ST4 build).
-    when_terms: list = field(default_factory=list)
-    when_terms_present: bool = False
     path_projections: list[dict] = field(default_factory=list)
     # Declared pose components referenced by this motion (folded from pose_components).
     declared_pose_components: list = field(default_factory=list)
     # Per-function capability booleans (which context objects each generated function
     # needs). The C++ signatures/args are built from these by the sig-params/sig-args
     # templates (folded from schedules/monitors/solvers).
-    can_start_needs_state: bool = False
-    can_start_needs_shared: bool = False
-    can_start_needs_robot: bool = False
     when_needs_state: bool = False
-    when_needs_shared: bool = False
+    when_needs_data: bool = False
     when_needs_robot: bool = False
     until_needs_state: bool = False
-    until_needs_shared: bool = False
+    until_needs_data: bool = False
     until_needs_robot: bool = False
-    monitor_needs_state: bool = False
-    monitor_needs_shared: bool = False
-    monitor_needs_robot: bool = False
     apply_needs_state: bool = False
-    apply_needs_shared: bool = False
+    apply_needs_data: bool = False
     apply_needs_robot: bool = False
-    # The disturbances this motion's state arms, and whether it arms any (an empty list is
-    # truthy in the ST4 build, so the flag is what the templates read).
+    # The disturbances this motion's state arms.
     perturbations: list = field(default_factory=list)
-    has_perturbations: bool = False
     # Whether the function records into the coordination event buffer (holds an edge monitor).
     when_needs_events: bool = False
     until_needs_events: bool = False
-    monitor_needs_events: bool = False
     control_needs_events: bool = False
     step_needs_events: bool = False
     # FSM wiring (folded from the FSM named graph): the state this motion runs in,
@@ -259,15 +223,7 @@ class MotionUnit:
     # The same captures cut by when they are taken: ST4 cannot filter, and each scope is
     # guarded differently -- per activation, once for the run, or on an event.
     entry_snapshots: list[SnapshotCapture] = field(default_factory=list)
-    # Stated, not inferred from the list: ST4 reads an empty list as present.
-    has_entry_snapshots: bool = False
     task_snapshots: list[SnapshotCapture] = field(default_factory=list)
-
-    # Relative-from-start pose computations (e.g. pose_start_ee)
-    relative_poses: list[RelativePoseCapture] = field(default_factory=list)
-
-    # Continuous relative pose of FK frame wrt scene object body (e.g. pose_ee_wrt_cube)
-    scene_relative_poses: list[SceneRelativePose] = field(default_factory=list)
 
     # Pose coordinate-view scalar constraints grouped back into one KDL::diff pose error.
     pose_axis_error_groups: list[PoseErrorRegroup] = field(default_factory=list)
@@ -275,16 +231,13 @@ class MotionUnit:
     # Direct robot command forwarding driven by FeedForward controllers.
     forwarded_commands: list[ForwardedCommandStep] = field(default_factory=list)
 
-    # The action goals this motion sends on entry and cancels on exit. The presence flag gates
-    # the exit block: JSON empty lists are truthy in the ST4 build.
+    # The action goals this motion sends on entry and cancels on exit.
     action_clients: list = field(default_factory=list)
-    has_action_clients: bool = False
     # Events fired by self-transitions on this motion's state: consuming one re-enters the
     # motion, so entry runs again (snapshots re-capture, goals re-send).
     reentry_events: list = field(default_factory=list)
-    has_reentry_events: bool = False
 
-    # This motion's introspection index: the single index space the frame log's active_motion,
+    # This motion's telemetry index: the single index space the frame log's active_motion,
     # the generated sample switch and schema["by_motion"] all share.
     index: int = -1
 

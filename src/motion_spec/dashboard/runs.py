@@ -11,14 +11,14 @@ from pathlib import Path
 from rec import State, Verdict
 
 from motion_spec.dashboard.frames import FrameLayout
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.provenance import rec_document, rec_run_lifecycle_from_file
-from motion_spec.introspection.replay import read_health
+from motion_spec.runs.provenance import rec_document, rec_run_lifecycle_from_file
+from motion_spec.runs.replay import read_health
+from motion_spec.telemetry import frame_log_pb
 
 LAYOUT_REL = Path("generated") / "contract" / "frame_layout.json"
 LOG_REL = Path("logs") / "frame_log.pb"
 # The rest of rec's states -- queued, in-progress -- mean the run may still produce frames.
-ENDED = frozenset({State.COMPLETE, State.CANCELED})
+ENDED = {State.COMPLETE, State.CANCELED}
 
 # The doc only changes when the runner appends a transition, so mtime+size gates a re-read.
 _LIFECYCLE_CACHE: dict[str, tuple[tuple, dict]] = {}
@@ -129,22 +129,20 @@ class GenerationInfo:
 
 
 class GenerationCatalog:
-    """Every generation under a set of output roots, newest first."""
+    """Every generation under the output root, newest first."""
 
-    def __init__(self, roots):
-        self.roots = [Path(root) for root in roots]
+    def __init__(self, root):
+        self.root = Path(root)
 
     def generations(self) -> list[GenerationInfo]:
         # a bundle sits two or three levels down, and `latest` is a link to one already found
         found = {
-            layout.parent.parent.parent: root
-            for root in self.roots
-            if root.is_dir()
+            layout.parent.parent.parent
             for depth in ("*/*", "*/*/*")
-            for layout in root.glob(f"{depth}/{LAYOUT_REL}")
-            if not any(part.is_symlink() for part in (layout.parent.parent.parent,))
+            for layout in self.root.glob(f"{depth}/{LAYOUT_REL}")
+            if not layout.parent.parent.parent.is_symlink()
         }
-        generations = [GenerationInfo(d, root) for d, root in found.items()]
+        generations = [GenerationInfo(d, self.root) for d in found]
         # a model is as recent as its newest generation, so the list leads with what was last built
         newest: dict[str, float] = {}
         for generation in generations:

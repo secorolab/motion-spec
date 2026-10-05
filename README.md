@@ -16,48 +16,48 @@ into RDF.
 ## Install
 
 ```bash
-python3 -m venv ~/ws/.venv && source ~/ws/.venv/bin/activate
-pip install "motion_spec @ git+https://github.com/secorolab/motion-spec.git@dev"
-export MOTION_SPEC_WS=~/ws
-motion-spec setup
-source ~/ws/setup-motion-spec.bash                               # .zsh under zsh
+mkdir -p ~/ws/src && cd ~/ws
+git clone https://github.com/secorolab/motion-spec.git src/motion-spec
+vcs import src < src/motion-spec/motion_spec.repos
+vcs import src < src/motion-spec/motion_spec.real.repos             # with --real only
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e src/motion-spec                                   # the CLI, PyPI dependencies only
+motion-spec setup --workspace . --dev                            # builds and installs what src/ holds
+source setup-motion-spec.bash                                    # .zsh under zsh
 motion-spec health
 motion-spec examples                                             # models to run, in src/ms-examples
 ```
 
-`setup` installs everything motion-spec builds against — no second repository, no workspace
-tool — into `$MOTION_SPEC_WS/install`, and writes the environment file that is the one step
-between a new shell and a working workspace. Naming no workspace is an error rather than a
-guess: nothing is installed into a location you did not choose.
+With ROS, `--ros` builds the CMake packages with colcon, and the environment file sources the
+distribution and the overlay; the venv has to see the distribution's Python packages:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+python3 -m venv --system-site-packages .venv && source .venv/bin/activate
+pip install -e src/motion-spec
+motion-spec setup --workspace . --dev --ros
+source setup-motion-spec.bash
+```
+
+What motion-spec builds against is listed in one place: the vcstool manifest
+`motion_spec.repos` — rdf-utils, the DSL compilers and rec under `thirdparty/`,
+then Orocos KDL, coord2b, mj_kdl_wrapper and STSTv4 — with the device drivers in
+`motion_spec.real.repos`. `setup` fetches nothing: it pip-installs the Python packages the
+imported checkouts hold into the active environment (or a `.venv` it creates), builds the CMake ones
+into `install/` with the arguments in the workspace's `colcon.meta`, and writes the environment
+file that is the one step between a new shell and a working workspace.
 
 | | |
 |---|---|
-| `--dev` | check every component out into `WORKSPACE/src` and install the Python ones editable |
+| `--dev` | Python packages installed editable (`pip install -e`); without it they install as snapshots. Sources are in `WORKSPACE/src` either way |
+| `--real` | also install `motion_spec.real.repos`: serial, robotiq_driver_noros, robif2b |
+| `--repos FILE` | install other manifests instead of the shipped one |
 | `--ros` | build with colcon, and source the distro and the overlay instead of exporting paths |
-| uv | `uv venv` and `uv pip` in place of venv and pip |
 
-Each is one flag and a couple of lines of setup:
+A checkout already at a manifest path is never moved: it is built as it stands, with a warning
+when it is not on the pinned commit, and rebuilt on every run while it has uncommitted changes.
+`--clean` removes builds, installed files and markers, never a source tree. Details:
 **[Setup](https://secorolab.github.io/motion-spec/setup.html)**.
-
-### In a workspace you already have
-
-`setup` adopts whatever is already in `ws/src/<repository>` — from an earlier `--dev` run, from
-your own clones, or from a `vcs import` of the pins, which the manifest's format supports. It
-never moves a checkout and never touches a working tree: it fetches, then builds what is there.
-
-| In `ws/src` | `motion-spec setup` | `motion-spec setup --dev` |
-|---|---|---|
-| a C++ package, clean, on the pinned commit | built where it stands; the next run is a no-op | same |
-| a C++ package on some other ref | built as it stands, with a warning naming the ref | same |
-| a C++ package with uncommitted changes | your edits are built, with a warning — and rebuilt on every run, since no commit describes them | same |
-| nothing for that package | cloned into `WORKSPACE/.ms-sources`, or pip-installed from the pin for the DSLs | cloned into `ws/src` |
-| a motion-spec-dsl or scene-dsl checkout | installed editable from your checkout | same |
-| a directory that is not a git checkout | skipped with a warning, and `setup` exits 1 | same |
-
-So `--dev` decides only where a *missing* source is cloned. Whatever is already in `ws/src` is
-what gets built and installed, in either mode — including a DSL you are editing, which is
-installed editable so your edits are live. `--clean` removes builds, installed files and
-markers, never a source tree.
 
 ## Requirements
 
@@ -73,8 +73,9 @@ What every model needs, whichever target it drives:
 | | coord2b, Eigen, Orocos KDL, toml++ | what every generated controller links |
 | MuJoCo | mj_kdl_wrapper, GLFW, OpenGL, EGL, `ffmpeg` | the simulation, its viewer, and the video recorder |
 
-The Python and authoring packages arrive with `pip install`; `motion-spec setup` builds STSTv4,
-coord2b, Orocos KDL and mj_kdl_wrapper; Eigen, toml++ and `protoc` come from apt. Orocos KDL
+PyPI packages arrive with `pip install`; `motion-spec setup` installs rdf-utils, the authoring
+packages and rec, and builds STSTv4, coord2b, Orocos KDL and mj_kdl_wrapper; vcstool, Eigen,
+toml++ and `protoc` come from apt. Orocos KDL
 must be the [secorolab fork](https://github.com/secorolab/orocos_kinematics_dynamics) —
 generated controllers call the Vereshchagin solvers with fixed joints, which
 `liborocos-kdl-dev` does not carry.

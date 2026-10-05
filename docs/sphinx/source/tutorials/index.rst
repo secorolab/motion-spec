@@ -9,7 +9,7 @@ This walkthrough follows one generation through the CLI in order:
 3. run the build and create a run archive;
 4. replay and inspect the result.
 
-They use ``pick_place_single.robmot`` from the sibling
+They use ``pick_and_place.robmot`` from the sibling
 `motion-spec-dsl project <https://github.com/secorolab/motion-spec-dsl>`_. Complete
 :doc:`end-to-end` first; the other pages reuse its ``generation/pick-place``
 directory.

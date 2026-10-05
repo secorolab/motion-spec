@@ -10,31 +10,35 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      MOTION_SPEC_GEN: ${{ github.workspace }}/generations
     steps:
+      # Where the manifest's layout puts it, so the test fixtures find thirdparty/motion-spec-dsl.
       - uses: actions/checkout@v4
+        with:
+          path: thirdparty/motion-spec
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # Workspace siblings, none on PyPI. The DSL packages are what parse a .robmot,
-      # and most test modules import one, so leaving them out fails collection rather
-      # than a test. pyshacl/protobuf cover the validation/introspection extras.
-      - name: Install workspace siblings
-        run: |
-          pip install pytest pyshacl protobuf click textx PyLD numpy scipy jinja2 pillow rdflib
-          pip install \
-            "git+https://github.com/minhnh/rdf-utils.git@main" \
-            "git+https://github.com/secorolab/rec.git@dev"
-          # --no-deps: these three depend on each other and on unpublished siblings, so a
-          # resolver run reaches PyPI for names that are not there. Their real imports are
-          # installed above.
-          pip install --no-deps \
-            "git+https://github.com/secorolab/scene-dsl.git@main" \
-            "git+https://github.com/secorolab/coord-dsl.git@main" \
-            "git+https://github.com/secorolab/motion-spec-dsl.git@dev"
-
+      # PyPI's vcstool imports pkg_resources, which current setuptools no longer ships.
       - name: Install motion_spec
-        run: pip install -e . --no-deps
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y vcstool protobuf-compiler
+          pip install -e "thirdparty/motion-spec[test]"
+
+      # The Python packages motion_spec.repos lists, in its order: none are on PyPI, and most
+      # test modules import one, so leaving them out fails collection rather than a test.
+      - name: Import the manifest and install its Python packages
+        run: |
+          vcs import --input thirdparty/motion-spec/motion_spec.repos .
+          python - <<'EOF'
+          import subprocess, sys
+          from motion_spec.setup import STST_REPOSITORY, is_thirdparty, manifest_files, read_manifest
+          for repository in read_manifest(manifest_files()[0]):
+              if is_thirdparty(repository) and repository.path != STST_REPOSITORY:
+                  subprocess.run([sys.executable, "-m", "pip", "install", repository.path], check=True)
+          EOF
 
       - name: Run tests
-        run: pytest -q
+        run: pytest -q thirdparty/motion-spec/tests

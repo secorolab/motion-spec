@@ -13,36 +13,32 @@ from pathlib import Path
 
 import pytest
 
-TEMPLATES = Path(__file__).resolve().parents[1] / "src" / "motion_spec" / "templates"
+IO_TEMPLATE = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "motion_spec"
+    / "templates"
+    / "backend"
+    / "robif2b"
+    / "devices.stg"
+).read_text()
 
-
-def _sampled(state: str = "Reading", sample: str = "reading_sample") -> str:
-    """The C++ of the handoff buffer, with the StringTemplate escapes undone and the rule's
-    state/sample parameters filled in the way the backend template fills them."""
-    text = (TEMPLATES / "backend_robif2b_io.stg").read_text()
-    found = re.search(
-        r"^sampled-buffer\(state, sample\) ::= <<\n(.*?)\n>>",
-        text,
-        re.DOTALL | re.MULTILINE,
+# The C++ of the handoff buffer and of the F/T worker, with the StringTemplate escapes undone.
+SAMPLED_BUFFER, FT_IO = (
+    re.search(rf"^{rule} ::= <<\n(.*?)\n>>", IO_TEMPLATE, re.DOTALL | re.MULTILINE)
+    .group(1)
+    .replace("\\<", "<")
+    .replace("\\>", ">")
+    .replace("\\}", "}")
+    for rule in (
+        r"sampled-buffer\(state, sample\)",
+        r"device-io-section-RobotiqFT300s\(solver, device\)",
     )
-    assert found, "sampled-buffer is no longer in backend_robif2b_io.stg"
-    body = found.group(1).replace("\\<", "<").replace("\\>", ">").replace("\\}", "}")
-    return body.replace("<state>", state).replace("<sample>", sample)
+)
 
+COMPILER = shutil.which("g++") or shutil.which("c++")
 
-def _ft_io() -> str:
-    text = (TEMPLATES / "backend_robif2b_io.stg").read_text()
-    found = re.search(
-        r"^device-io-section-RobotiqFT300s\(solver, device\) ::= <<\n(.*?)\n>>",
-        text,
-        re.DOTALL | re.MULTILINE,
-    )
-    assert found, "the FT worker is no longer in backend_robif2b_io.stg"
-    body = found.group(1).replace("\\<", "<").replace("\\>", ">").replace("\\}", "}")
-    return body.replace(
-        "<sampled-buffer({ft_sensor_state}, {ft_sensor_sample})>",
-        _sampled("ft_sensor_state", "ft_sensor_sample"),
-    )
+pytestmark = pytest.mark.skipif(COMPILER is None, reason="no C++ compiler")
 
 
 HAMMER = """
@@ -114,23 +110,22 @@ int main() {
 
 def test_a_reader_never_sees_a_torn_measurement(tmp_path: Path) -> None:
     """A delayed reader still sees one complete publication, never a reused slot."""
-    compiler = shutil.which("g++") or shutil.which("c++")
-    if compiler is None:
-        pytest.skip("no C++ compiler")
     source = tmp_path / "device_io.cpp"
-    source.write_text(HAMMER.replace("/* SAMPLED_BUFFER */", _sampled()))
+    source.write_text(
+        HAMMER.replace(
+            "/* SAMPLED_BUFFER */",
+            SAMPLED_BUFFER.replace("<state>", "Reading").replace("<sample>", "reading_sample"),
+        )
+    )
     binary = tmp_path / "device_io"
     subprocess.run(
-        [compiler, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
+        [COMPILER, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
     )
     for _ in range(10):
         subprocess.run([str(binary)], check=True)
 
 
 def test_ft_worker_publishes_failure_then_recovers(tmp_path: Path) -> None:
-    compiler = shutil.which("g++") or shutil.which("c++")
-    if compiler is None:
-        pytest.skip("no C++ compiler")
     source = tmp_path / "ft_failure.cpp"
     source.write_text(
         """
@@ -161,10 +156,18 @@ int main() {
     const auto recovered = io.sample.read();
     return calls.load() >= 2 && recovered.seq >= 2 && recovered.value.success ? 0 : 1;
 }
-""".replace("/* FT_IO */", _ft_io())
+""".replace(
+            "/* FT_IO */",
+            FT_IO.replace(
+                "<sampled-buffer({ft_sensor_state}, {ft_sensor_sample})>",
+                SAMPLED_BUFFER.replace("<state>", "ft_sensor_state").replace(
+                    "<sample>", "ft_sensor_sample"
+                ),
+            ),
+        )
     )
     binary = tmp_path / "ft_failure"
     subprocess.run(
-        [compiler, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
+        [COMPILER, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
     )
     subprocess.run([str(binary)], check=True)

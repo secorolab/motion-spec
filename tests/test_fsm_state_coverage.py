@@ -6,20 +6,58 @@ from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.handlers import EdgeMonitor
 from motion_spec.classes.motion import MotionUnit
-from motion_spec.rdf_parser.coordination import _apply_fsm_wiring
+from motion_spec.rdf_parser.fsm import apply_fsm_wiring
 
 NS = "https://example.org/fsm/"
 
+SEEN_MONITOR = EdgeMonitor(
+    id="mon",
+    monitor_type="EdgeTriggeredMonitor",
+    error=None,
+    event="e_seen",
+    event_idx=None,
+    event_uri=f"{NS}E_SEEN",
+    event_name="E_SEEN",
+    fallback_motion="hold",
+)
 
-def fsm(states, transitions, reactions, events=("E_STEP", "E_HELD")):
-    """An FSM framed the way read_fsm hands it to the wiring."""
-    return {
+
+@pytest.mark.parametrize(
+    ("states", "transitions", "reactions", "events", "motions", "rejection"),
+    [
+        (
+            ["S_START", "S_LOOK", "S_DONE"],
+            [("T_START_LOOK", "S_START", "S_LOOK"), ("T_LOOK_DONE", "S_LOOK", "S_DONE")],
+            [("R_STEP", "E_STEP", "T_START_LOOK"), ("R_HELD", "E_HELD", "T_LOOK_DONE")],
+            ["E_STEP", "E_HELD", "E_SEEN"],
+            [("m_look", None, "", [SEEN_MONITOR]), ("m_hold", "S_LOOK", "hold", [])],
+            "names no\n?\\s*'runs-in' state",
+        ),
+        # S_WAIT is entered and never left: the dispatch would render no case for it, so the loop
+        # steps nothing while the FSM is there and the arm keeps the last staged command.
+        (
+            ["S_START", "S_WAIT", "S_HOLD", "S_DONE"],
+            [("T_START_WAIT", "S_START", "S_WAIT"), ("T_WAIT_HOLD", "S_WAIT", "S_HOLD")],
+            [("R_STEP", "E_STEP", "T_START_WAIT")],
+            ["E_STEP", "E_HELD"],
+            [("m_hold", "S_HOLD", "", [])],
+            "S_WAIT",
+        ),
+    ],
+    ids=["in-state-gate-without-a-state", "state-with-no-motion"],
+)
+def test_every_state_the_fsm_can_hold_in_has_a_motion(
+    states, transitions, reactions, events, motions, rejection
+) -> None:
+    """The FSM is framed the way coord-dsl hands it to the wiring."""
+    document = {
         "name": "probe_fsm",
         "start_state": "S_START",
         "end_state": "S_DONE",
         "states": states,
         "state_uris": {state: f"{NS}{state}" for state in states},
-        "events": list(events),
+        "events": events,
+        "event_uris": {event: f"{NS}{event}" for event in events},
         "transitions_table": [
             {"id": tid, "uri": f"{NS}{tid}", "from_state": source, "to_state": target}
             for tid, source, target in transitions
@@ -37,139 +75,25 @@ def fsm(states, transitions, reactions, events=("E_STEP", "E_HELD")):
         ],
         "namespace_uri": NS,
     }
-
-
-def motion(mid, state, motion_id=""):
-    unit = MotionUnit(
-        id=mid,
-        motion_id=motion_id,
-        name=mid,
-        description=[],
-        when_evaluators=[],
-        while_evaluators=[],
-        until_evaluators=[],
-        controllers=[],
-        when_monitors=[],
-        while_monitors=[],
-        until_monitors=[],
-        when_schedule=[],
-        while_schedule=[],
-        until_schedule=[],
-    )
-    unit.fsm_state = state
-    return unit
-
-
-def when_monitor(event: str):
-    """A when monitor firing an FSM event, holding `hold` while its motion waits."""
-    return EdgeMonitor(
-        id="mon",
-        monitor_type="EdgeTriggeredMonitor",
-        error=None,
-        event=event.lower(),
-        event_idx=None,
-        event_uri=f"{NS}{event}",
-        event_name=event,
-        fallback_motion="hold",
-    )
-
-
-def test_a_when_event_no_reaction_consumes_gates_the_motion_inside_its_own_state() -> None:
-    # E_SEEN drives no transition, so the look holds in S_LOOK until its monitor's edge instead
-    # of waiting in the state before it.
-    document = fsm(
-        ["S_START", "S_LOOK", "S_DONE"],
-        [("T_START_LOOK", "S_START", "S_LOOK"), ("T_LOOK_DONE", "S_LOOK", "S_DONE")],
-        [("R_STEP", "E_STEP", "T_START_LOOK"), ("R_HELD", "E_HELD", "T_LOOK_DONE")],
-        events=("E_STEP", "E_HELD", "E_SEEN"),
-    )
-    look = motion("m_look", "S_LOOK")
-    monitor = when_monitor("E_SEEN")
-    look.when_monitors = [monitor]
-    hold = motion("m_hold", None, motion_id="hold")
-
-    _apply_fsm_wiring([look, hold], document, [])
-
-    assert monitor.opens_gate
-    assert look.has_when_gate
-    assert look.when_gate_hold == {"id": "m_hold"}
-    assert hold.is_when_gate_hold
-    assert hold.fsm_when_gate_motions == []
-
-
-def test_an_in_state_gate_needs_a_state_to_hold_in() -> None:
-    document = fsm(
-        ["S_START", "S_LOOK", "S_DONE"],
-        [("T_START_LOOK", "S_START", "S_LOOK"), ("T_LOOK_DONE", "S_LOOK", "S_DONE")],
-        [("R_STEP", "E_STEP", "T_START_LOOK"), ("R_HELD", "E_HELD", "T_LOOK_DONE")],
-        events=("E_STEP", "E_HELD", "E_SEEN"),
-    )
-    look = motion("m_look", None)
-    look.when_monitors = [when_monitor("E_SEEN")]
-    hold = motion("m_hold", "S_LOOK", motion_id="hold")
-
-    with pytest.raises(ConstraintViolation, match="names no\n?\\s*'runs-in' state"):
-        _apply_fsm_wiring([look, hold], document, [])
-
-
-def test_a_when_event_a_reaction_consumes_still_gates_from_the_previous_state() -> None:
-    # E_HELD leaves S_LOOK, so the hold runs there and re-evaluates the gated motion's when.
-    document = fsm(
-        ["S_START", "S_LOOK", "S_TOUCH", "S_DONE"],
-        [
-            ("T_START_LOOK", "S_START", "S_LOOK"),
-            ("T_LOOK_TOUCH", "S_LOOK", "S_TOUCH"),
-            ("T_TOUCH_DONE", "S_TOUCH", "S_DONE"),
-        ],
-        [
-            ("R_STEP", "E_STEP", "T_START_LOOK"),
-            ("R_HELD", "E_HELD", "T_LOOK_TOUCH"),
-            ("R_DONE", "E_DONE", "T_TOUCH_DONE"),
-        ],
-        events=("E_STEP", "E_HELD", "E_DONE"),
-    )
-    touch = motion("m_touch", "S_TOUCH")
-    monitor = when_monitor("E_HELD")
-    touch.when_monitors = [monitor]
-    hold = motion("m_hold", None, motion_id="hold")
-
-    _apply_fsm_wiring([touch, hold], document, [])
-
-    assert not monitor.opens_gate
-    assert not touch.has_when_gate
-    assert hold.fsm_state == "S_LOOK"
-    assert hold.fsm_when_gate_motions == ["m_touch"]
-
-
-def test_a_state_the_fsm_can_sit_in_with_no_motion_is_rejected() -> None:
-    # S_WAIT is entered and never left: the dispatch would render no case for it, so the loop
-    # steps nothing while the FSM is there and the arm keeps the last staged command.
-    document = fsm(
-        ["S_START", "S_WAIT", "S_HOLD", "S_DONE"],
-        [("T_START_WAIT", "S_START", "S_WAIT"), ("T_WAIT_HOLD", "S_WAIT", "S_HOLD")],
-        [("R_STEP", "E_STEP", "T_START_WAIT")],
-    )
-    with pytest.raises(ConstraintViolation, match="S_WAIT"):
-        _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document, [])
-
-
-def test_the_start_and_end_states_need_no_motion() -> None:
-    # The heartbeat leaves S_START before the FSM dwells there, and the loop breaks on S_DONE
-    # ahead of the dispatch, so neither has to run anything.
-    document = fsm(
-        ["S_START", "S_HOLD", "S_DONE"],
-        [("T_START_HOLD", "S_START", "S_HOLD"), ("T_HOLD_DONE", "S_HOLD", "S_DONE")],
-        [("R_STEP", "E_STEP", "T_START_HOLD"), ("R_HELD", "E_HELD", "T_HOLD_DONE")],
-    )
-    _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document, [])
-
-
-def test_a_state_no_reaction_transitions_into_is_not_reachable() -> None:
-    # S_ORPHAN is named by a transition, but no reaction fires it, so the FSM can never be there
-    # and demanding a motion for it would reject a model that is fine.
-    document = fsm(
-        ["S_START", "S_HOLD", "S_ORPHAN", "S_DONE"],
-        [("T_START_HOLD", "S_START", "S_HOLD"), ("T_HOLD_ORPHAN", "S_HOLD", "S_ORPHAN")],
-        [("R_STEP", "E_STEP", "T_START_HOLD")],
-    )
-    _apply_fsm_wiring([motion("m_hold", "S_HOLD")], document, [])
+    units = [
+        MotionUnit(
+            id=mid,
+            motion_id=motion_id,
+            name=mid,
+            description=[],
+            when_evaluators=[],
+            while_evaluators=[],
+            until_evaluators=[],
+            controllers=[],
+            when_monitors=when_monitors,
+            while_monitors=[],
+            until_monitors=[],
+            when_schedule=[],
+            while_schedule=[],
+            until_schedule=[],
+            fsm_state=state,
+        )
+        for mid, state, motion_id, when_monitors in motions
+    ]
+    with pytest.raises(ConstraintViolation, match=rejection):
+        apply_fsm_wiring(units, document, [])

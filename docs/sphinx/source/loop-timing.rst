@@ -116,7 +116,7 @@ hardware alike, and the real-time factor scales its period:
    effective period = nominal period / rtf     (rtf > 0)
    uncapped                                    (rtf == 0)
 
-The factor comes from ``mj_kdl::realtime_factor_of`` in simulation, so the viewer's ``,`` and
+The factor comes from ``mj_env.viewer.realtime_factor`` in simulation, so the viewer's ``,`` and
 ``.`` speed keys keep working mid-run, and is the literal ``1.0`` on hardware. This is a named
 backend dispatch (``loop-rtf-source``), not an inline conditional, for the same reason
 ``clock-time-source`` is.
@@ -174,7 +174,7 @@ in its header:
 .. code-block:: console
 
    $ motion-spec run <model>.robmot -o <generations>
-   $ python -c "from motion_spec.introspection.replay import summarize; print(summarize('<log>.pb'))"
+   $ python -c "from motion_spec.runs.replay import summarize; print(summarize('<log>.pb'))"
 
 The summary reports mean and maximum period alongside mean and maximum compute time. Compare the
 two: if compute is a small fraction of the period and the period still overshoots, the cause is

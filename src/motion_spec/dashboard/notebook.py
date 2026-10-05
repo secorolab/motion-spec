@@ -28,7 +28,7 @@ def lab_settings() -> Path:
     return directory
 
 
-def jupyter_server() -> dict:
+def jupyter_server(dashboard_port: int) -> dict:
     """The embedded JupyterLab, started on first use and framed by this dashboard only."""
     if JUPYTER.get("process") and JUPYTER["process"].poll() is None:
         return {"url": JUPYTER["url"], "root": str(roots.WORKSPACE)}
@@ -44,7 +44,10 @@ def jupyter_server() -> dict:
     framing = json.dumps(
         {
             "headers": {
-                "Content-Security-Policy": "frame-ancestors 'self' http://127.0.0.1:8080 http://localhost:8080"
+                "Content-Security-Policy": (
+                    f"frame-ancestors 'self' http://127.0.0.1:{dashboard_port}"
+                    f" http://localhost:{dashboard_port}"
+                )
             }
         }
     )
@@ -66,6 +69,9 @@ def jupyter_server() -> dict:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    # Its own session, so a dashboard killed outright leaves this for `dashboard -k` to find.
+    JUPYTER["pidfile"] = roots.pidfile(dashboard_port, "lab")
+    JUPYTER["pidfile"].write_text(f"{JUPYTER['process'].pid}\n")
     JUPYTER["url"] = f"http://127.0.0.1:{port}/lab?token={token}"
     JUPYTER["base"] = f"http://127.0.0.1:{port}"
     JUPYTER["token"] = token
@@ -75,18 +81,19 @@ def jupyter_server() -> dict:
 def stop_jupyter() -> None:
     """Take the embedded lab down with the dashboard that started it."""
     process = JUPYTER.get("process")
-    if process is None or process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(5)
-    except subprocess.TimeoutExpired:
-        process.kill()
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    if JUPYTER.get("pidfile") is not None:
+        JUPYTER["pidfile"].unlink(missing_ok=True)
 
 
-def run_notebook(run_dir: Path) -> dict:
+def run_notebook(run_dir: Path, dashboard_port: int) -> dict:
     """Seed a notebook beside the run that loads its signals, and open it in JupyterLab."""
-    jupyter_server()
+    jupyter_server(dashboard_port)
     notebook = run_dir / "analysis.ipynb"
     if not notebook.exists():
         notebook.write_text(json.dumps(NOTEBOOK_TEMPLATE(run_dir), indent=1))

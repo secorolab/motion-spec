@@ -1,10 +1,13 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [project]
 name = "motion_spec"
-version = "0.1.0"
+dynamic = ["version"]
 description = "IR generator and C++ code generator for motion specification models"
 authors = [
     {name = "Sven Schneider", email = "sven.schneider@h-brs.de"},
@@ -16,52 +19,41 @@ maintainers = [
 license = { text = "MPL-2.0" }
 # 3.11 for tomllib: the workspace's motion-spec.config.toml is read with the stdlib.
 requires-python = ">=3.11"
-# The secorolab packages are on no index, so they carry their source: named alone they
-# resolve nowhere and the whole install fails, wherever it is run from.
+# PyPI only. rdf-utils, the DSL compilers and rec are on no index: `motion-spec setup`
+# installs them from motion_spec.repos.
 dependencies = [
     "click>=8.1",
     # No multi-type scoped @context support; generated models use none.
     "rdflib>=7.6.0",
-    "rdf_utils @ git+https://github.com/minhnh/rdf-utils@main",
-    "jinja2",
-    "motion_spec_dsl @ git+https://github.com/secorolab/motion-spec-dsl@dev",
-    "scene-dsl @ git+https://github.com/secorolab/scene-dsl@main",
     "pyshacl>=0.25.0",
-    # `run` imports the runner, and the runner the frame log, whatever --no-log says: these
-    # were an extra, and every run without them ended in a ModuleNotFoundError traceback.
-    "rec @ git+https://github.com/secorolab/rec@dev",
     # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
     "protobuf>=4.22",
+    # `motion-spec setup` reads the .repos manifests with it.
+    "PyYAML",
+    # An archived run's frame log is zstd-packed.
+    "zstandard",
+    "numpy",
 ]
 
 [project.optional-dependencies]
-dashboard = ["nicegui>=2.0", "pillow"]
+dashboard = ["pillow"]
 # The browser dashboard's notebook tab; its SPARQL console runs on the rdflib above.
 replay = ["jupyterlab>=4.0", "matplotlib"]
-all = ["nicegui>=2.0", "pillow", "jupyterlab>=4.0", "matplotlib"]
-test = ["pytest", "pillow", "zstandard", "PyYAML", "empy", "lark"]
+all = ["pillow", "jupyterlab>=4.0", "matplotlib"]
+test = ["pytest"]
 docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
 dev = ["pytest", "ruff"]
 
 [project.scripts]
 motion-spec = "motion_spec.cli:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-include-package-data = true
+[tool.hatch.build.targets.wheel]
+packages = ["src/motion_spec"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-# frontend/**, not frontend/*: the vendored libraries live in subdirectories, and a
-# single-level glob shipped a dashboard whose editor and charts were missing.
-motion_spec = [
-    "templates/*.stg",
-    "dashboard/frontend/**/*",
-    # `motion-spec setup` reads its pins from this at run time, so it has to ship.
-    "*.repos",
-]
+# The manifests live at the repository root for `vcs import`; setup and health read them.
+[tool.hatch.build.targets.wheel.force-include]
+"motion_spec.repos" = "motion_spec/motion_spec.repos"
+"motion_spec.real.repos" = "motion_spec/motion_spec.real.repos"
 
 [tool.pytest.ini_options]
 # rdflib's Dataset.parse() internally reads its deprecated default_context

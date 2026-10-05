@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 STATE_DIRECTORY = ".motion-spec"
@@ -29,13 +29,7 @@ LOG_DIRECTORY = "logs"
 SGR = "\x1b["  # what a terminal reads as: the rest of this is a colour, until RESET
 RESET = f"{SGR}0m"
 STAMP_COLOUR = "90"
-LEVEL_COLOURS = {
-    "info": "",
-    "step": "1;34",
-    "warn": "1;33",
-    "error": "1;31",
-    "done": "1;32",
-}
+LEVEL_COLOURS = {"info": "", "step": "1;34", "warn": "1;33", "error": "1;31", "done": "1;32"}
 LEVEL_WIDTH = 6
 
 
@@ -69,7 +63,7 @@ def tool_environment(env: dict[str, str] | None = None) -> dict[str, str]:
 
 def command_log(root: Path, command: str) -> Path:
     """The file one invocation of COMMAND tees its tools' output into."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
     return root / STATE_DIRECTORY / LOG_DIRECTORY / f"{stamp}Z-{command}.log"
 
 
@@ -118,14 +112,12 @@ def _indenter():
     pad = INDENT.encode()
     fresh = True
 
-    def prefix(line: bytes) -> bytes:
-        return b"" if not line or STAMPED.match(line) else pad
-
     def indent(chunk: bytes) -> bytes:
         nonlocal fresh
-        lines = chunk.split(b"\n")
-        out = [(prefix(lines[0]) if fresh else b"") + lines[0]]
-        out += [prefix(line) + line for line in lines[1:]]
+        out = []
+        for number, line in enumerate(chunk.split(b"\n")):
+            starts = fresh or number > 0
+            out.append((pad if starts and line and not STAMPED.match(line) else b"") + line)
         fresh = chunk.endswith(b"\n")
         return b"\n".join(out)
 
@@ -140,33 +132,27 @@ def _for_the_file():
     pending = bytearray()
     pad = INDENT.encode()
 
-    def clean(line: bytes) -> bytes:
-        # rstrip first: under a pty every line ends CRLF, which redraws nothing.
-        text = ANSI.sub(b"", line.rstrip(b"\r").rpartition(b"\r")[2])
-        # A redrawn line lost its indent along with everything before the last return.
-        if text and line.startswith(pad) and not text.startswith(pad):
-            text = pad + text
-        return text + b"\n"
-
     def readable(chunk: bytes = b"", *, last: bool = False) -> bytes:
         pending.extend(chunk)
+        *lines, rest = bytes(pending).split(b"\n")
+        pending[:] = b"" if last else rest
+        if last and rest:
+            lines.append(rest)
         out = bytearray()
-        while True:
-            end = pending.find(b"\n")
-            if end < 0:
-                break
-            out += clean(bytes(pending[:end]))
-            del pending[: end + 1]
-        if last and pending:
-            out += clean(bytes(pending))
-            pending.clear()
+        for line in lines:
+            # rstrip first: under a pty every line ends CRLF, which redraws nothing.
+            text = ANSI.sub(b"", line.rstrip(b"\r").rpartition(b"\r")[2])
+            # A redrawn line lost its indent along with everything before the last return.
+            if text and line.startswith(pad) and not text.startswith(pad):
+                text = pad + text
+            out += text + b"\n"
         return bytes(out)
 
     return readable
 
 
 def _stamp() -> str:
-    return datetime.now(timezone.utc).strftime("%H:%M:%S")
+    return datetime.now(UTC).strftime("%H:%M:%S")
 
 
 def _outcome(returncode: int, started: float) -> str:
@@ -189,7 +175,7 @@ def log_header(log: Path | None, command: str, facts: dict[str, object]) -> None
     width = max((len(key) for key in facts), default=0)
     lines = [
         f"# motion-spec {command}",
-        f"# started    {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+        f"# started    {datetime.now(UTC).isoformat(timespec='seconds')}",
         f"# argv       {shlex.join(sys.argv)}",
         *(f"# {key:<{width}} {value}" for key, value in facts.items()),
         "",
@@ -317,8 +303,9 @@ def tee(
     return returncode
 
 
-def trash(path: Path) -> None:
-    """Move PATH to the desktop trash."""
+def trash(path: Path) -> Path | None:
+    """Move PATH to the desktop trash; where it landed, when the home trash records it."""
+    original = path.absolute()
     try:
         result = subprocess.run(
             ["gio", "trash", "--", str(path)], check=False, capture_output=True, text=True
@@ -328,28 +315,24 @@ def trash(path: Path) -> None:
         raise ValueError(f"cannot remove {path.name}: gio is not installed") from error
     if result.returncode:
         raise ValueError(f"could not move {path.name} to trash: {result.stderr.strip()}")
+    return trashed_location(original)
 
 
-def trash_if_present(path: Path) -> bool:
-    """Move PATH to the trash when it is there at all, saying whether anything moved."""
-    if not (path.exists() or path.is_symlink()):
-        return False
-    trash(path)
-    return True
+def trashed_location(original: Path) -> Path | None:
+    """Where the home trash keeps ORIGINAL: the newest entry whose .trashinfo names it.
 
+    None when it went to another filesystem's trash, which the home trash does not record.
+    """
+    from urllib.parse import quote
 
-def tree_size(path: Path) -> int:
-    """Bytes under PATH, or its own size when it is a file. A broken symlink counts as nothing."""
-    if path.is_file():
-        return path.stat().st_size
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
-
-
-def human_bytes(count: int) -> str:
-    """A size to put in front of someone before they answer a question about deleting it."""
-    size = float(count)
-    for unit in ("B", "KiB", "MiB"):
-        if size < 1024:
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GiB"
+    home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash"
+    wanted = f"Path={quote(str(original))}"
+    records = [
+        info
+        for info in (home / "info").glob("*.trashinfo")
+        if wanted in info.read_text(encoding="utf-8", errors="replace").splitlines()
+    ]
+    if not records:
+        return None
+    newest = max(records, key=lambda info: info.stat().st_mtime)
+    return home / "files" / newest.name.removesuffix(".trashinfo")

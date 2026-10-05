@@ -46,10 +46,9 @@ class Point:
 
 @dataclass
 class Frame:
-    """A named reference frame (optionally backed by a scene object)."""
+    """A named reference frame."""
 
     id: str
-    is_scene_object: bool = False
     # The scene node this stands for, kept so lowering can place it on a solver's chain.
     uri: str = field(default="", metadata=INTERNAL)
     # Where the frame sits on that chain, once a solver has resolved it: the segment index the
@@ -63,29 +62,12 @@ class Frame:
 
 @dataclass
 class SimplicialComplex:
-    """A geometric body (optionally a scene object)."""
+    """A geometric body."""
 
     id: str
-    is_scene_object: bool = False
     uri: str = field(default="", metadata=INTERNAL)
     segment: int | None = None
     type: str = field(default="SimplicialComplex")
-
-
-@dataclass
-class SceneObject:
-    """A scene object referenced as a spatial endpoint.
-
-    `site` names the marker a pose stated of one of the object's own frames is read off, and is
-    None when the pose is of the object itself and the body frame answers it. None rather than
-    "": a template asks `<if(of.site)>`, and ST4 reads an empty string as true.
-    """
-
-    id: str
-    body: str = ""
-    site: str | None = None
-    is_scene_object: bool = True
-    type: str = field(default="SceneObject")
 
 
 @dataclass
@@ -119,8 +101,8 @@ class Orientation:
     """An orientation quantity of a frame/object with respect to another."""
 
     id: str
-    of: Frame | SceneObject | None
-    with_respect_to: Frame | SceneObject | None = field(metadata=INTERNAL)
+    of: Frame | None
+    with_respect_to: Frame | None = field(metadata=INTERNAL)
     quantity_kind: QuantityKind = field(metadata=INTERNAL)
     as_seen_by: Frame | None
     unit: Unit = field(metadata=INTERNAL)
@@ -135,7 +117,7 @@ class Pose:
     """A pose (position and orientation) quantity."""
 
     id: str
-    of: SimplicialComplex | Frame | SceneObject | None
+    of: SimplicialComplex | Frame | None
     with_respect_to: SimplicialComplex | Frame | None = field(metadata=INTERNAL)
     quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     as_seen_by: Frame | None
@@ -148,6 +130,9 @@ class Pose:
     # Set when wrt/as-seen-by name a chain frame other than the root: the pose is then composed
     # from two world-model reads instead of one read off the chain root. Codegen-facing.
     relative_to_frame: Frame | None = None
+    # Stated in the chain root's axes while measured from another frame: the orientation is the
+    # subject's own and only the translation is taken between the two.
+    seen_by_root: bool = False
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
 
@@ -217,7 +202,6 @@ class Wrench(SpatialCoordinate):
     # codegen emits.
     retare_event_uris: tuple[str, ...] = ()
     retare_events: tuple[str, ...] = ()
-    retare_events_present: bool = False
     type: str = field(default="Wrench")
 
 

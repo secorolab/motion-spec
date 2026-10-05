@@ -3,19 +3,18 @@
 """The control law: authored controllers become per-axis control records.
 
 In order: the solver families and what each may be driven by, the derived ids, the derived ids and the
-IRIs they register, the controller records themselves, the closures and data they imply, and last
+IRIs they register, the controller records themselves, the functions and data they imply, and last
 the tables that say what state and which gains a controller type carries.
 
-This is the seam a controller DSL replaces. Its inputs are the model, the closures and the data
+This is the seam a controller DSL replaces. Its inputs are the model, the functions and the data
 structures; its outputs are the `SolverDerivationContext` and the controller and driver records.
 No other module derives a controller, and nothing here appends to the frame log: what a controller
-contributes to introspection is exported as a table for `communication.py` to read.
+contributes to telemetry is exported as a table for `communication.py` to read.
 """
 
 from __future__ import annotations
 
 import collections
-import math
 from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
@@ -29,18 +28,23 @@ from motion_spec_dsl.rdf_parser.vocab import (
     GEOM_COORD,
     GEOM_OP,
     GEOM_OP_EXT,
+    KC_OP,
+    KC_OP_EXT,
     KC_STAT,
     MAP,
     QUDT_SCHEMA,
+    RBDYN_OP,
+    RBDYN_OP_EXT,
     SLV,
     SLV_EXT,
 )
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.models.common import get_node_types
+from rdf_utils.models.common import ModelBase, get_node_types
+from rdf_utils.models.geom_coord import get_coord_vectorxyz
 from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdflib import Literal, URIRef
-from rdflib.namespace import PROV, RDF, XSD
-from scene_dsl.rdf_parser.common import ensure_one_obj_uri
+from rdflib.namespace import PROV, RDF
+from scene_dsl.rdf_parser.common import ensure_one_obj_uri, ensure_one_typed_subject_uri
 
 from motion_spec.classes.dynamics import Saturation
 from motion_spec.classes.geometry import Point, PoseDifference, Subspace, View
@@ -50,148 +54,165 @@ from motion_spec.classes.handlers import (
     PIDController,
     StateField,
 )
+from motion_spec.classes.motion import DataValue
 from motion_spec.classes.qudt import Provenance, Quantity, QuantityKind, Unit
 from motion_spec.classes.solvers import (
-    AccelerationEnergyDriven,
-    CartesianAccelerationDriven,
+    AccelerationConstraint,
     CartesianForceSpecification,
-    CommandForwarding,
-    DynamicsSolverFamily,
     JointForceSpecification,
     MotionDrivers,
-    Unsolved,
+    SolverFamily,
 )
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.model import kebab, local_name, si
+from motion_spec.rdf_parser.model import identifier, kebab, local_name
+
+_MOBILE_PLATFORM = SolverFamily()
 
 # Every solver family the code generator can run, keyed by the term that identifies it -- the
-# algorithm a solver names, or the type a command-forwarding solver carries.
-#
-# Vereshchagin's acceleration-constrained hybrid dynamics is posed as a constrained optimisation
-# over Gauss's principle, so each constrained direction is driven by an acceleration energy
-# (N-m2/s2) and the derived signals lead with `eacc`. Recursive Newton-Euler is driven by the
-# Cartesian acceleration itself, and leads with `acc`. A command-forwarding solver runs no
-# dynamics at all: its controller's output goes straight to the joint. `slv:ArticulatedBodyAlgorithm`
-# gets no entry: an unmapped algorithm is the "unsupported" answer below, not a fourth class.
-_SOLVER_FAMILIES = {
-    SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: AccelerationEnergyDriven,
-    SLV["RecursiveNewtonEulerAlgorithm"]: CartesianAccelerationDriven,
-    SLV_EXT.CommandForwardingSolver: CommandForwarding,
+# algorithm a solver names, or the type a command-forwarding or mobile-platform solver carries.
+# ACHD (Vereshchagin) drives each constrained direction by an acceleration energy, RNE by the
+# Cartesian acceleration itself; forward kinematics only reads its chain. An unmapped algorithm
+# (`slv:ArticulatedBodyAlgorithm`) is unsupported.
+SOLVER_FAMILIES = {
+    SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: SolverFamily(
+        name="ACHD",
+        driver_field="acceleration_constraint",
+        payload_field="acceleration_energy",
+        payload_kinds={
+            Subspace.Linear: ("AccelerationEnergy", "N-M2-PER-SEC2"),
+            Subspace.Angular: ("AccelerationEnergy", "N-M2-PER-SEC2"),
+        },
+        max_axes=6,
+        axes_must_be_distinct=True,
+    ),
+    SLV["RecursiveNewtonEulerAlgorithm"]: SolverFamily(
+        name="RNE",
+        driver_field="cartesian_acceleration",
+        payload_field="acceleration",
+        payload_kinds={
+            Subspace.Linear: ("LinearAcceleration", "M-PER-SEC2"),
+            Subspace.Angular: ("AngularAcceleration", "RAD-PER-SEC2"),
+        },
+    ),
+    KC_OP.ForwardPositionKinematics: SolverFamily(name="FPK", read_only=True),
+    KC_OP_EXT.ForwardVelocityKinematics: SolverFamily(name="FVK", read_only=True),
+    SLV_EXT.CommandForwardingSolver: SolverFamily(forwards_commands=True),
+    SLV.VelocityCompositionSolver: _MOBILE_PLATFORM,
+    SLV.ForceDistributionSolver: _MOBILE_PLATFORM,
+    SLV_EXT.VelocityDistributionSolver: _MOBILE_PLATFORM,
+    SLV_EXT.ForceCompositionSolver: _MOBILE_PLATFORM,
 }
 
 
-def solver_algorithm(model, solver: URIRef) -> type[DynamicsSolverFamily]:
+def solver_algorithm(model, solver: URIRef) -> SolverFamily:
     """The family a solver belongs to, and so what may be derived against it.
 
     Raises:
         ConstraintViolation: the solver names an algorithm no backend implements.
     """
     for type_ in get_node_types(model.graph, solver):
-        if type_ in _SOLVER_FAMILIES:
-            return _SOLVER_FAMILIES[type_]
+        if type_ in SOLVER_FAMILIES:
+            return SOLVER_FAMILIES[type_]
     algorithm = model.graph.value(solver, SLV["solver"])
     if algorithm is None:
-        return Unsolved
-    if algorithm not in _SOLVER_FAMILIES:
+        raise ConstraintViolation("solver", f"solver '{solver}' names no algorithm")
+    if algorithm not in SOLVER_FAMILIES:
         raise ConstraintViolation(
             "solver", f"Solver '{solver}' has unsupported algorithm '{algorithm}'."
         )
 
-    return _SOLVER_FAMILIES[algorithm]
+    return SOLVER_FAMILIES[algorithm]
 
 
 @dataclass(frozen=True)
 class SolverIdFactory:
-    """The ids one authored controller implies, built solely from authored RDF resource ids."""
+    """The ids one authored controller implies. Each id registers its IRI as it is minted -- the
+    id leads with its tag (`eacc_<ctrl>_<axis>`), the IRI with the controller
+    (`<ctrl-iri>/eacc-<axis>`) -- so an id nothing asks for names nothing.
+    """
 
-    controller: str
-    motion: str
+    model: object
+    controller: URIRef
 
     def component_controller(self, axis: quantities.SpatialAxis) -> str:
-        return f"{self.controller}_{axis.suffix}"
+        id_ = f"{self.model.id(self.controller)}_{axis.suffix}"
+        # One axis of the controller narrows it, and is a controller of the same kind.
+        types = tuple(get_node_types(self.model.graph, self.controller))
+        self.model.register_derived(
+            id_, str(self.controller), kebab(axis.suffix), PROV.specializationOf, types=types
+        )
+        return id_
 
     def component_error(self, axis: quantities.SpatialAxis) -> str:
-        return f"{self.controller}_err_{axis.suffix}"
+        id_ = f"{self.model.id(self.controller)}_err_{axis.suffix}"
+        self.model.register_derived(
+            id_, str(self.controller), f"err-{kebab(axis.suffix)}", PROV.wasDerivedFrom
+        )
+        return id_
 
     def component_energy(self, axis: quantities.SpatialAxis) -> str:
-        return f"eacc_{self.controller}_{axis.suffix}"
+        id_ = f"eacc_{self.model.id(self.controller)}_{axis.suffix}"
+        self.model.register_derived(
+            id_, str(self.controller), f"eacc-{kebab(axis.suffix)}", PROV.wasDerivedFrom
+        )
+        return id_
 
     def component_acceleration(self, axis: quantities.SpatialAxis) -> str:
-        return f"acc_{self.controller}_{axis.suffix}"
+        id_ = f"acc_{self.model.id(self.controller)}_{axis.suffix}"
+        self.model.register_derived(
+            id_, str(self.controller), f"acc-{kebab(axis.suffix)}", PROV.wasDerivedFrom
+        )
+        return id_
 
     def component_constraint(self, axis: quantities.SpatialAxis) -> str:
-        return f"acc_cstr_{self.controller}_{axis.suffix}"
+        id_ = f"acc_cstr_{self.model.id(self.controller)}_{axis.suffix}"
+        self.model.register_derived(
+            id_,
+            str(self.controller),
+            f"acc-cstr-{kebab(axis.suffix)}",
+            PROV.wasDerivedFrom,
+            types=(SLV.AccelerationConstraint,),
+        )
+        return id_
 
     def component_acceleration_specification(self, axis: quantities.SpatialAxis) -> str:
-        return f"cart_acc_{self.controller}_{axis.suffix}"
+        id_ = f"cart_acc_{self.model.id(self.controller)}_{axis.suffix}"
+        self.model.register_derived(
+            id_,
+            str(self.controller),
+            f"cart-acc-{kebab(axis.suffix)}",
+            PROV.wasDerivedFrom,
+            types=(SLV.AccelerationConstraint,),
+        )
+        return id_
 
     def component_measured_derivative(self, axis: quantities.SpatialAxis) -> str:
-        return f"{self.controller}_measured_derivative_{axis.suffix}"
-
-    def component_moment(self, axis: quantities.SpatialAxis) -> str:
-        return f"moment_{self.controller}_{axis.suffix}"
+        id_ = f"{self.model.id(self.controller)}_measured_derivative_{axis.suffix}"
+        self.model.register_derived(
+            id_,
+            str(self.controller),
+            f"measured-derivative-{kebab(axis.suffix)}",
+            PROV.wasDerivedFrom,
+        )
+        return id_
 
     def pose_evaluator(self) -> str:
-        return f"eval_pose_diff_{self.controller}"
+        id_ = f"eval_pose_diff_{self.model.id(self.controller)}"
+        self.model.register_derived(
+            id_, str(self.controller), "eval-pose-diff", PROV.wasDerivedFrom
+        )
+        return id_
 
     def pose_difference(self) -> str:
-        return f"pose_diff_{self.controller}"
-
-
-# Every id a controller can imply, with the IRI segment it is minted under and how it relates to
-# the controller: a per-axis component *narrows* the controller, anything computed from it is
-# derived. The id leads with its tag (`eacc_<ctrl>_<axis>`), the IRI with the parent
-# (`<ctrl-iri>/eacc-<axis>`). The bound methods sit in the table so every one has a visible
-# reference; the sites each mint a different subset, and a missed registration leaves a slot
-# unaddressable. An unused registration is inert.
-_AXIS_DERIVATIONS = (
-    (SolverIdFactory.component_controller, "{axis}", PROV.specializationOf, ()),
-    (SolverIdFactory.component_error, "err-{axis}", PROV.specializationOf, ()),
-    (SolverIdFactory.component_energy, "eacc-{axis}", PROV.wasDerivedFrom, ()),
-    (SolverIdFactory.component_acceleration, "acc-{axis}", PROV.wasDerivedFrom, ()),
-    (
-        SolverIdFactory.component_constraint,
-        "acc-cstr-{axis}",
-        PROV.wasDerivedFrom,
-        (SLV.AccelerationConstraint,),
-    ),
-    (
-        SolverIdFactory.component_acceleration_specification,
-        "cart-acc-{axis}",
-        PROV.wasDerivedFrom,
-        (SLV.AccelerationConstraint,),
-    ),
-    (
-        SolverIdFactory.component_measured_derivative,
-        "measured-derivative-{axis}",
-        PROV.wasDerivedFrom,
-        (),
-    ),
-    (SolverIdFactory.component_moment, "moment-{axis}", PROV.wasDerivedFrom, ()),
-)
-_WHOLE_DERIVATIONS = (
-    (SolverIdFactory.pose_evaluator, "eval-pose-diff"),
-    (SolverIdFactory.pose_difference, "pose-diff"),
-)
-
-
-def _solver_ids(model, context, plan) -> SolverIdFactory:
-    """The id factory for one controller, with its whole derived-IRI family registered."""
-    ids = SolverIdFactory(model.id(plan.controller), model.motion_suffix(plan.motion))
-    parent = str(plan.controller)
-    for derive, segment in _WHOLE_DERIVATIONS:
-        model.register_derived(derive(ids), parent, segment, PROV.wasDerivedFrom)
-    for spatial_axis in plan.axes:
-        for derive, segment, relation, types in _AXIS_DERIVATIONS:
-            model.register_derived(
-                derive(ids, spatial_axis),
-                parent,
-                segment.format(axis=kebab(spatial_axis.suffix)),
-                relation,
-                types=types,
-            )
-
-    return ids
+        id_ = f"pose_diff_{self.model.id(self.controller)}"
+        self.model.register_derived(
+            id_,
+            str(self.controller),
+            "pose-diff",
+            PROV.wasDerivedFrom,
+            types=(GEOM_COORD.PoseDifferenceCoordinate,),
+        )
+        return id_
 
 
 def _path_projection_outputs(model) -> dict:
@@ -259,25 +280,14 @@ def _is_moment_plan(model, plan) -> bool:
 
 class ControlDirections(NamedTuple):
     """What one controller's constraint contributes to its solver: the Cartesian directions, the
-    view they are taken in, the norm of the gradient they came from, and the frame that gradient
-    is stated in. Only an expression constraint sets the last two to anything but the default.
+    view they are taken in, the shared norm its error is divided by, and the frame its gradient is
+    stated in. Only an expression constraint sets the last two.
     """
 
     axes: tuple
     view: URIRef | None = None
-    gradient_norm: float = 1.0
+    gradient_norm: URIRef | None = None
     gradient_frame: URIRef | None = None
-
-
-class _LinearForm(NamedTuple):
-    """An expression read as `sum(coefficient * measured leaf) + constant`.
-
-    `constant` is None when the constant part is a runtime value: nothing is wrong with that in
-    itself, it only stops a subtree from being used as a coefficient.
-    """
-
-    coefficients: dict
-    constant: float | None
 
 
 # The four arithmetic operations an expression tree is built from, each as the operand
@@ -289,124 +299,55 @@ _EXPRESSION_OPS = {
     ALGO_EXT.Multiplication: ("multiply", (ALGO_EXT["in"],)),
     ALGO_EXT.Division: ("divide", (ALGO_EXT["dividend"], ALGO_EXT["divisor"])),
 }
-# Below this the gradient states no direction: a normalized one would be numerical noise.
-_GRADIENT_EPSILON = 1e-9
+# The view subspaces a component turns about an axis in; every other one moves along a line.
+_ANGULAR_VIEW_SUBSPACES = {"orientation", "angular-velocity", "angular-acceleration", "torque"}
 
 
 def expression_operation(graph, node):
     """The arithmetic operation writing `node`, as `(name, operands)`, or None when `node` is an
     ordinary quantity nothing computes.
     """
-    for op in graph.subjects(ALGO_EXT.out, node):
-        types = get_node_types(graph, op)
-        for type_, (name, predicates) in _EXPRESSION_OPS.items():
-            if type_ not in types:
-                continue
-            if len(predicates) == 1:
-                # sorted(): a commutative operation states its operands unordered.
-                return name, sorted(graph.objects(op, predicates[0]), key=str)
-            return name, [graph.value(op, predicate) for predicate in predicates]
-    return None
+    written = [
+        (op, kinds)
+        for op in graph.subjects(ALGO_EXT.out, node)
+        if (kinds := get_node_types(graph, op) & _EXPRESSION_OPS.keys())
+    ]
+    if not written:
+        return None
+    if len(written) > 1 or len(written[0][1]) > 1:
+        raise ConstraintViolation(
+            "control",
+            f"'{node}' is written by {len(written)} arithmetic operations -- an expression node "
+            "has one operation of one kind",
+        )
+    op, (type_,) = written[0]
+    name, predicates = _EXPRESSION_OPS[type_]
+    if len(predicates) == 1:
+        return name, list(graph.objects(op, predicates[0]))
+    return name, [graph.value(op, predicate) for predicate in predicates]
 
 
-def _constant_product(forms) -> float | None:
-    """The product of forms that carry no measured leaf, or None when any is runtime-valued."""
-    product = 1.0
-    for form in forms:
-        if form.constant is None:
-            return None
-        product *= form.constant
-    return product
+def _expression_subspace(model, node) -> str | None:
+    """The half an expression's moved terms lie in, read off the first one it reaches: `distance`
+    along a line, `rotation` about an axis; None where nothing under NODE moves.
 
-
-def _scaled(form: _LinearForm, factor: float) -> _LinearForm:
-    return _LinearForm(
-        {leaf: value * factor for leaf, value in form.coefficients.items()},
-        None if form.constant is None else form.constant * factor,
-    )
-
-
-def _linear_form(model, node, constraint) -> _LinearForm:
-    """`node` as a linear form over the measured leaves it is built from.
-
-    Raises:
-        ConstraintViolation: the expression is not affine in its measured leaves, or a
-            coefficient is only known at runtime -- either way the alpha row it would need
-            cannot be stated before the cycle runs.
+    The model states one half per controlled expression, so the first term speaks for all.
     """
     graph = model.graph
     operation = expression_operation(graph, node)
-    if operation is None:
-        if quantities.view_of(graph, node) is not None:
-            return _LinearForm({node: 1.0}, 0.0)
-        value = graph.value(node, QUDT_SCHEMA.value)
-        unit = graph.value(node, QUDT_SCHEMA.unit)
-        return _LinearForm({}, None if value is None else si(float(value), unit))
-
-    name, operands = operation
-    forms = [_linear_form(model, operand, constraint) for operand in operands]
-    if name == "add":
-        return _sum_forms(forms)
-    if name == "subtract":
-        return _sum_forms([forms[0], _scaled(forms[1], -1.0)])
-    if name == "multiply":
-        measured = [form for form in forms if form.coefficients]
-        if len(measured) > 1:
-            raise ConstraintViolation(
-                "control",
-                f"Constraint '{model.id(constraint)}' multiplies two measured views, so its "
-                "gradient depends on what it measures; a controller cannot drive that yet. A "
-                "monitor accepts it.",
-            )
-        if not measured:
-            return _LinearForm({}, _constant_product(forms))
-        scale = _constant_product([form for form in forms if not form.coefficients])
-        if scale is None:
-            raise ConstraintViolation(
-                "control",
-                f"Constraint '{model.id(constraint)}' scales a measured view by a runtime "
-                "value; a controlled expression needs coefficients it can state at generation "
-                "time. A monitor accepts it.",
-            )
-        return _scaled(measured[0], scale)
-
-    dividend, divisor = forms
-    if divisor.coefficients or divisor.constant is None:
-        raise ConstraintViolation(
-            "control",
-            f"Constraint '{model.id(constraint)}' divides by a value it measures; a controlled "
-            "expression divides only by a constant. A monitor accepts it.",
+    if operation is not None:
+        return next(
+            (half for operand in operation[1] if (half := _expression_subspace(model, operand))),
+            None,
         )
-    if divisor.constant == 0.0:
-        raise ConstraintViolation(
-            "control", f"Constraint '{model.id(constraint)}' divides by zero."
-        )
-    return _scaled(dividend, 1.0 / divisor.constant)
-
-
-def _sum_forms(forms) -> _LinearForm:
-    coefficients: dict = {}
-    for form in forms:
-        for leaf, value in form.coefficients.items():
-            coefficients[leaf] = coefficients.get(leaf, 0.0) + value
-    constants = [form.constant for form in forms]
-    return _LinearForm(coefficients, None if None in constants else sum(constants))
-
-
-def _gradient_direction(model, controller, frame_node, components) -> URIRef:
-    """Materialize the unit gradient as a direction coordinate the solver row reads, composed of
-    the same DirectionCoordinate/VectorXYZ/as-seen-by terms an authored direction carries.
-    """
-    node = URIRef(f"{controller}-gradient")
-    graph = model.graph
-    graph.add((node, RDF.type, GEOM_COORD.DirectionCoordinate))
-    graph.add((node, RDF.type, GEOM_COORD.VectorXYZ))
-    graph.add((node, QUDT_SCHEMA["hasQuantityKind"], NS_MM_QUDT_QTY["Dimensionless"]))
-    graph.add((node, QUDT_SCHEMA.unit, NS_MM_QUDT_UNIT["UNITLESS"]))
-    graph.add((node, GEOM_COORD["as-seen-by"], frame_node))
-    for name in "xyz":
-        graph.add((node, GEOM_COORD[name], Literal(components.get(name, 0.0), datatype=XSD.double)))
-    return node
+    subspace = _operator_gradient(model, node)[1]
+    if subspace is not None:
+        return subspace
+    view = quantities.view_of(graph, node)
+    if view is None:
+        return None
+    angular = local_name(graph.value(view, MAP.subspace)) in _ANGULAR_VIEW_SUBSPACES
+    return _GRADIENT_OUTPUTS[GEOM_OP["angle"] if angular else GEOM_OP["distance"]]
 
 
 def _view_axes(model, controller, constraint, view_node, target_node, *, subspace=None, axis=None):
@@ -434,13 +375,10 @@ def _view_axes(model, controller, constraint, view_node, target_node, *, subspac
         else subspace,
         axis=local_name(graph.value(view_node, MAP.axis)) if view_node is not None else axis,
         command_type=str(command_type) if command_type is not None else None,
-        relation=next(
-            (
-                local_name(type_)
-                for type_ in get_node_types(graph, constraint)
-                if type_ != CSTR.Constraint and local_name(type_).endswith("Constraint")
-            ),
-            "",
+        relation=(
+            "EqualityConstraint"
+            if CSTR.EqualityConstraint in get_node_types(graph, constraint)
+            else ""
         ),
         quantity_kind=next(
             (
@@ -459,33 +397,69 @@ _GRADIENT_OUTPUTS = {GEOM_OP["distance"]: "distance", GEOM_OP["angle"]: "rotatio
 
 
 def _operator_gradient(model, quantity):
-    """The direction `quantity` is driven along and the subspace that row sits in.
+    """`(gradient, subspace, moment, norm)`: the direction `quantity` is driven along, the
+    subspace that row sits in, its angular companion, and the shared norm its error is divided by.
 
-    Written either by the operator that writes the scalar itself, or -- for a direction pair held
-    off zero, whose angle comes from a `PlanarAngleFromDirections` with no gradient output of its
-    own -- by the `AngleGradientFromDirections` op paired with it.
+    Written by the operator that writes the scalar itself; for a direction pair held off zero,
+    whose angle comes from a `PlanarAngleFromDirections` with no gradient output of its own, by the
+    `AngleGradientFromDirections` op paired with it. A controlled expression's top operator names
+    the unit gradient its terms combine to, and the norm that unit was taken from; a geometric
+    operator's gradient is unit already, so it names none.
     """
     graph = model.graph
-    for predicate, subspace in _GRADIENT_OUTPUTS.items():
-        for op in sorted(graph.subjects(predicate, quantity), key=str):
-            gradient = graph.value(op, GEOM_OP_EXT["gradient"])
-            if gradient is not None:
-                return gradient, subspace, graph.value(op, GEOM_OP_EXT["gradient-moment"])
+    written = [
+        (op, subspace)
+        for predicate, subspace in _GRADIENT_OUTPUTS.items()
+        for op in graph.subjects(predicate, quantity)
+        if (op, GEOM_OP_EXT["gradient"], None) in graph
+    ]
+    expression = [
+        op
+        for op in graph.subjects(ALGO_EXT.out, quantity)
+        if (op, GEOM_OP_EXT["gradient"], None) in graph
+    ]
+    if len(written) + len(expression) > 1:
+        raise ConstraintViolation(
+            "control",
+            f"'{quantity}' is written by {len(written) + len(expression)} operators with a "
+            "gradient -- one writes it",
+        )
+    if expression:
+        op = expression[0]
+        return (
+            graph.value(op, GEOM_OP_EXT["gradient"]),
+            _expression_subspace(model, quantity),
+            graph.value(op, GEOM_OP_EXT["gradient-moment"]),
+            graph.value(op, GEOM_OP_EXT["norm"]),
+        )
+    if written:
+        op, subspace = written[0]
+        return (
+            graph.value(op, GEOM_OP_EXT["gradient"]),
+            subspace,
+            graph.value(op, GEOM_OP_EXT["gradient-moment"]),
+            None,
+        )
     op = alignment_gradient_op(model, quantity)
     if op is not None:
-        return graph.value(op, GEOM_OP_EXT["gradient"]), _GRADIENT_OUTPUTS[GEOM_OP["angle"]], None
-    return None, None, None
+        return (
+            graph.value(op, GEOM_OP_EXT["gradient"]),
+            _GRADIENT_OUTPUTS[GEOM_OP["angle"]],
+            None,
+            None,
+        )
+    return None, None, None, None
 
 
 def operator_gradient_directions(model, controller, constraint, quantity):
-    """The one solver row a plane/line operator's scalar is driven along, or None when nothing
-    writes `quantity` that way.
+    """The one solver row an operator's or an expression's scalar is driven along, or None when
+    nothing writes `quantity` with a gradient.
 
-    The operator recomputes the direction every cycle, so the row names the shared vector carrying
-    it instead of a frame axis -- the shape a path-following row already takes.
+    The direction is recomputed every cycle, so the row names the shared vector carrying it
+    instead of a frame axis -- the shape a path-following row already takes.
     """
     graph = model.graph
-    gradient, subspace, moment = _operator_gradient(model, quantity)
+    gradient, subspace, moment, norm = _operator_gradient(model, quantity)
     if gradient is None:
         return None
     axes = _view_axes(
@@ -494,81 +468,9 @@ def operator_gradient_directions(model, controller, constraint, quantity):
     return ControlDirections(
         tuple(replace(axis, direction=gradient, moment=moment) for axis in axes),
         None,
-        1.0,
+        norm,
         graph.value(gradient, GEOM_COORD["as-seen-by"]),
     )
-
-
-def gradient_directions(model, controller, constraint, quantity):
-    """The one alpha column a controlled expression drives.
-
-    An expression is driven along its own gradient: each measured leaf contributes its
-    coefficient to that leaf's own Cartesian direction, and the column is their normalized sum.
-    A single positive coefficient on one axis leaves the frame axis itself -- exactly the row the
-    same constraint gets when it is written as a plain view.
-
-    Raises:
-        ConstraintViolation: the expression measures nothing, its gradient vanishes, its leaves
-            are seen by different frames, or it spans both the linear and the angular half.
-    """
-    graph = model.graph
-    form = _linear_form(model, quantity, constraint)
-    components: dict = {}
-    frames = set()
-    leaf_view = None
-    for leaf, coefficient in sorted(form.coefficients.items(), key=lambda item: str(item[0])):
-        view = quantities.view_of(graph, leaf)
-        axes = _view_axes(model, controller, constraint, view, leaf)
-        if not axes:
-            # This command drives no solver row at all (a force command); neither does the
-            # expression built from it.
-            return ControlDirections((), view)
-        if len(axes) != 1:
-            raise ConstraintViolation(
-                "control",
-                f"Constraint '{model.id(constraint)}' combines '{model.id(leaf)}', which names a "
-                "whole subspace; select one axis of it.",
-            )
-        leaf_view = leaf_view if leaf_view is not None else view
-        components[axes[0]] = components.get(axes[0], 0.0) + coefficient
-        frames.add(graph.value(graph.value(view, MAP.superobject), GEOM_COORD["as-seen-by"]))
-
-    components = {
-        axis: value for axis, value in components.items() if abs(value) > _GRADIENT_EPSILON
-    }
-    if not components:
-        raise ConstraintViolation(
-            "control",
-            f"Constraint '{model.id(constraint)}' has no measured view a solver moves, so there "
-            "is no direction to drive it along.",
-        )
-    if len(frames) > 1:
-        raise ConstraintViolation(
-            "control",
-            f"Constraint '{model.id(constraint)}' combines views seen by different frames "
-            f"({', '.join(sorted(model.id(frame) for frame in frames))}); state them all in one "
-            "frame, since the gradient is one vector in one frame.",
-        )
-    if len({axis.subspace for axis in components}) > 1:
-        raise ConstraintViolation(
-            "control",
-            f"Constraint '{model.id(constraint)}' spans the linear and the angular subspace; one "
-            "solver row carries one of them, so split it into one constraint per subspace.",
-        )
-    frame_node = next(iter(frames))
-    norm = math.sqrt(sum(value * value for value in components.values()))
-    axis, coefficient = next(iter(components.items()))
-    if len(components) == 1 and coefficient > 0.0:
-        return ControlDirections((axis,), leaf_view, norm, frame_node)
-    direction = _gradient_direction(
-        model,
-        controller,
-        frame_node,
-        {component.axis: value / norm for component, value in components.items()},
-    )
-    column = quantities.SpatialAxis(axis.subspace, "gradient", direction)
-
-    return ControlDirections((column,), leaf_view, norm, frame_node)
 
 
 def alignment_axes(model, quantity):
@@ -617,11 +519,14 @@ def _authored_controller_axes(model) -> dict:
         if operator_gradient is not None:
             result[controller] = operator_gradient
             continue
-        # An expression names no view of its own: its row is the gradient over the views it is
-        # built from, so the axes and the frame come from those leaves instead.
+        # An expression names no view of its own: only the gradient its operator names says where
+        # it is driven.
         if expression_operation(graph, quantity) is not None:
-            result[controller] = gradient_directions(model, controller, constraint, quantity)
-            continue
+            raise ConstraintViolation(
+                "control",
+                f"controller '{model.id(controller)}' drives an expression that names no "
+                "gradient -- there is no direction to drive it along",
+            )
         result[controller] = ControlDirections(
             _view_axes(model, controller, constraint, view, quantity), view
         )
@@ -641,9 +546,9 @@ class ControllerDerivation:
     quantity: URIRef
     view: URIRef | None
     axes: tuple[quantities.SpatialAxis, ...]
-    # An expression is driven along a normalized gradient, so the error the controller reads is
-    # this many times the one along the direction it drives. 1.0 for every plain view.
-    gradient_norm: float = 1.0
+    # An expression is driven along its unit gradient, so the error the controller reads is this
+    # shared norm times the one along the direction it drives. None for every plain view.
+    gradient_norm: URIRef | None = None
     gradient_frame: URIRef | None = None
 
 
@@ -659,14 +564,13 @@ class SolverDerivationContext:
     controllers_by_handler: dict
     controllers_by_solver: dict
     algorithm_by_solver: dict
-    shared_constraints: frozenset
     _derived: dict = field(default_factory=dict, compare=False, repr=False)
 
     def controllers_for(self, plan: ControllerDerivation) -> tuple:
         """The derived per-axis controllers for one authored controller, computed once.
 
         Memoized so every consumer sees the same records: the controller dataclasses compare by
-        identity, and a motion, its handler and the introspection rows must agree on which object
+        identity, and a motion, its handler and the telemetry rows must agree on which object
         each id names.
         """
         if plan not in self._derived:
@@ -692,8 +596,8 @@ def solver_derivation_context(model) -> SolverDerivationContext:
                 "control", f"Constraint handler '{handler}' is missing its motion."
             )
         authored = sorted(
-            dict.fromkeys(graph.objects(handler, CSTR_HDL.controllers)),
-            key=lambda node: int(getattr(graph.value(node, APP.order), "value", 0)),
+            set(graph.objects(handler, CSTR_HDL.controllers)),
+            key=lambda node: int(graph.value(node, APP.order, default=Literal(0)).value),
         )
         plans = []
         for controller in authored:
@@ -729,9 +633,6 @@ def solver_derivation_context(model) -> SolverDerivationContext:
             by_solver[solver].append(plan)
         by_handler[handler] = tuple(plans)
 
-    constraint_counts = collections.Counter(
-        plan.constraint for plans in by_handler.values() for plan in plans
-    )
     solver_nodes = set(by_solver) | set(graph.subjects(RDF.type, SLV.SolverWithInputAndOutput))
     algorithms = {solver: solver_algorithm(model, solver) for solver in solver_nodes}
     _validate_solver_derivations(model, by_handler, by_solver, algorithms)
@@ -741,9 +642,6 @@ def solver_derivation_context(model) -> SolverDerivationContext:
         controllers_by_handler=by_handler,
         controllers_by_solver={node: tuple(plans) for node, plans in by_solver.items()},
         algorithm_by_solver=algorithms,
-        shared_constraints=frozenset(
-            node for node, count in constraint_counts.items() if count > 1
-        ),
     )
 
 
@@ -751,6 +649,12 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
     """Enforce executable solver limits, which only hold once authored RDF has resolved to plans."""
     for solver, plans in by_solver.items():
         family = algorithms[solver]
+        if family.read_only:
+            raise ConstraintViolation(
+                "solver",
+                f"Solver '{solver}' only reads its chain, but controller "
+                f"'{plans[0].controller}' drives it.",
+            )
         # A moment plan's axes are f_ext directions, not solver rows, so they claim no budget.
         axes = [axis for plan in plans if not _is_moment_plan(model, plan) for axis in plan.axes]
         if family.axes_must_be_distinct:
@@ -759,13 +663,13 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
                 rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
                 raise ConstraintViolation(
                     "solver",
-                    f"{family.codegen_name} solver '{solver}' repeats acceleration axis: "
+                    f"{family.name} solver '{solver}' repeats acceleration axis: "
                     f"{rendered}.",
                 )
         if family.max_axes is not None and len(axes) > family.max_axes:
             raise ConstraintViolation(
                 "solver",
-                f"{family.codegen_name} solver '{solver}' has {len(axes)} axes; at most "
+                f"{family.name} solver '{solver}' has {len(axes)} axes; at most "
                 f"{family.max_axes} are supported.",
             )
 
@@ -774,92 +678,78 @@ def _validate_solver_derivations(model, by_handler, by_solver, algorithms) -> No
         for plan in plans:
             command = str(model.graph.value(plan.controller, APP["command-type"]) or "")
             subspace = local_name(model.graph.value(plan.view, MAP.subspace)) if plan.view else None
-            domains[algorithms[plan.solver]].add(
+            domains[algorithms[plan.solver].name].add(
                 "force"
                 if command in {"Force", "Torque"} or subspace in {"force", "torque"}
                 else "pose"
             )
-        overlap = domains[AccelerationEnergyDriven] & domains[CartesianAccelerationDriven]
+        overlap = domains["ACHD"] & domains["RNE"]
         if overlap:
             raise ConstraintViolation(
                 "solver",
                 f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
-                f"{', '.join(sorted(overlap))}.",
+                f"{', '.join(overlap)}.",
             )
 
 
-def _gain(model, plan, predicate, *, required=True) -> float | None:
-    """An authored gain, divided by the norm of the gradient its constraint is driven along.
-
-    A controller on an expression reads an error in the expression's units while it drives a
-    normalized direction, and the two differ by exactly that norm; carrying it here leaves the
-    authored gain acting on the error along the direction, which is what the model states. Every
-    plain view has norm 1, so nothing else moves.
-    """
-    read = quantities.required_float if required else quantities.optional_float
-    value = read(model, plan.controller, predicate)
-    return None if value is None else value / plan.gradient_norm
-
-
-def _derived_quantity(id_: str, kind: str, unit: str, *, has_view: bool = False) -> Quantity:
-    """A runtime scalar the model implies rather than authors."""
-    return Quantity(id_, QuantityKind(kind), Unit(unit), None, has_view, provenance=Provenance())
-
-
-def _motion_scoped(model, context, plan) -> str:
-    """The motion suffix a derived id carries, empty when its constraint is shared."""
-    if plan.constraint in context.shared_constraints:
-        return ""
-    return f"_{model.motion_suffix(plan.motion)}"
+def _derived_quantity(id_: str, kind: URIRef, unit: URIRef, *, has_view: bool = False) -> Quantity:
+    """A runtime scalar the model implies rather than authors, of a QUDT kind and unit."""
+    return Quantity(
+        id_,
+        QuantityKind(identifier(local_name(kind)), str(kind)),
+        Unit(identifier(local_name(unit)), str(unit)),
+        None,
+        has_view,
+        provenance=Provenance(),
+    )
 
 
 def _controller_signal_id(model, context, plan) -> str:
     """The scalar output id a controller writes, from its authored command type.
 
     The id is registered here because this is where it is minted, and the only place that knows
-    which of the forms below it took -- and so what the signal derives from. A command the
-    controller alone decides derives from the controller; an acceleration payload is named after
-    the quantity it drives, and is the same id the acceleration driver mints per axis.
+    which of the forms below it took -- and so what the signal derives from. An acceleration
+    payload is the id the controller's one acceleration driver mints for its axis.
     """
     graph = model.graph
     controller_id = model.id(plan.controller)
     types = get_node_types(graph, plan.controller)
     command_type = str(graph.value(plan.controller, APP["command-type"]) or "")
 
-    def controller_output(signal_id: str) -> str:
-        model.register_derived(signal_id, str(plan.controller), "output", PROV.wasDerivedFrom)
-        return signal_id
-
+    # A force or moment command feeds the magnitude of a wrench the model builds, and the model
+    # names that magnitude itself.
+    authored = graph.value(plan.controller, CSTR_HDL["control-signal"])
+    if authored is not None:
+        return model.id(authored)
+    target = graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
+    signal_id = None
     # A Cartesian moment feeds the moment slot of a wrench, so it is named after that.
     if _is_moment_plan(model, plan):
-        return controller_output(f"moment_{controller_id}")
+        signal_id = f"moment_{controller_id}"
     # A force command is named after the wrench magnitude it feeds, whichever control law
     # produced it; only a command that goes straight to a device is named `cmd_`.
-    if CSTR_HDL.ImpedanceController in types or command_type == "Force":
-        return controller_output(f"force_{controller_id}")
-    if CSTR_HDL_EXT.FeedForwardController in types:
-        return controller_output(f"cmd_{controller_id}")
-    target = graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
-    if command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(
+    elif CSTR_HDL.ImpedanceController in types or command_type == "Force":
+        signal_id = f"force_{controller_id}"
+    elif CSTR_HDL_EXT.FeedForwardController in types:
+        signal_id = f"cmd_{controller_id}"
+    elif command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(
         graph, target
     ):
-        return controller_output(f"tau_{controller_id}")
+        signal_id = f"tau_{controller_id}"
+    if signal_id is not None:
+        model.register_derived(signal_id, str(plan.controller), "output", PROV.wasDerivedFrom)
+        return signal_id
     family = context.algorithm_by_solver[plan.solver]
-    if not hasattr(family, "payload"):
+    if family.driver_field is None:
         raise ConstraintViolation(
             "solver", f"Solver '{plan.solver}' does not accept acceleration signals."
         )
+    if not plan.axes:
+        raise ConstraintViolation(
+            "controller", f"'{plan.controller}' drives no axis for its acceleration to act along"
+        )
 
-    suffix = _motion_scoped(model, context, plan)
-    signal_id = f"{family.signal_prefix}_{model.id(plan.quantity)}{suffix}"
-    # Same id and same IRI the single-axis driver mints, so registering it twice is one fact
-    # stated twice rather than a collision -- and a controller with no axis has no driver to
-    # state it at all.
-    model.register_derived(
-        signal_id, str(plan.quantity), f"{family.signal_prefix}{kebab(suffix)}", PROV.wasDerivedFrom
-    )
-
-    return signal_id
+    return _DRIVER_ID_METHODS[family.name][1](SolverIdFactory(model, plan.controller), plan.axes[0])
 
 
 def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
@@ -867,8 +757,8 @@ def _axis_error(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quantity:
     linear = axis.subspace == Subspace.Linear
     return _derived_quantity(
         ids.component_error(axis),
-        "Length" if linear else "Angle",
-        "M" if linear else "RAD",
+        NS_MM_QUDT_QTY["Length" if linear else "Angle"],
+        NS_MM_QUDT_UNIT["M" if linear else "RAD"],
         has_view=True,
     )
 
@@ -878,8 +768,8 @@ def _axis_derivative(ids: SolverIdFactory, axis: quantities.SpatialAxis) -> Quan
     linear = axis.subspace == Subspace.Linear
     return _derived_quantity(
         ids.component_measured_derivative(axis),
-        "LinearVelocity" if linear else "AngularVelocity",
-        "M_PER_SEC" if linear else "RAD_PER_SEC",
+        NS_MM_QUDT_QTY["LinearVelocity" if linear else "AngularVelocity"],
+        NS_MM_QUDT_UNIT["M-PER-SEC" if linear else "RAD-PER-SEC"],
         has_view=True,
     )
 
@@ -924,17 +814,24 @@ class _Saturations(NamedTuple):
 
 def _controller_saturations(model, controller, signal) -> _Saturations:
     """The authored output and integral bounds, both bound to the derived control signal."""
-    nodes = list(model.graph.objects(controller, ALGO_EXT.limits))
-    output_node = next(
-        (
-            node
-            for node in nodes
-            if (input_node := model.graph.value(node, ALGO_EXT["in"])) is not None
-            and model.graph.value(input_node, QUDT_SCHEMA.hasQuantityKind) is not None
-        ),
-        None,
-    )
-    integral_node = next((node for node in nodes if node != output_node), None)
+    graph = model.graph
+    nodes = set(graph.objects(controller, ALGO_EXT.limits))
+    # The output bound reads a quantity; the integral bound reads the controller's own state.
+    outputs = {
+        node
+        for node in nodes
+        if (input_node := graph.value(node, ALGO_EXT["in"])) is not None
+        and (input_node, QUDT_SCHEMA.hasQuantityKind, None) in graph
+    }
+    integrals = nodes - outputs
+    if len(outputs) > 1 or len(integrals) > 1:
+        raise ConstraintViolation(
+            "control",
+            f"controller '{model.id(controller)}' states {len(outputs)} output and "
+            f"{len(integrals)} integral bounds -- it states at most one of each",
+        )
+    output_node = next(iter(outputs), None)
+    integral_node = next(iter(integrals), None)
 
     return _Saturations(
         _saturation_for_signal(model, output_node, signal),
@@ -959,37 +856,49 @@ def _whole_controller_signal(model, context, plan, types):
             reference_value=None,
         )
     if _is_moment_plan(model, plan):
-        return _derived_quantity(signal_id, "Torque", "N_M")
+        return _derived_quantity(signal_id, NS_MM_QUDT_QTY["Torque"], NS_MM_QUDT_UNIT["N-M"])
     if CSTR_HDL.ImpedanceController in types or command_type == "Force":
-        return _derived_quantity(signal_id, "Force", "N")
+        return _derived_quantity(signal_id, NS_MM_QUDT_QTY["Force"], NS_MM_QUDT_UNIT["N"])
     if signal_id.startswith("tau_"):
-        return _derived_quantity(signal_id, "Torque", "N_M")
+        return _derived_quantity(signal_id, NS_MM_QUDT_QTY["Torque"], NS_MM_QUDT_UNIT["N-M"])
     family = context.algorithm_by_solver[plan.solver]
-    if issubclass(family, CartesianAccelerationDriven) and plan.axes:
+    if family.driver_field is not None and plan.axes:
         return family.payload(signal_id, plan.axes[0].subspace)
 
-    return _derived_quantity(signal_id, "AccelerationEnergy", "N_M2_PER_SEC2")
+    return _derived_quantity(
+        signal_id, NS_MM_QUDT_QTY["AccelerationEnergy"], NS_MM_QUDT_UNIT["N-M2-PER-SEC2"]
+    )
 
 
 def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | None = None):
     """One controller record: per axis when the command is a pose, singular otherwise."""
     graph = model.graph
-    ids = _solver_ids(model, context, plan)
+    ids = SolverIdFactory(model, plan.controller)
     types = get_node_types(graph, plan.controller)
     measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
     if axis is not None:
         controller_id = ids.component_controller(axis)
         if _is_moment_plan(model, plan):
-            # A moment feeds f_ext, so its payload is the wrench's moment magnitude, not a row.
-            signal = _derived_quantity(ids.component_moment(axis), "Torque", "N_M")
+            # A moment feeds f_ext: its payload is the signal the wrench op along this axis takes.
+            unit_vector = tuple(float(axis.axis == name) for name in "xyz")
+            moments = [
+                signal
+                for signal in graph.objects(plan.controller, CSTR_HDL["control-signal"])
+                for op in graph.subjects(RBDYN_OP_EXT.moment, signal)
+                if get_coord_vectorxyz(ModelBase(graph.value(op, RBDYN_OP.direction), graph), graph)
+                == unit_vector
+            ]
+            if len(moments) != 1:
+                raise ConstraintViolation(
+                    "controller",
+                    f"'{plan.controller}' states {len(moments)} moment signals along {axis.suffix}",
+                )
+            signal = _derived_quantity(
+                model.id(moments[0]), NS_MM_QUDT_QTY["Torque"], NS_MM_QUDT_UNIT["N-M"]
+            )
         else:
             family = context.algorithm_by_solver[plan.solver]
-            payload_id = (
-                ids.component_energy(axis)
-                if issubclass(family, AccelerationEnergyDriven)
-                else ids.component_acceleration(axis)
-            )
-            signal = family.payload(payload_id, axis.subspace)
+            signal = family.payload(_DRIVER_ID_METHODS[family.name][1](ids, axis), axis.subspace)
         error = _axis_error(ids, axis)
         measured_derivative = _axis_derivative(ids, axis) if measured_source is not None else None
     else:
@@ -1005,6 +914,7 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
     # The band belongs to the constraint, so the logged verdict matches the monitor's.
     band = graph.value(plan.constraint, CSTR_EXT["tolerance"])
     tolerance_id = model.id(band) if band is not None else ""
+    gradient_norm = model.id(plan.gradient_norm) if plan.gradient_norm is not None else None
 
     if CSTR_HDL.ProportionalIntegralDerivative in types:
         decay = graph.value(plan.controller, CSTR_HDL["decay-rate"])
@@ -1014,30 +924,40 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
             control_signal=signal,
             error_signal=error,
             measured_derivative=measured_derivative,
-            proportional_gain=_gain(model, plan, CSTR_HDL["proportional-gain"]),
-            integral_gain=_gain(model, plan, CSTR_HDL["integral-gain"]),
-            derivative_gain=_gain(model, plan, CSTR_HDL["derivative-gain"]),
+            proportional_gain=quantities.required_float(
+                model, plan.controller, CSTR_HDL["proportional-gain"]
+            ),
+            integral_gain=quantities.required_float(
+                model, plan.controller, CSTR_HDL["integral-gain"]
+            ),
+            derivative_gain=quantities.required_float(
+                model, plan.controller, CSTR_HDL["derivative-gain"]
+            ),
             decay_rate=decay.value if CSTR_HDL.DecayingIntegralTerm in types else None,
             output_saturation=output_saturation,
             integral_saturation=integral_saturation,
             tolerance_id=tolerance_id,
+            gradient_norm=gradient_norm,
             constraint=model.id(plan.constraint),
             constraint_uri=str(plan.constraint),
-            type=model.id(CSTR_HDL.ProportionalIntegralDerivative),
+            type="ProportionalIntegralDerivative",
         )
     if CSTR_HDL.ImpedanceController in types:
         return ImpedanceController(
             id=controller_id,
             control_signal=signal,
             error_signal=error,
-            stiffness=_gain(model, plan, CSTR_HDL.stiffness),
-            damping=_gain(model, plan, CSTR_HDL.damping),
-            integral_gain=_gain(model, plan, CSTR_HDL["integral-gain"], required=False),
+            stiffness=quantities.required_float(model, plan.controller, CSTR_HDL.stiffness),
+            damping=quantities.required_float(model, plan.controller, CSTR_HDL.damping),
+            integral_gain=quantities.optional_float(
+                model, plan.controller, CSTR_HDL["integral-gain"]
+            ),
             output_saturation=output_saturation,
             tolerance_id=tolerance_id,
+            gradient_norm=gradient_norm,
             constraint=model.id(plan.constraint),
             constraint_uri=str(plan.constraint),
-            type=model.id(CSTR_HDL.ImpedanceController),
+            type="ImpedanceController",
         )
     reference_node = graph.value(plan.controller, CSTR_HDL_EXT["reference-signal"])
 
@@ -1051,7 +971,7 @@ def _derived_controller(model, context, plan, axis: quantities.SpatialAxis | Non
         tolerance_id=tolerance_id,
         constraint=model.id(plan.constraint),
         constraint_uri=str(plan.constraint),
-        type=model.id(CSTR_HDL_EXT.FeedForwardController),
+        type="FeedForwardController",
     )
 
 
@@ -1062,14 +982,13 @@ def _derived_controllers(model, context, plan) -> list:
     return [_derived_controller(model, context, plan)]
 
 
-# Per family, the `SolverIdFactory` methods that mint its multi-axis spec/payload ids. Keyed by
-# the family class itself; `family.id_tags` names the matching single-axis tag pair.
+# Per family, the `SolverIdFactory` methods that mint its spec/payload ids.
 _DRIVER_ID_METHODS = {
-    AccelerationEnergyDriven: (
+    "ACHD": (
         SolverIdFactory.component_constraint,
         SolverIdFactory.component_energy,
     ),
-    CartesianAccelerationDriven: (
+    "RNE": (
         SolverIdFactory.component_acceleration_specification,
         SolverIdFactory.component_acceleration,
     ),
@@ -1083,31 +1002,12 @@ class _DriverIds(NamedTuple):
     payload: str
 
 
-def _acceleration_driver_ids(model, context, plan, family, axis, multi_axis) -> _DriverIds:
-    """The two ids for one axis, registering them when they derive from a quantity."""
-    if multi_axis:
-        ids = _solver_ids(model, context, plan)
-        spec_id, payload_id = _DRIVER_ID_METHODS[family]
+def _acceleration_driver_ids(model, context, plan, family, axis) -> _DriverIds:
+    """The two ids for one axis of a controller's acceleration driver."""
+    ids = SolverIdFactory(model, plan.controller)
+    spec_id, payload_id = _DRIVER_ID_METHODS[family.name]
 
-        return _DriverIds(spec_id(ids, axis), payload_id(ids, axis))
-    # Single-axis ids are built off the quantity, so that is what they derive from.
-    suffix = _motion_scoped(model, context, plan)
-    quantity_id = model.id(plan.quantity)
-    spec_tag, payload_tag = family.id_tags
-    ids = []
-    for tag in (spec_tag, payload_tag):
-        derived_id = f"{tag.replace('-', '_')}_{quantity_id}{suffix}"
-        types = (SLV.AccelerationConstraint,) if tag == spec_tag else ()
-        model.register_derived(
-            derived_id,
-            str(plan.quantity),
-            f"{tag}{kebab(suffix)}",
-            PROV.wasDerivedFrom,
-            types=types,
-        )
-        ids.append(derived_id)
-
-    return _DriverIds(*ids)
+    return _DriverIds(spec_id(ids, axis), payload_id(ids, axis))
 
 
 def _derived_acceleration_drivers(model, context, plan, family) -> list:
@@ -1117,14 +1017,11 @@ def _derived_acceleration_drivers(model, context, plan, family) -> list:
     )
     frame_node = model.graph.value(target, GEOM_COORD["as-seen-by"]) or plan.gradient_frame
     frame = quantities.frame(model, frame_node) if frame_node is not None else None
-    multi_axis = len(plan.axes) > 1
     records = []
     for axis in plan.axes:
-        spec_id, payload_id = _acceleration_driver_ids(
-            model, context, plan, family, axis, multi_axis
-        )
+        spec_id, payload_id = _acceleration_driver_ids(model, context, plan, family, axis)
         records.append(
-            family.driver(
+            AccelerationConstraint(
                 id=spec_id,
                 subspace=axis.subspace,
                 axis=quantities.AXIS_BY_NAME.get(axis.frame_axis),
@@ -1155,7 +1052,7 @@ def motion_drivers(model, context, solver: URIRef) -> list:
     """
     plans = context.controllers_by_solver.get(solver, ())
     family = context.algorithm_by_solver[solver]
-    driven = hasattr(family, "payload")
+    driven = family.driver_field is not None
     accelerations = (
         [
             record
@@ -1184,13 +1081,14 @@ def motion_drivers(model, context, solver: URIRef) -> list:
                 for force in model.graph.objects(node, SLV["joint-force"])
             ],
             has_cartesian_force=bool(list(model.graph.objects(node, SLV["cartesian-force"]))),
+            handler=model.id(model.graph.value(node, PROV.wasDerivedFrom)),
             **driver_slots,
         )
         for node in model.graph.objects(solver, SLV["motion-drivers"])
     ]
 
 
-def _bind_alignment_band(model, plan, closure) -> None:
+def _bind_alignment_band(model, plan, function) -> None:
     """Give an alignment's rotation-vector op the angle it is allowed to keep.
 
     The ops are one set for the whole model, so two motions banding the same alignment
@@ -1199,44 +1097,52 @@ def _bind_alignment_band(model, plan, closure) -> None:
     Raises:
         ConstraintViolation: two motions state different bands for one alignment.
     """
-    if closure is None:
+    if function is None:
         return
     upper = model.graph.value(plan.constraint, CSTR["upper-threshold"])
     band = model.id(upper) if upper is not None else None
-    if "band" in closure and closure["band"] != band:
+    if "band" in function and function["band"] != band:
         raise ConstraintViolation(
             "constraint-handler",
-            f"alignment '{closure['id']}' is banded differently by two motions "
-            f"('{closure['band']}' and '{band}'); state one band for it.",
+            f"alignment '{function['id']}' is banded differently by two motions "
+            f"('{function['band']}' and '{band}'); state one band for it.",
         )
-    closure["band"] = band
+    function["band"] = band
 
 
-def augment_closures(model, context, closures: dict) -> None:
-    """Replace the graph-expanded controller closures with the authored semantic derivations.
+def augment_functions(model, context, functions: dict) -> None:
+    """Replace the graph-expanded controller functions with the authored semantic derivations.
 
-    In place: the controller nodes the operator walk found are removed, and one closure per
+    In place: the controller nodes the operator walk found are removed, and one function per
     derived controller takes their place, plus the pose-difference evaluator a per-axis command
     needs.
     """
     graph = model.graph
     for plans in context.controllers_by_handler.values():
         for plan in plans:
-            ids = _solver_ids(model, context, plan)
-            closures.pop(model.id(plan.controller), None)
+            ids = SolverIdFactory(model, plan.controller)
+            functions.pop(model.id(plan.controller), None)
             for controller in context.controllers_for(plan):
-                closures.pop(controller.id, None)
-                closures[controller.id] = {
+                functions.pop(controller.id, None)
+                error = controller.error_signal
+                reference = (
+                    controller.reference_signal
+                    if isinstance(controller, FeedForwardController)
+                    else None
+                )
+                derivative = (
+                    controller.measured_derivative
+                    if isinstance(controller, PIDController)
+                    else None
+                )
+                functions[controller.id] = {
                     "id": controller.id,
                     "type": "Controller",
-                    "error_signal": getattr(getattr(controller, "error_signal", None), "id", None),
-                    "reference_signal": getattr(
-                        getattr(controller, "reference_signal", None), "id", None
-                    ),
-                    "measured_derivative": getattr(
-                        getattr(controller, "measured_derivative", None), "id", None
-                    ),
+                    "error_signal": error.id if isinstance(error, Quantity) else None,
+                    "reference_signal": reference.id if isinstance(reference, Quantity) else None,
+                    "measured_derivative": derivative.id if derivative is not None else None,
                     "control_signal": controller.control_signal.id,
+                    "gradient_norm": controller.gradient_norm,
                 }
             if len(plan.axes) <= 1:
                 continue
@@ -1245,14 +1151,14 @@ def augment_closures(model, context, closures: dict) -> None:
             # cone, so the op carries the band and returns only the rotation beyond it.
             rotation_op = alignment_rotation_op(model, graph.value(plan.constraint, CSTR.quantity))
             if rotation_op is not None:
-                _bind_alignment_band(model, plan, closures.get(model.id(rotation_op)))
+                _bind_alignment_band(model, plan, functions.get(model.id(rotation_op)))
                 continue
             target = graph.value(plan.view, MAP.superobject)
             reference = graph.value(plan.constraint, CSTR["reference-value"])
             reference_view = quantities.view_of(graph, reference)
             if reference_view is not None:
                 reference = graph.value(reference_view, MAP.superobject)
-            closures[ids.pose_evaluator()] = {
+            functions[ids.pose_evaluator()] = {
                 "id": ids.pose_evaluator(),
                 "type": "PoseDiffEvaluator",
                 "in1": model.id(target),
@@ -1280,7 +1186,7 @@ def augment_data(model, context, data: list, views: dict) -> None:
             derived_ids.update(controller.control_signal.id for controller in controllers)
             if len(plan.axes) <= 1:
                 continue
-            ids = _solver_ids(model, context, plan)
+            ids = SolverIdFactory(model, plan.controller)
             rotation_op = alignment_rotation_op(model, graph.value(plan.constraint, CSTR.quantity))
             if rotation_op is not None:
                 vector = quantities.quantity(model, graph.value(rotation_op, GEOM_OP.out))
@@ -1341,42 +1247,46 @@ def augment_data(model, context, data: list, views: dict) -> None:
     data.extend(signals)
 
 
-def annotate_controller_signals(controllers, closures: dict, evaluators=()) -> None:
+def annotate_controller_signals(controllers, functions: dict, evaluators=()) -> None:
     """Fold the measured and setpoint signal ids onto each controller record.
 
-    Abstract ids only, taken from the error-evaluator closure that feeds the controller; the C++
+    Abstract ids only, taken from the error-evaluator function that feeds the controller; the C++
     access expression is the view's to render.
     """
     error_sources = {
-        closure["error"]: closure
-        for closure in closures.values()
-        if closure.get("type") == "ErrorEvaluator" and closure.get("error")
+        function["error"]: function
+        for function in functions.values()
+        if function.get("type") == "ErrorEvaluator" and function.get("error")
     }
     # This motion's own evaluators, by the constraint they evaluate: a deduplicated constraint
-    # shares its id across motions, so the global closures cannot disambiguate.
+    # shares its id across motions, so the global functions cannot disambiguate.
     sources_by_constraint = {
-        constraint_id: closure
+        constraint_id: function
         for evaluator in evaluators
-        if (constraint_id := getattr(getattr(evaluator, "constraint", None), "id", None))
-        and (closure := closures.get(evaluator.id))
+        if evaluator.constraint is not None
+        and (constraint_id := evaluator.constraint.id)
+        and (function := functions.get(evaluator.id))
     }
     for controller in controllers:
-        error = getattr(controller, "error_signal", None)
-        source = error_sources.get(error if isinstance(error, str) else getattr(error, "id", None))
+        error = controller.error_signal
+        error_id = error.id if isinstance(error, Quantity) else error
+        source = error_sources.get(error_id)
         if source is None:
             # A feed-forward controller consumes no error, but its constraint's evaluator still
             # says what is measured against what -- fold those on so the logged slot carries the
             # real values instead of zeros.
-            source = sources_by_constraint.get(getattr(controller, "constraint", None))
+            source = sources_by_constraint.get(controller.constraint)
             if source is not None and error is None and source.get("error"):
                 controller.error_signal = source["error"]
         source = source or {}
-        reference = getattr(controller, "reference_signal", None)
-        setpoint_id = (
-            reference
-            if isinstance(reference, str)
-            else getattr(reference, "id", None) or source.get("reference_value")
+        reference = (
+            controller.reference_signal if isinstance(controller, FeedForwardController) else None
         )
+        if isinstance(reference, str):
+            setpoint_id = reference
+        else:
+            reference_id = reference.id if isinstance(reference, Quantity) else None
+            setpoint_id = reference_id or source.get("reference_value")
         if source.get("quantity"):
             controller.measured_signal = source["quantity"]
         if setpoint_id:
@@ -1410,15 +1320,106 @@ CONTROLLER_GAIN_FIELDS = {
     ),
 }
 
-# The signals a controller binds, in the order their introspection rows are emitted.
-CONTROLLER_SIGNAL_ROLES = (
-    "error_signal",
-    "reference_signal",
-    "measured_derivative",
-    "control_signal",
-    "measured_signal",
-    "setpoint_signal",
-)
+
+def add_controller_state(model, functions: dict, algorithm_data: list, motions) -> None:
+    """Give each stateful controller the D-blocks it keeps between ticks.
+
+    A value the controller integrates is a runtime value like any other: without a slot it cannot
+    be reported, and its step call has nowhere to keep it.
+    """
+    state_by_controller = {
+        controller.id: CONTROLLER_STATE_FIELDS[controller.type]
+        for motion in motions
+        for controller in motion.controllers
+        if controller.type in CONTROLLER_STATE_FIELDS
+    }
+    present = {item.id for item in algorithm_data}
+    for function in functions.values():
+        fields = (
+            state_by_controller.get(function["id"])
+            if function.get("type") == "Controller"
+            else None
+        )
+        if not fields:
+            continue
+        # Through the registry, not the graph: a per-axis controller is itself derived.
+        parent = model.iri_of(function["id"])
+        if parent is None:
+            raise RuntimeError(
+                f"controller internal state: '{function['id']}' has no IRI to derive from"
+            )
+        samples = []
+        for state in fields:
+            member_id = f"{function['id']}_{state.name}"
+            if member_id not in present:
+                present.add(member_id)
+                algorithm_data.append(
+                    DataValue(
+                        id=member_id,
+                        type=state.type,
+                        role="controller_internal_state",
+                        controller=function["id"],
+                        state=state.name,
+                    )
+                )
+            model.register_derived(member_id, parent, state.name, PROV.wasDerivedFrom)
+            samples.append({"id": member_id, "getter": state.getter})
+        function["internal_state_samples"] = samples
+
+
+def add_control_parameters(model, functions: dict, algorithm_data: list, motions) -> None:
+    """Give every authored control parameter a D-block the step call reads.
+
+    A gain baked into a constructor can neither be reported nor vary; as a D-block it has a
+    producer -- authored, so written once -- and is recorded once for the run.
+    """
+    controller_by_id = {
+        controller.id: controller for motion in motions for controller in motion.controllers
+    }
+    present = {item.id for item in algorithm_data}
+    for function in functions.values():
+        # An admittance's parameters are authored quantities the function already names, so they
+        # are D-blocks on their own; publishing them again would be a second source of truth.
+        if function.get("type") != "Controller":
+            continue
+        controller = controller_by_id.get(function["id"])
+        gains = CONTROLLER_GAIN_FIELDS.get(controller.type if controller is not None else None)
+        if not gains:
+            continue
+        owner_id = function["id"]
+        parent = model.iri_of(owner_id)
+        if parent is None:
+            raise RuntimeError(f"control parameter: '{owner_id}' has no IRI to derive from")
+        function["controller_type"] = controller.type
+        function["gains"] = {}
+        for name, source, required in gains:
+            value = getattr(controller, source)
+            if value is None and required:
+                raise ConstraintViolation(
+                    "control", f"control parameter: '{owner_id}' authors no '{name}'"
+                )
+            member_id = f"{owner_id}_{name}"
+            if member_id not in present:
+                present.add(member_id)
+                algorithm_data.append(
+                    DataValue(
+                        id=member_id,
+                        type="Quantity",
+                        value=float(value) if value is not None else 0.0,
+                        role="control_parameter",
+                        owner=owner_id,
+                        parameter=name,
+                    )
+                )
+            model.register_derived(member_id, parent, name, PROV.wasDerivedFrom)
+            function["gains"][name] = member_id
+        # The bounds are authored shared quantities already; the call site reads them by id. Both
+        # cross here: the reader binds them to the same signal, and a bound that stops at the
+        # controller record is a limit the model authored and the robot never sees.
+        function["integral_saturation"] = (
+            controller.integral_saturation if isinstance(controller, PIDController) else None
+        )
+        function["output_saturation"] = controller.output_saturation
 
 
 def saturation(model, node) -> Saturation:
@@ -1427,7 +1428,6 @@ def saturation(model, node) -> Saturation:
     Raises:
         ConstraintViolation: the node is not a Saturation.
     """
-    model.expect_type(node, ALGO_EXT.Saturation)
     graph = model.graph
     bounds = [
         graph.value(node, predicate)
@@ -1453,7 +1453,6 @@ def saturation(model, node) -> Saturation:
 
 def joint_force_specification(model, node) -> JointForceSpecification:
     """An authored joint-space force: the wrench id it applies and the joint it acts on."""
-    model.expect_type(node, SLV["JointForceSpecification"])
     force = model.graph.value(node, SLV["force"])
     joint = model.graph.value(node, SLV["attached-to"])
     return JointForceSpecification(
@@ -1464,18 +1463,18 @@ def joint_force_specification(model, node) -> JointForceSpecification:
 
 
 def cartesian_force_specification(model, node) -> CartesianForceSpecification:
-    """An authored Cartesian force: the wrench it applies and the body it acts on."""
-    model.expect_type(node, SLV["CartesianForceSpecification"])
+    """An authored Cartesian force: the wrench it applies, the body it acts on, and the
+    controller it derives from."""
     return CartesianForceSpecification(
         model.id(node),
         quantities.wrench(model, model.graph.value(node, SLV["force"])),
         quantities.simplicial_complex(model, model.graph.value(node, SLV["attached-to"])),
+        model.id(model.graph.value(node, PROV.wasDerivedFrom)),
     )
 
 
 def authored_motion_drivers(model, node) -> MotionDrivers:
     """The drivers a solver authors directly, before its controllers are derived."""
-    model.expect_type(node, SLV["MotionDrivers"])
     cartesian = [
         cartesian_force_specification(model, force)
         for force in model.graph[node : SLV["cartesian-force"]]
@@ -1490,6 +1489,7 @@ def authored_motion_drivers(model, node) -> MotionDrivers:
             for force in model.graph[node : SLV["joint-force"]]
         ],
         has_cartesian_force=bool(cartesian),
+        handler=model.id(model.graph.value(node, PROV.wasDerivedFrom)),
     )
 
 
@@ -1497,13 +1497,8 @@ def alignment_chain_ops(model, quantity):
     """The rotate-direction and angle ops producing the alignment angle `quantity`, in
     dependency order, or `[]` when `quantity` is not an alignment angle."""
     graph = model.graph
-    angle_op = next(
-        (
-            op
-            for op in graph.subjects(GEOM_OP.angle, quantity)
-            if GEOM_OP.PlanarAngleFromDirections in get_node_types(graph, op)
-        ),
-        None,
+    angle_op = ensure_one_typed_subject_uri(
+        graph, quantity, GEOM_OP.angle, GEOM_OP.PlanarAngleFromDirections
     )
     if angle_op is None:
         return []
@@ -1521,25 +1516,24 @@ def _alignment_op(model, quantity, type_):
     reading the same two rotated/reference directions -- or None when `quantity` is not one.
     """
     graph = model.graph
-    angle_op = next(
-        (
-            op
-            for op in graph.subjects(GEOM_OP.angle, quantity)
-            if GEOM_OP.PlanarAngleFromDirections in get_node_types(graph, op)
-        ),
-        None,
+    angle_op = ensure_one_typed_subject_uri(
+        graph, quantity, GEOM_OP.angle, GEOM_OP.PlanarAngleFromDirections
     )
     if angle_op is None:
         return None
     directions = set(graph.objects(angle_op, GEOM_OP["from-directions"]))
-    return next(
-        (
-            op
-            for op in graph.subjects(RDF.type, type_)
-            if {graph.value(op, GEOM_OP.in1), graph.value(op, GEOM_OP.in2)} == directions
-        ),
-        None,
-    )
+    paired = [
+        op
+        for op in graph.subjects(RDF.type, type_)
+        if {graph.value(op, GEOM_OP.in1), graph.value(op, GEOM_OP.in2)} == directions
+    ]
+    if len(paired) > 1:
+        raise ConstraintViolation(
+            "control",
+            f"{len(paired)} '{local_name(type_)}' ops read the directions of '{quantity}' -- one "
+            "pairs with its angle",
+        )
+    return paired[0] if paired else None
 
 
 def alignment_rotation_op(model, quantity):

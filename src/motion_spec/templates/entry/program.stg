@@ -1,0 +1,599 @@
+// SPDX-License-Identifier: MPL-2.0
+// The program: main.cpp and the algorithm data header.
+
+import "runtime.stg"
+import "../resources/mobile_base.stg"
+import "../communication/ros.stg"
+import "../coordination/fsm.stg"
+import "../coordination/motion.stg"
+import "../computation/values.stg"
+
+main_source(configuration, resources, composition, computation, coordination, communication) ::= <<
+#include "runtime.hpp"
+#include "algorithm_data.hpp"
+#include "telemetry_model.hpp"
+<if(resources.by_kind.mobile_base)>
+#include "mobile_base_cycle.hpp"
+<endif>
+<coordination.motions:{motion | <motion-include(motion)>}; separator="\n">
+
+<app-chain-includes(resources.driven, resources, communication.ros, composition.scene.cameras)>
+#include \<unistd.h\>
+<if(composition.sampling)>
+#include "robot_config.hpp"
+#include \<chrono\>
+#include \<cstdint\>
+#include \<random\>
+<endif>
+
+<coordination.motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
+
+int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
+    motion_spec::runtime::install_stop_handlers();
+    motion_spec::runtime::tighten_timer_slack();
+    robot_io robot{};
+    algorithm_data data{};
+    motion_spec_event_buffer events{};
+<if(composition.sampling)>
+
+<sampling-draws(composition.sampling, configuration.platform.config)>
+<endif>
+<if(communication.ros)>
+
+<ros-setup(communication.ros)>
+<endif>
+<if(resources.by_kind.serial_chain)>
+
+<world-model-trees(resources)>
+<endif>
+<if(resources.driven)>
+
+<app-chain-setup(resources.by_kind.serial_chain, composition.scene, configuration.platform.config, communication.ros, resources.world_ports)>
+<endif>
+<if(resources.by_kind.serial_chain)>
+
+<world-model-wiring(resources, communication)>
+<configuration.config_poses:{pose |     data.<pose.id> = motion_spec::config::pose(robot_config, "<pose.config_key>");
+}><endif>
+<if(resources.by_kind.mobile_base)>
+
+<app-main-base-setup()>
+<endif>
+<coordination.motions:{motion | <motion-state-member(motion)>}; separator="\n">
+<if(resources.by_kind.mobile_base)>
+    mobile_base_state mobile_base_state_instance;
+<endif>
+<if(resources.by_kind.mobile_base)>
+
+<app-main-base-start()>
+<endif>
+<if(resources.by_kind.serial_chain)>
+<resources.by_kind.serial_chain:{solver |
+<robot-configure(solver)>
+}; separator="\n">
+<endif>
+
+<if(resources.by_kind.serial_chain)>
+<app-chain-post-setup(resources.by_kind.serial_chain, coordination.motions, configuration.agent_homes)>
+<resources.by_kind.serial_chain:{solver | <solver-init(solver)>}; separator="\n">
+<endif>
+<if(communication.ros)>
+<ros-joint-states-setup(communication.ros)>
+<ros-clock-setup(communication.ros)>
+<ros-tf-setup(communication.ros, resources)>
+<ros-spin-start()>
+<ros-publish-tick-locals(communication.ros)>
+<endif>
+
+    struct fsm_nbx *fsm = <coordination.fsm.cpp_namespace>::create_fsm();
+    if (!fsm) {
+<if(communication.ros)>
+        <ros-stop-before-loop(communication.ros)>
+<endif>
+        return 1;
+    \}
+    robot.fsm_events = fsm->eventData;
+
+<fsm-active-motion(coordination.motions, coordination.fsm)>
+<fsm-dispatch(coordination.motions, coordination.fsm)>
+
+    int _step = 0;
+    int _fsm_prev_state = -1;
+<if(composition.sampling)>
+<sampling-record(composition.sampling)>
+    motion_spec::telemetry::RunPublisher _telemetry(&_sampling_record);
+<else>
+    motion_spec::telemetry::RunPublisher _telemetry;
+<endif>
+<if(configuration.platform.simulated)>
+    // The operator asked to arm the run and press play.
+    if (_start_paused) _telemetry.start_paused();
+<endif>
+    timespec _next_tick{};
+    clock_gettime(CLOCK_MONOTONIC, &_next_tick);
+    double _prev_clock_s = 0.0;
+<if(configuration.platform.simulated)>
+    double _ctrl_speed_applied = 1.0;
+<endif>
+    while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
+<if(configuration.platform.simulated)>
+        const auto _ctrl = _telemetry.poll_control();
+        if (_ctrl.stop) motion_spec::runtime::request_stop(0);
+<if(resources.by_kind.serial_chain)>
+<app-chain-control-apply(resources.by_kind.serial_chain)>
+<endif>
+        if (_ctrl.pause && !_ctrl.step && !motion_spec::runtime::stop_requested()) {
+<if(resources.by_kind.serial_chain)>
+<app-chain-control-paused-step(resources.by_kind.serial_chain)>
+<endif>
+            // Skip the whole tick: the clock never advanced, so an FSM step or a frame here
+            // would be a duplicate, and the controllers would wind up against a frozen plant.
+            usleep(20000);
+            // The deadline is meaningless across a pause, and carrying a stale one would report
+            // the resuming tick as an overrun that never happened.
+            motion_spec::runtime::advance_uncapped(_next_tick);
+            continue;
+        \}
+<endif>
+        data.clock_time_s = <if(resources.driven)><clock-time-source()><else>motion_spec::runtime::monotonic_time_s()<endif>;
+<if(communication.ros.clock)>
+        robot.sim_time_s = data.clock_time_s;
+<endif>
+        // Integrators step with the time that actually elapsed, not the period we asked for: the
+        // loop sleeps to deadlines it can overrun. In sim the clock advances exactly one timestep
+        // per tick, so this equals the nominal period.
+        const double _dt_raw = (_step == 0)
+            ? motion_spec::runtime::kControlPeriodS
+            : data.clock_time_s - _prev_clock_s;
+        _prev_clock_s = data.clock_time_s;
+        data.dt_measured_s = std::clamp(_dt_raw, motion_spec::runtime::kDtClampMin,
+                                          motion_spec::runtime::kDtClampMax);
+<if(resources.by_kind.serial_chain)>
+<app-chain-loop-reset(resources.by_kind.serial_chain, coordination.fsm)>
+<endif>
+        if (static_cast\<int\>(fsm->currentStateIndex) != _fsm_prev_state) {
+            _fsm_prev_state = static_cast\<int\>(fsm->currentStateIndex);
+            std::cerr \<\< "[fsm] state   " \<\< <coordination.fsm.cpp_namespace>::STATE_URIS[fsm->currentStateIndex] \<\< std::endl;
+            // Leaving a state ends its motion's activation, so re-entering one is a fresh
+            // start: active_steps returns to 0 and any trajectory replans from the current
+            // pose instead of resuming the alpha it had when it was interrupted.
+<if(communication.ros)>
+<coordination.motions:{motion | <ros-action-cancel-on-exit(motion)>}>
+<endif>
+<coordination.motions:{motion |             <motion.id>_state_instance.active = false;<if(motion.has_when_gate)>
+            <motion.id>_state_instance.when_gate_open = false;<endif>}; separator="\n">
+        \}
+        if (fsm->currentStateIndex == fsm->endStateIndex) {
+<if(coordination.fsm.end_motion)>
+            // A motion bound to the end state holds the arm there; the run ends on the event its
+            // until monitor fires, which is the model saying it is done.
+            if (robot.fsm_events && (<coordination.motions:{m | <if(m.runs_in_end_state)><m.until_monitors:{mon | consume_event(robot.fsm_events, <mon.fsm_namespace>::<mon.event_name>)}; separator=" || "><endif>}>)) break;
+<else>
+            break;
+<endif>
+        \}
+        const int _active_motion = fsm_active_motion(fsm);
+<coordination.motions:{m | <fsm-motion-reentry(m, coordination.fsm)>}><if(communication.ros.action_server)>
+<ros-goal-arm-tick(coordination, communication.ros.action_server)>
+<endif>
+<if(coordination.fsm.step_event)>
+        // The heartbeat drives the FSM but is not recorded: the frame log is a time series, so
+        // every frame already *is* the tick (t, step, wall_ns, period_ns). Logging a per-tick
+        // event would restate that 24k times and leave last_event permanently pinned to it.
+        produce_event(fsm->eventData, <coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>);
+<endif>
+        // The freshness token every world read is checked against: one dispatch, one world
+        // update, one set of poses that the whole cycle's reads agree on.
+        robot.control_cycle = static_cast\<std::uint64_t\>(_step);
+<if(resources.by_kind.mobile_base)>
+        // Composes the platform twist from the hub rates before anything reads it: a monitor
+        // on the base's motion is evaluated on this tick's measurement, not the last.
+        update_mobile_base(mobile_base_state_instance, data, robot);
+<endif>
+<if(resources.by_kind.serial_chain)>
+<world-state-block(resources.world_observations, resources.by_kind.serial_chain, resources.by_id)>
+<endif>
+<if(coordination.perturbations)>
+<perturbation-clear-block(coordination.perturbations)>
+<endif>
+        fsm_dispatch(fsm);
+<if(resources.by_kind.mobile_base)>
+        // The active motion's controllers have written the platform wrench by now; distribute it
+        // over the drives and hand the hub torques to whatever is driving them.
+        control_mobile_base(mobile_base_state_instance, data, robot, _active_motion);
+        apply_mobile_base(mobile_base_state_instance, data, robot);
+<endif>
+<if(coordination.perturbations)>
+<perturbation-write-block(coordination.perturbation_bodies)>
+<endif>
+<if(communication.ros)>
+<ros-publish-tick(coordination, communication, computation.views)>
+<endif>
+<if(resources.by_kind.serial_chain)>
+<app-chain-trace-update(resources.by_kind.serial_chain, configuration.trace)>
+<if(coordination.perturbations)>
+<perturbation-arrows(coordination.perturbations, configuration.trace)>
+<endif>
+<app-chain-runtime-step(resources.by_kind.serial_chain, "_active_motion")>
+<endif>
+<if(resources.base_owns_runtime)>
+<base-runtime-step()>
+<endif>
+        const unsigned int _fsm_state_before = fsm->currentStateIndex;
+        fsm_step_nbx(fsm);
+        reconfig_event_buffers(fsm->eventData);
+        // After the swap, currentEvents holds exactly what this tick produced -- by a monitor,
+        // a reaction chain, or a goal -- each flag current for one cycle. Recording here, the
+        // one point every producer routes through, is what makes the log carry every fire, and
+        // enum value == log index: coord-dsl's fsm_ir.json numbers both.
+        // The heartbeat stays excluded as ever; the transition it causes is recorded below.
+        for (unsigned int _e = 0; _e \< fsm->eventData->numEvents; ++_e) {
+<if(coordination.fsm.step_event)>            if (_e == static_cast\<unsigned int\>(<coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>)) continue;
+<endif>            if (fsm->eventData->currentEvents[_e]) events.record(static_cast\<int\>(_e));
+        \}
+<coordination.fsm.step_transitions:{t |         // The clock is this transition's guard, so this one heartbeat is the cause of the
+        // state change -- record it, unlike the 24k that drive nothing.
+        if (_fsm_state_before == <coordination.fsm.cpp_namespace>::<t.from> && fsm->currentStateIndex == <coordination.fsm.cpp_namespace>::<t.to>) {
+            events.record(static_cast\<int\>(<coordination.fsm.cpp_namespace>::<coordination.fsm.step_event>));
+        \}}; separator="\n">
+        static_cast\<void\>(_fsm_state_before);
+<if(resources.by_kind.serial_chain)>
+<app-chain-camera-publish(composition.scene.cameras, communication.ros)>
+<endif>
+        // The frame's t is the platform clock: simulation time under MuJoCo, so a log is the
+        // same regardless of how fast the host stepped it; wall_ns stays alongside for wall
+        // anchoring.
+        _telemetry.begin_tick(
+            data.clock_time_s,
+            static_cast\<std::uint64_t\>(_step),
+            _active_motion,
+            static_cast\<int\>(fsm->currentStateIndex));
+        _telemetry.event_occurrences(events.count, events.buffer, events.size);
+        motion_spec::telemetry::sample_model(
+            _telemetry,
+            _active_motion,
+            data);
+<if(resources.by_kind.serial_chain)>
+<app-chain-telemetry-sample(resources.by_kind.serial_chain)>
+<endif>
+        _telemetry.end_tick();
+        ++_step;
+        // One pacer for this loop. The real-time factor scales the period rather than adding a
+        // second sleep somewhere else: in simulation it is the viewer's live setting, so the
+        // speed keys work mid-run; on hardware it is 1.0.
+        const double _rtf = <if(resources.driven)><loop-rtf-source()><else>1.0<endif>;
+        if (_rtf > 0.0) {
+            motion_spec::runtime::sleep_until_next(
+              _next_tick, static_cast\<long>(<configuration.control_period_ns> / _rtf));
+        \} else {
+            motion_spec::runtime::advance_uncapped(_next_tick);
+        \}
+    }
+    _telemetry.close();
+<if(resources.by_kind.serial_chain)>
+<app-chain-camera-cleanup(composition.scene.cameras)>
+<endif>
+<if(resources.driven)>
+
+<app-chain-cleanup(resources.driven)>
+<endif>
+<if(resources.by_kind.serial_chain)>
+<resources.by_kind.serial_chain:{solver |
+<robot-shutdown(solver)>
+}; separator="\n">
+<endif>
+<if(resources.by_kind.mobile_base)>
+<app-main-base-stop()>
+<endif>
+    <coordination.fsm.cpp_namespace>::destroy_fsm(fsm);
+<if(communication.ros)>
+
+<ros-shutdown(communication.ros)>
+<endif>
+
+    if (motion_spec::runtime::overrun_count() > 0) {
+        std::cerr \<\< "[run] " \<\< motion_spec::runtime::overrun_count() \<\< " of " \<\< _step
+                  \<\< " cycles overran the control period" \<\< std::endl;
+    \}
+    if (motion_spec::runtime::stop_requested()) {
+        std::cerr \<\< "[run] interrupted; frame log closed at step " \<\< _step \<\< std::endl;
+        return 130;
+    \}
+    return 0;
+}
+>>
+
+// What a backend with no fieldbus to start, or nothing to draw, leaves empty.
+app-main-base-start() ::= <<>>
+app-main-base-stop() ::= <<>>
+perturbation-arrows(perturbations, trace) ::= <<>>
+
+// Every distinct scene tree, built once, into the one world model. A tree several robots share
+// is still one tree, and a tree no serial-chain solver commands is still part of the world.
+world-model-trees(resources) ::= <<
+    motion_spec::runtime::WorldKinematics world;
+    std::string world_error;
+<resources.world_trees:{tree |     KDL::Tree world_tree_<tree.cpp_name>{\};
+    if (!<tree.namespace>::make_tree_<tree.cpp_name>(&world_tree_<tree.cpp_name>)) {
+        std::cerr \<\< "make_tree_<tree.cpp_name>() failed" \<\< std::endl;
+        return 1;
+    \}
+<tree.sampled_frames:{frame | <drawn-frame-segment(tree, frame)>}; separator="\n">
+    if (!world.add_tree(world_tree_<tree.cpp_name>, world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}}; separator="\n">
+>>
+
+// A frame the run draws the position of joins its tree here, under the frame its pose is
+// stated against, once the draw is known.
+drawn-frame-segment(tree, frame) ::= <<
+    if (!world_tree_<tree.cpp_name>.addSegment(
+          KDL::Segment("<frame.name>", KDL::Joint(KDL::Joint::None),
+            KDL::Frame(KDL::Rotation::Quaternion(<frame.rotation; separator=", ">),
+                       KDL::Vector(<frame.draw>_draw[0], <frame.draw>_draw[1], <frame.draw>_draw[2]))),
+          "<frame.parent>")) {
+        std::cerr \<\< "no segment <frame.parent> to attach <frame.name> to" \<\< std::endl;
+        return 1;
+    }
+>>
+
+// Drawn once, before anything reads them. A draw is scaled to SI here, so the program sees the
+// quantity as it sees an authored one.
+sampling-draws(sampling, config_path) ::= <<
+    const std::uint64_t sampling_seed = motion_spec::config::sampling_seed("<config_path>");
+    std::mt19937_64 sampling_rng(sampling_seed);
+    const std::int64_t sampling_drawn_at_ns = std::chrono::duration_cast\<std::chrono::nanoseconds\>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+<sampling:{s | <sampling-draw(s)>}; separator="\n">
+>>
+
+sampling-draw(s) ::= <<
+    double <s.id>_draw[<s.size>];
+<s.components:{c |     <s.id>_draw[<i0>] = <s.scale> * std::<s.dist>_distribution\<double\>(<c.a>, <c.b>)(sampling_rng);}; separator="\n">
+<if(s.data_member)>    data.<s.data_member> = <s.id>_draw[0];<endif>
+>>
+
+sampling-record(sampling) ::= <<
+    motion_spec::telemetry::log::FrameLogRecord _sampling_record;
+    _sampling_record.mutable_sampling()->set_seed(sampling_seed);
+    _sampling_record.mutable_sampling()->set_drawn_at_ns(sampling_drawn_at_ns);
+<sampling:{s | <sampling-record-draw(s)>}; separator="\n">
+>>
+
+sampling-record-draw(s) ::= <<
+    {
+        auto *draw = _sampling_record.mutable_sampling()->add_draws();
+        draw->set_quantity("<s.uri>");
+        for (const double value : <s.id>_draw) draw->add_values(value);
+    }
+>>
+
+// Wired after the backends have assigned their driver pointers, because binding takes the
+// address the driver already writes its measurement to. Every name is resolved here, so the
+// control loop only ever indexes.
+world-model-wiring(resources, communication) ::= <<
+    robot.world = &world;
+<resources.by_kind.serial_chain:{solver | <chain-port-wiring(solver)>}; separator="">
+<resources.world_ports.free_roots:{port | <free-root-port-wiring(port)>}; separator="\n">
+<resources.world_ports.joints:{port | <joint-port-wiring(port)>}; separator="\n">
+<resources.world_ports.aux_cmds:{port | <aux-cmd-port-wiring(port)>}; separator="\n">
+<resources.world_ports.wrench_cmds:{port | <wrench-cmd-port-wiring(port)>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <world-solver-wiring(solver)>}; separator="\n">
+<resources.world_frames:{frame | <world-frame-wiring(frame)>}; separator="\n">
+<resources.world_observations:{obs | <ft-load-wiring(obs)>}; separator="\n">
+<communication.ros.subscriptions:{s | <ros-subscription-wiring(s)>}; separator="\n">
+    if (!world.seal(world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+>>
+
+// One row per chain joint of the runtime: the addresses its owner already reads and writes, so
+// the world model, the solvers and the backend are readers of one buffer rather than copies.
+chain-port-wiring(solver) ::= <<
+<if(solver.runtime.owner)><solver.chain.joints:{joint |     robot.ports_<solver.runtime.id>[<i0>] = <world-chain-port-address(solver, i0)>;
+}><endif>
+>>
+
+// A port a backend has no provider for renders a null address, which startup refuses: the model
+// asks for a reading this platform cannot take.
+world-port-none(port) ::= "nullptr"
+
+free-root-port-wiring(port) ::= <<
+    robot.free_root_<port.slot> = <world-port-address("free_root", port)>;
+    robot.free_root_<port.slot>_seq = <world-port-address("free_root_seq", port)>;
+    if (!robot.free_root_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no free_root source on <backend-name()>" \<\< std::endl;
+        return 1;
+    \}
+    if (!world.bind_base("<port.segment>", robot.free_root_<port.slot>, world_error)
+            || !world.require_base("<port.segment>", world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+>>
+
+joint-port-wiring(port) ::= <<
+    robot.world_joint_<port.slot> = <world-port-address("joint", port)>;
+    robot.world_joint_<port.slot>_velocity = <world-port-address("joint_velocity", port)>;
+    if (!robot.world_joint_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no joint source on <backend-name()>" \<\< std::endl;
+        return 1;
+    \}
+<if(port.segment)>    if (!world.bind_joint("<port.segment>", robot.world_joint_<port.slot>, world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+<endif>
+>>
+
+aux-cmd-port-wiring(port) ::= <<
+    robot.aux_cmd_<port.slot> = <world-port-address("aux_cmd", port)>;
+    if (!robot.aux_cmd_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no aux_cmd source on <backend-name()>" \<\< std::endl;
+        return 1;
+    \}
+>>
+
+wrench-cmd-port-wiring(port) ::= <<
+    robot.wrench_cmd_<port.slot> = <world-port-address("wrench_cmd", port)>;
+    if (!robot.wrench_cmd_<port.slot>) {
+        std::cerr \<\< "[world] '<port.mapping>' has no wrench_cmd source on <backend-name()>" \<\< std::endl;
+        return 1;
+    \}
+>>
+
+world-solver-wiring(solver) ::= <<
+    robot.<solver.id>.world_root = world.index_of("<solver.chain.world_root>");
+    robot.<solver.id>.world_tip = world.index_of("<solver.chain.world_tip>");
+    if (robot.<solver.id>.world_root \< 0 || robot.<solver.id>.world_tip \< 0) {
+        std::cerr \<\< "[world] solver '<solver.id>' runs from '<solver.chain.world_root>' to '<solver.chain.world_tip>', which the world model does not hold" \<\< std::endl;
+        return 1;
+    \}
+<solver.chain.joint_segments:{segment |     if (!world.bind_joint("<segment>", robot.ports_<solver.runtime.id>[<i0>].position, world_error)
+            || !world.bind_joint_velocity("<segment>", robot.ports_<solver.runtime.id>[<i0>].velocity, world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}}; separator="\n">
+    if (!world.require_path(robot.<solver.id>.world_root, robot.<solver.id>.world_tip, world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+>>
+
+// Only a sensed wrench has a sensor frame to hang a load off; every other observation -- an
+// estimated wrench included -- renders nothing here. Keyed on the frame, since an absent name
+// is an empty string, which the template engine reads as present.
+ft-load-wiring(obs) ::= <<
+<if(obs.out.sensor_frame)>    if (!world.load_on(robot.world_<obs.owner_id>_<obs.out.sensor_frame.id>, robot.ft_<obs.out.sensor_name>_load, world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+<endif>
+>>
+
+world-frame-wiring(frame) ::= <<
+    robot.world_<frame.solver_id>_<frame.frame_id> = world.index_of("<frame.segment_name>");
+    if (robot.world_<frame.solver_id>_<frame.frame_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<frame.segment_name>'" \<\< std::endl;
+        return 1;
+    \}
+<if(frame.tree_root)>
+    // On another branch of the chain's tree: the joints that place it run from the tree root.
+    if (!world.require_path(world.index_of("<frame.tree_root>"), robot.world_<frame.solver_id>_<frame.frame_id>, world_error)) {
+<else>
+    if (!world.require_path(robot.<frame.solver_id>.world_root, robot.world_<frame.solver_id>_<frame.frame_id>, world_error)) {
+<endif>
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}
+>>
+
+algorithm_data_header(configuration, resources, computation, coordination, communication) ::= <<
+#pragma once
+
+#include "frame_layout.h"
+#include "runtime.hpp"
+#include "coord2b/functions/event_loop.h"
+#include "coord2b/functions/fsm.h"
+#include "<coordination.fsm.header>"
+
+#include \<limits\>
+#include \<memory\>
+<if(communication.ros)>
+<ros-includes(communication.ros)>
+<endif>
+#include \<kdl/frames.hpp\>
+<if(resources.by_kind.serial_chain)>
+#include \<kdl/chain.hpp\>
+#include \<kdl/jacobian.hpp\>
+#include \<kdl/jntarray.hpp\>
+#include \<kdl/chainfksolverpos_recursive.hpp\>
+#include \<kdl/chainfksolvervel_recursive.hpp\>
+<if(computation.uses.("SolverACHD"))>
+#include \<kdl/chainhdsolver_vereshchagin.hpp\>
+<endif>
+#include \<kdl/chainjnttojacsolver.hpp\>
+<endif>
+<if(resources.by_kind.serial_chain)><solver-rnea-include()><endif>
+<if(resources.by_kind.serial_chain)><robot-driver-include(first(resources.by_kind.serial_chain), resources)><endif>
+<if(resources.by_kind.mobile_base)>
+<mobile-base-driver-include()>
+<endif>
+
+
+<if(resources.by_kind.mobile_base)>
+<mobile-base-robot-struct()>
+<endif>
+
+<if(resources.by_kind.serial_chain)>
+<robot-state-struct(first(resources.by_kind.serial_chain))>
+
+<robot-manipulator-struct(first(resources.by_kind.serial_chain))>
+
+<resources.by_kind.serial_chain:{solver | <solver-state-struct(solver)>}; separator="\n\n">
+<endif>
+
+<if(resources.by_kind.serial_chain)>
+// One connector per physical variable of a chain joint, bound once at startup to the address its
+// resource owner already reads or writes. `seq` is the provider's write count where it keeps one.
+struct world_ports {
+    const double *position = nullptr;
+    const double *velocity = nullptr;
+    const double *effort = nullptr;
+    const std::uint64_t *seq = nullptr;
+    double *effort_cmd = nullptr;
+};
+<endif>
+
+struct robot_io {
+<if(resources.by_kind.mobile_base)>
+    mobile_base_robot mobile_base;
+<endif>
+    struct events *fsm_events = nullptr;
+<if(communication.ros)>
+<ros-io-members(communication.ros)>
+<endif>
+<resources.by_kind.serial_chain:{solver | <chain-robot-member(solver)>}; separator="\n">
+<resources.by_kind.serial_chain:{solver | <chain-port-member(solver)>}; separator="">
+<resources.by_kind.serial_chain:{solver | <if(solver.runtime.owner)><chain-device-members(solver)><endif>}; separator="">
+<resources.world_ports.free_roots:{port |     const KDL::Frame *free_root_<port.slot> = nullptr;   // <port.mapping>
+    const std::uint64_t *free_root_<port.slot>_seq = nullptr;}; separator="\n">
+<resources.world_ports.joints:{port |     const double *world_joint_<port.slot> = nullptr;   // <port.mapping>
+    const double *world_joint_<port.slot>_velocity = nullptr;}; separator="\n">
+<resources.world_ports.aux_cmds:{port |     double *aux_cmd_<port.slot> = nullptr;   // <port.mapping>}; separator="\n">
+<resources.world_ports.wrench_cmds:{port |     KDL::Wrench *wrench_cmd_<port.slot> = nullptr;   // <port.mapping>}; separator="\n">
+<if(resources.world_trees)>
+    // The one pose authority, and the cycle its poses were computed for.
+    motion_spec::runtime::WorldKinematics *world = nullptr;
+    std::uint64_t control_cycle = 0;
+<endif>
+<resources.world_frames:{frame |     int world_<frame.solver_id>_<frame.frame_id> = -1;}; separator="\n">
+};
+
+<event-buffer-struct()>
+
+struct algorithm_data {
+    <computation.data:{var | <data-member(var)>}; separator="\n">
+};
+>>
+
+// A self-transition's fired event re-enters the state's motion: entry runs again, so a model
+// retries perception by authoring `fires` on the retry reaction.
+
+fsm-motion-reentry(m, fsm) ::= <<
+<if(m.reentry_events)>
+        if (fsm->currentStateIndex == <fsm.cpp_namespace>::<m.fsm_state>
+                && (<m.reentry_events:{e | consume_event(robot.fsm_events, <fsm.cpp_namespace>::<e>)}; separator=" || ">)) {
+<m.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">
+            <m.id>_state_instance.active = false;
+        \}
+<endif>
+>>
+
+// One array per runtime, not per solver record: the solvers sharing a chain read one set of ports.
+chain-port-member(solver) ::= <<
+<if(solver.runtime.owner)>    world_ports ports_<solver.runtime.id>[<length(solver.chain.joints)>];
+<endif>
+>>

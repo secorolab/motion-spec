@@ -48,90 +48,72 @@ class ConstraintEvaluator:
     type: str = field(default="ConstraintEvaluator")
 
 
-@dataclass
-class PIDController:
-    """A proportional-integral-derivative controller."""
+@dataclass(kw_only=True)
+class Controller:
+    """What every controller carries: its command, its signals, and the constraint it serves."""
 
     id: str
     control_signal: Quantity
+    output_saturation: Saturation | None = None
+    # Abstract signal ids folded from the error-evaluator function; the C++ access
+    # expression is rendered by access-expr (computation/values.stg).
+    measured_signal: str | None = None
+    setpoint_signal: str | None = None
+    # The band its constraint is satisfied within, as the model authored it.
+    tolerance_id: str = ""
+    # The shared norm of an expression's gradient: the error along the direction it drives is
+    # the expression's error divided by it.
+    gradient_norm: str | None = None
+    # The constraint this controller serves; per-axis controllers share the authored one.
+    constraint: str | None = None
+    constraint_uri: str | None = None
+
+
+@dataclass(kw_only=True)
+class PIDController(Controller):
+    """A proportional-integral-derivative controller."""
+
     error_signal: Quantity | None = None
     measured_derivative: Quantity | None = None
     proportional_gain: float | None = None
     integral_gain: float | None = None
     derivative_gain: float | None = None
     decay_rate: float | None = None
-    output_saturation: Saturation | None = None
     integral_saturation: Saturation | None = None
-    # Abstract signal ids folded from the error-evaluator closure; the C++ access
-    # expression is rendered backend-side by access-expr (shared_data.stg).
-    measured_signal: str | None = None
-    setpoint_signal: str | None = None
-    # The band its constraint is satisfied within, as the model authored it.
-    tolerance_id: str = ""
-    # The constraint this controller serves; per-axis controllers share the authored one.
-    constraint: str | None = None
-    constraint_uri: str | None = None
     type: str = "ProportionalIntegralDerivative"
 
 
-@dataclass
-class ImpedanceController:
+@dataclass(kw_only=True)
+class ImpedanceController(Controller):
     """An impedance controller."""
 
-    id: str
-    control_signal: Quantity
     error_signal: Quantity | None = None
     integral_gain: float | None = None
     stiffness: float | None = None
     damping: float | None = None
-    output_saturation: Saturation | None = None
-    measured_signal: str | None = None
-    setpoint_signal: str | None = None
-    # The band its constraint is satisfied within, as the model authored it.
-    tolerance_id: str = ""
-    # The constraint this controller serves; per-axis controllers share the authored one.
-    constraint: str | None = None
-    constraint_uri: str | None = None
     type: str = "ImpedanceController"
 
 
-@dataclass
-class FeedForwardController:
+@dataclass(kw_only=True)
+class FeedForwardController(Controller):
     """A feed-forward controller."""
 
-    id: str
-    control_signal: Quantity
     reference_signal: Quantity | None = None
-    output_saturation: Saturation | None = None
     # Not consumed by the controller; folded from its constraint's evaluator so the logged
     # slot carries the real error instead of a zero.
     error_signal: str | None = None
-    measured_signal: str | None = None
-    setpoint_signal: str | None = None
-    # The band its constraint is satisfied within, as the model authored it.
-    tolerance_id: str = ""
-    # The constraint this controller serves; per-axis controllers share the authored one.
-    constraint: str | None = None
-    constraint_uri: str | None = None
     type: str = "FeedForwardController"
 
 
-Controller = PIDController | ImpedanceController | FeedForwardController
-
-
-@dataclass
-class LevelMonitor:
-    """A monitor that continuously sets a boolean flag from its constraint."""
+@dataclass(kw_only=True)
+class Monitor:
+    """What every monitor carries: the constraints it watches, its band, and what it publishes."""
 
     id: str
     monitor_type: str
     error: Quantity | None
-    flag: str | None
     # The band its constraint is satisfied within, when the model authored one.
     tolerance: Quantity | None = None
-    is_edge_triggered: bool = False
-    is_until_aggregate: bool = False
-    is_when_aggregate: bool = False
     # Set when the monitor targets an expression node: the member constraint ids it
     # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
@@ -146,57 +128,42 @@ class LevelMonitor:
     # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
     active_terms: list | None = None
-    active_terms_present: bool = False
     active_any: bool = False
     ros: RosPublication | None = None
     answer: RosGoalAnswer | None = None
+
+
+@dataclass(kw_only=True)
+class LevelMonitor(Monitor):
+    """A monitor that continuously sets a boolean flag from its constraint."""
+
+    flag: str | None
+    is_edge_triggered: bool = False
+    is_until_aggregate: bool = False
+    is_when_aggregate: bool = False
     type: str = field(default="LevelMonitor")
 
 
-@dataclass
-class EdgeMonitor:
+@dataclass(kw_only=True)
+class EdgeMonitor(Monitor):
     """A monitor that fires an FSM event on a rising edge of its constraint."""
 
-    id: str
-    monitor_type: str
-    error: Quantity | None
     event: str | None
     event_idx: int | None
-    # The band its constraint is satisfied within, when the model authored one.
-    tolerance: Quantity | None = None
     is_edge_triggered: bool = True
     is_until_aggregate: bool = field(default=False, metadata=INTERNAL)
     is_when_aggregate: bool = field(default=False, metadata=INTERNAL)
-    # Set when the monitor targets an expression node: the member constraint ids it
-    # aggregates, and whether they combine with 'any' rather than 'all'.
-    group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
-    group_constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
-    group_constraint_tolerances: list[str] = field(default_factory=list, metadata=INTERNAL)
-    # The constraints this monitor watches, by id: how a term read directly off shared state --
-    # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
-    constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
-    # The same constraints by URI, for joins against the model graph.
-    constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
-    group_any: bool = field(default=False, metadata=INTERNAL)
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
     # Its satisfied edge starts the motion it guards, inside that motion's own state.
     opens_gate: bool = False
     # The authored duration the constraint must hold before the edge fires, by id: the runtime
-    # accumulates measured cycle time against that shared value, so the model's bound has one
+    # accumulates measured cycle time against that D-block, so the model's bound has one
     # source of truth. None when absent.
     debounce_id: str | None = None
-    # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
-    has_active: bool = False
-    active_terms: list | None = None
-    active_terms_present: bool = False
-    active_any: bool = False
     # FSM binding (folded when the monitor's event lives in the FSM namespace).
     fsm_namespace: str | None = None
-    fsm_event_idx: int | None = None
-    ros: RosPublication | None = None
-    answer: RosGoalAnswer | None = None
     type: str = field(default="EdgeMonitor")
 
 
@@ -218,8 +185,6 @@ class RosPublication:
     pub_id: str | None = None
     on_satisfied: list[dict] = field(default_factory=list)
     on_violated: list[dict] = field(default_factory=list)
-    has_satisfied: bool = False
-    has_violated: bool = False
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
     # How often the verdict goes out, as the model states it and as the loop counts it. Without
@@ -254,9 +219,6 @@ class RosGoalAnswer:
     auto_context_id: list[str] = field(default_factory=list)
 
 
-Monitor = LevelMonitor | EdgeMonitor
-
-
 @dataclass
 class ConstraintHandler:
     """Binds a motion to its progress policy, evaluators, controllers and monitors."""
@@ -287,7 +249,7 @@ class Perturbation:
     applied_id: str
     active_id: str
     # The authored window length, by id: the runtime accumulates measured cycle time against that
-    # shared value. None when the window lasts until the state exits.
+    # D-block. None when the window lasts until the state exits.
     duration_id: str | None = None
     # The pose whose translation the force direction is normalized from, by id: the body-to-target
     # vector, which is what a guide line to the aimed-at point is drawn along. None when the
@@ -296,7 +258,6 @@ class Perturbation:
     has_gate: bool = False
     # Structured boolean terms, rendered by the same template a monitor's condition uses.
     terms: list = field(default_factory=list)
-    terms_present: bool = False
     gate_any: bool = False
     type: str = field(default="Perturbation")
 

@@ -29,16 +29,13 @@ from motion_spec.rdf_parser.model import local_name
 
 
 def nodes(model, handler_node) -> list:
-    """Every perturbation the handler arms, in a stable order."""
+    """Every perturbation the handler arms."""
     graph = model.graph
-    return sorted(
-        (
-            node
-            for node in graph.subjects(RDF.type, SIM["Perturbation"])
-            if graph.value(node, PROV.wasDerivedFrom) == handler_node
-        ),
-        key=str,
-    )
+    return [
+        node
+        for node in graph.subjects(RDF.type, SIM["Perturbation"])
+        if (node, PROV.wasDerivedFrom, handler_node) in graph
+    ]
 
 
 def wrench_node(model, node):
@@ -51,16 +48,14 @@ def wrench_node(model, node):
     return wrench
 
 
-def compose_ops(model, node) -> list:
+def compose_ops(model, node) -> set:
     """The op nodes writing the perturbation's wrench: one per authored component, or the sum
     that folds them. Walking back from these picks up the magnitudes and directions they read.
     """
     graph = model.graph
     wrench = wrench_node(model, node)
-    return sorted(
-        set(graph.subjects(RBDYN_OP["wrench"], wrench))
-        | set(graph.subjects(RBDYN_OP["out"], wrench)),
-        key=str,
+    return set(graph.subjects(RBDYN_OP["wrench"], wrench)) | set(
+        graph.subjects(RBDYN_OP["out"], wrench)
     )
 
 
@@ -72,12 +67,19 @@ def _target_pose(model, node):
     authored direction is normalized from nothing and aims at no particular point.
     """
     graph = model.graph
-    for op in graph.subjects(RBDYN_OP["wrench"], wrench_node(model, node)):
-        for direction in graph.objects(op, RBDYN_OP["direction"]):
-            for source in graph.subjects(GEOM_OP["direction"], direction):
-                if GEOM_OP["PoseToDirection"] in get_node_types(graph, source):
-                    return graph.value(source, GEOM_OP["pose"])
-    return None
+    poses = {
+        graph.value(source, GEOM_OP["pose"])
+        for op in graph.subjects(RBDYN_OP["wrench"], wrench_node(model, node))
+        for direction in graph.objects(op, RBDYN_OP["direction"])
+        for source in graph.subjects(GEOM_OP["direction"], direction)
+        if GEOM_OP["PoseToDirection"] in get_node_types(graph, source)
+    }
+    if len(poses) > 1:
+        raise ConstraintViolation(
+            "perturbation",
+            f"perturbation '{model.id(node)}' aims at {len(poses)} poses -- a force has one target",
+        )
+    return next(iter(poses), None)
 
 
 def gate_constraints(model, node) -> tuple[list, bool]:
@@ -87,9 +89,9 @@ def gate_constraints(model, node) -> tuple[list, bool]:
     motion's when section does; a single condition is held directly.
     """
     graph = model.graph
-    held = sorted(graph.objects(node, CSTR_EXT["has-constraint"]), key=str)
+    held = list(graph.objects(node, CSTR_EXT["has-constraint"]))
     if len(held) == 1:
-        inner = sorted(graph.objects(held[0], CSTR_EXT["has-constraint"]), key=str)
+        inner = list(graph.objects(held[0], CSTR_EXT["has-constraint"]))
         if inner:
             return inner, CSTR_EXT["ConstraintDisjunction"] in get_node_types(graph, held[0])
     return held, False
@@ -102,7 +104,7 @@ def evaluator_nodes(model, node) -> list:
     return [
         evaluator
         for constraint in constraints
-        for evaluator in sorted(graph.subjects(CSTR_HDL["constraint"], constraint), key=str)
+        for evaluator in graph.subjects(CSTR_HDL["constraint"], constraint)
         if CSTR_HDL["ConstraintEvaluator"] in get_node_types(graph, evaluator)
     ]
 

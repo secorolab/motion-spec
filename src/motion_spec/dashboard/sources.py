@@ -119,8 +119,8 @@ def check_syntax(path: Path) -> dict | None:
         # (an import that does not resolve, say) -- then there is no line worth pointing at.
         return {
             "ok": False,
-            "line": getattr(problem, "line", None) or None,
-            "column": getattr(problem, "col", None) or None,
+            "line": problem.line or None,
+            "column": problem.col or None,
             "message": _tidy(problem, path),
         }
     except RecursionError:
@@ -351,11 +351,6 @@ def open_source(value: str, name: str | None = None) -> dict:
     return {"opened": value, "editor": name}
 
 
-def _key(name: str | None) -> str:
-    """One spelling for a name authored with dashes and generated with underscores."""
-    return (name or "").replace("-", "_")
-
-
 def authored_lines(text: str) -> dict:
     """(motion, constraint) -> (line number, expression, authored motion name) per source line.
 
@@ -379,7 +374,12 @@ def authored_lines(text: str) -> dict:
         name, _, expression = line.partition(":")
         name, expression = name.strip(), expression.strip()
         if re.fullmatch(r"[\w-]+", name) and expression:
-            lines[(_key(motion), _key(name))] = (number, expression, motion)
+            # Authored with dashes, generated with underscores: one spelling keys both.
+            lines[((motion or "").replace("-", "_"), name.replace("-", "_"))] = (
+                number,
+                expression,
+                motion,
+            )
     return lines
 
 

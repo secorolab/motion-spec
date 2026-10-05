@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""The dynamics-solver family hierarchy, the one per-axis driver record both families derive,
-and the solvers built on top of them.
+"""Solver families, the per-axis driver record they derive, and the solvers built on them.
 
-`DynamicsSolverFamily` and its subclasses are never instantiated: they carry a family's
-behaviour as class-level attributes and a `payload()` factory, dispatched on with
-`issubclass()`/`hasattr()` rather than an isinstance check on a built object. The
-term -> family map stays in `rdf_parser/constraint_handler.py` -- `classes/` is RDF-free.
+The term -> family table lives in `rdf_parser/constraint_handler.py`: `classes/` is RDF-free.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 
 from motion_spec.classes.base import INTERNAL
 from motion_spec.classes.bindings import (
@@ -38,9 +36,8 @@ from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 class AccelerationConstraint:
     """An acceleration constraint (axis- or direction-aligned) on a solver.
 
-    One driver record for both solver families: `acceleration_energy` and `saturation`
-    are set only by `AccelerationEnergyDriven` (ACHD), `acceleration` only by
-    `CartesianAccelerationDriven` (RNE). Absent means the other family built this record --
+    One driver record for both driven families: `acceleration_energy` and `saturation` are set
+    only by ACHD, `acceleration` only by RNE. Absent means the other family built this record --
     no sentinel, the family that built it is the fact.
     """
 
@@ -60,86 +57,42 @@ class AccelerationConstraint:
     type: str = field(default="AccelerationConstraint")
 
 
-class DynamicsSolverFamily:
-    """Base of the solver-algorithm family hierarchy. Class attributes only; never instantiated,
-    never published.
+@dataclass(frozen=True, eq=False)
+class SolverFamily:
+    """What a solver algorithm accepts: the slot its acceleration drivers fill and their payload
+    per subspace, its axis limits, and whether it is only read or only forwards commands.
     """
 
-    codegen_name: str = ""
-    signal_prefix: str | None = None
-    driver: type | None = None
+    name: str = ""
     driver_field: str | None = None
     payload_field: str | None = None
-    id_tags: tuple[str, ...] = ()
+    # Subspace -> the payload's QUDT quantity kind and unit local names.
+    payload_kinds: dict = field(default_factory=dict)
     max_axes: int | None = None
     axes_must_be_distinct: bool = False
+    read_only: bool = False
+    forwards_commands: bool = False
 
-
-class AccelerationEnergyDriven(DynamicsSolverFamily):
-    """slv:AccelerationConstrainedHybridDynamicsAlgorithm.
-
-    Vereshchagin's acceleration-constrained hybrid dynamics is posed as a constrained
-    optimisation over Gauss's principle, so each constrained axis is driven by an acceleration
-    energy (N-m2/s2).
-    """
-
-    codegen_name = "ACHD"
-    signal_prefix = "eacc"
-    driver = AccelerationConstraint
-    driver_field = "acceleration_constraint"
-    payload_field = "acceleration_energy"
-    id_tags = ("acc-cstr", "eacc")
-    max_axes = 6
-    axes_must_be_distinct = True
-
-    @staticmethod
-    def payload(id: str, axis: Subspace) -> Quantity:
-        return Quantity(id, QuantityKind("AccelerationEnergy"), Unit("N_M2_PER_SEC2"), None, False)
-
-
-class CartesianAccelerationDriven(DynamicsSolverFamily):
-    """slv:RecursiveNewtonEulerAlgorithm. Driven by the Cartesian acceleration itself, linear or
-    angular depending on which half of the subspace the axis is in.
-    """
-
-    codegen_name = "RNE"
-    signal_prefix = "acc"
-    driver = AccelerationConstraint
-    driver_field = "cartesian_acceleration"
-    payload_field = "acceleration"
-    id_tags = ("cart-acc", "acc")
-
-    @staticmethod
-    def payload(id: str, axis: Subspace) -> Quantity:
-        kind, unit = (
-            ("LinearAcceleration", "M_PER_SEC2")
-            if axis == Subspace.Linear
-            else ("AngularAcceleration", "RAD_PER_SEC2")
+    def payload(self, id: str, subspace: Subspace) -> Quantity:
+        """The quantity one axis's driver carries, in this family's kind and unit."""
+        kind, unit = self.payload_kinds[subspace]
+        return Quantity(
+            id,
+            QuantityKind(kind, str(NS_MM_QUDT_QTY[kind])),
+            Unit(unit.replace("-", "_"), str(NS_MM_QUDT_UNIT[unit])),
+            None,
+            False,
         )
-        return Quantity(id, QuantityKind(kind), Unit(unit), None, False)
-
-
-class CommandForwarding(DynamicsSolverFamily):
-    """slv-ext:CommandForwardingSolver. Accepts no acceleration driver; a controller's output
-    forwards straight to a joint.
-    """
-
-    codegen_name = ""
-
-
-class Unsolved(DynamicsSolverFamily):
-    """Names no algorithm: nothing drives this solver, it is read for state and watched by
-    monitors.
-    """
 
 
 @dataclass
 class CartesianForceSpecification:
-    """A Cartesian force applied to a body."""
+    """A Cartesian force applied to a body, and the controller commanding it."""
 
     id: str
     force: Wrench
     attached_to: SimplicialComplex
+    controller: str
     type: str = field(default="CartesianForceSpecification")
 
 
@@ -157,11 +110,13 @@ class JointForceSpecification:
 
 @dataclass
 class MotionDrivers:
-    """The physically distinct inputs accepted by a dynamics solver pipeline."""
+    """The physically distinct inputs accepted by a dynamics solver pipeline, for the handler
+    whose controllers state them."""
 
     id: str
     acceleration_constraint: list[AccelerationConstraint]
     cartesian_force: list[CartesianForceSpecification]
+    handler: str
     cartesian_acceleration: list[AccelerationConstraint] = field(default_factory=list)
     joint_force: list[JointForceSpecification] = field(default_factory=list)
     has_cartesian_force: bool = False
@@ -180,9 +135,7 @@ class SolverWithInputAndOutput:
     runtime: RuntimeBinding
     # What drives this chain, resolved once from the algorithm the model names; the runtime and
     # the templates dispatch on the name, the lowering reads the record.
-    algorithm: type[DynamicsSolverFamily] | None = field(default=None, metadata=INTERNAL)
-    # None, not "", when the model names no algorithm: ST4 reads an empty string as present and
-    # would dispatch on it.
+    algorithm: SolverFamily = field(metadata=INTERNAL)
     algorithm_name: str | None = None
     # What the scene mounts on this chain, and what hardware is bound to drive it.
     sensors: list[SensorBinding] = field(default_factory=list)
@@ -192,11 +145,13 @@ class SolverWithInputAndOutput:
     # the root acceleration ACHD itself takes. Nothing else derives a sign from the author.
     gravity_compensation: list[float] | None = None
     derived_root_acceleration: list[float] | None = None
-    # The shared value the gravity vector was read from; templates take the numbers above, this
+    # The D-block the gravity vector was read from; templates take the numbers above, this
     # says which recorded constant they came from.
     gravity_source: str | None = field(default=None, metadata=INTERNAL)
     torque_saturation: Saturation | None = None
-    # Frame-log mirrors of this runtime's joint-space signals (plan 012); the two lists render at
+    # The widest motion's row count; the motions share one state and zero the rows they leave.
+    constraint_rows: int = 0
+    # Frame-log mirrors of this runtime's joint-space signals; the two lists render at
     # two different hook sites -- the run block and the command-stage block.
     # `output` split by what each observation reads. A world output is answered by the one world
     # model, so the loop computes it every tick whether or not a motion that wants it is running;
@@ -229,5 +184,13 @@ class ForceDistributionSolver:
     id: str
     configuration: str
     force: Wrench
+    # The commanded wrenches routed to this solver, one per force controller: what the platform
+    # is asked to push with, before it is distributed over the drives. A controller holding a
+    # scalar -- a distance, say -- contributes through the wrench built from it and its
+    # direction, which is the only form a distribution can take.
+    forces: tuple = field(default=())
+    # The world-model read this solver makes per frame IRI: its own, since another solver may
+    # read the same frame under its own key.
+    world_keys: dict = field(default_factory=dict, metadata=INTERNAL)
     kind: str = field(default="mobile_base")
     type: str = field(default="ForceDistributionSolver")

@@ -12,7 +12,7 @@ import mmap
 import struct
 
 from motion_spec.dashboard.frames import shm_path
-from motion_spec.introspection.frame_log_pb import ctrl_shm_name
+from motion_spec.telemetry.frame_log_pb import ctrl_shm_name
 
 SIZE = 56
 VERSION = 1

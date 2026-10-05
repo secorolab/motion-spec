@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-import argparse
 import atexit
 import json
+import os
 import re
 import signal
 import socket
@@ -19,7 +19,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from motion_spec.dashboard import roots, ros_camera
-from motion_spec.dashboard.analysis import run_reports
 from motion_spec.dashboard.catalog import (
     drift_summary,
     generation_details,
@@ -69,7 +68,6 @@ from motion_spec.dashboard.queries import (
 from motion_spec.dashboard.replay import plot_data, replay_data, run_verdict
 from motion_spec.dashboard.roots import (
     FRONTEND,
-    GENERATION_DIR_ENV,
     LAYOUT_REL,
     current_roots,
     directory_size,
@@ -78,7 +76,6 @@ from motion_spec.dashboard.roots import (
     relative_path,
     set_root,
     storage_info,
-    trash,
 )
 from motion_spec.dashboard.runs import GenerationCatalog
 from motion_spec.dashboard.sources import (
@@ -92,7 +89,8 @@ from motion_spec.dashboard.sources import (
     source_path,
 )
 from motion_spec.devices import probe_devices
-from motion_spec.introspection.lifecycle_events import socket_path
+from motion_spec.runs.lifecycle_events import socket_path
+from motion_spec.utils import trash
 
 LIFECYCLE = None
 
@@ -113,50 +111,45 @@ def lan_refusal(port: int) -> str:
     return LAN_REFUSED.format(port=port)
 
 
-LAN_GET_ALLOWED = frozenset(
-    {
-        "/api/events",
-        "/api/generations",
-        "/api/generation",
-        "/api/generation-graph",
-        "/api/generated",
-        "/api/model/lint",
-        "/api/source-drift",
-        "/api/storage",
-        "/api/runs",
-        "/api/run",
-        "/api/run/files",
-        "/api/run/verdict",
-        "/api/console",
-        "/api/notes",
-        "/api/annotations",
-        "/api/baseline",
-        "/api/queries",
-        "/api/video",
-        "/api/ros-camera",
-        "/api/replay",
-        "/api/plot",
-        "/api/reports",
-        "/api/roots",
-        "/api/sources",
-        "/api/source",
-        "/api/source-diff",
-        "/api/generate",
-    }
-)
+LAN_GET_ALLOWED = {
+    "/api/events",
+    "/api/generations",
+    "/api/generation",
+    "/api/generation-graph",
+    "/api/generated",
+    "/api/model/lint",
+    "/api/source-drift",
+    "/api/storage",
+    "/api/runs",
+    "/api/run",
+    "/api/run/files",
+    "/api/run/verdict",
+    "/api/console",
+    "/api/notes",
+    "/api/annotations",
+    "/api/baseline",
+    "/api/queries",
+    "/api/video",
+    "/api/ros-camera",
+    "/api/replay",
+    "/api/plot",
+    "/api/roots",
+    "/api/sources",
+    "/api/source",
+    "/api/source-diff",
+    "/api/generate",
+}
 
-LAN_POST_ALLOWED = frozenset(
-    {
-        "/api/run",
-        "/api/run/stop",
-        "/api/live",
-        "/api/control",
-        "/api/notes",
-        "/api/queries",
-        "/api/sparql",
-        "/api/generate",
-    }
-)
+LAN_POST_ALLOWED = {
+    "/api/run",
+    "/api/run/stop",
+    "/api/live",
+    "/api/control",
+    "/api/notes",
+    "/api/queries",
+    "/api/sparql",
+    "/api/generate",
+}
 
 
 class LifecycleListener:
@@ -303,7 +296,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(
                     [
                         generation_info(generation.dir)
-                        for generation in GenerationCatalog([roots.GENERATIONS]).generations()
+                        for generation in GenerationCatalog(roots.GENERATIONS).generations()
                     ]
                 )
             if parsed.path == "/api/storage":
@@ -331,7 +324,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     model = generation.relative_to(roots.GENERATIONS).parts[0]
                     runs = [
                         run_info(run.dir) | {"generation_label": annotations(g.dir)["label"]}
-                        for g in GenerationCatalog([roots.GENERATIONS]).generations()
+                        for g in GenerationCatalog(roots.GENERATIONS).generations()
                         if g.model == model
                         for run in g.runs
                     ]
@@ -375,9 +368,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.stream_ros_camera(query.get("topic", [""])[0])
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(expected_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/reports":
-                # All three off one sweep: three passes over a 160 MB log is what would cost.
-                return self.send_json(run_reports(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/plot":
                 bounds = query.get("window", [])
                 return self.send_json(
@@ -388,9 +378,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     )
                 )
             if parsed.path == "/api/sources":
-                return self.send_json(sorted(authored_sources()))
+                return self.send_json(authored_sources())
             if parsed.path == "/api/jupyter":
-                return self.send_json(jupyter_server())
+                return self.send_json(jupyter_server(self.server.server_address[1]))
             if parsed.path == "/api/source":
                 return self.send_json(read_source(value))
             if parsed.path == "/api/source-diff":
@@ -497,7 +487,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     )
                 )
             if self.path == "/api/notebook":
-                return self.send_json(run_notebook(relative_path(roots.GENERATIONS, body["path"])))
+                return self.send_json(
+                    run_notebook(
+                        relative_path(roots.GENERATIONS, body["path"]),
+                        self.server.server_address[1],
+                    )
+                )
             if self.path != "/api/delete":
                 return self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
             selected = body["paths"]
@@ -605,6 +600,9 @@ def serve(
     if sources is not None:
         roots.WORKSPACE = Path(sources).expanduser().resolve()
     LIFECYCLE = LifecycleListener()
+    own = roots.pidfile(port)
+    own.write_text(f"{os.getpid()}\n")
+    atexit.register(own.unlink, missing_ok=True)
     atexit.register(stop_jupyter)
     for name in (signal.SIGTERM, signal.SIGINT):
         signal.signal(name, lambda *_: sys.exit(0))
@@ -619,28 +617,3 @@ def serve(
         )
     print(f"  runs from {roots.GENERATIONS}\n  sources from {roots.WORKSPACE}")
     server.serve_forever()
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument(
-        "--logs", type=Path, help=f"generation root (default ${GENERATION_DIR_ENV})"
-    )
-    parser.add_argument(
-        "--sources", type=Path, help="model sources root (default: the logs root's parent)"
-    )
-    parser.add_argument(
-        "--lan",
-        action="store_true",
-        help="reachable from the network: replay and simulated runs only, no delete or source access",
-    )
-    parser.add_argument("--env", help="environment file to report health under")
-    args = parser.parse_args()
-    if args.env:
-        use_environment(args.env)
-    serve(args.port, args.logs, args.sources, args.lan)
-
-
-if __name__ == "__main__":
-    main()

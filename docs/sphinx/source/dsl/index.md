@@ -8,7 +8,7 @@ lowering.
 
 Read [DSL concepts](concepts.md) for the complete language surface, [quantity
 expressions](expressions.md) for arithmetic over quantity refs, then work through the
-[`pick_place_single` tutorial](tutorials/single-arm.md).
+[`pick_and_place` tutorial](tutorials/single-arm.md).
 
 ```{toctree}
 :maxdepth: 2

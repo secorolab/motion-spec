@@ -16,7 +16,7 @@ Run from the workspace root and define two paths used throughout this page.
 .. code-block:: console
 
    $ motion-spec examples
-   $ MODEL_PATH=src/ms-examples/pick_place_single/pick_place_single.robmot
+   $ MODEL_PATH=src/ms-examples/01_pick_and_place/pick_and_place.robmot
    $ GENERATION_DIR=generation/pick-place
 
 ``MODEL_PATH`` is authored input. ``GENERATION_DIR`` will own the generated model,
@@ -53,7 +53,7 @@ The important outputs are:
      generated/model/        JSON-LD, FSM artifacts, and ir.json
      generated/controller/   generated C++ and CMake project
      generated/contract/     schema and frame-log contract
-     generated/provenance.ld.json  generation provenance, one named graph per tool
+     generated/provenance/   generation and derivation provenance
 
 To stop after RDF and IR, use a different generation directory:
 
@@ -112,8 +112,8 @@ the generation and one over all the models -- the way a colcon workspace carries
 
 .. code-block:: text
 
-   $MOTION_SPEC_GEN/latest                   -> look_joint1_test/20260815T155542360467Z
-   $MOTION_SPEC_GEN/look_joint1_test/latest  -> 20260815T155542360467Z
+   $MOTION_SPEC_GEN/latest                -> base_rotation/20260815T155542360467Z
+   $MOTION_SPEC_GEN/base_rotation/latest  -> 20260815T155542360467Z
 
 ``rerun`` follows the first of those: it is ``run`` for the generation already
 built, under a run id of its own, taking the same options. It generates and
@@ -121,7 +121,7 @@ builds nothing, so it is the command to reach for while tuning a deployment
 config or a scene the controller reads at startup.
 
 The links are ordinary paths, so they work with every other command too --
-``motion-spec run "$MOTION_SPEC_GEN/look_joint1_test/latest"`` goes back to one
+``motion-spec run "$MOTION_SPEC_GEN/base_rotation/latest"`` goes back to one
 model after another has been generated since. Name a ``GENERATION`` to repeat
 that one instead. A generation that has never been run has nothing to repeat, so
 it is launched with no arguments.

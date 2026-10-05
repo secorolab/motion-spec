@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from rdflib import URIRef
+
 from motion_spec.classes.base import INTERNAL
 
 
@@ -20,8 +22,10 @@ class ChainBinding:
     end: str
     tip: str
     # Identifier-safe (sanitized in Python; ST4 cannot sanitize). `tree` names the kinematic
-    # tree the chain is sliced from; `name` is the chain's own qualified name.
+    # tree the chain is sliced from, `namespace` the scene header declaring it; `name` is the
+    # chain's own qualified name.
     tree: str
+    namespace: str
     name: str
     # Ordered revolute joint local names, unprefixed; the runtime prefix is `runtime.prefix`.
     joints: list[str]
@@ -56,6 +60,25 @@ class HardwareBinding:
 
 
 @dataclass
+class WorldPort:
+    """One port of the world model's table: a physical variable, its provider mapping, its slot.
+
+    `kind` is the variable; `segment` the world-model segment it moves or places, empty for a
+    body-only port; `mapping` the name the backend resolves its provider by.
+    """
+
+    kind: str
+    segment: str
+    mapping: str
+    slot: int
+    # The runtime whose device provides it, for a port a bound device answers rather than the
+    # scene; empty otherwise.
+    owner_id: str = ""
+    iri: str = field(default="", metadata=INTERNAL)
+    type: str = field(default="WorldPort")
+
+
+@dataclass
 class RuntimeBinding:
     """Which runtime this solver's chain is driven by, and the deployment slot it fills."""
 
@@ -66,6 +89,10 @@ class RuntimeBinding:
     owned_trees: list = field(metadata=INTERNAL)
     # Section name in the deployment config; empty under simulation.
     config_key: str
+    # The solver that owns this runtime; every record on it reads that one's world_to_root.
+    owner_id: str = ""
+    # False when only forward kinematics reads this chain: the arm is held in position mode.
+    commanded: bool = True
 
 
 @dataclass
@@ -75,6 +102,9 @@ class SensorBinding:
     id: str
     type: str
     frame: str
+    # `id` and `frame` without the runtime prefix, as the robot's own model names them.
+    local_id: str
+    local_frame: str
     update_rate_hz: float | None
     # What `robot.toml` calls this sensor. The same key a bound device is configured under, so a
     # deployment property of the sensor -- its tare length -- is stated once for both platforms.
@@ -116,7 +146,6 @@ class DeviceBinding:
     config_key: str
     drives: str = ""
     required_by_motion: list[int] = field(default_factory=list)
-    has_required_motions: bool = False
     health_index: int | None = None
     # kc-ext:JointCoupling mimic joints this device reports instead of the chain (was the
     # solver's own flat `gripper_joint_outputs`).
@@ -127,13 +156,13 @@ class DeviceBinding:
 class JointSpaceChannel:
     """One joint-space signal a runtime mirrors into the frame log.
 
-    Declared in one place so the producer and the template's mirror expression cannot drift. All
+    Declared in one place so the writer and the template's mirror expression cannot drift. All
     chain joints are revolute, so a position is an angle. `backends` of None means every backend
     carries the signal; naming backends restricts it to those that actually measure it.
     """
 
     name: str
-    producer: str
-    quantity_kind: str
-    unit: str
+    writer: str
+    quantity_kind: URIRef
+    unit: URIRef
     backends: tuple | None = None

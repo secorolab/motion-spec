@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import (
-    ALGO_EXT,
     CSTR,
     CSTR_EXT,
+    CSTR_HDL,
     GEOM_COORD,
     GEOM_ENT,
     GEOM_OP,
@@ -22,14 +22,14 @@ from rdf_utils.models.vocab import (
     URI_GEOM_PRED_AXES_SEQ,
     URI_GEOM_PRED_BETA,
     URI_GEOM_PRED_GAMMA,
-    URI_GEOM_PRED_W,
-    URI_GEOM_TYPE_ANGLES_ABG,
-    URI_GEOM_TYPE_EULER_ANGLES,
-    URI_GEOM_TYPE_EXTRINSIC,
     URI_GEOM_PRED_OF_ORIENT,
     URI_GEOM_PRED_OF_POSE,
     URI_GEOM_PRED_OF_POSITION,
     URI_GEOM_PRED_SEEN_BY,
+    URI_GEOM_PRED_W,
+    URI_GEOM_TYPE_ANGLES_ABG,
+    URI_GEOM_TYPE_EULER_ANGLES,
+    URI_GEOM_TYPE_EXTRINSIC,
     URI_GEOM_TYPE_ORIENT_REF,
     URI_GEOM_TYPE_POSE,
     URI_GEOM_TYPE_POSE_COORD,
@@ -40,443 +40,319 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_M,
     URI_QUDT_UNIT_RAD,
 )
-from rdflib import Dataset, Graph, Literal, URIRef
+from rdflib import Dataset, URIRef
 from rdflib.namespace import RDF
 from scipy.spatial.transform import Rotation
 
-from motion_spec.rdf_parser.model import Model, local_name
+from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.operations import (
-    _materialize_linear_distance_operations,
-    _materialize_pose_reference_transforms,
+    ErrorEvaluator,
+    materialize_linear_distance_operations,
+    materialize_pose_reference_transforms,
 )
-from motion_spec.rdf_parser.quantities import _relative_orientation, orientation_representation
-from motion_spec.rdf_parser.resources import _placement
+from motion_spec.rdf_parser.quantities import frame_placement, relative_orientation
 
 BASE = "https://example.test/"
 
+PREFIXES = f"""
+@prefix ex: <{BASE}> .
+@prefix cstr: <{CSTR}> .
+@prefix cstr-ext: <{CSTR_EXT}> .
+@prefix cstr-hdl: <{CSTR_HDL}> .
+@prefix geom-coord: <{GEOM_COORD}> .
+@prefix geom-ent: <{GEOM_ENT}> .
+@prefix geom-op: <{GEOM_OP}> .
+@prefix geom-op-ext: <{GEOM_OP_EXT}> .
+@prefix geom-rel: <{GEOM_REL}> .
+@prefix qudt: <{QUDT_SCHEMA}> .
+"""
 
-def _u(name: str) -> URIRef:
-    return URIRef(BASE + name)
+FRAMES = "".join(
+    f"ex:{frame} a geom-ent:Frame ; geom-ent:origin ex:{frame}-origin .\n"
+    f"ex:{frame}-origin a geom-ent:Point .\n"
+    for frame in ("frame-base", "frame-table", "frame-shoulder", "frame-ee")
+)
 
+# A pose quantity of `of` with respect to and as seen by `wrt`.
+POSE = (
+    "ex:{name} a qudt:Quantity, geom-rel:Pose, geom-coord:PoseCoordinate ;\n"
+    "    geom-rel:of ex:{of} ; geom-rel:with-respect-to ex:{wrt} ; geom-coord:as-seen-by ex:{wrt} .\n"
+)
 
-def _model(g: Graph) -> Model:
-    return Model(
-        graph=g, app_path=Path("model-app.ld.json"), imported_models=[], imported_provenance=[]
-    )
+# The distance between `shoulder wrt base` and `ee wrt base`, with a base<-table connecting pose,
+# sampled by two constrained coordinates the way two motions measure the same two poses.
+TWO_DISTANCE_COORDINATES = (
+    PREFIXES
+    + FRAMES
+    + POSE.format(name="pose-table-base", of="frame-table", wrt="frame-base")
+    + POSE.format(name="pose-shoulder-base", of="frame-shoulder", wrt="frame-base")
+    + POSE.format(name="pose-ee-x", of="frame-ee", wrt="frame-base")
+    + """
+ex:dist-rel a geom-rel:LinearDistance ;
+    geom-rel:between-entities ex:pose-shoulder-base, ex:pose-ee-x .
+ex:dist a geom-coord:DistanceReference ; geom-coord:of ex:dist-rel .
+ex:c-dist a cstr:Constraint ; cstr:quantity ex:dist .
+ex:dist-2 a geom-coord:DistanceReference ; geom-coord:of ex:dist-rel .
+ex:c-dist-2 a cstr:Constraint ; cstr:quantity ex:dist-2 .
+"""
+)
 
+# `pose ee-wrt-base` equal to a reference `ee wrt table`.
+CROSS_FRAME_EQUALITY = (
+    PREFIXES
+    + FRAMES
+    + POSE.format(name="pose-table-base", of="frame-table", wrt="frame-base")
+    + POSE.format(name="pose-ee-base", of="frame-ee", wrt="frame-base")
+    + POSE.format(name="ref-ee", of="frame-ee", wrt="frame-table")
+    + """
+ex:c-eq a cstr:Constraint, cstr:EqualityConstraint ;
+    cstr:quantity ex:pose-ee-base ; cstr:reference-value ex:ref-ee .
+"""
+)
 
-def _frame(g: Graph, name: str) -> URIRef:
-    node = _u(name)
-    origin = _u(f"{name}-origin")
-    g.add((node, RDF.type, GEOM_ENT.Frame))
-    g.add((node, GEOM_ENT.origin, origin))
-    g.add((origin, RDF.type, GEOM_ENT.Point))
-    return node
+# An orientation composing `pose-ee-base` with an Euler delta in canonical rdf-utils form; the
+# operand slots are filled per case.
+RELATIVE_ORIENTATION = (
+    PREFIXES
+    + FRAMES
+    + POSE.format(name="pose-ee-base", of="frame-ee", wrt="frame-base")
+    + f"""
+ex:delta a qudt:Quantity, <{URI_GEOM_TYPE_EULER_ANGLES}>, <{URI_GEOM_TYPE_ANGLES_ABG}>,
+        <{URI_GEOM_TYPE_EXTRINSIC}> ;
+    <{URI_GEOM_PRED_AXES_SEQ}> "xyz" ; qudt:unit <{URI_QUDT_UNIT_RAD}> ;
+    <{URI_GEOM_PRED_ALPHA}> -0.75e0 ; <{URI_GEOM_PRED_BETA}> 0.0e0 ; <{URI_GEOM_PRED_GAMMA}> 0.0e0 .
+ex:relative-orientation a geom-coord:OrientationCoordinate ;
+    geom-rel:of ex:frame-ee ; geom-coord:as-seen-by ex:frame-base .
+ex:relative-orientation-composition a geom-op-ext:ComposeOrientation ;
+    geom-op:composite ex:relative-orientation .
+"""
+)
 
+SCENE_FRAMES = "".join(
+    f"ex:{frame} a geom-ent:Frame ; geom-ent:origin ex:{frame}-origin .\n"
+    for frame in ("frame-ground", "frame-world", "frame-object", "frame-jointed")
+)
 
-def _pose(g: Graph, name: str, of_frame: URIRef, wrt_frame: URIRef) -> URIRef:
-    node = _u(name)
-    g.add((node, RDF.type, QUDT_SCHEMA.Quantity))
-    g.add((node, RDF.type, GEOM_REL.Pose))
-    g.add((node, RDF.type, GEOM_COORD.PoseCoordinate))
-    g.add((node, GEOM_REL.of, of_frame))
-    g.add((node, GEOM_REL["with-respect-to"], wrt_frame))
-    g.add((node, GEOM_COORD["as-seen-by"], wrt_frame))
-    return node
+# A placement as scene-dsl emits one: a Pose over a position and an orientation. `_position_of`
+# looks a frame up by its origin point, so the position relates the two origins.
+PLACEMENT = f"""
+ex:position-{{of}} a geom-rel:Position ;
+    geom-rel:of ex:{{of}}-origin ; geom-rel:with-respect-to ex:{{wrt}}-origin .
+ex:position-coord-{{of}} a geom-coord:PositionCoordinate, <{URI_GEOM_TYPE_POSITION_REF}>,
+        <{URI_GEOM_TYPE_VECTOR_XYZ}> ;
+    geom-coord:of-position ex:position-{{of}} ; geom-coord:as-seen-by ex:{{wrt}} ;
+    geom-coord:x {{x:.17e}} ; geom-coord:y {{y:.17e}} ; geom-coord:z {{z:.17e}} ;
+    qudt:unit <{{unit}}> .
+ex:orientation-{{of}} a geom-rel:Orientation ;
+    geom-rel:of ex:{{of}} ; geom-rel:with-respect-to ex:{{wrt}} .
+ex:orientation-coord-{{of}} a geom-coord:OrientationCoordinate, <{URI_GEOM_TYPE_ORIENT_REF}>,
+        geom-coord:Quaternion ;
+    geom-coord:of-orientation ex:orientation-{{of}} ; geom-coord:as-seen-by ex:{{wrt}} ;
+    geom-coord:x {{qx:.17e}} ; geom-coord:y {{qy:.17e}} ; geom-coord:z {{qz:.17e}} ;
+    <{URI_GEOM_PRED_W}> {{qw:.17e}} .
+ex:pose-{{of}} a <{URI_GEOM_TYPE_POSE}>, <{URI_GEOM_TYPE_POSITION_REF}>,
+        <{URI_GEOM_TYPE_ORIENT_REF}> ;
+    geom-rel:of ex:{{of}} ; geom-rel:with-respect-to ex:{{wrt}} ;
+    <{URI_GEOM_PRED_OF_POSITION}> ex:position-{{of}} ;
+    <{URI_GEOM_PRED_OF_ORIENT}> ex:orientation-{{of}} .
+ex:pose-coord-{{of}} a <{URI_GEOM_TYPE_POSE_REF}>, <{URI_GEOM_TYPE_POSE_COORD}> ;
+    <{URI_GEOM_PRED_OF_POSE}> ex:pose-{{of}} ; <{URI_GEOM_PRED_SEEN_BY}> ex:{{wrt}} .
+"""
 
-
-def _derived(node: URIRef, suffix: str) -> URIRef:
-    return URIRef(f"{node}.derived-{suffix}")
-
-
-# --------------------------------------------------------------------------- #
-# Linear-distance materialization
-# --------------------------------------------------------------------------- #
-def _distance_coordinate(g: Graph, name: str, relation: URIRef) -> URIRef:
-    """One constrained sampling of `relation`: the node the operations hang off."""
-    coordinate = _u(name)
-    g.add((coordinate, RDF.type, GEOM_COORD.DistanceReference))
-    g.add((coordinate, GEOM_COORD.of, relation))
-    constraint = _u(f"c-{name}")
-    g.add((constraint, RDF.type, CSTR.Constraint))
-    g.add((constraint, CSTR.quantity, coordinate))
-    return coordinate
-
-
-def _distance_graph(*, end_wrt_name: str) -> tuple[Graph, URIRef]:
-    """Distance between `shoulder wrt base` and `ee wrt <end_wrt_name>`, with a
-    base<-table connecting pose available for the cross-frame path.
-    """
-    g = Dataset(default_union=True)
-    base = _frame(g, "frame-base")
-    table = _frame(g, "frame-table")
-    shoulder = _frame(g, "frame-shoulder")
-    ee = _frame(g, "frame-ee")
-    _pose(g, "pose-table-base", table, base)
-    start = _pose(g, "pose-shoulder-base", shoulder, base)
-    end = _pose(g, "pose-ee-x", ee, base if end_wrt_name == "frame-base" else table)
-
-    relation = _u("dist-rel")
-    g.add((relation, RDF.type, GEOM_REL.LinearDistance))
-    g.add((relation, GEOM_REL["between-entities"], start))
-    g.add((relation, GEOM_REL["between-entities"], end))
-    return g, _distance_coordinate(g, "dist", relation)
-
-
-def test_distance_materializes_magnitude_op() -> None:
-    g, distance = _distance_graph(end_wrt_name="frame-base")
-    _materialize_linear_distance_operations(_model(g))
-
-    magnitudes = [
-        op
-        for op in g.subjects(RDF.type, GEOM_OP.PoseToLinearDistance)
-        if g.value(op, GEOM_OP.distance) == distance
-    ]
-    assert len(magnitudes) == 1
-    assert g.value(magnitudes[0], GEOM_OP.pose) == _derived(distance, "relative-pose")
-    assert (_derived(distance, "invert-start"), RDF.type, GEOM_OP.InvertPose) in g
-
-
-def test_distance_cross_frame_composes_reference_path() -> None:
-    g, distance = _distance_graph(end_wrt_name="frame-table")
-    _materialize_linear_distance_operations(_model(g))
-
-    end_in_start = _derived(distance, "end-in-start-reference")
-    assert (None, GEOM_OP.composite, end_in_start) in g
-    assert URIRef(f"{end_in_start}-pose-rel") in set(g.subjects(RDF.type, GEOM_REL.Pose))
-
-
-def test_distance_same_frame_skips_reference_path() -> None:
-    g, distance = _distance_graph(end_wrt_name="frame-base")
-    _materialize_linear_distance_operations(_model(g))
-
-    end_in_start = _derived(distance, "end-in-start-reference")
-    assert (None, GEOM_OP.composite, end_in_start) not in g
-    assert (None, RDF.type, GEOM_OP.PoseToLinearDistance) in g
+IDENTITY = {"qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
 
 
 def test_each_coordinate_of_one_relation_computes_its_own_value() -> None:
     """Two motions measuring the same two poses share the relation; sharing the derivation
     would leave the second reading the first's value.
     """
-    g, first = _distance_graph(end_wrt_name="frame-base")
-    second = _distance_coordinate(g, "dist-2", g.value(first, GEOM_COORD.of))
-    _materialize_linear_distance_operations(_model(g))
+    g = Dataset(default_union=True)
+    g.default_graph.parse(data=TWO_DISTANCE_COORDINATES, format="turtle")
+    materialize_linear_distance_operations(Model(graph=g, app_path=Path("model-app.ld.json")))
 
+    first, second = URIRef(BASE + "dist"), URIRef(BASE + "dist-2")
     outputs = {
         g.value(op, GEOM_OP.distance) for op in g.subjects(RDF.type, GEOM_OP.PoseToLinearDistance)
     }
     assert outputs == {first, second}
-    assert _derived(first, "relative-pose") != _derived(second, "relative-pose")
-
-
-# --------------------------------------------------------------------------- #
-# Pose-reference transform (full-pose equality across frames)
-# --------------------------------------------------------------------------- #
-def _equality_graph(*, reference_wrt_name: str) -> tuple[Graph, URIRef, URIRef]:
-    """`pose ee-wrt-base` equal to a reference `ee wrt <reference_wrt_name>`."""
-    g = Dataset(default_union=True)
-    base = _frame(g, "frame-base")
-    table = _frame(g, "frame-table")
-    ee = _frame(g, "frame-ee")
-    _pose(g, "pose-table-base", table, base)
-    target = _pose(g, "pose-ee-base", ee, base)
-    reference = _pose(g, "ref-ee", ee, base if reference_wrt_name == "frame-base" else table)
-
-    constraint = _u("c-eq")
-    g.add((constraint, RDF.type, CSTR.Constraint))
-    g.add((constraint, RDF.type, CSTR.EqualityConstraint))
-    g.add((constraint, CSTR.quantity, target))
-    g.add((constraint, CSTR["reference-value"], reference))
-    return g, constraint, reference
+    assert f"{first}.derived-relative-pose" != f"{second}.derived-relative-pose"
 
 
 def test_pose_reference_cross_frame_reexpresses_reference() -> None:
-    g, constraint, reference = _equality_graph(reference_wrt_name="frame-table")
-    _materialize_pose_reference_transforms(_model(g))
+    g = Dataset(default_union=True)
+    g.default_graph.parse(data=CROSS_FRAME_EQUALITY, format="turtle")
+    materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
 
-    reexpressed = _derived(constraint, "reference-in-target")
+    constraint = URIRef(BASE + "c-eq")
+    reexpressed = URIRef(f"{constraint}.derived-reference-in-target")
     assert g.value(constraint, CSTR["reference-value"]) == reexpressed
-    compose = _derived(constraint, "compose-reference")
+    compose = URIRef(f"{constraint}.derived-compose-reference")
     assert (compose, RDF.type, GEOM_OP.ComposePose) in g
-    assert g.value(compose, GEOM_OP.in2) == reference
+    assert g.value(compose, GEOM_OP.in2) == URIRef(BASE + "ref-ee")
     assert g.value(compose, GEOM_OP.composite) == reexpressed
     relation = URIRef(f"{reexpressed}-pose-rel")
-    assert g.value(relation, GEOM_REL["with-respect-to"]) == _u("frame-base")
-
-
-def test_pose_reference_same_frame_is_noop() -> None:
-    g, constraint, reference = _equality_graph(reference_wrt_name="frame-base")
-    _materialize_pose_reference_transforms(_model(g))
-
-    assert g.value(constraint, CSTR["reference-value"]) == reference
-    assert (None, RDF.type, GEOM_OP.ComposePose) not in g
+    assert g.value(relation, GEOM_REL["with-respect-to"]) == URIRef(BASE + "frame-base")
 
 
 def test_pose_reference_rejects_body_mismatch() -> None:
-    g, constraint, _ = _equality_graph(reference_wrt_name="frame-table")
-    reference = g.value(constraint, CSTR["reference-value"])
-    g.remove((reference, GEOM_REL.of, None))
-    g.add((reference, GEOM_REL.of, _frame(g, "frame-other")))
+    g = Dataset(default_union=True)
+    g.default_graph.parse(
+        data=CROSS_FRAME_EQUALITY.replace(
+            "ex:ref-ee a qudt:Quantity, geom-rel:Pose, geom-coord:PoseCoordinate ;\n"
+            "    geom-rel:of ex:frame-ee",
+            "ex:ref-ee a qudt:Quantity, geom-rel:Pose, geom-coord:PoseCoordinate ;\n"
+            "    geom-rel:of ex:frame-other",
+        )
+        + "ex:frame-other a geom-ent:Frame ; geom-ent:origin ex:frame-other-origin .\n"
+        + "ex:frame-other-origin a geom-ent:Point .\n",
+        format="turtle",
+    )
 
     with pytest.raises(ConstraintViolation, match="compares a pose"):
-        _materialize_pose_reference_transforms(_model(g))
+        materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
 
 
-# --------------------------------------------------------------------------- #
-# Relative orientation: geom-op:in1/in2 operands, read back in slot order
-# --------------------------------------------------------------------------- #
-def _delta_node(g: Graph, name: str, values: tuple[float, float, float]) -> URIRef:
-    """A standalone Euler delta quantity in canonical rdf-utils form."""
-    node = _u(name)
-    for type_ in (QUDT_SCHEMA.Quantity, URI_GEOM_TYPE_EULER_ANGLES, URI_GEOM_TYPE_ANGLES_ABG):
-        g.add((node, RDF.type, type_))
-    g.add((node, RDF.type, URI_GEOM_TYPE_EXTRINSIC))
-    g.add((node, URI_GEOM_PRED_AXES_SEQ, Literal("xyz")))
-    g.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_RAD))
-    for predicate, value in zip(
-        (URI_GEOM_PRED_ALPHA, URI_GEOM_PRED_BETA, URI_GEOM_PRED_GAMMA), values
-    ):
-        g.add((node, predicate, Literal(float(value))))
-    return node
-
-
-def _relative_orientation_graph(*, in1_is_pose: bool) -> tuple[Graph, URIRef]:
-    """An orientation composing `pose-ee-base` with a delta, slotted into
-    `geom-op:in1`/`in2` base-first (`in1_is_pose`) or delta-first.
-    """
+@pytest.mark.parametrize(
+    ("operands", "order"),
+    [
+        (
+            (
+                "ex:delta geom-coord:as-seen-by ex:frame-ee .\n"
+                "ex:relative-orientation-composition geom-op:in1 ex:pose-ee-base ; geom-op:in2 ex:delta .\n"
+            ),
+            ("pose", "delta"),
+        ),
+        (
+            (
+                "ex:delta geom-coord:as-seen-by ex:frame-base .\n"
+                "ex:relative-orientation-composition geom-op:in1 ex:delta ; geom-op:in2 ex:pose-ee-base .\n"
+            ),
+            ("delta", "pose"),
+        ),
+    ],
+    ids=["base-first", "delta-first"],
+)
+def test_relative_orientation_reads_operands_in_slot_order(operands: str, order: tuple) -> None:
     g = Dataset(default_union=True)
-    base = _frame(g, "frame-base")
-    ee = _frame(g, "frame-ee")
-    base_pose = _pose(g, "pose-ee-base", ee, base)
-    delta = _delta_node(g, "delta", (-0.75, 0.0, 0.0))
-
-    orientation = _u("relative-orientation")
-    g.add((orientation, RDF.type, GEOM_COORD.OrientationCoordinate))
-    g.add((orientation, GEOM_REL.of, ee))
-    g.add((orientation, GEOM_COORD["as-seen-by"], base))
-    g.add((delta, GEOM_COORD["as-seen-by"], ee if in1_is_pose else base))
-
-    composition = _u("relative-orientation-composition")
-    g.add((composition, RDF.type, GEOM_OP_EXT.ComposeOrientation))
-    in1, in2 = (base_pose, delta) if in1_is_pose else (delta, base_pose)
-    g.add((composition, GEOM_OP["in1"], in1))
-    g.add((composition, GEOM_OP["in2"], in2))
-    g.add((composition, GEOM_OP["composite"], orientation))
-    return g, orientation
-
-
-def test_orientation_without_a_composition_operator_is_not_relative() -> None:
-    """The slots alone do not make a composition: only the typed operator does."""
-    g, orientation = _relative_orientation_graph(in1_is_pose=True)
-    g.remove((None, RDF.type, GEOM_OP_EXT.ComposeOrientation))
-
-    assert orientation_representation(_model(g), orientation) != "relative"
-    with pytest.raises(ConstraintViolation, match="no composition operator"):
-        _relative_orientation(_model(g), orientation)
-
-
-def test_relative_orientation_reads_operands_in_slot_order() -> None:
-    g, orientation = _relative_orientation_graph(in1_is_pose=True)
-    operands = _relative_orientation(_model(g), orientation)
-    assert "pose" in operands[0] and "delta" in operands[1]
+    g.default_graph.parse(data=RELATIVE_ORIENTATION + operands, format="turtle")
+    read = relative_orientation(
+        Model(graph=g, app_path=Path("model-app.ld.json")), URIRef(BASE + "relative-orientation")
+    )
+    assert order[0] in read[0] and order[1] in read[1]
     # The delta is authored as an Euler triple and leaves as the quaternion it denotes.
-    assert operands[1]["representation"] == "quaternion"
-    assert [c["value"] for c in operands[1]["delta"]] == pytest.approx(
+    delta = read[order.index("delta")]
+    assert delta["representation"] == "quaternion"
+    assert [c["value"] for c in delta["delta"]] == pytest.approx(
         [-0.36627253, 0.0, 0.0, 0.93050762]
     )
 
-    g, orientation = _relative_orientation_graph(in1_is_pose=False)
-    operands = _relative_orientation(_model(g), orientation)
-    assert "delta" in operands[0] and "pose" in operands[1]
 
-
-def test_relative_orientation_rejects_a_mismatched_operand_pair() -> None:
-    g, orientation = _relative_orientation_graph(in1_is_pose=True)
-    # Two poses in the slots: not one pose + one delta.
-    other_pose = _pose(g, "pose-other", _frame(g, "frame-other-body"), _frame(g, "frame-other-wrt"))
-    composition = _u("relative-orientation-composition")
-    g.remove((composition, GEOM_OP["in2"], None))
-    g.add((composition, GEOM_OP["in2"], other_pose))
-
-    with pytest.raises(ConstraintViolation, match="exactly one base pose and one delta"):
-        _relative_orientation(_model(g), orientation)
-
-
-# --------------------------------------------------------------------------- #
-# Scene placement: representation-aware orientation, unit-aware position
-# --------------------------------------------------------------------------- #
-def _scene_frame(g: Graph, name: str) -> URIRef:
-    """A frame with an origin point (rdf-utils's FrameModel requires one)."""
-    frame = _u(name)
-    g.add((frame, RDF.type, GEOM_ENT.Frame))
-    g.add((frame, GEOM_ENT.origin, _u(f"{name}-origin")))
-    return frame
-
-
-def _scene_position_coord(
-    g: Graph, of_frame: URIRef, wrt_frame: URIRef, xyz: tuple[float, float, float]
-) -> URIRef:
-    """A Position coordinate at `of_frame`'s origin, wrt `wrt_frame`'s origin -- `_position_of`
-    looks a frame up by its origin point, matching how scene-dsl authors a placement."""
-    position = _u(f"position-{local_name(of_frame)}")
-    coord = _u(f"position-coord-{local_name(of_frame)}")
-    g.add((position, RDF.type, GEOM_REL.Position))
-    g.add((position, GEOM_REL.of, g.value(of_frame, GEOM_ENT.origin)))
-    g.add((position, GEOM_REL["with-respect-to"], g.value(wrt_frame, GEOM_ENT.origin)))
-    g.add((coord, RDF.type, GEOM_COORD.PositionCoordinate))
-    g.add((coord, RDF.type, URI_GEOM_TYPE_POSITION_REF))
-    g.add((coord, RDF.type, URI_GEOM_TYPE_VECTOR_XYZ))
-    g.add((coord, GEOM_COORD["of-position"], position))
-    g.add((coord, GEOM_COORD["as-seen-by"], wrt_frame))
-    for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), xyz):
-        g.add((coord, predicate, Literal(float(value))))
-    g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
-    return coord
-
-
-def _scene_orientation_coord(g: Graph, of_frame: URIRef, wrt_frame: URIRef, quat) -> URIRef:
-    """An Orientation coordinate at `of_frame`, wrt `wrt_frame`, as a quaternion."""
-    orientation = _u(f"orientation-{local_name(of_frame)}")
-    coord = _u(f"orientation-coord-{local_name(of_frame)}")
-    g.add((orientation, RDF.type, GEOM_REL.Orientation))
-    g.add((orientation, GEOM_REL.of, of_frame))
-    g.add((orientation, GEOM_REL["with-respect-to"], wrt_frame))
-    g.add((coord, RDF.type, GEOM_COORD.OrientationCoordinate))
-    g.add((coord, RDF.type, URI_GEOM_TYPE_ORIENT_REF))
-    g.add((coord, RDF.type, GEOM_COORD.Quaternion))
-    g.add((coord, GEOM_COORD["of-orientation"], orientation))
-    g.add((coord, GEOM_COORD["as-seen-by"], wrt_frame))
-    x, y, z, w = quat
-    for predicate, value in zip((GEOM_COORD.x, GEOM_COORD.y, GEOM_COORD.z), (x, y, z)):
-        g.add((coord, predicate, Literal(float(value))))
-    g.add((coord, URI_GEOM_PRED_W, Literal(float(w))))
-    return coord
-
-
-def _scene_pose(g: Graph, of_frame: URIRef, wrt_frame: URIRef, xyz, quat=(0.0, 0.0, 0.0, 1.0)):
-    """A placement as scene-dsl emits one: a Pose over a position and an orientation.
-
-    `_placement` composes whole poses, so a position with no orientation beside it places
-    nothing -- which is what a scene author writes anyway.
-    """
-    position_coord = _scene_position_coord(g, of_frame, wrt_frame, xyz)
-    orientation_coord = _scene_orientation_coord(g, of_frame, wrt_frame, quat)
-    pose = _u(f"pose-{local_name(of_frame)}")
-    coord = _u(f"pose-coord-{local_name(of_frame)}")
-    g.add((pose, RDF.type, URI_GEOM_TYPE_POSE))
-    g.add((pose, GEOM_REL.of, of_frame))
-    g.add((pose, GEOM_REL["with-respect-to"], wrt_frame))
-    g.add((pose, RDF.type, URI_GEOM_TYPE_POSITION_REF))
-    g.add((pose, URI_GEOM_PRED_OF_POSITION, g.value(position_coord, GEOM_COORD["of-position"])))
-    g.add((pose, RDF.type, URI_GEOM_TYPE_ORIENT_REF))
-    g.add((pose, URI_GEOM_PRED_OF_ORIENT, g.value(orientation_coord, GEOM_COORD["of-orientation"])))
-    g.add((coord, RDF.type, URI_GEOM_TYPE_POSE_REF))
-    g.add((coord, RDF.type, URI_GEOM_TYPE_POSE_COORD))
-    g.add((coord, URI_GEOM_PRED_OF_POSE, pose))
-    g.add((coord, URI_GEOM_PRED_SEEN_BY, wrt_frame))
-    return position_coord
-
-
-def test_orientation_of_reads_quaternion_placement_as_quat() -> None:
-    """A quaternion-authored placement is read back as [x, y, z, w], unmodified."""
+def test_a_placement_keeps_its_quaternion_composes_to_the_anchor_and_scales_to_metres() -> None:
+    """A wrong frame, unit or quaternion convention gives wrong numbers without breaking a build."""
+    qx, qy, qz, qw = Rotation.from_euler("xyz", (0.3, -0.2, 0.75)).as_quat()
     g = Dataset(default_union=True)
-    frame = _scene_frame(g, "frame-object")
-    wrt = _scene_frame(g, "frame-world")
-    quat = tuple(Rotation.from_euler("xyz", (0.3, -0.2, 0.75)).as_quat())
-    _scene_pose(g, frame, wrt, (0.0, 0.0, 0.0), quat)
+    g.default_graph.parse(
+        data=PREFIXES
+        + SCENE_FRAMES
+        + PLACEMENT.format(
+            of="frame-world",
+            wrt="frame-ground",
+            x=0.0,
+            y=0.0,
+            z=0.72,
+            unit=URI_QUDT_UNIT_M,
+            **IDENTITY,
+        )
+        + PLACEMENT.format(
+            of="frame-object",
+            wrt="frame-world",
+            x=-0.9,
+            y=1.8,
+            z=0.05,
+            unit=URI_QUDT_UNIT_M,
+            qx=qx,
+            qy=qy,
+            qz=qz,
+            qw=qw,
+        ),
+        format="turtle",
+    )
+    model = Model(graph=g, app_path=Path("model-app.ld.json"))
+    anchor = URIRef(BASE + "frame-ground")
 
-    assert _placement(_model(g), frame, wrt)[1] == pytest.approx(quat)
+    position, orientation = frame_placement(model, URIRef(BASE + "frame-object"), anchor)
+    assert position == pytest.approx([-0.9, 1.8, 0.77])
+    assert orientation == pytest.approx([qx, qy, qz, qw])
+    # A body a joint holds is placed by the joint, not by a pose, so it composes to nothing.
+    assert frame_placement(model, URIRef(BASE + "frame-jointed"), anchor) == (None, None)
 
-
-def test_a_placement_composes_through_the_frames_between_it_and_the_anchor() -> None:
-    """A scene places against whatever frame it likes; the runtime is built on one."""
     g = Dataset(default_union=True)
-    anchor = _scene_frame(g, "frame-ground")
-    middle = _scene_frame(g, "frame-world")
-    frame = _scene_frame(g, "frame-object")
-    _scene_pose(g, middle, anchor, (0.0, 0.0, 0.72))
-    _scene_pose(g, frame, middle, (-0.9, 1.8, 0.05))
-
-    assert _placement(_model(g), frame, anchor)[0] == pytest.approx([-0.9, 1.8, 0.77])
-
-
-def test_a_frame_no_pose_leads_to_is_coincident() -> None:
-    """A body a joint holds is placed by the joint, not by a pose, so it composes to nothing."""
-    g = Dataset(default_union=True)
-    anchor = _scene_frame(g, "frame-ground")
-    frame = _scene_frame(g, "frame-jointed")
-
-    assert _placement(_model(g), frame, anchor) == (None, None)
-
-
-def test_position_of_scales_to_metres_and_rejects_a_missing_unit() -> None:
-    """Reading x/y/z alone ignores the coordinate's unit; a cm-authored placement must
-    scale, not pass through as if it were already metres. A missing unit is not a
-    default -- it's an error.
-    """
-    g = Dataset(default_union=True)
-    frame = _scene_frame(g, "frame-object")
-    wrt = _scene_frame(g, "frame-world")
-    coord = _scene_pose(g, frame, wrt, (150.0, -50.0, 720.0))
-    g.remove((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
-    g.add((coord, QUDT_SCHEMA.unit, URI_QUDT_UNIT_CM))
-
-    assert _placement(_model(g), frame, wrt)[0] == pytest.approx([1.5, -0.5, 7.2])
-
-    g2 = Dataset(default_union=True)
-    frame2 = _scene_frame(g2, "frame-object")
-    wrt2 = _scene_frame(g2, "frame-world")
-    coord2 = _scene_pose(g2, frame2, wrt2, (1.0, 2.0, 3.0))
-    g2.remove((coord2, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))  # a placement with no unit at all
-
-    with pytest.raises(ConstraintViolation):
-        _placement(_model(g2), frame2, wrt2)
+    g.default_graph.parse(
+        data=PREFIXES
+        + SCENE_FRAMES
+        + PLACEMENT.format(
+            of="frame-object",
+            wrt="frame-world",
+            x=150.0,
+            y=-50.0,
+            z=720.0,
+            unit=URI_QUDT_UNIT_CM,
+            **IDENTITY,
+        ),
+        format="turtle",
+    )
+    assert frame_placement(
+        Model(graph=g, app_path=Path("model-app.ld.json")),
+        URIRef(BASE + "frame-object"),
+        URIRef(BASE + "frame-world"),
+    )[0] == pytest.approx([1.5, -0.5, 7.2])
 
 
 def test_sampled_scene_placements_are_rejected() -> None:
     """A placement is built into the world before the run draws anything, so a drawn pose can
     only be a frame on a body, never what places the body."""
     g = Dataset(default_union=True)
-    frame = _scene_frame(g, "frame-object")
-    wrt = _scene_frame(g, "frame-world")
-    coord = _scene_pose(g, frame, wrt, (1.0, 2.0, 3.0))
-    g.add((coord, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
+    g.default_graph.parse(
+        data=PREFIXES
+        + SCENE_FRAMES
+        + PLACEMENT.format(
+            of="frame-object",
+            wrt="frame-world",
+            x=1.0,
+            y=2.0,
+            z=3.0,
+            unit=URI_QUDT_UNIT_M,
+            **IDENTITY,
+        )
+        + f"ex:position-coord-frame-object a <{URI_DISTRIB_TYPE_SAMPLED_QUANTITY}> .\n",
+        format="turtle",
+    )
 
     with pytest.raises(ConstraintViolation, match="cannot be drawn"):
-        _placement(_model(g), frame, wrt)
-
-
-def test_an_authored_bound_is_named_by_the_closure_never_copied_into_it() -> None:
-    """A parameter that is a model quantity travels as its id: copying the number would leave the
-    authored bound with no reader, and the design and derived graphs disagreeing about it."""
-    from motion_spec.rdf_parser.operations import _parse_argument
-
-    g = Dataset(default_union=True)
-    call, bound = _u("admit-comply-x"), _u("admit-comply-x-max-velocity")
-    g.add((call, ALGO_EXT["maximum-velocity"], bound))
-    g.add((bound, RDF.type, QUDT_SCHEMA.Quantity))
-    g.add((bound, QUDT_SCHEMA.value, Literal(0.3)))
-    g.add((bound, QUDT_SCHEMA.unit, URI_QUDT_UNIT_M))
-    model = _model(g)
-
-    assert _parse_argument(g, call, ALGO_EXT["maximum-velocity"], model.id) == model.id(bound)
+        frame_placement(
+            Model(graph=g, app_path=Path("model-app.ld.json")),
+            URIRef(BASE + "frame-object"),
+            URIRef(BASE + "frame-world"),
+        )
 
 
 def test_a_constraint_no_evaluator_compiles_is_rejected_by_name() -> None:
     """A relation kind no evaluator reads leaves the authored bound uncompared. Dropping the
     evaluator silently emits a program that ignores it, so generation names the constraint."""
-    from motion_spec_dsl.rdf_parser.vocab import CSTR_HDL
-
-    from motion_spec.rdf_parser.operations import ErrorEvaluator
-
     g = Dataset(default_union=True)
-    evaluator, constraint = _u("eval-home-while-above-table"), _u("home/while/above-table")
-    g.add((evaluator, RDF.type, CSTR_HDL.ErrorEvaluator))
-    g.add((evaluator, CSTR_HDL.constraint, constraint))
-    g.add((constraint, RDF.type, CSTR.Constraint))
-    g.add((constraint, RDF.type, CSTR_EXT.AngleConstraint))
-    g.add((constraint, CSTR.quantity, _u("tcp-height")))
+    g.default_graph.parse(
+        data=PREFIXES
+        + """
+ex:eval-home-while-above-table a cstr-hdl:ErrorEvaluator ;
+    cstr-hdl:constraint <https://example.test/home/while/above-table> .
+<https://example.test/home/while/above-table> a cstr:Constraint, cstr-ext:AngleConstraint ;
+    cstr:quantity ex:tcp-height .
+""",
+        format="turtle",
+    )
 
     with pytest.raises(ConstraintViolation, match="above_table.*AngleConstraint"):
-        ErrorEvaluator().closure_step(_model(g), evaluator)
+        ErrorEvaluator().function_step(
+            Model(graph=g, app_path=Path("model-app.ld.json")),
+            URIRef(BASE + "eval-home-while-above-table"),
+        )

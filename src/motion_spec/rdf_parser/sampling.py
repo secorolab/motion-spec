@@ -30,7 +30,7 @@ from rdflib.namespace import RDF
 
 from motion_spec.classes.sampling import SampledQuantity
 from motion_spec.rdf_parser.model import seconds, si
-from motion_spec.rdf_parser.quantities import _is_duration
+from motion_spec.rdf_parser.quantities import is_duration
 
 
 def unplaced_frames(tree: dict) -> list[dict]:
@@ -45,14 +45,15 @@ def unplaced_frames(tree: dict) -> list[dict]:
 
 
 def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
-    """Every sampled quantity of the model, sorted by IRI so a seed reproduces the draw."""
+    """Every sampled quantity of the model, in the order the model states them."""
     frames = {
         frame["position_coord_iri"]: (tree, frame)
         for tree in trees
         for frame in unplaced_frames(tree)
     }
-    nodes = sorted(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY), key=str)
-    for coord in sorted(set(frames) - {str(node) for node in nodes}):
+    nodes = list(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
+    sampled = {str(node) for node in nodes}
+    for coord in (coord for coord in frames if coord not in sampled):
         _, frame = frames[coord]
         raise ConstraintViolation(
             "sampling",
@@ -64,7 +65,7 @@ def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
         distribution = model.graph.value(node, URI_DISTRIB_PRED_FROM_DISTRIB)
         dist, components = _components(DistributionModel(distribution, model.graph))
         unit = model.graph.value(node, QUDT_SCHEMA.unit)
-        scale = seconds(1.0, unit) if _is_duration(model, node) else si(1.0, unit)
+        scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))
         if frame is None and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
@@ -82,12 +83,11 @@ def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
             SampledQuantity(
                 id=model.id(node),
                 uri=str(node),
-                distribution_uri=str(distribution),
                 dist=dist,
                 components=components,
                 size=len(components),
                 scale=scale,
-                shared_member=None if frame else model.id(node),
+                data_member=None if frame else model.id(node),
                 segment=frame["name"] if frame else None,
                 parent=frame["parent"] if frame else None,
                 rotation=frame["rotation_xyzw"] if frame else None,

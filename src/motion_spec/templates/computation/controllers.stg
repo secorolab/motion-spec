@@ -1,0 +1,302 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// Every line of controller C++ is born here: the runtime classes, the state members
+// each controller kind declares, the tuning its step reads, and its per-tick call.
+
+import "values.stg"
+
+// Its own generated header rather than part of runtime.hpp, so runtime stays a leaf both in the
+// template import graph and in the generated include graph.
+controller_runtime_header(resources, configuration, computation) ::= <<
+#pragma once
+
+#include "runtime.hpp"
+
+namespace motion_spec::runtime {
+
+<if(computation.uses.("Admittance"))>
+// Virtual mass-damper(-spring) admittance filter: turns a measured external-force
+// axis into a per-axis velocity setpoint. vel_/offset_ integrate across control
+// steps (persistent state), so the filter must outlive a single step -- it lives
+// as a member of the tracking constraint's PIDControl, mirroring the vp_* members.
+// Velocity-output (not position-with-K): v -> 0 as F -> 0, so the arm halts when
+// the push ends. M/D/K/vmax are authored tuning knobs, passed in each step.
+class AdmittanceFilter {
+  public:
+    enum class Mode { IDLE_HOLD, COMPLY };
+
+    double step(double force, double mass, double damping, double stiffness,
+                double max_velocity, double max_excursion,
+                double lower_threshold, double upper_threshold,
+                double release_threshold, double dt) {
+        mass = std::max(mass, 1e-6);
+        entered_comply_ = false;
+        const bool outside_engage_band = force > upper_threshold || force \< lower_threshold;
+        if (mode_ == Mode::IDLE_HOLD) {
+            if (outside_engage_band) {
+                mode_ = Mode::COMPLY;
+                entered_comply_ = true;
+            } else {
+                // Brake the last compliant velocity instead of removing its setpoint in one
+                // control tick. The exact zero below prevents the exponential tail from drifting.
+                const double decay = std::max(0.0, 1.0 - damping * dt / mass);
+                vel_ *= decay;
+                if (std::abs(vel_) \< 0.001) vel_ = 0.0;
+                offset_ += vel_ * dt;
+                return vel_;
+            }
+        } else if (std::abs(force) \<= release_threshold) {
+            mode_ = Mode::IDLE_HOLD;
+            const double decay = std::max(0.0, 1.0 - damping * dt / mass);
+            vel_ *= decay;
+            if (std::abs(vel_) \< 0.001) vel_ = 0.0;
+            offset_ += vel_ * dt;
+            return vel_;
+        }
+        // Only force beyond the engage band drives; between release and engage the damper
+        // brakes, so a tare residual inside the band cannot creep and the direction never reverses.
+        force = (force > upper_threshold) ? force - upper_threshold
+              : (force \< lower_threshold) ? force - lower_threshold
+                                          : 0.0;
+        const double acc = (force - damping * vel_ - stiffness * offset_) / mass;
+        vel_ += acc * dt;
+        vel_ = std::clamp(vel_, -max_velocity, max_velocity);
+        // Stop yielding once the excursion is spent, but never refuse to come back: only the
+        // component that would travel further out is dropped. Zero means no limit. A limit and
+        // not a spring, so releasing the push leaves the arm where it stopped.
+        if (max_excursion > 0.0) {
+            if (offset_ >= max_excursion) vel_ = std::min(vel_, 0.0);
+            if (offset_ \<= -max_excursion) vel_ = std::max(vel_, 0.0);
+        }
+        offset_ += vel_ * dt;
+        return vel_;
+    }
+
+    bool entered_comply() const { return entered_comply_; }
+
+  private:
+    Mode mode_ = Mode::IDLE_HOLD;
+    bool entered_comply_ = false;
+    double vel_ = 0.0;
+    double offset_ = 0.0;
+};
+
+<endif>
+<if(computation.uses.("ProportionalIntegralDerivative"))>
+// The tuning a step applies, handed in per call like dt. Kept out of the controller so the
+// numbers stay algorithm data a run artifact can report rather than construction-time state.
+struct PIDGains {
+    double kp = 0.0;
+    double ki = 0.0;
+    double kd = 0.0;
+    double decay_rate = 0.0;
+    bool has_integral_limit = false;
+    double integral_lower = 0.0;
+    double integral_upper = 0.0;
+};
+
+class PIDControl {
+  public:
+    PIDControl() = default;
+
+    // dt is the time the loop measured for this tick, not the nominal period.
+    double control(double error, double dt, const PIDGains &gains) {
+        return control_impl(error, 0.0, false, dt, gains);
+    }
+
+    double control(double error, double error_derivative, double dt, const PIDGains &gains) {
+        return control_impl(error, error_derivative, true, dt, gains);
+    }
+
+    double control_impl(double error, double error_derivative, bool has_error_derivative, double dt,
+                        const PIDGains &gains) {
+        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt);
+        if (gains.decay_rate > 0.0) {
+            err_integ = gains.decay_rate * err_integ + error * dt;
+        } else {
+            err_integ = err_integ + error * dt;
+        }
+        if (gains.has_integral_limit) {
+            err_integ = std::clamp(err_integ, gains.integral_lower, gains.integral_upper);
+        }
+        err_last = error;
+        first_sample = false;
+        const double deriv = has_error_derivative ? error_derivative : err_diff;
+        return gains.kp * error + gains.ki * err_integ + gains.kd * deriv;
+    }
+
+    double error_integral() const { return err_integ; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
+
+    void clear_error_history() {
+        err_integ = 0.0;
+        err_last = 0.0;
+        first_sample = true;
+    }
+
+    // Re-arm on motion entry. The stored error belongs to whenever this motion last ran, so
+    // differencing across that gap would yield a huge one-step derivative.
+    //
+    // retain_integral says the setpoint cannot move between entries, so the accumulated effort
+    // still describes the same standing disturbance. Dropping it there re-opens the offset on
+    // every entry, which a motion re-entered faster than the integral rebuilds never closes.
+    void reset(bool retain_integral = false) {
+        if (!retain_integral) {
+            err_integ = 0.0;
+        }
+        err_last = 0.0;
+        first_sample = true;
+<if(computation.uses.("VelocityProfile"))>
+        vp_init = false;
+<endif>
+<if(computation.uses.("Admittance"))>
+        adm_filter = AdmittanceFilter{};
+<endif>
+    }
+
+<if(computation.uses.("VelocityProfile"))>
+    double vp_setpoint = 0.0;
+    double vp_velocity = 0.0;
+    double vp_accel = 0.0;
+    bool vp_init = false;
+
+<endif>
+<if(computation.uses.("Admittance"))>
+    AdmittanceFilter adm_filter;
+
+<endif>
+  private:
+    double err_integ = 0.0;
+    double err_last = 0.0;
+    bool first_sample = true;
+};
+
+<endif>
+<if(computation.uses.("ImpedanceController"))>
+// Spring-damper controller: maps a single scalar constraint error to a
+// force/torque output as F = ks*e + kd*(de/dt). The derivative is
+// approximated by finite difference on successive error samples, so
+// "error" is assumed to be a position or angle error; the damping term
+// then approximates velocity feedback rather than reading it directly.
+struct ImpedanceGains {
+    double stiffness = 0.0;
+    double damping = 0.0;
+    double integral_gain = 0.0;
+};
+
+class ImpedanceControl {
+  public:
+    ImpedanceControl() = default;
+
+    // dt is the time the loop measured for this tick, not the nominal period.
+    double control(double error, double dt, const ImpedanceGains &gains) {
+        const double err_diff = first_sample ? 0.0 : ((error - err_last) / dt);
+        err_last = error;
+        first_sample = false;
+        if (gains.integral_gain > 0.0) {
+            err_int += error * dt;
+        }
+        return gains.stiffness * error + gains.damping * err_diff + gains.integral_gain * err_int;
+    }
+
+    double error_integral() const { return err_int; }
+    double previous_error() const { return err_last; }
+    bool is_first_sample() const { return first_sample; }
+
+    // See PIDControl::reset().
+    void reset(bool retain_integral = false) {
+        if (!retain_integral) {
+            err_int = 0.0;
+        }
+        err_last = 0.0;
+        first_sample = true;
+    }
+
+  private:
+    double err_last = 0.0;
+    double err_int = 0.0;
+    bool first_sample = true;
+};
+
+<endif>
+}  // namespace motion_spec::runtime
+>>
+
+controller-member(controller) ::= <<
+<({controller-member-<controller.type>})(controller)>
+>>
+
+controller-member-ProportionalIntegralDerivative(controller) ::= <<
+    motion_spec::runtime::PIDControl <controller.id>;
+>>
+
+controller-member-ImpedanceController(controller) ::= <<
+    motion_spec::runtime::ImpedanceControl <controller.id>;
+>>
+
+// The tuning a controller's step applies, read off the algorithm data at the call site. Field order
+// is the gains struct's in runtime.stg.
+control-gains(function) ::= <<
+<({control-gains-<function.controller_type>})(function)>
+>>
+
+control-gains-ProportionalIntegralDerivative(function) ::= <<
+{data.<function.gains.kp>, data.<function.gains.ki>, data.<function.gains.kd>, data.<function.gains.decay_rate><if(function.integral_saturation)>, true, <integral-bound-lower(function.integral_saturation)>, <integral-bound-upper(function.integral_saturation)><endif>}
+>>
+
+control-gains-ImpedanceController(function) ::= <<
+{data.<function.gains.stiffness>, data.<function.gains.damping>, data.<function.gains.integral_gain>}
+>>
+
+integral-bound-lower(saturation) ::= <<
+<if(saturation.maximum)>-data.<saturation.maximum.id><else>data.<saturation.lower.id><endif>
+>>
+
+integral-bound-upper(saturation) ::= <<
+<if(saturation.maximum)>data.<saturation.maximum.id><else>data.<saturation.upper.id><endif>
+>>
+
+controller-member-FeedForwardController(controller) ::= <<
+>>
+
+// Re-arm a controller when its motion is entered. FeedForward carries no state.
+// resamples: the motion re-captures a snapshot on entry, so its setpoint may have moved and
+// the accumulated integral no longer describes the error it was built from.
+controller-reset(motion_id, controller, resamples) ::= <<
+<if(controller.type)><({controller-reset-<controller.type>})(motion_id, controller, resamples)><endif>
+>>
+
+controller-reset-ProportionalIntegralDerivative(motion_id, controller, resamples) ::= <<
+<motion_id>_state_instance.<controller.id>.reset(<if(!resamples)>true<endif>);
+>>
+
+controller-reset-ImpedanceController(motion_id, controller, resamples) ::= <<
+<motion_id>_state_instance.<controller.id>.reset(<if(!resamples)>true<endif>);
+>>
+
+controller-reset-FeedForwardController(motion_id, controller, resamples) ::= <<
+>>
+
+emit-call-Admittance(function, views) ::= <<
+data.<function.out> = state.<function.controller>.adm_filter.step(<access-expr(function.in, views)>, data.<function.mass>, data.<function.damping>, data.<function.stiffness>, data.<function.maximum_velocity>, data.<function.maximum_absolute_value>, data.<function.lower_threshold>, data.<function.upper_threshold>, data.<function.release_threshold>, data.dt_measured_s);
+if (state.<function.controller>.adm_filter.entered_comply()) state.<function.controller>.clear_error_history();
+>>
+
+// An expression is driven along its unit gradient, so the error along that direction is the
+// expression's divided by the gradient's norm; where the norm vanishes there is no direction.
+along-gradient(function, value) ::= <%
+<if(function.gradient_norm)>(data.<function.gradient_norm> \> 1e-9 ? (<value>) / data.<function.gradient_norm> : 0.0)<else><value><endif>
+%>
+
+emit-call-Controller(function, views) ::= <<
+{
+    const double _control_signal = <if(function.reference_signal)><access-expr(function.reference_signal, views)><else>state.<function.id>.control(<along-gradient(function, {<access-expr(function.error_signal, views)>})><if(function.measured_derivative)>, -(<along-gradient(function, {<access-expr(function.measured_derivative, views)>})>)<endif>, data.dt_measured_s, <control-gains(function)>)<endif>;
+<if(function.output_saturation)>
+    data.<function.control_signal> = std::clamp\<double\>(_control_signal, <saturation-lower(function.output_saturation)>, <saturation-upper(function.output_saturation)>);
+<else>
+    data.<function.control_signal> = _control_signal;
+<endif>
+<function.internal_state_samples:{sample |     data.<sample.id> = state.<function.id>.<sample.getter>();}; separator="\n">
+}
+>>

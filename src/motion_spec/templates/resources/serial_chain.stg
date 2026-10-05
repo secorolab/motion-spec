@@ -1,0 +1,749 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// Author: Vamsi Kalagaturu
+// A serial chain's solver -- Vereshchagin (ACHD) or RNE: state, init, sync, outputs, run stages.
+// What a backend adds rides on rules it states: `solver-state-extra-ACHD`,
+// `solver-init-extra-ACHD`, `solver-run-finalize`, `wrench-raw`, `wrench-gravity`, `estimator-tau`,
+// `joint-effort`.
+
+import "../computation/values.stg"
+
+solver-rnea-include() ::= <<
+#include \<kdl/chainidsolver_recursive_newton_euler.hpp\>
+#include \<kdl/chainexternalwrenchestimator.hpp\>
+#include \<kdl/chainjnttojacsolver.hpp\>
+#include \<kdl/chainjnttojacdotsolver.hpp\>
+>>
+
+solver-state-struct(solver) ::= <<
+struct <solver.id>_solver_state {
+    int num_spatial_directions = 0;
+    int num_joints = 0;
+    int num_segments = 0;
+    KDL::Twist root_acc;
+    KDL::JntArray q;
+    KDL::JntArray qd;
+    KDL::JntArray qdd;
+    KDL::JntArray tau_ff;
+    KDL::JntArray tau_ctrl;
+    KDL::Wrenches f_ext;
+    KDL::Jacobian spatial_directions;
+    // The velocity solver's input, filled in place each cycle rather than rebuilt.
+    KDL::JntArrayVel q_qd;
+    // This chain's root, as of this cycle's world update: every pose it reports is composed onto
+    // this, so the chain-relative reading is unchanged by where the arm stands in the scene. It
+    // is a member because positional outputs run in `update_motion_*` while alpha directions are
+    // consumed later, in `control_motion_*` of the same dispatch.
+<({<solver-state-algorithm-fields.(solver.algorithm_name)>})(solver)>
+<({<solver-state-extra.(solver.algorithm_name)>})(solver)>
+};
+>>
+
+// Forward kinematics never solves, so FPK and FVK carry no algorithm state and fall through to the
+// empty default. This hook is handed the resource solver, which states the algorithm it was
+// resolved to; `read_only` is a motion slice's word for the same thing and is not a field here.
+solver-state-algorithm-fields ::= [
+    "ACHD": "solver-state-algorithm-fields-ACHD",
+    "RNE": "solver-state-algorithm-fields-RNE",
+    default: "solver-no-extra"
+]
+
+solver-state-algorithm-fields-ACHD(solver) ::= <<
+    KDL::JntArray acceleration_energy;
+    // Zero after initialization and never written again: the pass that must not see a wrench.
+    KDL::Wrenches f_ext_zero;
+    KDL::JntArray tau_ctrl_acc;
+    std::unique_ptr\<KDL::ChainHdSolver_Vereshchagin\> achd;
+>>
+
+solver-state-algorithm-fields-RNE(solver) ::= <<
+    KDL::JntArray cartesian_acceleration;
+    KDL::Jacobian jac;
+    KDL::JntArray qdd_des;
+    Eigen::VectorXd task_bias;
+    motion_spec::runtime::CartesianAccelerationWorkspace accel_work;
+    std::unique_ptr\<KDL::ChainIdSolver_RNE\> rnea;
+    std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
+    std::unique_ptr\<KDL::ChainJntToJacDotSolver\> jac_dot_solver;
+>>
+
+// What an ACHD solver needs beyond its own fields is the backend's: each states
+// `solver-state-extra-ACHD` and `solver-init-extra-ACHD`.
+solver-state-extra ::= [
+    "ACHD": "solver-state-extra-ACHD",
+    default: "solver-no-extra"
+]
+
+solver-init-extra ::= [
+    "ACHD": "solver-init-extra-ACHD",
+    default: "solver-no-extra"
+]
+
+solver-init-algorithm ::= [
+    "ACHD": "solver-init-algorithm-ACHD",
+    "RNE": "solver-init-algorithm-RNE",
+    default: "solver-no-extra"
+]
+
+solver-no-extra(solver) ::= <<>>
+
+// The frame an alpha direction is taken in comes off the one world model, composed back onto this
+// chain's root. Only that source changes here: the constraint's row and column are untouched.
+alpha-frame(specification, solver_state, column, owner) ::= <<
+        const KDL::Frame alpha_frame_<solver_state>_<column> =
+            robot.<solver_state>.world_to_root
+            * robot.world->pose(robot.world_<owner>_<specification.as_seen_by.id>, robot.control_cycle);
+>>
+
+assign-spatial-direction(specification, solver_state, column, owner) ::= <<
+<if(specification.direction)>
+<if(specification.base_aligned)>
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = data.<specification.direction.id>.x();
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = data.<specification.direction.id>.y();
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.direction.id>.z();
+<if(specification.moment_direction)>
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = data.<specification.moment_direction.id>.x();
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = data.<specification.moment_direction.id>.y();
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.moment_direction.id>.z();
+<endif>
+<else>
+    {
+<alpha-frame(specification, solver_state, column, owner)>
+        const KDL::Vector alpha_axis_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * data.<specification.direction.id>;
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+<if(specification.moment_direction)>
+        const KDL::Vector alpha_moment_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * data.<specification.moment_direction.id>;
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_moment_<solver_state>_<column>[0];
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_moment_<solver_state>_<column>[1];
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_moment_<solver_state>_<column>[2];
+<endif>
+    }
+<endif>
+<else>
+<if(specification.base_aligned)>
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::<specification.axis>), <column>) = 1.0;
+<else>
+    {
+<alpha-frame(specification, solver_state, column, owner)>
+        const KDL::Vector alpha_axis_<solver_state>_<column> =
+            alpha_frame_<solver_state>_<column>.M * KDL::Vector(<axis-to-vector.(specification.axis)>);
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+    }
+<endif>
+<endif>
+>>
+
+assign-acceleration-constraint(constraint, solver_state, column, owner) ::= <<
+<assign-spatial-direction(constraint, solver_state, column, owner)>
+    robot.<solver_state>_state.acceleration_energy(<column>) = data.<constraint.acceleration_energy.id>;
+>>
+
+assign-cartesian-acceleration(specification, solver_state, column, owner) ::= <<
+<assign-spatial-direction(specification, solver_state, column, owner)>
+    robot.<solver_state>_state.cartesian_acceleration(<column>) = data.<specification.acceleration.id>;
+>>
+
+// Once per solver, before the loop, at the widest motion's row count. Zero rows is valid for
+// posture-only handlers: Vereshchagin passes tau_ff through to tau_ctrl unchanged.
+solver-init(solver) ::= <<
+    robot.<solver.id>_state.num_joints = robot.<solver.id>.chain->getNrOfJoints();
+    robot.<solver.id>_state.num_segments = robot.<solver.id>.chain->getNrOfSegments();
+    robot.<solver.id>_state.q = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.qd = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.qdd = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.tau_ff = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.tau_ctrl = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.q_qd = KDL::JntArrayVel(robot.<solver.id>_state.num_joints);
+<if(solver.derived_root_acceleration)>
+    robot.<solver.id>_state.root_acc.vel = KDL::Vector(<solver.derived_root_acceleration; separator=", ">);
+<endif>
+<({<solver-init-algorithm.(solver.algorithm_name)>})(solver)>
+<({<solver-init-extra.(solver.algorithm_name)>})(solver)>
+>>
+
+solver-init-algorithm-ACHD(solver) ::= <<
+    robot.<solver.id>_state.num_spatial_directions = <solver.constraint_rows>;
+    robot.<solver.id>_state.spatial_directions = KDL::Jacobian(robot.<solver.id>_state.num_spatial_directions);
+    robot.<solver.id>_state.acceleration_energy = KDL::JntArray(robot.<solver.id>_state.num_spatial_directions);
+    // KDL::Wrench default-constructs to zero, which is the only value this one ever holds.
+    robot.<solver.id>_state.f_ext_zero = KDL::Wrenches(robot.<solver.id>_state.num_segments);
+    robot.<solver.id>_state.f_ext = KDL::Wrenches(robot.<solver.id>_state.num_segments);
+    robot.<solver.id>_state.tau_ctrl_acc = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.achd = std::make_unique\<KDL::ChainHdSolver_Vereshchagin\>(*robot.<solver.id>.chain, robot.<solver.id>_state.root_acc, robot.<solver.id>_state.num_spatial_directions);
+    // Weight one: the authored wrench is exerted, not a disturbance to compensate. A motion with
+    // no wrench passes f_ext_zero, which no weight changes.
+    robot.<solver.id>_state.achd->setDriverWeights(
+        Eigen::VectorXd::Ones(robot.<solver.id>_state.num_spatial_directions),
+        Eigen::VectorXd::Zero(robot.<solver.id>_state.num_spatial_directions));
+>>
+
+solver-init-algorithm-RNE(solver) ::= <<
+    robot.<solver.id>_state.f_ext = KDL::Wrenches(robot.<solver.id>_state.num_segments);
+    robot.<solver.id>_state.num_spatial_directions = <solver.constraint_rows>;
+    robot.<solver.id>_state.spatial_directions = KDL::Jacobian(robot.<solver.id>_state.num_spatial_directions);
+    robot.<solver.id>_state.cartesian_acceleration = KDL::JntArray(robot.<solver.id>_state.num_spatial_directions);
+    robot.<solver.id>_state.jac = KDL::Jacobian(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.qdd_des = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.task_bias = Eigen::VectorXd::Zero(robot.<solver.id>_state.num_spatial_directions);
+    robot.<solver.id>_state.accel_work.resize(robot.<solver.id>_state.num_spatial_directions, robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.rnea = std::make_unique\<KDL::ChainIdSolver_RNE\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.gravity)><solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
+    robot.<solver.id>_state.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
+    robot.<solver.id>_state.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
+>>
+
+// The turn a measured joint angle is read onto. Applied to the measurement a model names and
+// constraints read -- not to the solver's own joint array, which FK and the dynamics see only
+// through sin/cos and which a joint resting on the interval's edge would make discontinuous.
+normalized-joint-read(expression, joint_normalization) ::= <<
+<if(joint_normalization)>motion_spec::runtime::normalize_joint_position(<expression>, <joint_normalization.lower>, <joint_normalization.upper>)<else><expression><endif>
+>>
+
+// The runtime was read once for this cycle before the FSM was dispatched; this mirrors the
+// measured ports into the solver's own joint arrays.
+solver-sync-input(solver, chain_solver) ::= <<
+for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
+    robot.<solver.id>_state.q(i) = *robot.ports_<chain_solver.runtime.id>[i].position;
+    robot.<solver.id>_state.qd(i) = *robot.ports_<chain_solver.runtime.id>[i].velocity;
+    robot.<solver.id>_state.q_qd.q(i) = robot.<solver.id>_state.q(i);
+    robot.<solver.id>_state.q_qd.qdot(i) = robot.<solver.id>_state.qd(i);
+}
+>>
+
+// The command that means "stay put": RNE at the measured configuration, at rest, unloaded. Uses
+// the solver's own arrays -- no motion is running, and the next one refills them.
+solver-gravity-hold(solver, chain_solver) ::= <<
+    {
+        static KDL::ChainIdSolver_RNE _gravity_<solver.id>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
+        <solver-sync-input(solver, chain_solver)>
+        KDL::SetToZero(robot.<solver.id>_state.qd);
+        KDL::SetToZero(robot.<solver.id>_state.qdd);
+        for (auto &_w : robot.<solver.id>_state.f_ext) {
+            _w = KDL::Wrench::Zero();
+        \}
+        _gravity_<solver.id>.CartToJnt(
+            robot.<solver.id>_state.q,
+            robot.<solver.id>_state.qd,
+            robot.<solver.id>_state.qdd,
+            robot.<solver.id>_state.f_ext,
+            robot.<solver.id>_state.tau_ctrl);
+    for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
+            *robot.ports_<chain_solver.runtime.id>[i].effort_cmd = <solver-torque-command(solver, chain_solver)>;
+        \}
+    \}
+>>
+
+// Every end reads off the one world model, so the same rule answers on every platform.
+solver-output-Pose(solver, chain_solver, out) ::= <<
+<if(out.seen_by_root)>
+{
+    // Measured from a frame that moves with the arm, but stated in the chain root's axes: the
+    // translation is the base-frame gap between the two, so what the pose carries as its
+    // orientation is the subject's own.
+    const KDL::Frame _of_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.of.id>})>;
+    const KDL::Frame _wrt_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.relative_to_frame.id>})>;
+    data.<out.id> = KDL::Frame(_of_<out.id>.M, _of_<out.id>.p - _wrt_<out.id>.p);
+}
+<elseif(out.relative_to_frame)>
+<relative-world-pose(out)>
+<else>
+data.<out.id> = <world-pose(solver, {<if(out.of.id)>robot.world_<chain_solver.runtime.owner_id>_<out.of.id><else>robot.<solver.id>.world_tip<endif>})>;
+<endif>
+>>
+
+// One indexed read out of this cycle's world update, composed back onto the chain's own root --
+// the same "target relative to this chain's base" the chain solver reported.
+world-pose(solver, index) ::= <<
+robot.<solver.id>.world_to_root * robot.world->pose(<index>, robot.control_cycle)
+>>
+
+// Both ends read off the world model; world_to_root cancels in a relative pose.
+relative-world-pose(out) ::= <<
+data.<out.id> = (robot.world->pose(robot.world_<chain_solver.runtime.owner_id>_<out.relative_to_frame.id>, robot.control_cycle)).Inverse() * robot.world->pose(robot.world_<chain_solver.runtime.owner_id>_<out.of.id>, robot.control_cycle);
+>>
+
+// The outward pass carries the twist beside the pose, so the chain is not walked a second time;
+// what it holds is in the world's axes, and the chain root's rotation states it as the chain does.
+solver-output-VelocityTwist(solver, chain_solver, out) ::= <<
+<if(out.seen_by_root)>
+data.<out.id> = robot.<solver.id>.world_to_root.M * robot.world->twist(robot.world_<chain_solver.runtime.owner_id>_<out.of.id>, robot.control_cycle);
+<else>
+// Seen by a frame that moves with the arm: the same twist about the same point, turned into
+// that frame's axes, so a rotation the arm carries along reads as a constant.
+data.<out.id> = (<world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.as_seen_by.id>})>).M.Inverse()
+    * (robot.<solver.id>.world_to_root.M * robot.world->twist(robot.world_<chain_solver.runtime.owner_id>_<out.of.id>, robot.control_cycle));
+<endif>
+>>
+
+// A chain joint reads its runtime's own port row; one the chain does not articulate -- a gripper
+// mimic, an object hinge -- reads the world port whichever provider answers it wrote into.
+solver-output-JointPosition(solver, chain_solver, out) ::= <<
+<if(out.on_chain)>data.<out.id> = <normalized-joint-read({*robot.ports_<chain_solver.runtime.id>[<out.joint_index>].position}, out.normalization)>;  // <out.joint_name>
+<else>data.<out.id> = <normalized-joint-read({*robot.world_joint_<out.world_slot>}, out.normalization)>;  // <out.joint_name>
+<endif>
+>>
+
+solver-output-JointVelocity(solver, chain_solver, out) ::= <<
+<if(out.on_chain)>data.<out.id> = *robot.ports_<chain_solver.runtime.id>[<out.joint_index>].velocity;  // <out.joint_name>
+<else>data.<out.id> = *robot.world_joint_<out.world_slot>_velocity;  // <out.joint_name>
+<endif>
+>>
+
+// Only a chain joint reports its torque; the sign it is read with is the backend's.
+solver-output-JointForce(solver, chain_solver, out) ::= <<
+data.<out.id> = <joint-effort(chain_solver, out.joint_index)>;  // <out.joint_name>
+>>
+
+// A joint a bound device reports rather than the chain: the device wrote its port, so the read
+// is the same one any other off-chain joint takes.
+gripper-joint-output ::= [
+    "JointVelocity": "gripper-velocity-output",
+    default: "gripper-position-output"
+]
+
+gripper-position-output(out) ::= <<
+data.<out.id> = <normalized-joint-read({*robot.world_joint_<out.world_slot>}, out.normalization)>;
+>>
+
+gripper-velocity-output(out) ::= <<
+data.<out.id> = *robot.world_joint_<out.world_slot>_velocity;
+>>
+
+solver-output-Wrench(solver, chain_solver, out) ::= <<
+<if(out.estimator)><solver-output-Wrench-estimated(solver, chain_solver, out)><else><solver-output-Wrench-measured(solver, chain_solver, out)><endif>
+>>
+
+// Only the raw sample and the gravity vector are the platform's; the three frames the tare needs
+// are read off the one world model, composed back onto this chain's root.
+solver-output-Wrench-measured(solver, chain_solver, out) ::= <<
+{
+<wrench-raw(solver, out)>
+    const KDL::Frame sensor_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.sensor_frame.id>})>;
+    const KDL::Frame reference_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.reference_point.id>})>;
+    const KDL::Frame observer_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.as_seen_by.id>})>;
+    const KDL::Vector gravity_<out.id> = <wrench-gravity(solver, chain_solver)>;
+<ft-tare(out, {raw_<out.id>}, {sensor_<out.id>}, {reference_<out.id>}, {observer_<out.id>}, {gravity_<out.id>})>
+}
+>>
+
+// Three constants, three frames: the sensor's zero is fixed in the sensor frame, the load's weight
+// in gravity's frame, the payload in the as-seen-by frame. A zero taken in any one frame leaves
+// the other two rotating with the wrist. `raw` is what the load applies to the sensor.
+ft-tare(out, raw, sensor, reference, observer, gravity) ::= <<
+    const KDL::Vector gravity_sensor_<out.id> = (<sensor>).M.Inverse(<gravity>);
+    {
+        const KDL::Vector weight_<out.id> = robot.ft_<out.sensor_name>_load.getMass() * gravity_sensor_<out.id>;
+        data.<out.id>_ft_load = KDL::Wrench(
+            weight_<out.id>,
+            robot.ft_<out.sensor_name>_load.getMass() > 0.0
+                ? robot.ft_<out.sensor_name>_load.getCOG() * weight_<out.id>
+                : KDL::Vector::Zero());
+    }
+    // In the observer's axes, taken at the reference point.
+    const KDL::Frame at_reference_<out.id> = KDL::Frame(<observer>.M, <reference>.p).Inverse() * <sensor>;
+    data.<out.id>_ft_raw = at_reference_<out.id> * <raw>;
+    // Sensor frame, zero and load out: payload plus contact (plus the zero until the first tare).
+    const KDL::Wrench net_<out.id> = <raw> - data.<out.id>_ft_bias - data.<out.id>_ft_load;
+<retare-on(out)>    if (robot.ft_<out.sensor_name>_bias_samples > 0 && data.<out.id>_ft_settle \< robot.ft_<out.sensor_name>_bias_samples) {
+        if (data.<out.id>_ft_settle > 0 && robot.ft_<out.sensor_name>_bias_max_drift > 0.0
+            && (net_<out.id> - data.<out.id>_ft_bias_new).force.Norm() > robot.ft_<out.sensor_name>_bias_max_drift) {
+            data.<out.id>_ft_settle = 0;
+        \}
+        ++data.<out.id>_ft_settle;
+        data.<out.id>_ft_bias_new = data.<out.id>_ft_bias_new
+            + (net_<out.id> - data.<out.id>_ft_bias_new) / static_cast\<double>(data.<out.id>_ft_settle);
+        if (data.<out.id>_ft_settle >= robot.ft_<out.sensor_name>_bias_samples) {
+            // Two agreeing windows commit; a press that ends between them never becomes the zero.
+            if (data.<out.id>_ft_confirming
+                && (data.<out.id>_ft_bias_new - data.<out.id>_ft_bias_prev).force.Norm()
+                     \<= robot.ft_<out.sensor_name>_bias_max_drift) {
+                if (data.<out.id>_ft_tares == 0) {
+                    // First tare of a run: the sensor's zero.
+                    data.<out.id>_ft_bias = data.<out.id>_ft_bias_new;
+                \} else {
+                    // A held weight lies along gravity; what a later tare finds across it is
+                    // the zero having moved.
+                    const double _g = gravity_sensor_<out.id>.Norm();
+                    const KDL::Vector _g_hat = _g > 0.0 ? gravity_sensor_<out.id> / _g : KDL::Vector::Zero();
+                    const KDL::Wrench _along(
+                        KDL::dot(data.<out.id>_ft_bias_new.force, _g_hat) * _g_hat,
+                        KDL::dot(data.<out.id>_ft_bias_new.torque, _g_hat) * _g_hat);
+                    data.<out.id>_ft_bias = data.<out.id>_ft_bias + (data.<out.id>_ft_bias_new - _along);
+                    data.<out.id>_ft_payload = at_reference_<out.id> * _along;
+                \}
+                ++data.<out.id>_ft_tares;
+                data.<out.id>_ft_confirming = false;
+            \} else {
+                if (data.<out.id>_ft_confirming) {
+                    ++data.<out.id>_ft_rejects;
+                \}
+                data.<out.id>_ft_bias_prev = data.<out.id>_ft_bias_new;
+                data.<out.id>_ft_confirming = true;
+                data.<out.id>_ft_settle = 0;
+            \}
+        \}
+    \}
+    // The environment's wrench on the tool, the same sense as the momentum observer's estimate.
+    data.<out.id> = (data.<out.id>_ft_tares > 0 || robot.ft_<out.sensor_name>_bias_samples == 0)
+        ? at_reference_<out.id> * (<raw> - data.<out.id>_ft_bias - data.<out.id>_ft_load)
+            - data.<out.id>_ft_payload
+        : KDL::Wrench::Zero();
+>>
+
+// Re-arm the settle: the bias is only what the sensor reads unloaded, and the load changes.
+retare-on(out) ::= <<
+<if(out.retare_events)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
+        data.<out.id>_ft_settle = 0;
+        data.<out.id>_ft_confirming = false;
+    \}
+<endif>
+>>
+
+// Momentum observer (Haddadin/De Luca/Albu-Schaeffer, T-RO 2017) as KDL ships it: fed the
+// chain's q, qd and joint torque, it returns the environment's wrench on the tip, in the tip frame.
+solver-output-Wrench-estimated(solver, chain_solver, out) ::= <<
+{
+    static KDL::ChainExternalWrenchEstimator est_<out.id>(
+        *robot.<solver.id>.chain,
+        KDL::Vector(<chain_solver.gravity; separator=", ">),
+        1.0 / motion_spec::runtime::kControlPeriodS,
+        <out.estimator.estimation_gain_hz>,
+        <out.estimator.filter_constant>);
+    // The world block runs in main, where no motion's `state` is in scope: size off the chain.
+    static const unsigned nj_<out.id> = robot.<solver.id>.chain->getNrOfJoints();
+    static KDL::JntArray q_<out.id>(nj_<out.id>);
+    static KDL::JntArray qd_<out.id>(nj_<out.id>);
+    static KDL::JntArray tau_<out.id>(nj_<out.id>);
+    // Five observer time constants for a reset to converge, five more averaged into the payload.
+    static const int settle_<out.id> = static_cast\<int>(
+        std::ceil(5.0 / (<out.estimator.estimation_gain_hz> * motion_spec::runtime::kControlPeriodS)));
+    for (unsigned i = 0; i \< nj_<out.id>; ++i) {
+        q_<out.id>(i) = *robot.ports_<solver.runtime.id>[i].position;
+        qd_<out.id>(i) = *robot.ports_<solver.runtime.id>[i].velocity;
+        tau_<out.id>(i) = <estimator-tau(solver)>;
+    \}
+<retare-on-estimator(out)>    KDL::Wrench tip_<out.id>;
+    if (est_<out.id>.JntToExtWrench(q_<out.id>, qd_<out.id>, tau_<out.id>, tip_<out.id>) != KDL::SolverI::E_NOERROR) {
+        throw std::runtime_error(std::string("wrench estimate '<out.id>': ") + est_<out.id>.strError(est_<out.id>.getError()));
+    \}
+    const KDL::Frame tip_frame_<out.id> = <world-pose(solver, {robot.<solver.id>.world_tip})>;
+    const KDL::Frame reference_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.reference_point.id>})>;
+    const KDL::Frame observer_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.as_seen_by.id>})>;
+    const KDL::Frame at_reference_<out.id> = KDL::Frame(observer_<out.id>.M, reference_<out.id>.p).Inverse() * tip_frame_<out.id>;
+    if (data.<out.id>_est_settle \< 2 * settle_<out.id>) {
+        ++data.<out.id>_est_settle;
+        if (data.<out.id>_est_settle > settle_<out.id>) {
+            // As the FT tare: a held weight lies along gravity, so only that part is the payload.
+            const KDL::Vector g_tip_<out.id> = tip_frame_<out.id>.M.Inverse(KDL::Vector(<chain_solver.gravity; separator=", ">));
+            const double g_norm_<out.id> = g_tip_<out.id>.Norm();
+            const KDL::Vector g_hat_<out.id> = g_norm_<out.id> > 0.0 ? g_tip_<out.id> / g_norm_<out.id> : KDL::Vector::Zero();
+            const KDL::Wrench along_<out.id>(
+                KDL::dot(tip_<out.id>.force, g_hat_<out.id>) * g_hat_<out.id>,
+                KDL::dot(tip_<out.id>.torque, g_hat_<out.id>) * g_hat_<out.id>);
+            const KDL::Wrench sample_<out.id> = at_reference_<out.id> * along_<out.id>;
+            const double n_<out.id> = static_cast\<double>(data.<out.id>_est_settle - settle_<out.id>);
+            data.<out.id>_est_payload_new = data.<out.id>_est_payload_new + (sample_<out.id> - data.<out.id>_est_payload_new) / n_<out.id>;
+            if (data.<out.id>_est_settle == 2 * settle_<out.id>) {
+                data.<out.id>_est_payload = data.<out.id>_est_payload_new;
+                ++data.<out.id>_est_tares;
+            \}
+        \}
+    \}
+    // Same sign as the FT path: what the environment applies to the arm (a hanging load reads -z).
+    data.<out.id> = at_reference_<out.id> * tip_<out.id> - data.<out.id>_est_payload;
+\}
+>>
+
+// The observer's zero is the momentum now: the integral and the filtered torque restart from it,
+// and the payload is taken again once it has re-converged.
+retare-on-estimator(out) ::= <<
+<if(out.retare_events)>    if (robot.fsm_events && (<out.retare_events:{e | consume_event(robot.fsm_events, <e>)}; separator=" || ">)) {
+        est_<out.id>.setInitialMomentum(q_<out.id>, qd_<out.id>);
+        data.<out.id>_est_settle = 0;
+        data.<out.id>_est_payload_new = KDL::Wrench::Zero();
+    \}
+<endif>
+>>
+
+solver-output(solver, chain_solver, out) ::= <<
+<({solver-output-<out.type>})(solver, chain_solver, out)>
+>>
+
+// A read-only solver serves state and FK only: no solve runs and the staged command is zero.
+// The q/qd mirrors still publish so the frame log records the observed arm.
+solver-run(solver, chain_solver, motion_driver) ::= <<
+<if(!solver.read_only)>
+    KDL::SetToZero(robot.<solver.id>_state.spatial_directions);
+<solver-assign-acceleration-input(solver, chain_solver, motion_driver)>
+    KDL::SetToZero(robot.<solver.id>_state.tau_ff);
+<motion_driver.joint_force:{jf |     robot.<solver.id>_state.tau_ff(<jf.joint_index>) += data.<jf.force_id>;  // <jf.joint_name>}; separator="\n">
+<solver-clear-external-forces(solver, chain_solver, motion_driver)>
+<if(motion_driver.has_cartesian_force)>
+<motion_driver.cartesian_force:{f |     <solver-assign-f-ext-modular(solver, chain_solver, f)>}; separator="\n">
+<endif>
+<({solver-execute-algorithm-<chain_solver.algorithm_name>})(solver, motion_driver)>
+<endif>
+<solver-log-joint-space(solver, chain_solver)>
+>>
+
+// Mirror the solver's joint-space signals into the algorithm data so the frame log can carry them:
+// the solver state lives in robot_io, which sample_model never sees.
+solver-log-joint-space(solver, chain_solver) ::= <<
+<solver.joint_space_samples:{s |     data.<s.id> = <joint-space-expr(s, solver, chain_solver)>;}; separator="\n">
+>>
+
+joint-space-expr(s, solver, chain_solver) ::= <<
+<({joint-space-expr-<s.channel>})(s, solver, chain_solver)>
+>>
+
+joint-space-expr-q(s, solver, chain_solver)        ::= "robot.<solver.id>_state.q(<s.index>)"
+joint-space-expr-qd(s, solver, chain_solver)       ::= "robot.<solver.id>_state.qd(<s.index>)"
+joint-space-expr-qdd(s, solver, chain_solver)      ::= "robot.<solver.id>_state.qdd(<s.index>)"
+joint-space-expr-tau_ctrl(s, solver, chain_solver) ::= "robot.<solver.id>_state.tau_ctrl(<s.index>)"
+
+// Only backends that actually measure joint torque get this channel (see _JOINT_SPACE_CHANNELS);
+// under simulated torque control the measured effort mirrors qfrc_actuator, which is zero.
+// Negated: only robif2b emits this, and Kortex feedback torque carries the opposite sign to its command.
+joint-space-expr-tau_msr(s, solver, chain_solver) ::= "-*robot.ports_<chain_solver.runtime.id>[<s.index>].effort"
+
+// Read back from the port, so what is logged is what was sent -- not a second evaluation of
+// the clamp, which could drift from what the store wrote.
+solver-log-joint-space-cmd(solver, chain_solver) ::= <<
+<solver.joint_space_cmd_samples:{s |     data.<s.id> = *robot.ports_<chain_solver.runtime.id>[<s.index>].effort_cmd;}; separator="\n">
+>>
+
+solver-clear-external-forces(solver, chain_solver, motion_driver) ::= <<
+<({solver-clear-external-forces-<chain_solver.algorithm_name>})(solver, motion_driver)>
+>>
+
+solver-clear-external-forces-ACHD(solver, motion_driver) ::= <<
+<if(motion_driver.has_cartesian_force)>
+    for (int i = 0; i \< robot.<solver.id>_state.num_segments; ++i) {
+        KDL::SetToZero(robot.<solver.id>_state.f_ext[i]);
+    }
+<endif>
+>>
+
+solver-clear-external-forces-RNE(solver, motion_driver) ::= <<
+    for (int i = 0; i \< robot.<solver.id>_state.num_segments; ++i) {
+        KDL::SetToZero(robot.<solver.id>_state.f_ext[i]);
+    }
+>>
+
+solver-assign-acceleration-input(solver, chain_solver, motion_driver) ::= <<
+<({solver-assign-acceleration-input-<chain_solver.algorithm_name>})(solver, chain_solver, motion_driver)>
+>>
+
+// The rows this motion leaves are zero, so the resolve decouples them and they add nothing.
+solver-assign-acceleration-input-RNE(solver, chain_solver, motion_driver) ::= <<
+    KDL::SetToZero(robot.<solver.id>_state.cartesian_acceleration);
+<if(motion_driver.cartesian_acceleration)>
+<motion_driver.cartesian_acceleration:{a | <assign-cartesian-acceleration(a, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n">
+<endif>
+>>
+
+// The rows this motion leaves are zero, and Vereshchagin's truncated SVD drops a zero row.
+solver-assign-acceleration-input-ACHD(solver, chain_solver, motion_driver) ::= <<
+    KDL::SetToZero(robot.<solver.id>_state.acceleration_energy);
+<if(motion_driver.acceleration_constraint)>
+<motion_driver.acceleration_constraint:{c | <assign-acceleration-constraint(c, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n">
+<endif>
+>>
+
+solver-execute-algorithm-ACHD(solver, motion_driver) ::= <<
+    robot.<solver.id>_state.achd->CartToJnt(
+        robot.<solver.id>_state.q,
+        robot.<solver.id>_state.qd,
+        robot.<solver.id>_state.qdd,
+        robot.<solver.id>_state.spatial_directions,
+        robot.<solver.id>_state.acceleration_energy,
+        <if(motion_driver.has_cartesian_force)>robot.<solver.id>_state.f_ext<else>robot.<solver.id>_state.f_ext_zero<endif>,
+        robot.<solver.id>_state.tau_ff,
+        robot.<solver.id>_state.tau_ctrl_acc);
+<solver-run-finalize(solver, motion_driver)>
+>>
+
+solver-execute-algorithm-RNE(solver, motion_driver) ::= <<
+    robot.<solver.id>_state.jac_solver->JntToJac(robot.<solver.id>_state.q, robot.<solver.id>_state.jac);
+    // Task-space velocity-product term Jdot*qdot (base frame, ee ref point):
+    // xdd = J*qdd + Jdot*qdot, so subtract it from the desired task accel before
+    // resolving the joint acceleration consumed by RNEA. This Cartesian-to-joint
+    // mapping is an upstream kinematic adapter, not part of RNEA itself.
+    KDL::Twist jdot_qd_<solver.id>;
+    robot.<solver.id>_state.jac_dot_solver->JntToJacDot(robot.<solver.id>_state.q_qd, jdot_qd_<solver.id>);
+    Eigen::Matrix\<double, 6, 1\> jdot_qd_vec_<solver.id>;
+    jdot_qd_vec_<solver.id> \<\< jdot_qd_<solver.id>.vel.x(), jdot_qd_<solver.id>.vel.y(), jdot_qd_<solver.id>.vel.z(),
+                               jdot_qd_<solver.id>.rot.x(), jdot_qd_<solver.id>.rot.y(), jdot_qd_<solver.id>.rot.z();
+    robot.<solver.id>_state.task_bias.noalias() = robot.<solver.id>_state.spatial_directions.data.transpose() * jdot_qd_vec_<solver.id>;
+    motion_spec::runtime::resolve_cartesian_acceleration(
+        robot.<solver.id>_state.jac,
+        robot.<solver.id>_state.spatial_directions,
+        robot.<solver.id>_state.cartesian_acceleration,
+        &robot.<solver.id>_state.task_bias,
+        robot.<solver.id>_state.accel_work,
+        robot.<solver.id>_state.qdd_des);
+    robot.<solver.id>_state.rnea->CartToJnt(
+        robot.<solver.id>_state.q,
+        robot.<solver.id>_state.qd,
+        robot.<solver.id>_state.qdd_des,
+        robot.<solver.id>_state.f_ext,
+        robot.<solver.id>_state.tau_ctrl);
+    // Publish the resolved acceleration RNE was given; ACHD writes state.qdd itself, this is the
+    // RNE path's equivalent. Copied after CartToJnt, never passed in as the input in its place.
+    robot.<solver.id>_state.qdd = robot.<solver.id>_state.qdd_des;
+    for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
+        robot.<solver.id>_state.tau_ctrl(i) += robot.<solver.id>_state.tau_ff(i);
+    }
+>>
+
+// The modelled wrench is one the arm generates on the segment it is attached to, stated in the
+// chain root's orientation about that segment's origin. What each algorithm wants of it differs
+// on both counts, so the two take separate rules. A sensed wrench is the same wrench read the
+// other way round -- what the environment exerts on the arm -- so it enters with the sign flipped.
+solver-assign-f-ext-modular(solver, chain_solver, force) ::= <<
+<({solver-assign-f-ext-<chain_solver.algorithm_name>})(solver, chain_solver, force)>
+>>
+
+// From the wrench's own as-seen-by frame and reference point to root orientation at the segment.
+f-ext-on-segment(solver, chain_solver, force) ::= <<
+    const KDL::Frame f_ext_seen_<force.force.id> =
+        <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<force.force.as_seen_by.id>})>;
+    const KDL::Frame f_ext_ref_<force.force.id> =
+        <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<force.force.reference_point.id>})>;
+    const KDL::Frame f_ext_frame_<force.force.id> =
+        <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<force.attached_to.id>})>;
+    const KDL::Wrench f_ext_root_<force.force.id> = (f_ext_seen_<force.force.id>.M * data.<force.force.id>)
+        .RefPoint(f_ext_frame_<force.force.id>.p - f_ext_ref_<force.force.id>.p);
+>>
+
+// Vereshchagin rotates f_ext onto the segment itself and enters it as a bias force of the sign
+// the model states, so the wrench goes in as authored.
+solver-assign-f-ext-ACHD(solver, chain_solver, force) ::= <<
+{
+<f-ext-on-segment(solver, chain_solver, force)>
+    robot.<solver.id>_state.f_ext[<force.attached_to.segment> - 1] += f_ext_root_<force.force.id>;
+}
+>>
+
+// RNEA does neither: it reads f_ext[i] in segment i's own frame, and enters it as `-J_i^T f_ext`
+// -- the wrench the environment applies to the arm. Rotating onto the segment and negating is
+// what turns that into the force the arm generates there.
+solver-assign-f-ext-RNE(solver, chain_solver, force) ::= <<
+{
+<f-ext-on-segment(solver, chain_solver, force)>
+    robot.<solver.id>_state.f_ext[<force.attached_to.segment> - 1] -=
+        f_ext_frame_<force.force.id>.M.Inverse() * f_ext_root_<force.force.id>;
+}
+>>
+
+// An undriven solver stages a zero torque command on its runtime; the command reaches the
+// platform through the same port either way.
+solver-stage-output(solver, chain_solver) ::= <<
+    for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
+        *robot.ports_<chain_solver.runtime.id>[i].effort_cmd = <if(solver.read_only)>0.0<else><solver-torque-command(solver, chain_solver)><endif>;
+    }
+<solver-log-joint-space-cmd(solver, chain_solver)>
+>>
+// The authored torque limit binds on every backend: it protects the joint, so the simulator and
+// the real arm must clamp the same command by the same bound.
+solver-torque-command(solver, chain_solver) ::= <<
+motion_spec::runtime::finite_or_stop(<if(chain_solver.torque_saturation)>std::clamp\<double\>(robot.<solver.id>_state.tau_ctrl(i), <saturation-lower(chain_solver.torque_saturation)>, <saturation-upper(chain_solver.torque_saturation)>)<else>robot.<solver.id>_state.tau_ctrl(i)<endif>, i)
+>>
+
+// The runtime helpers the chain solvers call, by algorithm.
+solver-runtime(uses) ::= <<
+// A non-finite command means the controller diverged, and no value is the right one to send: zero
+// drops a simulated arm, the last good value hides the divergence, and throwing from the loop
+// leaves the log truncated. So ask the loop to leave -- shutdown then closes the frame log the
+// same way an interrupt does, and the record ends at the tick that broke. The substitute below
+// reaches a simulator, which is where it has to be a number at all; on hardware the cycle that
+// asked to stop transmits nothing.
+inline double finite_or_stop(double value, int joint) {
+    if (std::isfinite(value)) return value;
+    if (!stop_requested()) {
+        std::cerr \<\< "[run] non-finite command on joint " \<\< joint \<\< "; stopping" \<\< std::endl;
+        request_stop(0);
+    \}
+    return 0.0;
+\}
+
+<if(uses.("SolverACHD") || uses.("SolverRNE"))>
+enum class Axis {
+    X = 0,
+    Y = 1,
+    Z = 2,
+};
+
+enum class Subspace {
+    Linear = 0,
+    Angular = 1,
+};
+
+inline int constraint_row(Subspace subspace, Axis axis) {
+    return static_cast\<int\>(subspace) * 3 + static_cast\<int\>(axis);
+}
+
+<endif>
+<if(uses.("SolverRNE"))>
+// Every dynamically sized term the task-space resolve needs, at its final size. Sized once when
+// the solver initializes, so the control cycle only writes into it.
+struct CartesianAccelerationWorkspace {
+    Eigen::MatrixXd task_jac;
+    Eigen::VectorXd rhs;
+    Eigen::MatrixXd gram;
+    Eigen::VectorXd lambda;
+    Eigen::VectorXd qdd;
+    Eigen::LDLT\<Eigen::MatrixXd\> factorization;
+
+    void resize(int constraints, int joints) {
+        task_jac.resize(constraints, joints);
+        rhs.resize(constraints);
+        gram.resize(constraints, constraints);
+        lambda.resize(constraints);
+        qdd.resize(joints);
+        factorization = Eigen::LDLT\<Eigen::MatrixXd\>(constraints);
+    }
+};
+
+// Damped least-squares regularization for J^T (J J^T + lambda^2 I)^-1. This is
+// deliberately small: it removes the singular inverse without materially changing a
+// well-conditioned task. Keep it named because hardware may justify model-level tuning later.
+inline constexpr double kCartesianAccelerationDamping = 0.05;
+
+inline void resolve_cartesian_acceleration(
+        const KDL::Jacobian &jac,
+        const KDL::Jacobian &directions,
+        const KDL::JntArray &cartesian_acceleration,
+        const Eigen::VectorXd *bias,
+        CartesianAccelerationWorkspace &work,
+        KDL::JntArray &qdd_out) {
+    KDL::SetToZero(qdd_out);
+    const int m = cartesian_acceleration.rows();
+    if (m == 0) return;
+    work.task_jac.noalias() = directions.data.transpose() * jac.data;
+    for (int i = 0; i \< m; ++i) {
+        work.rhs(i) = cartesian_acceleration(i);
+    }
+    if (bias != nullptr && bias->size() == m) {
+        work.rhs -= *bias;
+    }
+    work.gram.noalias() = work.task_jac * work.task_jac.transpose();
+    work.gram.diagonal().array() +=
+        kCartesianAccelerationDamping * kCartesianAccelerationDamping;
+    // Factor and solve the damped normal equations in place, without a temporary per cycle.
+    work.factorization.compute(work.gram);
+    work.lambda = work.rhs;
+    work.factorization.solveInPlace(work.lambda);
+    work.qdd.noalias() = work.task_jac.transpose() * work.lambda;
+    for (int i = 0; i \< static_cast\<int\>(qdd_out.rows()); ++i) {
+        qdd_out(i) = work.qdd(i);
+    }
+}
+
+<endif>
+>>

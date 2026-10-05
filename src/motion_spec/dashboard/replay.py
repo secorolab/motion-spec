@@ -10,10 +10,10 @@ from urllib.parse import urlparse
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import rdf_name, run_videos
 from motion_spec.dashboard.frames import slot_signals
-from motion_spec.dashboard.sources import _key, authored_lines
-from motion_spec.introspection import frame_log_pb
-from motion_spec.introspection.archive import ArchiveError
-from motion_spec.introspection.replay import read_health, resolve_archive, validate_header
+from motion_spec.dashboard.sources import authored_lines
+from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.replay import read_health, resolve_archive, validate_header
+from motion_spec.telemetry import frame_log_pb
 
 
 def downsample(values: list[float], target: int = 1600) -> list[float]:
@@ -37,14 +37,19 @@ def run_source_text(run_dir: Path, manifest: dict | None) -> str:
         for rel in (manifest or {}).get("files", {}).get("sources", ())
         if rel.endswith(".robmot")
     ]
-    generated = sorted((run_dir.parent.parent / "generated/source").glob("*.robmot"))
+    generated = (run_dir.parent.parent / "generated/source").glob("*.robmot")
     source = next((path for path in (*vendored, *generated) if path.is_file()), None)
     return source.read_text() if source else ""
 
 
 def _slot_ids(slots: list, field: str) -> list[str]:
     """The ids these slots name in one role, in order, without repeats or blanks."""
-    return list(dict.fromkeys(value for slot in slots if (value := getattr(slot, field))))
+    ids = []
+    for slot in slots:
+        value = getattr(slot, field)
+        if value and value not in ids:
+            ids.append(value)
+    return ids
 
 
 def _by_constraint(slots) -> dict:
@@ -68,23 +73,32 @@ def authored_key(slot, motion, name: str) -> tuple[str, str]:
     """
     # A generated conjunction has no motion in its own IRI, but it is a motion's `until`, so
     # what it watches says where it belongs.
-    for iri in (slot.constraint_iri, *(member.iri for member in slot.watched)):
+    watched = slot.watched if slot.DESCRIPTOR.name == "Monitor" else ()
+    for iri in (slot.constraint_iri, *(member.iri for member in watched)):
         segments = PurePosixPath(urlparse(iri or "").path).parts
         if len(segments) >= 3 and segments[-2] in ("while", "until", "when"):
-            return (_key(segments[-3]), _key(name))
-    return (_key(motion.id), _key(name))
+            return (segments[-3].replace("-", "_"), (name or "").replace("-", "_"))
+    return ((motion.id or "").replace("-", "_"), (name or "").replace("-", "_"))
 
 
 def _constraint_row(motion, kind: str, group: list, constants: dict, authored: dict) -> dict:
-    spelled = {_key(name): name for _, _, name in authored.values()}
     """One constraint's row: its identity and signals from the header, its line from the source."""
+    spelled = {(name or "").replace("-", "_"): name for _, _, name in authored.values()}
     first = group[0]
     name = first.constraint_id or rdf_name(first.constraint_iri) or first.id
     key = authored_key(first, motion, name)
     line, expression, authored_motion = authored.get(key, (None, None, None))
     # The header names the pair the evaluator compares; measured/setpoint only where it does not.
-    operands = list(dict.fromkeys(value for slot in group for value in slot.operand_ids))
-    compared = operands or [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
+    operands = []
+    for slot in group:
+        for value in slot.operand_ids:
+            if value not in operands:
+                operands.append(value)
+    compared = operands or (
+        [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
+        if kind == "controlled"
+        else []
+    )
     evaluator = next(iter(_slot_ids(group, "evaluator_id")), None)
     return {
         # As the source spells it, so a generated row lands in the motion's own block
@@ -94,7 +108,7 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
         "name": name,
         "expression": expression,
         "kind": kind,
-        # The closure the header names, or the slot computing the error where it names none.
+        # The function the header names, or the slot computing the error where it names none.
         "evaluator": evaluator or first.iri or first.id or None,
         "between": compared,
         "tracking": [value for value in compared if value not in constants],
@@ -111,20 +125,26 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
                 for member in slot.watched
                 if member.error_id
             }.values()
-        ),
+        )
+        if kind == "monitored"
+        else [],
         "error": _slot_ids(group, "error_id"),
-        "control": _slot_ids(group, "output_id"),
+        "control": _slot_ids(group, "output_id") if kind == "controlled" else [],
         "monitors": [slot.id for slot in group] if kind == "monitored" else [],
         "setpoints": [
             {"label": value, "value": constants[value]}
             for value in _slot_ids(group, "setpoint_id")
             if value in constants
-        ],
+        ]
+        if kind == "controlled"
+        else [],
         "gains": {
             GAIN_LABELS.get(gain.role, gain.role): gain.value
             for slot in group
             for gain in slot.gains
-        },
+        }
+        if kind == "controlled"
+        else {},
         "tolerance": next(
             (constants[slot.tolerance_id] for slot in group if slot.tolerance_id in constants), None
         ),
@@ -157,13 +177,16 @@ def source_constraints(run_dir: Path, manifest: dict | None, contract) -> list[d
     ]
 
 
-SLOT_ROLES = (
-    ("error_id", "error"),
-    ("output_id", "output"),
-    ("measured_id", "measured"),
-    ("setpoint_id", "setpoint"),
-    ("tolerance_id", "tolerance"),
-)
+SLOT_ROLES = {
+    "constraints": (
+        ("error_id", "error"),
+        ("output_id", "output"),
+        ("measured_id", "measured"),
+        ("setpoint_id", "setpoint"),
+        ("tolerance_id", "tolerance"),
+    ),
+    "monitors": (("error_id", "error"), ("tolerance_id", "tolerance")),
+}
 
 
 def signal_index(contract) -> dict:
@@ -187,7 +210,7 @@ def signal_index(contract) -> dict:
                 owner = slot.constraint_id or rdf_name(slot.constraint_iri) or slot.id
                 fields = contract.fields.get(pool) or ()
                 field = fields[slot.number]["id"] if slot.number < len(fields) else None
-                named = {role for attribute, role in SLOT_ROLES if getattr(slot, attribute, "")}
+                named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
                 for key in keys:
                     where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
                     # The pooled slot mirrors a signal the header already names: offering both
@@ -196,8 +219,8 @@ def signal_index(contract) -> dict:
                         index[f"{field}.{key}"] = where
                     if pool == "monitors":
                         index[f"{slot.id}.{key}"] = where
-                for attribute, role in SLOT_ROLES:
-                    signal = getattr(slot, attribute, "")
+                for attribute, role in SLOT_ROLES[pool]:
+                    signal = getattr(slot, attribute)
                     if signal:
                         index.setdefault(
                             signal,
@@ -208,7 +231,7 @@ def signal_index(contract) -> dict:
                                 "slot": slot.id,
                             },
                         )
-                for member in slot.watched:
+                for member in slot.watched if pool == "monitors" else ():
                     if member.error_id:
                         index.setdefault(
                             member.error_id,
@@ -244,8 +267,8 @@ def replay_data(run_dir: Path) -> dict:
         for motion in contract.header.motions
         for slot in motion.controllers
         if slot.number < len(contract.fields["constraints"])
-        for attribute, role in SLOT_ROLES
-        if getattr(slot, attribute, "")
+        for attribute, role in SLOT_ROLES["constraints"]
+        if getattr(slot, attribute)
     }
     signals.extend(
         name
@@ -276,7 +299,7 @@ def replay_data(run_dir: Path) -> dict:
             constraint[key] = [
                 signal
                 for name in constraint[key]
-                for signal in ([name] if name in logged else sorted(parts.get(name, ())))
+                for signal in ([name] if name in logged else parts.get(name, ()))
             ]
         handler = constraint.pop("handler")
         spelling.setdefault(handler, constraint["motion"])
@@ -286,6 +309,11 @@ def replay_data(run_dir: Path) -> dict:
         for constraint in constraints
         for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
     )
+    # A constraint's own signals are pooled ones already listed: each is offered once.
+    offered = []
+    for signal in signals:
+        if signal not in offered:
+            offered.append(signal)
     # A run copied out of its generation has none to go back to; the log says everything else.
     generation = run_dir.parent.parent
     return {
@@ -298,7 +326,7 @@ def replay_data(run_dir: Path) -> dict:
         "duration": frame_count * contract.header.nominal_period_ns / 1e9,
         "states": [state.id for state in contract.header.fsm_states],
         "events": log_events(log, contract)["events"],
-        "signals": list(dict.fromkeys(signals)),
+        "signals": offered,
         "signal_index": {
             name: {**where, "motion": spelling.get(where["motion"], where["motion"])}
             for name, where in signal_index(contract).items()
@@ -346,7 +374,6 @@ def log_events(log: Path, contract) -> dict:
             "index": 0,
             "states": [state.id for state in contract.header.fsm_states],
             "fired": fired,
-            "trigger_names": [field["name"] for field in contract.fields.get("triggers", [])],
             # Slot indices are motion-local: the active motion says which controller and
             # monitor slot i is, and a slot that motion does not claim is not written at all.
             "by_motion": {
@@ -356,8 +383,6 @@ def log_events(log: Path, contract) -> dict:
                 )
                 for motion in contract.header.motions
             },
-            "constraint_names": [field["name"] for field in contract.fields["constraints"]],
-            "monitor_names": [field["name"] for field in contract.fields["monitors"]],
             "state_was": None,
             "event_was": None,
             "motion_was": None,
@@ -374,27 +399,19 @@ def log_events(log: Path, contract) -> dict:
 def _extend_events(log: Path, contract, scan: dict) -> None:
     """Append the markers of the frames written since the scan's offset, advancing it."""
     states, fired = scan["states"], scan["fired"]
-    trigger_names = scan["trigger_names"]
+    constraint_pool = len(contract.fields["constraints"])
+    monitor_pool = len(contract.fields["monitors"])
     events, windows = scan["result"]["events"], scan["result"]["windows"]
     tally, exits = scan["result"]["tally"], scan["result"]["exits"]
     index = scan["index"]
     state_was, event_was, motion_was = scan["state_was"], scan["event_was"], scan["motion_was"]
     csat_was, msat_was = scan["csat_was"], scan["msat_was"]
     with frame_log_pb.open_log(log) as fh:
-        while True:
-            data, next_offset = frame_log_pb._read_delimited_at(fh, scan["offset"])
-            if data is None:
-                break
-            scan["offset"] = next_offset
-            record = contract.record_cls()
-            record.ParseFromString(data)
-            if record.WhichOneof("record") != "frame":
-                continue
-            frame = record.frame
+        for frame, offset in frame_log_pb.raw_frames(fh, contract, scan["offset"]):
+            scan["offset"] = offset
             fired_now: list[str] = []
-            if trigger_names:
-                for slot in range(min(int(frame.trigger_count), len(trigger_names))):
-                    entry = getattr(frame, trigger_names[slot])
+            if contract.trigger_pool:
+                for entry in frame.triggers:
                     if 0 <= entry.idx < len(fired):
                         events.append({"frame": index, "kind": "event", "label": fired[entry.idx]})
                         fired_now.append(fired[entry.idx])
@@ -405,12 +422,16 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
                     fired_now.append(fired[event_was])
             controllers, monitors = scan["by_motion"].get(frame.active_motion, ({}, {}))
             csat = [
-                slot in controllers and bool(getattr(frame, name).satisfied)
-                for slot, name in enumerate(scan["constraint_names"])
+                slot in controllers
+                and bool(
+                    (entry := frame_log_pb.slot(frame, "constraints", slot)) and entry.satisfied
+                )
+                for slot in range(constraint_pool)
             ]
             msat = [
-                slot in monitors and bool(getattr(frame, name).satisfied)
-                for slot, name in enumerate(scan["monitor_names"])
+                slot in monitors
+                and bool((entry := frame_log_pb.slot(frame, "monitors", slot)) and entry.satisfied)
+                for slot in range(monitor_pool)
             ]
             # The latch is only valid within one state and motion: across a change slot i is
             # a different controller, so the projection compares nothing there either.
@@ -551,22 +572,26 @@ def signal_reader(contract):
             gate = contract.gate.get("quantities")
             if gate is not None and field["index"] not in gate.get(frame.active_motion, ()):
                 return None
-            return float(getattr(frame, field["name"]))
+            for index, value in zip(frame.quantity_slots, frame.quantities):
+                if index == field["index"]:
+                    return float(value)
+            return 0.0
         if name in slots:
             kind, field, attribute = slots[name]
             gate = contract.gate.get(kind)
             if gate is not None and field["index"] not in gate.get(frame.active_motion, ()):
                 return None
-            return float(getattr(getattr(frame, field["name"]), attribute))
+            return float(getattr(getattr(frame, kind)[field["index"]], attribute))
         prefix, _, key = name.rpartition(".")
         if prefix in constraint_slots:
-            field = contract.fields["constraints"][constraint_slots[prefix]]
-            return getattr(getattr(frame, field["name"]), key)
+            entry = frame_log_pb.slot(frame, "constraints", constraint_slots[prefix])
+            return getattr(entry, key) if entry else 0
         if prefix in monitor_slots:
             field, owner = monitor_slots[prefix]
             if frame.active_motion != owner:
                 return None
-            return getattr(getattr(frame, field["name"]), key)
+            entry = frame_log_pb.slot(frame, "monitors", field["index"])
+            return getattr(entry, key) if entry else 0
         raise ValueError(f"unknown signal: {name}")
 
     return value
@@ -584,19 +609,11 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
     first, last = window or (0, max(0, health.get("written_frames", 0) - 1))
     step = max(1, (last - first + 1) // 1600)
     series = {name: [] for name in names}
-    index = 0
     with frame_log_pb.open_log(log) as fh:
-        frame_log_pb._read_delimited(fh)
-        while data := frame_log_pb._read_delimited(fh, partial_ok=True):
-            record = contract.record_cls()
-            record.ParseFromString(data)
-            if record.WhichOneof("record") != "frame":
-                continue
-            frame = record.frame
+        for index, (frame, _) in enumerate(frame_log_pb.raw_frames(fh, contract)):
             if first <= index <= last and (index - first) % step == 0:
                 for name in names:
                     series[name].append(value(frame, name))
-            index += 1
     return {
         "signals": series,
         "events": log_events(log, contract)["events"],

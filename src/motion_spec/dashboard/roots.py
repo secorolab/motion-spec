@@ -10,21 +10,24 @@ their values, which would freeze whichever root was current at import time.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
+from motion_spec.runs.provenance import artifact_size
 from motion_spec.setup import ENVIRONMENT_FILES
 
-# Re-exported: the dashboard's callers ask roots for it, and it is the same removal every
-# other part of motion-spec uses.
-from motion_spec.utils import trash as trash
 
-GENERATION_DIR_ENV = "MOTION_SPEC_GEN"
+def pidfile(port: int | str, role: str = "dashboard") -> Path:
+    """Where the dashboard on PORT, or the lab it started, records its pid; "*" globs them."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
+    return runtime / f"motion-spec-{role}-{port}.pid"
 
 
 # Roots the dashboard browses, replaced at startup by `serve` and by /api/roots.
@@ -57,8 +60,8 @@ IGNORED = {
     "__pycache__",
     "test",
     "tests",
-    # What `motion-spec setup` checks out under src/: four third-party repositories, none of
-    # them anybody's authored model, and between them more files than the workspace itself.
+    # What `motion-spec setup` imports under src/: the Python packages and STST, none of them
+    # anybody's authored model, and between them more files than the workspace itself.
     "thirdparty",
 }
 
@@ -74,7 +77,7 @@ NOT_AUTHORED = {"METADATA.toml", "netlify.toml", "pixi.toml", "pyproject.toml", 
 
 # Not a DSL file and not a suffix worth admitting -- every .zsh in a workspace is not a source.
 # This one is: every build and run is launched under it, so what it says is part of the result.
-AUTHORED_NAMES = frozenset(ENVIRONMENT_FILES)
+AUTHORED_NAMES = set(ENVIRONMENT_FILES)
 
 
 def current_roots() -> dict:
@@ -166,10 +169,8 @@ def _parsed_json(path: Path, _mtime_ns: int, _size: int) -> dict:
     return json.loads(path.read_text())
 
 
-@lru_cache(maxsize=256)
-def directory_size(path: Path) -> int:
-    """Byte size of one generation bundle, cached for the dashboard session."""
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+# Byte size of one generation bundle, cached for the dashboard session.
+directory_size = lru_cache(maxsize=256)(artifact_size)
 
 
 @lru_cache(maxsize=1)
@@ -192,11 +193,7 @@ def stamp_iso(name: str) -> str | None:
     match = re.fullmatch(r"(\d{8}T\d{6}\d{6})Z", name)
     if not match:
         return None
-    return (
-        datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%f")
-        .replace(tzinfo=timezone.utc)
-        .isoformat()
-    )
+    return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC).isoformat()
 
 
 LAYOUT_REL = "generated/contract/frame_layout.json"

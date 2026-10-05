@@ -3,21 +3,21 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
-import sys
+import tempfile
 from collections.abc import Iterator
 from itertools import chain
 from pathlib import Path
 
 from motion_spec.classes.base import DataclassJSONEncoder
-from motion_spec.generation.artifacts import write_introspection_artifacts
+from motion_spec.generation.artifacts import write_telemetry_artifacts
+from motion_spec.telemetry import frame_log_pb
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
-MAIN_TEMPLATE = "main"
 # The templates ship inside the package, so they sit beside it however it was installed.
 TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 
@@ -32,21 +32,81 @@ ST_OPTIONAL_READ = "no such property or can't access"
 
 
 def write_json(path: Path, payload):
-    """Write payload as pretty, dataclass-aware JSON, creating parent directories.
-
-    ``sort_keys`` so dict-insertion order can never make two generations of the same model differ."""
+    """Write payload as pretty, dataclass-aware JSON, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4, sort_keys=True) + "\n")
+    path.write_text(json.dumps(payload, cls=DataclassJSONEncoder, indent=4) + "\n")
+
+
+def _for_templates(o):
+    """Every empty list as null: StringTemplate's `<if()>` holds a JSON list true even when empty."""
+    if isinstance(o, dict):
+        return {key: _for_templates(value) for key, value in o.items()}
+    if isinstance(o, list):
+        return [_for_templates(value) for value in o] or None
+    return o
+
+
+def runtime_uses(ir: dict) -> dict:
+    """What the program calls into the runtime for, by name: runtime.hpp carries only these."""
+    uses = set()
+    for function in ir["computation"]["functions"].values():
+        kind = function["type"]
+        uses.add(kind)
+        if kind == "ErrorEvaluator":
+            uses.add(f"ErrorEvaluator-{function['constraint']}")
+        if kind == "VelocityProfile":
+            uses.add(
+                "PathVelocityProfile" if function.get("path_parameter") else "TargetVelocityProfile"
+            )
+        if function.get("error_normalization"):
+            uses.add("JointNormalization")
+        # A control law with gains names its kind, so only the classes a model runs are emitted.
+        if function.get("controller_type"):
+            uses.add(function["controller_type"])
+    solvers = (ir["resources"].get("by_id") or {}).values()
+    for solver in solvers:
+        if solver.get("algorithm_name"):
+            uses.add(f"Solver{solver['algorithm_name']}")
+        if any(out.get("normalization") for out in solver.get("output") or ()):
+            uses.add("JointNormalization")
+    # A monitor whose error signal is a whole pose or twist reduces it to one value before
+    # comparing it with the tolerance.
+    composite = {
+        item["id"]
+        for item in ir["computation"].get("data") or ()
+        if item.get("type") in {"Pose", "VelocityTwist"}
+    }
+    for motion in ir["coordination"]["motions"]:
+        for phase in ("when", "while", "until"):
+            for monitor in motion.get(f"{phase}_monitors") or ():
+                error_signals = [
+                    (monitor.get("error") or {}).get("id"),
+                    *(term.get("error_id") for term in monitor.get("active_terms") or ()),
+                ]
+                if composite.intersection(error_signals):
+                    uses.add("CompositeError")
+                if monitor.get("is_edge_triggered"):
+                    uses.add("SustainedEdge" if monitor.get("debounce_id") else "RisingEdge")
+                    if not monitor.get("fsm_namespace"):
+                        uses.add("ProduceEvent")
+                elif monitor.get("flag"):
+                    uses.add("Flag")
+    return dict.fromkeys(uses, True)
+
+
+def write_payload(path: Path, payload) -> None:
+    """Write a template payload, with empty lists read as absent."""
+    write_json(path, _for_templates(json.loads(json.dumps(payload, cls=DataclassJSONEncoder))))
 
 
 def render_template(
-    stst_bin: str,
-    template_name: str,
-    payload_path: Path,
-    output_path: Path,
-    module_template: str = MAIN_TEMPLATE,
+    stst_bin: str, group: str, template_name: str, payload_path: Path, output_path: Path
 ) -> Path:
-    """Render a StringTemplate group template over a JSON payload to output_path via the STSTv4 runner."""
+    """Render GROUP's template over a JSON payload to output_path via the STSTv4 runner.
+
+    GROUP is a path under the templates, without `.stg`: a backend's root, `backend/<name>/main`,
+    for everything the program is generated from.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     stst_path = Path(stst_bin)
     run_cwd = stst_path.resolve().parent if stst_path.parent != Path(".") else PACKAGE_ROOT
@@ -56,7 +116,7 @@ def render_template(
         "<>",
         "-t",
         str(TEMPLATES),
-        f"{module_template}.{template_name}",
+        f"{group}.{template_name}",
         str(payload_path),
     ]
     env = os.environ.copy()
@@ -113,34 +173,6 @@ def _reject_dropped_output(template_name: str, output_path: Path, stderr: str) -
         )
 
 
-def compile_frame_log_proto(proto_path: Path) -> None:
-    """Compile the generated frame_log.proto to C++ (frame_log.pb.{h,cc}) with protoc.
-
-    The controller links libprotobuf and includes the generated header; protoc owns the
-    wire format on the C++ side (the Python reader builds its message classes from schema).
-    """
-    proto_path = Path(proto_path)
-    try:
-        subprocess.run(
-            [
-                "protoc",
-                f"--proto_path={proto_path.parent}",
-                f"--cpp_out={proto_path.parent}",
-                proto_path.name,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "protoc was not found. Install the protobuf compiler (apt: protobuf-compiler) "
-            "to generate the frame-log C++ codec."
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(exc.stderr.strip() or exc.stdout.strip()) from exc
-
-
 def _collapse_blank_lines(text: str) -> str:
     """Normalize StringTemplate output: at most one blank line between blocks, single trailing newline.
 
@@ -155,52 +187,6 @@ def load_ir(input_path: Path):
     """Load an IR JSON file into a dict."""
     with input_path.open() as handle:
         return json.load(handle)
-
-
-def _adopt_fsm_state_order(ir: dict, *candidates: Path) -> None:
-    """Index FSM states and events the way the runtime does.
-
-    A frame's ``fsm_state`` is ``fsm->currentStateIndex`` and a produced event's flag sits at
-    the coord-dsl enum's value -- both enums are built from ``fsm_ir.json``. ir_gen re-derives
-    its own lists by iterating the merged app graph, and rdflib hands them back in a different
-    order, so the schema's indices named the wrong state or event. Take the order from the
-    artifact that defines the enums, and remap every event index ir_gen already baked
-    (``step_event_idx``, each monitor's ``fsm_event_idx``): after this there is exactly one
-    index space -- enum value, schema index and recorded value all agree.
-    """
-    fsm = ir["coordination"].get("fsm")
-    fsm_ir_path = next((path for path in candidates if path.is_file()), None)
-    if not fsm or fsm_ir_path is None:
-        return
-    doc = json.loads(fsm_ir_path.read_text())
-    for kind in ("states", "events"):
-        adopted = doc.get(kind)
-        if not adopted:
-            continue
-        if set(adopted) != set(fsm.get(kind, [])):
-            raise RuntimeError(
-                f"{fsm_ir_path.name} {kind} {sorted(adopted)} do not match the model's "
-                f"{sorted(fsm.get(kind, []))}"
-            )
-        if kind == "events":
-            remap = {old: adopted.index(name) for old, name in enumerate(fsm["events"])}
-            if fsm.get("step_event_idx", -1) >= 0:
-                fsm["step_event_idx"] = remap[fsm["step_event_idx"]]
-            _remap_event_indices(ir["coordination"], remap)
-        fsm[kind] = list(adopted)
-
-
-def _remap_event_indices(node, remap: dict) -> None:
-    """Rewrite every ``fsm_event_idx`` under `node` into the adopted index space."""
-    if isinstance(node, dict):
-        idx = node.get("fsm_event_idx")
-        if isinstance(idx, int) and idx >= 0:
-            node["fsm_event_idx"] = remap[idx]
-        for value in node.values():
-            _remap_event_indices(value, remap)
-    elif isinstance(node, list):
-        for value in node:
-            _remap_event_indices(value, remap)
 
 
 class MissingAssets(RuntimeError):
@@ -224,7 +210,6 @@ class MissingAssets(RuntimeError):
 
 # The same prefixes the generated find_asset_path maps into the wrapper's cache.
 _VENDOR_MARKERS = (
-    ("third_party/menagerie/", "menagerie"),
     ("src/mj_kdl_wrapper/assets/", "assets"),
     ("src/examples/assets/", "assets"),
 )
@@ -251,15 +236,9 @@ def asset_candidates(path: str) -> list[Path]:
         return [declared]
     candidates = [Path.cwd() / declared]
     cache = _cache_root()
-    menagerie = os.environ.get("MJ_KDL_MENAGERIE")
     for marker, subdirectory in _VENDOR_MARKERS:
-        if not declared.is_relative_to(marker):
-            continue
-        tail = declared.relative_to(marker)
-        if cache:
-            candidates.append(cache / subdirectory / tail)
-        if menagerie and subdirectory == "menagerie":
-            candidates.append(Path(menagerie) / tail)
+        if cache and declared.is_relative_to(marker):
+            candidates.append(cache / subdirectory / declared.relative_to(marker))
     return candidates
 
 
@@ -292,7 +271,7 @@ def resolve_model_assets(ir, model_dir: Path) -> list[str]:
 
 def unresolved_assets(ir) -> list[str]:
     """The MJCF assets the IR names that nothing on this machine can supply."""
-    declared = dict.fromkeys(node["path"] for node in _asset_nodes(ir))
+    declared = {node["path"] for node in _asset_nodes(ir)}
     return [
         path
         for path in declared
@@ -300,13 +279,16 @@ def unresolved_assets(ir) -> list[str]:
     ]
 
 
-def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
-    """Render every C++/artifact file for an IR: introspection headers, runtime and
+def generate_code(
+    ir_path: Path, output_dir: Path, contract_dir: Path, stst_bin: str, fsm: dict | None
+) -> list[Path]:
+    """Render every C++/artifact file for an IR: telemetry headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
-    main.cpp, and return the files written.
+    main.cpp into OUTPUT_DIR, the frame-log contract into CONTRACT_DIR, and return the files
+    written.
 
-    ir.json is complete by construction in ir_gen (every codegen-facing field, incl. FSM
-    wiring); codegen only loads it, writes artifacts, and renders.
+    ir.json carries every codegen-facing field but the FSM's own tables, which come from
+    coord-dsl's framed FSM `fsm`.
 
     Raises:
         RuntimeError: the IR declares no FSM. The generated program is an FSM dispatcher.
@@ -321,73 +303,81 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
     missing = unresolved_assets(ir)
     if missing:
         raise MissingAssets(Path(ir_path), missing, asset_roots())
-    # The pipeline moves fsm_ir.json into the controller dir before calling codegen; the
-    # standalone `gen code <ir.json>` path leaves it beside the IR.
-    _adopt_fsm_state_order(
-        ir, Path(output_dir) / "fsm_ir.json", Path(ir_path).parent / "fsm_ir.json"
-    )
 
-    ir["communication"]["introspection_artifacts"] = write_introspection_artifacts(
-        ir, ir_path=ir_path, output_dir=output_dir
+    ir["communication"]["telemetry_artifacts"] = write_telemetry_artifacts(
+        ir, ir_path=ir_path, output_dir=contract_dir, fsm_ir=fsm
     )
-    written = [output_dir / "frame_layout.json", output_dir / "frame_log_header.pb"]
+    written = [contract_dir / "frame_layout.json", contract_dir / "frame_log_header.pb"]
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
-    # The DSL-generated FSM header stays at the source root (like frame_layout.h); the bare
-    # include in shared_state.hpp resolves it via the root include dir, so no headers/ copy
+    # coord-dsl's FSM header stays at the source root (like frame_layout.h); the bare
+    # include in algorithm_data.hpp resolves it via the root include dir, so no headers/ copy
     # is needed — copying it there just duplicated the file in the tree and the archive.
 
-    payload_dir = output_dir / ".stst"
-    payload_dir.mkdir(parents=True, exist_ok=True)
+    ir["computation"]["uses"] = runtime_uses(ir)
+    # What stst renders from is scratch, not part of the generation.
+    scratch = tempfile.TemporaryDirectory(prefix="motion-spec-stst-")
+    payload_dir = Path(scratch.name)
     ir_payload_path = payload_dir / "ir.json"
-    write_json(ir_payload_path, ir)
+    write_payload(ir_payload_path, ir)
+    # The backend's root group: its own rules first, so it answers every hook the shared ones call.
+    root = f"backend/{ir['configuration']['backend']}/main"
 
     written.append(
         render_template(
-            stst_bin,
-            "introspection_runtime_header",
-            ir_payload_path,
-            output_dir / "introspection_runtime.hpp",
+            stst_bin, root, "telemetry_header", ir_payload_path, output_dir / "telemetry.hpp"
         )
     )
     written.append(
         render_template(
             stst_bin,
-            "introspect_model_header",
+            root,
+            "telemetry_model_header",
             ir_payload_path,
-            output_dir / "introspect_model.hpp",
+            output_dir / "telemetry_model.hpp",
         )
     )
     written.append(
         render_template(
-            stst_bin, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"
+            stst_bin, root, "frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"
+        )
+    )
+    shutil.copyfile(frame_log_pb.PROTO, contract_dir / "frame_log.proto")
+    frame_log_pb.run_protoc(f"--cpp_out={output_dir}")
+    written += [
+        contract_dir / "frame_log.proto",
+        output_dir / "frame_log.pb.h",
+        output_dir / "frame_log.pb.cc",
+    ]
+    written.append(
+        render_template(
+            stst_bin, root, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp"
         )
     )
     written.append(
         render_template(
-            stst_bin, "frame_log_proto", ir_payload_path, output_dir / "frame_log.proto"
-        )
-    )
-    compile_frame_log_proto(output_dir / "frame_log.proto")
-    written += [output_dir / "frame_log.pb.h", output_dir / "frame_log.pb.cc"]
-    written.append(
-        render_template(stst_bin, "runtime_header", ir_payload_path, headers_dir / "runtime.hpp")
-    )
-    written.append(
-        render_template(
-            stst_bin, "controller_runtime_header", ir_payload_path, headers_dir / "controllers.hpp"
+            stst_bin,
+            root,
+            "controller_runtime_header",
+            ir_payload_path,
+            headers_dir / "controllers.hpp",
         )
     )
     written.append(
         render_template(
-            stst_bin, "shared_state_header", ir_payload_path, headers_dir / "shared_state.hpp"
+            stst_bin,
+            root,
+            "algorithm_data_header",
+            ir_payload_path,
+            headers_dir / "algorithm_data.hpp",
         )
     )
     if ir["resources"]["by_kind"].get("mobile_base"):
         written.append(
             render_template(
                 stst_bin,
+                root,
                 "mobile_base_cycle_header",
                 ir_payload_path,
                 headers_dir / "mobile_base_cycle.hpp",
@@ -397,71 +387,39 @@ def generate_code(ir_path: Path, output_dir: Path, stst_bin: str) -> list[Path]:
     for motion in ir["coordination"]["motions"]:
         payload = {
             "motion": motion,
-            "closures": ir["computation"]["closures"],
+            "functions": ir["computation"]["functions"],
             "views": ir["computation"]["views"],
-            "backend": ir["configuration"]["backend"],
             "solvers": ir["resources"]["by_id"],
         }
         payload_path = payload_dir / f"{motion['id']}.json"
-        write_json(payload_path, payload)
+        write_payload(payload_path, payload)
         written.append(
             render_template(
-                stst_bin, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
+                stst_bin, root, "motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"
             )
         )
 
     written.append(
-        render_template(stst_bin, "main_source", ir_payload_path, output_dir / "main.cpp")
+        render_template(stst_bin, root, "main_source", ir_payload_path, output_dir / "main.cpp")
     )
-    cmake = "cmake_mj_kdl" if ir["configuration"]["backend"] == "mj_kdl" else "cmake_robif2b"
-    written.append(render_template(stst_bin, cmake, ir_payload_path, output_dir / "CMakeLists.txt"))
+    written.append(
+        render_template(
+            stst_bin, root, "cmake_project", ir_payload_path, output_dir / "CMakeLists.txt"
+        )
+    )
     # Both backends read deployment properties (the FT tare length) from the same config.
     written.append(
         render_template(
-            stst_bin, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
+            stst_bin, root, "robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"
         )
     )
-    # Only real hardware has serial devices the loop must not block on: the simulator's are
-    # function calls. Which kinds those are is the backend template's decision
-    # (backend_robif2b_io.stg); this mirror only decides whether the file exists at all.
-    serial_device_kinds = {"Robotiq2F85", "RobotiqFT300s"}
-    if ir["configuration"]["backend"] == "robif2b" and serial_device_kinds & set(
-        ir["resources"]["device_kinds"]
-    ):
+    # Only real hardware has serial devices the loop must not block on; whether anything includes
+    # this header is the backend template's decision.
+    if ir["configuration"]["backend"] == "robif2b":
         written.append(
             render_template(
-                stst_bin, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"
+                stst_bin, root, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"
             )
         )
+    scratch.cleanup()
     return written
-
-
-def main(argv: list[str] | None = None):
-    """CLI entry point: render C++ from a previously generated IR JSON."""
-    parser = argparse.ArgumentParser(
-        prog="motion-spec codegen", description="Generate C++ header files from motion-spec IR."
-    )
-    parser.add_argument("input", help="Previously generated IR JSON path")
-    parser.add_argument(
-        "-o", "--output-dir", required=True, help="Directory for generated C++ files"
-    )
-    parser.add_argument(
-        "--stst-bin",
-        default="stst",
-        help="Path to the STSTv4 executable used to render StringTemplate groups",
-    )
-    args = parser.parse_args(argv)
-
-    try:
-        generate_code(
-            ir_path=Path(args.input).resolve(),
-            output_dir=Path(args.output_dir).resolve(),
-            stst_bin=args.stst_bin,
-        )
-    except RuntimeError as exc:
-        print(f"Code generation failed: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

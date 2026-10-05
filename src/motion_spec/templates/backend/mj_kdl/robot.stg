@@ -432,13 +432,24 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
             return 1;
         \}
         object_spec.mjcf_path = object_path.string();
-<endif>        object_spec.pos[0] = <object.pos_x>;
+<endif><if(object.draw)>
+        // Drawn this run: the drawn position, on the frame the pose states it against.
+        const KDL::Frame object_frame =
+            KDL::Frame(KDL::Rotation::Quaternion(<object.draw_base_quat; separator=", ">),
+                       KDL::Vector(<object.draw_base_pos; separator=", ">)) *
+            KDL::Frame(KDL::Rotation::Quaternion(<object.draw_rotation; separator=", ">),
+                       KDL::Vector(<object.draw>_draw[0], <object.draw>_draw[1], <object.draw>_draw[2]));
+        object_frame.M.GetQuaternion(object_spec.quat[0], object_spec.quat[1], object_spec.quat[2], object_spec.quat[3]);
+        for (int i = 0; i \< 3; ++i) object_spec.pos[i] = object_frame.p[i];
+<else>
+        object_spec.pos[0] = <object.pos_x>;
         object_spec.pos[1] = <object.pos_y>;
         object_spec.pos[2] = <object.pos_z>;
         object_spec.quat[0] = <object.quat_x>;
         object_spec.quat[1] = <object.quat_y>;
         object_spec.quat[2] = <object.quat_z>;
         object_spec.quat[3] = <object.quat_w>;
+<endif>
         object_spec.fixed = <object.fixed>;
 <if(!object.has_path)>        object_spec.shape = mj_kdl::Shape::<object.shape>;
         object_spec.size[0] = <object.size_x>;

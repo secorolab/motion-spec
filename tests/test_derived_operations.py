@@ -309,8 +309,7 @@ def test_a_placement_keeps_its_quaternion_composes_to_the_anchor_and_scales_to_m
 
 
 def test_sampled_scene_placements_are_rejected() -> None:
-    """A placement is built into the world before the run draws anything, so a drawn pose can
-    only be a frame on a body, never what places the body."""
+    """Only a scene object's own placement may be drawn; any placement read as numbers is not."""
     g = Dataset(default_union=True)
     g.default_graph.parse(
         data=PREFIXES

@@ -60,7 +60,9 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     setups, _ordered, world_trees = agents.robot_setups(model)
     scene = read_scene(model, world_trees)
     derivation = constraint_handler.solver_derivation_context(model)
-    sampling = sampled_quantities(model, world_trees)
+    sampling = sampled_quantities(
+        model, world_trees, {obj.draw_uri for obj in scene.objects if obj.draw_uri}
+    )
 
     # One scope for the whole active block: a step reachable from both a solver and a handler is
     # emitted once, and the four sections are only ever read as their union.

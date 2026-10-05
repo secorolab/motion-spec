@@ -44,8 +44,14 @@ def unplaced_frames(tree: dict) -> list[dict]:
     return tree["unplaced_frames"]
 
 
-def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
-    """Every sampled quantity of the model, in the order the model states them."""
+def sampled_quantities(
+    model, trees: list[dict], placements: set[str] = frozenset()
+) -> list[SampledQuantity]:
+    """Every sampled quantity of the model, in the order the model states them.
+
+    PLACEMENTS are the drawn positions the scene places an object by: positions too, but on no
+    tree, since the simulator places the object.
+    """
     frames = {
         frame["position_coord_iri"]: (tree, frame)
         for tree in trees
@@ -67,17 +73,18 @@ def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
         unit = model.graph.value(node, QUDT_SCHEMA.unit)
         scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))
-        if frame is None and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
+        position = frame is not None or str(node) in placements
+        if not position and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
                 "sampling",
                 f"'{node}' is a position with coordinates of its own and a distribution to draw "
                 f"from: the scene places the frame, so nothing should draw it",
             )
-        if len(components) != (3 if frame else 1):
+        if len(components) != (3 if position else 1):
             raise ConstraintViolation(
                 "sampling",
                 f"'{node}' draws {len(components)} numbers from '{distribution}', which is not "
-                f"{'a position' if frame else 'a scalar'}",
+                f"{'a position' if position else 'a scalar'}",
             )
         result.append(
             SampledQuantity(
@@ -87,7 +94,7 @@ def sampled_quantities(model, trees: list[dict]) -> list[SampledQuantity]:
                 components=components,
                 size=len(components),
                 scale=scale,
-                data_member=None if frame else model.id(node),
+                data_member=None if position else model.id(node),
                 segment=frame["name"] if frame else None,
                 parent=frame["parent"] if frame else None,
                 rotation=frame["rotation_xyzw"] if frame else None,

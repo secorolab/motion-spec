@@ -46,6 +46,7 @@ from rdf_utils.models.geom_coord import (
     get_coord_vectorxyz,
     get_orientation_coord_vals,
     get_pose_coords,
+    get_rotation_between_frames,
     get_transform_between_frames,
     to_metres,
 )
@@ -1227,6 +1228,40 @@ def placement_of(model, attachment, anchor):
     # joint happens to hang it by, which may sit anywhere on it.
     is_frame = GEOM_ENT.Frame in get_node_types(model.graph, frame)
     return frame_placement(model, body_of_frame(frame, model.graph) if is_frame else frame, anchor)
+
+
+class DrawnPlacement(NamedTuple):
+    """A body placed by a pose whose position the run draws, on a frame placed by numbers."""
+
+    position: URIRef
+    rotation: list[float]
+    base_pos: list[float]
+    base_quat: list[float]
+
+
+def drawn_placement_of(model, attachment, anchor) -> DrawnPlacement | None:
+    """The drawn placement of a body the scene places itself, or None when numbers place it.
+
+    Only the pose placing the body's own root frame may be drawn; the frame it is drawn against
+    must be placed by numbers, which `frame_placement` enforces.
+    """
+    kind, _name, frame, _parent = attachment
+    if kind != "World":
+        return None
+    if GEOM_ENT.Frame in get_node_types(model.graph, frame):
+        frame = body_of_frame(frame, model.graph)
+    frame = placement_frame(model, frame)
+    graph = _placement_graph(model)
+    placing = (find_pose_path(frame, anchor, graph) or [])[:1]
+    for pose, coords in get_pose_coords(graph=graph, poses=placing):
+        for coord in coords:
+            position = coord.position_coord.id
+            if URI_DISTRIB_TYPE_SAMPLED_QUANTITY not in get_node_types(model.graph, position):
+                continue
+            rotation = get_rotation_between_frames(frame, pose.wrt_id, model.graph)
+            base_pos, base_quat = frame_placement(model, pose.wrt_id, anchor)
+            return DrawnPlacement(position, list(rotation.as_quat()), base_pos, base_quat)
+    return None
 
 
 @reader

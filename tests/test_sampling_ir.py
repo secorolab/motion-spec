@@ -86,6 +86,23 @@ def test_a_scalar_is_drawn_into_a_member_of_its_own() -> None:
     assert drawn.tree is None
 
 
+def test_a_drawn_object_placement_is_a_position_on_no_tree() -> None:
+    """The simulator places the object, so the draw joins no tree and needs no member."""
+    graph = Dataset(default_union=True)
+    graph.default_graph.parse(data=DRAWN_POSITION, format="turtle")
+
+    [drawn] = sampled_quantities(
+        Model(graph=graph, app_path=Path("model-app.ld.json"), namespaces=(NS,)),
+        [{"name": "arm", "cpp_name": "arm", "unplaced_frames": []}],
+        {f"{NS}marker_position"},
+    )
+
+    assert drawn.size == 3
+    assert drawn.data_member is None
+    assert drawn.segment is None
+    assert drawn.tree is None
+
+
 # No coordinates and no distribution: the frame would never be placed at all. Coordinates in the
 # graph and a distribution to draw from: the two disagree.
 @pytest.mark.parametrize(

@@ -71,6 +71,12 @@ class MjcfSceneObject:
     attach_name: str = ""
     pos: list[float] | None = None
     quat: list[float] | None = None
+    # Placed by a drawn position instead of pos/quat: the draw's id, the rotation the pose states
+    # with it, and where the frame it is drawn against sits.
+    draw: str | None = None
+    draw_rotation: list[float] | None = None
+    draw_base_pos: list[float] | None = None
+    draw_base_quat: list[float] | None = None
     fixed: bool = False
     shape: str | None = None
     size: list[float] | None = None
@@ -102,6 +108,8 @@ class MjcfSceneObject:
     secondary_bodies: dict[str, str] = field(default_factory=dict, metadata=INTERNAL)
     # The scene body this object is spawned as, so a world tree rooted on it finds its provider.
     body_iri: str = field(default="", metadata=INTERNAL)
+    # The drawn position quantity, so sampling knows the scene places its object by it.
+    draw_uri: str = field(default="", metadata=INTERNAL)
     type: str = field(default="MjcfSceneObject")
 
 

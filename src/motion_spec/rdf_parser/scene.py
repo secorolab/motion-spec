@@ -83,7 +83,10 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         object_id = local_name(obj)
         attachment = attach_by_body.get(body, ("World", "", body, None))
         attach_kind, attach_name, _frame, parent = attachment
-        position, orientation = quantities.placement_of(model, attachment, anchor)
+        drawn = quantities.drawn_placement_of(model, attachment, anchor)
+        position, orientation = (
+            (None, None) if drawn else quantities.placement_of(model, attachment, anchor)
+        )
         parent_of[local_name(body)] = local_name(parent) if parent is not None else None
         scene.objects.append(
             MjcfSceneObject(
@@ -96,6 +99,11 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 attach_name=attach_name,
                 pos=position,
                 quat=orientation,
+                draw=model.id(drawn.position) if drawn else None,
+                draw_uri=str(drawn.position) if drawn else "",
+                draw_rotation=drawn.rotation if drawn else None,
+                draw_base_pos=drawn.base_pos if drawn else None,
+                draw_base_quat=drawn.base_quat if drawn else None,
                 secondary_bodies={
                     str(other): f"{object_id}_{entity}"
                     for _asset, other, entity in mapped[1:]

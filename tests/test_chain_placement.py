@@ -6,6 +6,7 @@ never reaches is an error here rather than a dead controller on its first tick."
 from __future__ import annotations
 
 import pytest
+from motion_spec_dsl.rdf_parser.vocab import SLV
 from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
@@ -17,6 +18,7 @@ from motion_spec.classes.solvers import (
     SolverWithInputAndOutput,
 )
 from motion_spec.rdf_parser.agents import place_on_chain
+from motion_spec.rdf_parser.constraint_handler import SOLVER_FAMILIES
 from motion_spec.rdf_parser.runtime import index_chain_joints
 
 SITE = "https://example.test/ft_tree/wrist_ft_body/wrist_ft_site"
@@ -104,6 +106,7 @@ def test_a_joint_resolves_to_its_chain_index_or_fails_while_generating(
         ),
         hardware=HardwareBinding(urdf="arm.urdf", model="arm", tool_body="", tcp_frame=""),
         runtime=RuntimeBinding(id="rt", owner=True, prefix=prefix, owned_trees=[], config_key=""),
+        algorithm=SOLVER_FAMILIES[SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]],
     )
     if rejection:
         with pytest.raises(ConstraintViolation, match=rejection):

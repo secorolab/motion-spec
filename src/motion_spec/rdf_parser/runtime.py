@@ -99,7 +99,7 @@ _ESTIMATE_TARE_MEMBERS = (
 # compute it whether or not a motion that reads it is running.
 _STATE_ANSWERED = {
     "mj_kdl": {"VelocityTwist"},
-    "robif2b": {"VelocityTwist", "JointPosition", "JointVelocity", "JointCurrent"},
+    "robif2b": {"VelocityTwist", "JointPosition", "JointVelocity"},
 }
 
 
@@ -387,7 +387,6 @@ def annotate_runtime(
     for solver in serial_chains:
         solver.runtime.commanded = solver.runtime.id in commanding
         _refuse_twist_without_velocity_kinematics(solver)
-        _refuse_unreportable_currents(solver, backend)
         _split_gripper_outputs(solver, backend)
         # Last, so it sees the outputs a gripper device took over: what the loop answers is
         # decided from the list as it finally stands.
@@ -453,17 +452,14 @@ def annotate_device_dependencies(serial_chains, motions) -> None:
 _OUTPUT_KEYWORD = {
     "JointPosition": "joint-position",
     "JointVelocity": "joint-velocity",
-    "JointCurrent": "joint-current",
+    "JointForce": "joint-force",
 }
 
 # Every reading addressed by joint rather than by frame; each resolves to a chain index or a port.
 _JOINT_OUTPUT_KINDS = set(_OUTPUT_KEYWORD)
 
 # Readings the robif2b arm cannot take on a chain joint: only a bound gripper device answers them.
-_GRIPPER_ONLY_OUTPUTS = {"JointVelocity", "JointCurrent"}
-
-# Readings no simulated backend answers, and why; the simulator reads any joint's rate by name.
-_SIMULATOR_UNREPORTED = {"JointCurrent": "the simulator reports no motor current"}
+_GRIPPER_ONLY_OUTPUTS = {"JointVelocity"}
 
 
 def _refuse_twist_without_velocity_kinematics(solver) -> None:
@@ -481,20 +477,6 @@ def _refuse_twist_without_velocity_kinematics(solver) -> None:
                 f"solver '{solver.id}' is forward position kinematics, but twist '{out.id}' is "
                 "read through it; name 'fvk' to read twists.",
             )
-
-
-def _refuse_unreportable_currents(solver, backend: str) -> None:
-    """A gripper's motor current is a hardware reading no simulated backend answers.
-
-    Raises:
-        RuntimeError: the model reads one on a backend that does not measure it.
-    """
-    if backend == "robif2b":
-        return
-    for out in solver.output:
-        reason = _SIMULATOR_UNREPORTED.get(out.type)
-        if reason is not None:
-            raise ConstraintViolation("solver", f"{_OUTPUT_KEYWORD[out.type]} '{out.id}': {reason}")
 
 
 def _split_gripper_outputs(solver, backend: str) -> None:
@@ -570,6 +552,12 @@ def index_chain_joints(solver) -> None:
         if out.type in _JOINT_OUTPUT_KINDS:
             out.joint_index = _chain_joint_index(solver, out.joint_name)
             out.on_chain = out.joint_index is not None
+        if out.type == "JointForce" and not out.on_chain:
+            raise ConstraintViolation(
+                "solver",
+                f"joint-force '{out.id}' reads joint '{out.joint_name}', which is not on solver "
+                f"'{solver.id}'s chain -- only a chain joint reports its torque",
+            )
     for driver in solver.motion_drivers:
         for force in driver.joint_force:
             force.joint_index = _chain_joint_index(solver, force.joint_name)

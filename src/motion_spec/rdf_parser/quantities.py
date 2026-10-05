@@ -12,7 +12,6 @@ from typing import NamedTuple
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import (
-    ACT,
     AGN,
     ALGO_EXT,
     CSTR,
@@ -1017,13 +1016,13 @@ def duration_quantity(model, node) -> Quantity:
 JOINT_QUANTITY_TYPES = {
     KC_STAT.JointPositionCoordinate: "JointPosition",
     KC_STAT.JointVelocityCoordinate: "JointVelocity",
-    ACT.JointCurrent: "JointCurrent",
+    KC_STAT.JointForceCoordinate: "JointForce",
 }
 
 
 @reader
 def joint_quantity(model, node) -> JointQuantity:
-    """A joint position, velocity or motor current, named by the joint it reads."""
+    """A joint position, velocity or force, named by the joint it reads."""
     joint = model.graph.value(node, KC_STAT["of-joint"])
     if not isinstance(joint, URIRef):
         raise ConstraintViolation("kinematic-chain", f"joint quantity '{node}' has no of-joint URI")

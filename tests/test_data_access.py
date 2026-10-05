@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
+from motion_spec_dsl.rdf_parser.vocab import SLV
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding
@@ -22,6 +23,7 @@ from motion_spec.generation.artifacts import (
     build_telemetry_model,
     field_names_and_format,
 )
+from motion_spec.rdf_parser.constraint_handler import SOLVER_FAMILIES
 from motion_spec.rdf_parser.data_access import analyse_data_access, build_data_access
 from motion_spec.runs.archive import ArchiveError
 from motion_spec.telemetry import frame_log_pb
@@ -69,6 +71,7 @@ def two_motions() -> tuple[dict, list, dict, list, list, dict]:
         runtime=RuntimeBinding(
             id="arm_solver", owner=True, prefix="", owned_trees=[], config_key=""
         ),
+        algorithm=SOLVER_FAMILIES[SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]],
     )
     motions = [
         MotionUnit(

@@ -417,7 +417,6 @@ free-root-port-wiring(port) ::= <<
 joint-port-wiring(port) ::= <<
     robot.world_joint_<port.slot> = <world-port-address("joint", port)>;
     robot.world_joint_<port.slot>_velocity = <world-port-address("joint_velocity", port)>;
-    robot.world_joint_<port.slot>_current = <world-port-address("joint_current", port)>;
     if (!robot.world_joint_<port.slot>) {
         std::cerr \<\< "[world] '<port.mapping>' has no joint source on <backend-name()>" \<\< std::endl;
         return 1;
@@ -562,8 +561,7 @@ struct robot_io {
 <resources.world_ports.free_roots:{port |     const KDL::Frame *free_root_<port.slot> = nullptr;   // <port.mapping>
     const std::uint64_t *free_root_<port.slot>_seq = nullptr;}; separator="\n">
 <resources.world_ports.joints:{port |     const double *world_joint_<port.slot> = nullptr;   // <port.mapping>
-    const double *world_joint_<port.slot>_velocity = nullptr;
-    const double *world_joint_<port.slot>_current = nullptr;}; separator="\n">
+    const double *world_joint_<port.slot>_velocity = nullptr;}; separator="\n">
 <resources.world_ports.aux_cmds:{port |     double *aux_cmd_<port.slot> = nullptr;   // <port.mapping>}; separator="\n">
 <resources.world_ports.wrench_cmds:{port |     KDL::Wrench *wrench_cmd_<port.slot> = nullptr;   // <port.mapping>}; separator="\n">
 <if(resources.world_trees)>

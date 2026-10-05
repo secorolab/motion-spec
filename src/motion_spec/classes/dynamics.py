@@ -12,11 +12,11 @@ from motion_spec.classes.qudt import Quantity
 
 @dataclass
 class JointQuantity:
-    """A joint position, velocity or motor current for a named joint."""
+    """A joint position, velocity or force for a named joint."""
 
     id: str
     joint_name: str
-    # JointPosition, JointVelocity or JointCurrent.
+    # JointPosition, JointVelocity or JointForce.
     type: str
     # The scene joint itself, so a segment resolves by identity: two grippers on two arms
     # carry the same local joint name and must not resolve to one segment.

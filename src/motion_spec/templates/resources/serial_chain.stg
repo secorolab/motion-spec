@@ -3,7 +3,8 @@
 // Author: Vamsi Kalagaturu
 // A serial chain's solver -- Vereshchagin (ACHD) or RNE: state, init, sync, outputs, run stages.
 // What a backend adds rides on rules it states: `solver-state-extra-ACHD`,
-// `solver-init-extra-ACHD`, `solver-run-finalize`, `wrench-raw`, `wrench-gravity`, `estimator-tau`.
+// `solver-init-extra-ACHD`, `solver-run-finalize`, `wrench-raw`, `wrench-gravity`, `estimator-tau`,
+// `joint-effort`.
 
 import "../computation/values.stg"
 
@@ -293,11 +294,15 @@ solver-output-JointVelocity(solver, chain_solver, out) ::= <<
 <endif>
 >>
 
+// Only a chain joint reports its torque; the sign it is read with is the backend's.
+solver-output-JointForce(solver, chain_solver, out) ::= <<
+data.<out.id> = <joint-effort(chain_solver, out.joint_index)>;  // <out.joint_name>
+>>
+
 // A joint a bound device reports rather than the chain: the device wrote its port, so the read
 // is the same one any other off-chain joint takes.
 gripper-joint-output ::= [
     "JointVelocity": "gripper-velocity-output",
-    "JointCurrent": "gripper-current-output",
     default: "gripper-position-output"
 ]
 
@@ -307,10 +312,6 @@ data.<out.id> = <normalized-joint-read({*robot.world_joint_<out.world_slot>}, ou
 
 gripper-velocity-output(out) ::= <<
 data.<out.id> = *robot.world_joint_<out.world_slot>_velocity;
->>
-
-gripper-current-output(out) ::= <<
-data.<out.id> = *robot.world_joint_<out.world_slot>_current;
 >>
 
 solver-output-Wrench(solver, chain_solver, out) ::= <<

@@ -75,6 +75,7 @@ solver-run-finalize(solver, motion_driver) ::= <<
 
 // The drive torque the torque actuators actually produced (qfrc_actuator), after MuJoCo's clamp.
 estimator-tau(solver) ::= "*robot.ports_<solver.runtime.id>[i].effort"
+joint-effort(solver, index) ::= "*robot.ports_<solver.runtime.id>[<index>].effort"
 
 // A platform that drives no chain still has to advance the simulation it runs in.
 base-runtime-step() ::= <<

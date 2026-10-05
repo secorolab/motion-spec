@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from support import EXAMPLES
+from support import EXAMPLES, REQUIRES_ROS
 
 from motion_spec.generation.pipeline import load_model
 from motion_spec.rdf_parser.ir import generate_ir
@@ -14,6 +14,7 @@ from motion_spec.rdf_parser.ir import generate_ir
 ARC = EXAMPLES["arc_tracing_with_admittance"] / "arc_tracing_with_admittance.robmot"
 
 
+@REQUIRES_ROS
 def test_an_output_saturation_limits_the_controllers_own_control_signal(tmp_path: Path) -> None:
     loaded = load_model(ARC, tmp_path / "generated" / "model")
     ir = generate_ir(loaded.model, loaded.fsm)

@@ -6,7 +6,6 @@ pose -> the chain that no longer computes it can be read at once."""
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
@@ -14,17 +13,12 @@ import pytest
 from rdf_utils.constraints import ConstraintViolation
 from rdflib import URIRef
 from rdflib.namespace import split_uri
+from support import REQUIRES_ROS
 
 from motion_spec.generation.pipeline import generate_model
 from motion_spec.rdf_parser import communication
 
 MODEL = Path(__file__).parent / "fixtures" / "perception"
-
-# Lowering a subscription resolves `vision_msgs/msg/Detection3DArray` through rosidl.
-REQUIRES_ROS = pytest.mark.skipif(
-    importlib.util.find_spec("rosidl_runtime_py") is None,
-    reason="no rosidl_runtime_py; source the ROS distribution",
-)
 
 
 @pytest.fixture(scope="module")

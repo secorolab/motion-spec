@@ -10,28 +10,38 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      MOTION_SPEC_GEN: ${{ github.workspace }}/../generations
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # PyPI's vcstool imports pkg_resources, which current setuptools no longer ships.
       - name: Install motion_spec
-        run: pip install -e ".[test]" vcstool
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y vcstool
+          pip install -e ".[test]"
 
       # The Python packages motion_spec.repos lists, in its order: none are on PyPI, and most
       # test modules import one, so leaving them out fails collection rather than a test.
       - name: Install the manifest's Python packages
         run: |
-          mkdir -p ws/src
-          vcs import --input src/motion_spec/motion_spec.repos ws/src
+          mkdir -p "$RUNNER_TEMP/ws/src"
+          vcs import --input src/motion_spec/motion_spec.repos "$RUNNER_TEMP/ws/src"
           python - <<'EOF'
-          import subprocess, sys
+          import os, subprocess, sys
           from motion_spec.setup import MANIFEST, STST_REPOSITORY, is_thirdparty, read_manifest, shipped
+          src = os.path.join(os.environ["RUNNER_TEMP"], "ws", "src")
           for repository in read_manifest(shipped(MANIFEST)):
               if is_thirdparty(repository) and repository.path != STST_REPOSITORY:
-                  subprocess.run([sys.executable, "-m", "pip", "install", f"ws/src/{repository.path}"], check=True)
+                  subprocess.run([sys.executable, "-m", "pip", "install", os.path.join(src, repository.path)], check=True)
           EOF
 
+      # The test fixtures import the DSL's example scenes from a sibling checkout.
+      - name: Clone motion-spec-dsl next to this checkout
+        run: git clone --depth 1 --branch v0.1.0 https://github.com/secorolab/motion-spec-dsl.git ../motion-spec-dsl
+
       - name: Run tests
-        run: pytest -q
+        run: pytest -q tests

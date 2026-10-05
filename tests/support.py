@@ -4,10 +4,19 @@ document, and the generation loader."""
 
 from __future__ import annotations
 
+import importlib.util
 from importlib.resources import files
 from pathlib import Path
 
+import pytest
+
 from motion_spec.runs.provenance import GRAPH_MOTION_SPEC, PROV_CONTEXT, prov_uri
+
+# A model that publishes or subscribes to a ROS topic resolves its messages through rosidl.
+REQUIRES_ROS = pytest.mark.skipif(
+    importlib.util.find_spec("rosidl_runtime_py") is None,
+    reason="no rosidl_runtime_py; source the ROS distribution",
+)
 
 # Where the installed DSL ships its example models, as `motion-spec examples` reads them.
 DSL_MODELS = Path(str(files("motion_spec_dsl") / "models"))

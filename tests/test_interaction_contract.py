@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from support import EXAMPLES
+from support import EXAMPLES, REQUIRES_ROS
 
 from motion_spec.generation.pipeline import load_model
 from motion_spec.rdf_parser.ir import generate_ir
@@ -40,6 +40,7 @@ def geometric_operators_ir(tmp_path: Path) -> dict:
     return generate_ir(loaded.model, loaded.fsm)
 
 
+@REQUIRES_ROS
 @pytest.mark.parametrize(
     ("motion_id", "rows"),
     [
@@ -71,6 +72,7 @@ _ESTIMATED_WRENCH = """        wrench ext-force-est {
         wrench ext-force {"""
 
 
+@REQUIRES_ROS
 @pytest.mark.parametrize(
     ("old", "new"),
     [
@@ -122,6 +124,7 @@ def test_a_wrench_reaches_the_ir_in_the_frames_its_source_states(
         } == {("wrist_ft_site", "wrist_ft_site", "wrist_ft_site")}
 
 
+@REQUIRES_ROS
 def test_admittance_reference_is_produced_before_it_is_consumed(interaction_ir: dict) -> None:
     """Grouped evaluators were excluded from the schedule walk, so the admittance filter was
     generated but never called and the compliant axes were a stiff zero-velocity regulator."""
@@ -136,6 +139,7 @@ def test_admittance_reference_is_produced_before_it_is_consumed(interaction_ir: 
     )
 
 
+@REQUIRES_ROS
 def test_no_motion_captures_or_schedules_another_motions_state(interaction_ir: dict) -> None:
     """Snapshots write shared slots, so a motion re-capturing another's retargets it; and the
     backward schedule walk must not advance another motion's path while it is not running."""

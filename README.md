@@ -96,7 +96,6 @@ Full documentation: **<https://secorolab.github.io/motion-spec/>**
 - [Dashboard](docs/sphinx/source/dashboard.rst) — browsing generations, live runs, replay
 - [CLI tutorials](docs/sphinx/source/tutorials/index.rst)
 - [DSL concepts and tutorials](docs/sphinx/source/dsl/index.md)
-- [Original RAL tutorial](docs/sphinx/source/tutorial.rst)
 
 ## Contributors
 
@@ -106,8 +105,6 @@ Full documentation: **<https://secorolab.github.io/motion-spec/>**
 ## License
 
 All Python scripts are licensed under the Mozilla Public License 2.0 (see [`LICENSE.MPL-2.0`](LICENSE.MPL-2.0))
-
-The models are licensed under the MIT No Attribution (see [`LICENSE.MIT-0`](LICENSE.MIT-0)) License.
 
 ## Citation
 

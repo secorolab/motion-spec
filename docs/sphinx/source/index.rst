@@ -67,12 +67,6 @@ running an existing one.
    dsl/index
 
 .. toctree::
-   :maxdepth: 2
-   :caption: JSON-LD tutorial
-
-   tutorial
-
-.. toctree::
    :maxdepth: 1
    :caption: About
 

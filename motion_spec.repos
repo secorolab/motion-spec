@@ -21,8 +21,8 @@ repositories:
     version: v0.1.0
   thirdparty/coord-dsl:
     type: git
-    url: https://github.com/secorolab/coord-dsl.git
-    version: main
+    url: https://github.com/minhnh/coord-dsl.git
+    version: v1.0.0
   thirdparty/scene-dsl:
     type: git
     url: https://github.com/secorolab/scene-dsl.git

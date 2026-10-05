@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: MPL-2.0
+// Pose composition: rotation, position, deltas.
+
+import "values.stg"
+
+component-value(comp, views) ::= <<
+<if(comp.ref)><access-expr(comp.ref, views)><else><comp.value><endif>
+>>
+
+rotation-template ::= [
+    "quaternion": "pose-rotation-quaternion",
+    "euler": "pose-rotation-euler",
+    "relative": "pose-rotation-relative",
+    default: "pose-rotation-quaternion"
+]
+
+delta-rotation-template ::= [
+    default: "delta-rotation-quaternion"
+]
+
+delta-component(c) ::= <%
+<if(c.ref)>data.<c.ref><else><c.value><endif>
+%>
+
+delta-rotation-quaternion(op) ::= <%
+KDL::Rotation::Quaternion(<op.delta:{c | <delta-component(c)>}; separator=", ">)
+%>
+
+relative-operand(op) ::= <%
+<if(op.pose)>data.<op.pose>.M<else><(delta-rotation-template.(op.representation))(op)><endif>
+%>
+
+pose-rotation-relative(pose, views) ::= <%
+<pose.orientation_operands:{op | <relative-operand(op)>}; separator=" * ">
+%>
+
+axis-rotation ::= [
+    "x": "RotX",
+    "y": "RotY",
+    "z": "RotZ"
+]
+
+pose-rotation-euler(pose, views) ::= <%
+<pose.euler_factors:{f | KDL::Rotation::<axis-rotation.(f.axis)>(<component-value(f.component, views)>)}; separator=" * ">
+%>
+
+pose-rotation-quaternion(pose, views) ::= <%
+KDL::Rotation::Quaternion(<component-value(pose.orientation_x, views)>, <component-value(pose.orientation_y, views)>, <component-value(pose.orientation_z, views)>, <component-value(pose.orientation_w, views)>)
+%>
+
+pose-rotation(pose, views) ::= <%
+<(rotation-template.(pose.representation))(pose, views)>
+%>
+
+pose-position(pose, views) ::= <%
+KDL::Vector(<component-value(pose.position_x, views)>, <component-value(pose.position_y, views)>, <component-value(pose.position_z, views)>)
+%>
+
+pose-frame-inline(pose, views) ::= <%
+KDL::Frame(<pose-rotation(pose, views)>, <pose-position(pose, views)>)
+%>
+
+materialize-pose-component(pose, views) ::= <<
+    data.<pose.id> = KDL::Frame(
+        <pose-rotation(pose, views)>,
+        <pose-position(pose, views)>);
+>>

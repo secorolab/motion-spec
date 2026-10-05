@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: MPL-2.0
+// A motion's schedules and cycle, and the chain and device members it runs.
+
+import "../computation/functions.stg"
+import "../computation/controllers.stg"
+import "../computation/monitors.stg"
+import "../computation/poses.stg"
+import "../computation/values.stg"
+import "../resources/serial_chain.stg"
+
+schedule-step(step, functions, views) ::= <<
+    // <step>
+    <emit-call(functions.(step), views)>
+>>
+
+schedule-block(steps, functions, views) ::= <<
+<if(steps)>
+<steps:{step | <schedule-step(step, functions, views)>}; separator="\n">
+<endif>
+>>
+
+// Boolean-condition rendering: fold a list of structured terms into a C++ expression.
+// empty -> empty_default; one term -> the term; many -> parenthesized, joined by any/all.
+
+sig-params(mid, needs_state, needs_data, needs_robot, needs_events=false) ::= <<
+<if(needs_state)>
+    <mid>_state &state<endif><if(needs_data)><if(needs_state)>,<endif>
+    algorithm_data &data<endif><if(needs_robot)><if(needs_state||needs_data)>,<endif>
+    robot_io &robot<endif><if(needs_events)><if(needs_state||needs_data||needs_robot)>,<endif>
+    motion_spec_event_buffer &events<endif><if(needs_state||needs_data||needs_robot||needs_events)>
+<endif>
+>>
+
+sig-args(mid, needs_state, needs_data, needs_robot, needs_events=false) ::= <<
+<if(needs_state)><mid>_state_instance<endif><if(needs_data)><if(needs_state)>, <endif>data<endif><if(needs_robot)><if(needs_state||needs_data)>, <endif>robot<endif><if(needs_events)><if(needs_state||needs_data||needs_robot)>, <endif>events<endif>
+>>
+
+chain-robot-member(solver) ::= <<
+    manipulator_robot <solver.id>;
+    <solver.id>_solver_state <solver.id>_state;
+>>
+
+motion-state-member(motion) ::= <<
+    <motion.id>_state <motion.id>_state_instance;
+>>
+
+motion-include(motion) ::= <<
+#include "<motion.id>.hpp"
+>>
+
+// The motion mirrors the measurements its own solve reads, and reads what only that mirror can
+// answer. The world model and everything answered by it were updated for this cycle before the
+// FSM was dispatched, so a quantity the scene shares is fresh whether or not this motion runs.
+chain-prepare-block(serial_chain_solvers, solvers) ::= <<
+<serial_chain_solvers:{solver |
+    <solver-sync-input(solver, solvers.(solver.solver_id))>}; separator="\n">
+<serial_chain_solvers:{solver |
+    <solvers.(solver.solver_id).state_output:{out | <solver-output(solver, solvers.(solver.solver_id), out)>}; separator="\n\n">
+<solver.gripper_joint_outputs:{out |     <({<gripper-joint-output.(out.type)>})(out)>}; separator="\n">
+}; separator="\n\n">
+>>
+
+// One pass per tick, before the FSM is dispatched: every provider is read, the one world model is
+// updated from those readings, and every observation it answers is written. Interleaved with the
+// motions, arm 1 would read forward kinematics from before arm 2 had been read.
+world-state-block(observations, serial_chain_solvers, solvers) ::= <<
+<app-chain-provider-update(serial_chain_solvers)>
+        robot.world->update(robot.control_cycle);
+<serial_chain_solvers:{solver | <world-to-root(solver)>}; separator="">
+<observations:{obs |
+        <solver-output(solvers.(obs.solver_id), solvers.(obs.solver_id), obs.out)>
+}; separator="\n">
+>>
+
+// The chain root inverted once per runtime: every record on it stands on the same root, so the
+// rest copy that one frame rather than each inverting it again.
+world-to-root(solver) ::= <<
+<if(solver.runtime.owner)>        // This chain's root is not the tree's, so every pose it reports is relative to that root.
+        robot.<solver.id>.world_to_root =
+            robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();
+<else>        robot.<solver.id>.world_to_root = robot.<solver.runtime.owner_id>.world_to_root;
+<endif>
+>>
+
+chain-run-block(serial_chain_solvers, solvers) ::= <<
+<serial_chain_solvers:{solver | <solver-run(solver, solvers.(solver.solver_id), solver.motion_driver)>}; separator="\n">
+>>
+
+chain-stage-block(serial_chain_solvers, solvers) ::= <<
+<serial_chain_solvers:{solver |     <solver-stage-output(solver, solvers.(solver.solver_id))>}; separator="\n">
+>>
+
+chain-gravity-block(serial_chain_solvers, solvers) ::= <<
+<serial_chain_solvers:{solver | <solver-gravity-hold(solver, solvers.(solver.solver_id))>}; separator="\n">
+>>
+
+// A forwarded command exists only where a gripper joint is commanded, and generation rejects
+// that without an actuator bound -- so the port is wired by the time this runs.
+command-forwarding(motion) ::= <<
+<motion.forwarded_commands:{cmd | <if(cmd.target)>    *robot.aux_cmd_<cmd.world_slot> = data.<cmd.control_signal.id>;
+<endif>}; separator="">
+>>
+
+// The window: it opens the first time the gate holds while the state is active, stays open for
+// the authored duration, and never opens twice on one activation. What it writes is the wrench
+// in the world frame the simulator applies wrenches in -- the ops composed it in the frame the
+// authored direction is seen by, which is the arm's base, so it is rotated on the way out.
+perturbation-apply(perturbation, views) ::= <<
+    {
+        const bool gate = <if(perturbation.has_gate)><bool-condition(perturbation.terms, perturbation.gate_any)><else>true<endif>;
+        if (!state.<perturbation.id>_fired && gate) {
+            state.<perturbation.id>_fired = true;
+            state.<perturbation.id>_open = true;
+            state.<perturbation.id>_elapsed_s = 0.0;
+        \}
+<if(perturbation.duration_id)>        if (state.<perturbation.id>_open) {
+            state.<perturbation.id>_elapsed_s += data.dt_measured_s;
+            if (state.<perturbation.id>_elapsed_s >= data.<perturbation.duration_id>) {
+                state.<perturbation.id>_open = false;
+            \}
+        \}
+<endif>        data.<perturbation.active_id> = state.<perturbation.id>_open;
+        if (state.<perturbation.id>_open) {
+            data.<perturbation.applied_id> =
+                robot.<perturbation.robot_id>.world_to_root.M.Inverse() * data.<perturbation.wrench_id>;
+        \}
+    \}
+>>
+
+perturbation-apply-block(motion, views) ::= <<
+<motion.perturbations:{p | <perturbation-apply(p, views)>}; separator="\n">
+>>
+
+// Cleared before the states are dispatched, written after: the simulator holds an applied wrench
+// until something clears it, and the tick a state exits on selects no motion to clear it from.
+perturbation-clear-block(perturbations) ::= <<
+<perturbations:{p |         data.<p.applied_id> = KDL::Wrench::Zero();
+        data.<p.active_id> = false;}; separator="\n">
+>>
+
+// One write per body, carrying the sum of everything pushing it: a closed window contributes a
+// zero rather than erasing a live push, and the port is written every tick rather than left
+// alone, since the platform holds an applied wrench until something clears it.
+perturbation-write-block(bodies) ::= <<
+<bodies:{b |         *robot.wrench_cmd_<b.slot> = <b.members:{p|data.<p.applied_id>}; separator=" + ">;}; separator="\n">
+>>
+
+emit-snapshot(snap, functions, views) ::= <<
+<if(snap.source_function_id)>
+        <({emit-call-<functions.(snap.source_function_id).type>})(functions.(snap.source_function_id), views)>
+<endif>
+        data.<snap.target_id> = <access-expr(snap.source_id, views)>;
+>>
+
+// An event-triggered snapshot re-samples on every occurrence of its trigger. The FSM fires
+// the event into the future buffer as it transitions, so it is readable for exactly the one
+// tick that is this motion's first after entry.
+
+emit-triggered-snapshot(snap, functions, views) ::= <<
+<if(snap.trigger_event)>
+
+    if (robot.fsm_events && consume_event(robot.fsm_events, <snap.fsm_namespace>::<snap.trigger_event>)) {
+    <emit-snapshot(snap, functions, views)>
+    \}
+<endif>
+>>

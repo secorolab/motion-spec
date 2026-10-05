@@ -2,3 +2,21 @@ __pycache__/
 comp-rob2b/
 
 build/
+.stst/
+generated/
+/runs/
+docs/_build/
+docs/sphinx/source/_static/dsl-paths/
+
+# Python packaging artifacts
+*.egg-info/
+dist/
+.eggs/
+
+# uv lock — not used by CI or the other monorepo packages
+uv.lock
+generations/
+
+# npx fetches prettier on demand; nothing here is installed into the repo
+node_modules/
+package-lock.json

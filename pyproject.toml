@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[project]
+name = "motion_spec"
+dynamic = ["version"]
+description = "IR generator and C++ code generator for motion specification models"
+authors = [
+    {name = "Sven Schneider", email = "sven.schneider@h-brs.de"},
+    {name = "Vamsi Kalagaturu", email = "vamsikalagaturu@gmail.com"}
+]
+maintainers = [
+    {name = "Vamsi Kalagaturu", email = "vamsikalagaturu@gmail.com"}
+]
+license = { text = "MPL-2.0" }
+# 3.11 for tomllib: the workspace's motion-spec.config.toml is read with the stdlib.
+requires-python = ">=3.11"
+# PyPI only. rdf-utils, the DSL compilers and rec are on no index: `motion-spec setup`
+# installs them from motion_spec.repos.
+dependencies = [
+    "click>=8.1",
+    # No multi-type scoped @context support; generated models use none.
+    "rdflib>=7.6.0",
+    "pyshacl>=0.25.0",
+    # frame_log_pb reads .pb logs via message_factory.GetMessageClass, added in 4.22.
+    "protobuf>=4.22",
+    # `motion-spec setup` reads the .repos manifests with it.
+    "PyYAML",
+    # An archived run's frame log is zstd-packed.
+    "zstandard",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dashboard = ["pillow"]
+# The browser dashboard's notebook tab; its SPARQL console runs on the rdflib above.
+replay = ["jupyterlab>=4.0", "matplotlib"]
+all = ["pillow", "jupyterlab>=4.0", "matplotlib"]
+test = ["pytest"]
+docs = ["sphinx", "myst-parser", "furo", "sphinx-autobuild", "matplotlib"]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+motion-spec = "motion_spec.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/motion_spec"]
+
+# The manifests live at the repository root for `vcs import`; setup and health read them.
+[tool.hatch.build.targets.wheel.force-include]
+"motion_spec.repos" = "motion_spec/motion_spec.repos"
+"motion_spec.real.repos" = "motion_spec/motion_spec.real.repos"
+
+[tool.pytest.ini_options]
+# rdflib's Dataset.parse() internally reads its deprecated default_context
+# property. pytest forces "always" on warnings, so the package-level filter in
+# motion_spec/__init__.py doesn't apply under test — suppress it here too.
+filterwarnings = [
+    "ignore:Dataset.default_context is deprecated:DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+# Collapse calls/collections/imports onto as few lines as fit in line-length,
+# instead of keeping them exploded one-entity-per-line on a trailing comma.
+skip-magic-trailing-comma = true

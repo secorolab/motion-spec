@@ -1,0 +1,14 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de) -->
+<!-- Two frames waiting to be brought into coincidence. The open one is what is measured, the
+     accent one what is commanded: the same pairing the plots draw, and the shape of the line
+     these models spend most of themselves writing, "keeping a equal to b".
+     Two shapes and no more. A favicon is read at 16px, where fewer large forms hold and many
+     small ones smear. The tile carries its own dark ground so the mark keeps its contrast on a
+     light browser chrome as well. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32"
+     role="img" aria-label="motion-spec">
+  <rect width="32" height="32" rx="7" fill="#202327"/>
+  <rect x="6.5" y="6.5" width="12" height="12" rx="2.5" fill="none" stroke="#a7a8a4" stroke-width="3"/>
+  <rect x="13.5" y="13.5" width="12" height="12" rx="2.5" fill="none" stroke="#e07a5f" stroke-width="3"/>
+</svg>

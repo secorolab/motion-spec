@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+// Author: Vamsi Kalagaturu
+// The runtime the program links against: the control loop's own core, then what the spec uses.
+
+import "../resources/world.stg"
+import "../resources/serial_chain.stg"
+import "../resources/mobile_base.stg"
+import "../computation/functions.stg"
+import "../computation/monitors.stg"
+
+runtime_header(resources, configuration, computation) ::= <<
+#pragma once
+
+#include \<cassert\>
+#include \<algorithm\>
+#include \<cerrno\>
+#include \<chrono\>
+#include \<cmath\>
+#include \<csignal\>
+#include \<sys/prctl.h\>
+#include \<memory\>
+#include \<mutex\>
+#include \<thread\>
+#include \<cstdint\>
+#include \<cstdlib\>
+#include \<ctime\>
+#include \<iostream\>
+#include \<kdl/frames.hpp\>
+#include \<stdexcept\>
+#include \<string\>
+#include \<string_view\>
+#include \<vector\>
+<if(resources.by_kind.serial_chain)>
+#include \<Eigen/Dense\>
+#include \<kdl/chain.hpp\>
+#include \<kdl/jacobian.hpp\>
+#include \<kdl/jntarray.hpp\>
+<endif>
+<if(resources.world_trees)>
+<world-kinematics-includes()>
+<endif>
+<if(resources.by_kind.mobile_base)>
+<mobile-base-runtime-includes()>
+<endif>
+
+namespace motion_spec::runtime {
+
+// An interrupted run is still a run: the frame log is closed by a destructor, so letting a
+// signal terminate the process outright truncates it and loses the ticks already recorded. The
+// handler does the one thing that is async-signal-safe -- set a flag -- and the control loop
+// leaves on its own, so shutdown unwinds exactly as a completed run does.
+inline volatile std::sig_atomic_t g_stop_requested = 0;
+
+inline void request_stop(int) { g_stop_requested = 1; \}
+
+inline bool stop_requested() { return g_stop_requested != 0; \}
+
+inline void install_stop_handlers() {
+    std::signal(SIGINT, request_stop);
+    std::signal(SIGTERM, request_stop);
+\}
+
+inline constexpr double kControlPeriodS = <configuration.control_period_ns> * 1e-9;
+
+// A fixed band, not an authored one: make it a model property if real-robot jitter demands it.
+// Floor on a measured tick: a near-zero dt must not blow up (error - err_last) / dt.
+inline constexpr double kDtClampMin = 0.5 * kControlPeriodS;
+// Ceiling on a measured tick: a scheduler stall must not become one giant integral step.
+inline constexpr double kDtClampMax = 2.0 * kControlPeriodS;
+
+inline double monotonic_time_s() {
+    using clock = std::chrono::steady_clock;
+    static const auto start = clock::now();
+    return std::chrono::duration\<double\>(clock::now() - start).count();
+}
+
+inline bool timespec_less(const timespec &a, const timespec &b) {
+    return a.tv_sec \< b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_nsec \< b.tv_nsec);
+}
+
+// A normal-priority thread is granted 50us of timer slack, and the kernel may fire the timer
+// that late. Asking for one nanosecond is what a SCHED_FIFO thread gets for free.
+inline void tighten_timer_slack() { prctl(PR_SET_TIMERSLACK, 1UL, 0UL, 0UL, 0UL); \}
+
+// Yield the pipeline to the SMT sibling while polling. No-op where there is nothing to say.
+inline void spin_hint() {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield");
+#endif
+}
+
+// The last stretch before the deadline is spun rather than slept: a wakeup lands late by more
+// than this on a stock kernel, and the loop uses under 1% of its period computing.
+inline constexpr long kSpinMarginNs = 150000L;  // 150us
+
+// Deadlines the work did not fit into. Published per cycle; a missed deadline is otherwise
+// indistinguishable from a normal one after the fact.
+inline unsigned long long &overrun_count() {
+    static unsigned long long count = 0;
+    return count;
+}
+
+// Uncapped: the loop runs as fast as it can, so there is no deadline to wait for and none to
+// miss. Re-phase onto now rather than letting the deadline arithmetic fall behind, which would
+// otherwise count every cycle as an overrun.
+inline void advance_uncapped(timespec &next) { clock_gettime(CLOCK_MONOTONIC, &next); \}
+
+inline void sleep_until_next(timespec &next, long period_ns) {
+    next.tv_nsec += period_ns;
+    while (next.tv_nsec >= 1000000000L) {
+        next.tv_nsec -= 1000000000L;
+        ++next.tv_sec;
+    }
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (!timespec_less(now, next)) {
+        // Overrun. Re-phase onto now rather than running compressed cycles to repay the time:
+        // dt_measured_s already tells the controllers what actually elapsed.
+        ++overrun_count();
+        next = now;
+        return;
+    }
+
+    timespec wake = next;
+    wake.tv_nsec -= kSpinMarginNs;
+    if (wake.tv_nsec \< 0) {
+        wake.tv_nsec += 1000000000L;
+        --wake.tv_sec;
+    }
+    // Skipped when less than the margin remains, so the spin is never longer than the margin.
+    if (timespec_less(now, wake)) {
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake, nullptr) == EINTR) {}
+    }
+    do {
+        spin_hint();
+        clock_gettime(CLOCK_MONOTONIC, &now);
+    } while (timespec_less(now, next));
+}
+
+<backend-runtime(resources)>
+<if(resources.by_kind.serial_chain)>
+<solver-runtime(computation.uses)>
+<endif>
+<if(resources.world_trees)>
+<world-kinematics()>
+
+<endif>
+<function-runtime(computation.uses)>
+<monitor-runtime(computation.uses)>
+<if(resources.by_kind.mobile_base)>
+<mobile-base-runtime(resources.by_kind.mobile_base)>
+
+<endif>
+}  // namespace motion_spec::runtime
+>>

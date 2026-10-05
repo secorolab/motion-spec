@@ -1,0 +1,49 @@
+# What `motion-spec setup` installs, in the order it installs it. Import it first; setup
+# fetches nothing:
+#
+#   vcs import ws/src < ws/src/motion-spec/motion_spec.repos
+#
+# thirdparty/ holds what colcon must not build -- the Python packages and the ant-built
+# STSTv4 -- and setup marks it with a COLCON_IGNORE in a ROS workspace. Everything else is
+# a CMake package; per-package cmake arguments live in the workspace's colcon.meta.
+#
+# The Python packages go dependents first: their own pyproject files pin each other by git
+# URL, so each install pulls its dependencies from git, and the local checkout installed
+# after it replaces that copy. rdf-utils, which all of them pin, is last.
+repositories:
+  thirdparty/rec:
+    type: git
+    url: https://github.com/secorolab/rec.git
+    version: dev
+  thirdparty/motion-spec-dsl:
+    type: git
+    url: https://github.com/secorolab/motion-spec-dsl.git
+    version: v0.1.0
+  thirdparty/coord-dsl:
+    type: git
+    url: https://github.com/secorolab/coord-dsl.git
+    version: main
+  thirdparty/scene-dsl:
+    type: git
+    url: https://github.com/secorolab/scene-dsl.git
+    version: main
+  thirdparty/rdf-utils:
+    type: git
+    url: https://github.com/minhnh/rdf-utils.git
+    version: main
+  orocos_kinematics_dynamics:
+    type: git
+    url: https://github.com/secorolab/orocos_kinematics_dynamics.git
+    version: vereshchagin-driver-weighting
+  coord2b:
+    type: git
+    url: https://github.com/rosym-project/coord2b.git
+    version: master
+  mj_kdl_wrapper:
+    type: git
+    url: https://github.com/vamsikalagaturu/mj_kdl_wrapper.git
+    version: v0.5.0
+  thirdparty/STSTv4:
+    type: git
+    url: https://github.com/jsnyders/STSTv4.git
+    version: e6152907c7f82aba7685c4f2630490968ffd6594

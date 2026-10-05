@@ -4,7 +4,8 @@
         "https://comp-rob2b.github.io/metamodels/qudt-quant.json",
         "https://comp-rob2b.github.io/metamodels/task/constraint-handler.json",
         {
-            "@base": "https://secorolab.github.io/models/demo/"
+            "@base": "https://secorolab.github.io/models/demo/",
+            "JointTorque": "https://comp-rob2b.github.io/metamodels/task/constraint-handler#JointTorque"
         }
     ],
     "@id": "https://secorolab.github.io/models/demo/",
@@ -13,6 +14,9 @@
             "@id": "cstr-hdl-rightarm",
             "@type": "ConstraintHandler",
             "motion": "motion-rightarm",
+            "cstr-hdl:control-mode": {
+                "@id": "cstr-hdl:JointTorque"
+            },
             "evaluators": [
                 "eval-frc-rightarm-ee-anteroposterior",
                 "eval-linvel-rightarm-shoulder-ee-vertical",

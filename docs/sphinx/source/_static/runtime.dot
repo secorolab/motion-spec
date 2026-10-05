@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: MPL-2.0
+// The generated program at run time, in Bruyninckx's F/D/S-block terms. Rationale: architecture.md.
+digraph runtime {
+  rankdir=LR
+  fontname="Helvetica" labelloc=t labeljust=c fontsize=16
+  label=<<b>generated program — one activity: F-blocks over D-blocks, under S-blocks</b>>
+  node [fontname="Helvetica" fontsize=11 shape=box style="filled,rounded" height=0.4 margin="0.16,0.09"]
+  edge [fontname="Helvetica" fontsize=10]
+
+  subgraph cluster_f { label="F-blocks" style=filled fillcolor="#e8f4ea" fontsize=11 color="#7fae7f"
+    node [fillcolor="#b8ddb8" color="#7fae7f"]
+    f1 [label="functions"] f2 [label="controllers"] f3 [label="monitors"] f4 [label="solvers / sensors"] }
+
+  d [label="algorithm_data — D-blocks\n\nevery D-block has a data access\nconstraint that writes it"
+     shape=box style="filled,rounded" fillcolor="#ffeeba" color="#c8a93a" penwidth=2 fontsize=12]
+
+  subgraph cluster_s { label="coordination — dispatches the S-blocks" style=filled fillcolor="#f6eef8" fontsize=11 color="#b090c0"
+    node [fillcolor="#e0cdef" color="#b090c0"]
+    fsm [label="FSM"] s [label="motion schedules\n(when · while · until)"] ev [label="event buffer"] }
+
+  subgraph cluster_c { label="communication — crosses the activity's boundary" style=filled fillcolor="#eef2fa" fontsize=11 color="#9bb0d0"
+    node [fillcolor="#cdd9ef" color="#9bb0d0"]
+    log [label="logging stream\n(frame log + shm)"] ros [label="ROS topics, goals"] }
+
+  {f1 f2 f3 f4} -> d [color="#4a8a4a" label="write port"]
+  d -> {f1 f2 f3 f4} [color="#5878b0" label="read port"]
+  d -> log [color="#5878b0" label="tap"]
+  d -> ros [color="#5878b0" dir=both]
+  fsm -> s [color="#8e44ad" label="dispatch"]
+  s -> {f1 f2 f3} [style=dashed color="#8e44ad"]
+  f3 -> ev [color="#8e44ad"]  ev -> fsm [color="#8e44ad"]
+}

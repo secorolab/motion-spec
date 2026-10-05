@@ -1,0 +1,127 @@
+// A pose the model does not compute: an eye-in-hand camera reports where the table is, stated
+// in the wrist sensor frame it is mounted on, and the model reads it off the topic. No chain
+// answers that pose, which is what the subscription cases are about.
+import "./perception.fsm"
+import "../../../../motion-spec-dsl/src/motion_spec_dsl/models/common/table_arm_sim.scenex"
+ns app = "https://secorolab.github.io/models/perception-fixture/"
+ns pcp = "https://secorolab.github.io/models/perception-fixture/fsm/"
+
+exec-context (ns=app) perception-exec {
+    runs-scene: <table_arm_sim_scene_mjc>
+    platform:   simulation { name: "MuJoCo" }
+    config:     "robot.toml"
+    timestep:   1.0 ms
+}
+
+ros (ns=app) {
+    publishers {
+        table-moved: topic "/perception/table_moved" message "action_msgs/msg/GoalStatus",
+    },
+    subscribers {
+        table-top: topic "/recognized_objects" message "vision_msgs/msg/Detection3DArray" {
+            observes { <shared.world.pose-table-cam> }
+            pose from results
+        },
+    },
+}
+
+tolerances {
+    position:    0.05 m,
+    orientation: 0.01 rad
+}
+
+context (ns=app) shared {
+    world {
+        pose pose-table-cam {
+            of:         <world_tree.table.table_top>,
+            wrt:        <ft_tree.wrist_ft_body.wrist_ft_site>,
+            as-seen-by: <ft_tree.wrist_ft_body.wrist_ft_site>
+        },
+        pose pose-ee-base {
+            of:         <kinova.bracelet_link.bracelet_link_origin>,
+            wrt:        <kinova.base_link.base_link_origin>,
+            as-seen-by: <kinova.base_link.base_link_origin>
+        }
+    },
+    spec {
+        length table-moved-band = 0.01 m,
+        duration table-validity = 1.0 s
+    }
+}
+
+guarded-motion (ns=app) watch-table {
+    description: "Command nothing; report what the camera says the table top is"
+
+    context {
+        spec {
+            pose table-ref = snapshot of <shared.world.pose-table-cam> on event <pcp.E_TABLE_SEEN>
+        }
+    }
+
+    when {
+        table-seen: elapsed since <shared.world.pose-table-cam> observed less than <shared.spec.table-validity>
+    }
+
+    while {
+        table-moved: distance between <shared.world.pose-table-cam> and <spec.table-ref> greater than <shared.spec.table-moved-band>
+    }
+
+    until {}
+}
+
+guarded-motion (ns=app) hold-idle {
+    description: "Command nothing while the camera has not yet reported"
+
+    context {
+        spec {
+            length idle-x = 0.4 m
+        }
+    }
+
+    when {}
+
+    while {
+        stay-put: keeping <shared.world.pose-ee-base>.position.x equal to <spec.idle-x>
+    }
+
+    until {}
+}
+
+constraint-handler (ns=app) handler-watch {
+    handles: <watch-table>
+    runs-in: <pcp.S_WATCH>
+    monitors {
+        mon-seen: monitor <watch-table.when> {
+            satisfied for 0.2 s {
+                trigger: event <pcp.E_TABLE_SEEN>
+            },
+            violated { hold: <hold-idle> }
+        },
+        mon-table: monitor <watch-table.table-moved> {
+            satisfied for 0.3 s {
+                trigger: event <pcp.E_ANCHOR_SEEN>,
+                publish: to <ros.publishers.table-moved> { status: STATUS_SUCCEEDED }
+            },
+        }
+    }
+    controllers { }
+    solvers {
+        arm-solver: serial-chain {
+            agent:     <agents.arm1>,
+            algorithm: fpk
+        }
+    }
+}
+
+constraint-handler (ns=app) handler-hold-idle {
+    handles: <hold-idle>
+    monitors {
+        mon-idle: monitor <hold-idle.stay-put> {
+            satisfied { flag: idle-reached }
+        }
+    }
+    controllers { }
+    solvers {
+        <handler-watch.arm-solver>
+    }
+}

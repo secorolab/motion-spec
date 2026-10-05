@@ -1,0 +1,15 @@
+# The device drivers a real platform needs, installed after motion_spec.repos by
+# `motion-spec setup --real`. vcstool's format, like it.
+repositories:
+  serial:
+    type: git
+    url: https://github.com/secorolab/serial.git
+    version: noros
+  robotiq_driver_noros:
+    type: git
+    url: https://github.com/secorolab/robotiq_driver_noros.git
+    version: main
+  robif2b:
+    type: git
+    url: https://github.com/secorolab/robif2b.git
+    version: dev

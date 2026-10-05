@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: MPL-2.0
+// Template architecture. Rationale and measurements: architecture.md.
+digraph templates {
+  rankdir=TB
+  fontname="Helvetica" labelloc=t labeljust=c fontsize=16
+  label=<<b>templates — folders by IR section, one root per backend</b>>
+  node [fontname="Helvetica" fontsize=11 shape=box style="filled,rounded" height=0.4 margin="0.16,0.09"]
+  edge [fontname="Helvetica" fontsize=9 color="#9099a8"]
+
+  subgraph cluster_backend { label="backend/ — imported first, so its rules win" style=filled fillcolor="#eef2fa" fontsize=11 color="#9bb0d0"
+    node [fillcolor="#cdd9ef" color="#9bb0d0"]
+    m1 [label="mj_kdl/main" fillcolor="#ffeeba" color="#c8a93a"] r1 [label="mj_kdl/robot"]
+    m2 [label="robif2b/main" fillcolor="#ffeeba" color="#c8a93a"] r2 [label="robif2b/robot"]
+    k2 [label="robif2b/kelo"] v2 [label="robif2b/devices"] }
+
+  subgraph cluster_entry { label="entry/ — one group per generated artifact" style=filled fillcolor="#dff0df" fontsize=11 color="#7fae7f"
+    node [fillcolor="#b8ddb8" color="#7fae7f"]
+    e1 [label="program"] e2 [label="motion"] e3 [label="telemetry"] e4 [label="build"]
+    e5 [label="runtime"] }
+
+  subgraph cluster_coord { label="coordination/" style=filled fillcolor="#e6f4e6" fontsize=11 color="#8fb98f"
+    node [fillcolor="#c8e4c8" color="#8fb98f"]
+    c1 [label="fsm"] c2 [label="motion"] }
+
+  subgraph cluster_comm { label="communication/" style=filled fillcolor="#e6f4e6" fontsize=11 color="#8fb98f"
+    node [fillcolor="#c8e4c8" color="#8fb98f"]
+    n1 [label="ros"] }
+
+  subgraph cluster_res { label="resources/" style=filled fillcolor="#edf7ed" fontsize=11 color="#9fc49f"
+    node [fillcolor="#d6ebd6" color="#9fc49f"]
+    s1 [label="serial_chain"] s2 [label="world"] s3 [label="mobile_base"] }
+
+  subgraph cluster_comp { label="computation/" style=filled fillcolor="#f3faf3" fontsize=11 color="#afd0af"
+    node [fillcolor="#e4f2e4" color="#afd0af"]
+    p1 [label="functions"] p2 [label="controllers"] p3 [label="monitors"] p4 [label="poses"]
+    p5 [label="values"] }
+
+  m1 -> r1 [color="#5878b0"]
+  m2 -> {r2 k2} [color="#5878b0"]  r2 -> v2 [color="#5878b0"]
+  {m1 m2} -> {e1 e2 e3 e4}
+  e1 -> {e5 s3 n1 c1 c2 p5}  e2 -> {c2 p1 p2 p3 p4 p5 s1}  e3 -> {p3 p5}
+  e5 -> {s1 s2 s3 p1 p3}
+  c1 -> {c2 p2 p5 n1}  c2 -> {p1 p2 p3 p4 p5 s1}  n1 -> {p3 p5}
+  s1 -> p5  p1 -> {p4 p5}  p2 -> p5  p3 -> p5  p4 -> p5
+}

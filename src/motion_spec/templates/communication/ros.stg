@@ -1,0 +1,961 @@
+// SPDX-License-Identifier: MPL-2.0
+// ROS: the node, its executor thread, the publishers, and the per-cycle tick.
+// Every line of ROS text the program carries is written here.
+
+import "../computation/monitors.stg"
+import "../computation/values.stg"
+
+// The DDS write happens on each RealtimePublisher's own thread; the control loop only hands
+// over a filled message. Parameter services are answered by one executor thread, so a
+// `ros2 param set` returns while the loop keeps its deadline.
+
+ros-includes(ros) ::= <<
+#include \<rclcpp/rclcpp.hpp\>
+#include \<realtime_tools/realtime_publisher.hpp\>
+#include \<array\>
+#include \<cstdint\>
+#include \<mutex\>
+#include \<thread\>
+<ros.publishers:{p | #include "<p.include>"}; separator="\n">
+<if(ros.action_clients)>
+#include \<rclcpp_action/rclcpp_action.hpp\>
+#include \<action_msgs/msg/goal_status.hpp\>
+<ros.action_clients:{c | #include "<c.include>"}; separator="\n">
+<endif>
+<if(ros.subscriptions)>
+#include \<chrono\>
+#include \<string\>
+#include \<vector\>
+<ros.subscriptions:{s | #include "<s.include>"}; separator="\n">
+<endif>
+<if(ros.joint_states)>
+#include \<sensor_msgs/msg/joint_state.hpp\>
+#include \<limits\>
+<endif>
+<if(ros.tf)>
+#include \<tf2_msgs/msg/tf_message.hpp\>
+#include \<geometry_msgs/msg/transform_stamped.hpp\>
+#include \<algorithm\>
+#include \<vector\>
+<endif>
+<if(ros.clock)>
+#include \<rosgraph_msgs/msg/clock.hpp\>
+<endif>
+<if(ros.action_server)>
+#include \<atomic\>
+#include \<rclcpp_action/rclcpp_action.hpp\>
+#include "<ros.action_server.include>"
+<endif>
+
+namespace motion_spec::ros {
+
+<if(ros.action_server)>
+using ServedAction = <ros.action_server.cpp_type>;
+using ServedGoalHandle = rclcpp_action::ServerGoalHandle\<ServedAction\>;
+
+<endif>
+<if(ros.scenario_context_id)>
+<if(!ros.action_server)>
+// A hex UUID, with or without its dashes. An empty string is the zero UUID: a run that
+// belongs to no scenario says so, rather than failing to start.
+inline bool parse_uuid(const std::string &text, std::array\<std::uint8_t, 16\> &out) {
+    std::string digits;
+    for (const char c : text) {
+        if (c != '-') digits.push_back(c);
+    \}
+    if (digits.empty()) {
+        out.fill(0);
+        return true;
+    \}
+    if (digits.size() != 32) return false;
+    for (std::size_t i = 0; i \< 16; ++i) {
+        const std::string byte = digits.substr(i * 2, 2);
+        if (byte.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) return false;
+        out[i] = static_cast\<std::uint8_t\>(std::stoul(byte, nullptr, 16));
+    \}
+    return true;
+\}
+
+<endif>
+<endif>
+<if(ros.joint_states || ros.clock || ros.tf)>
+<ros-publish-divider()>
+<endif>
+<if(ros.tf)>
+<ros-transform-writer()>
+<endif>
+}  // namespace motion_spec::ros
+>>
+
+// Publish every Nth control cycle. A rate at or above the loop rate, or none at all, means
+// every cycle -- the loop is the fastest this can go.
+
+ros-publish-divider() ::= <<
+inline int publish_divider(double rate_hz) {
+    if (rate_hz \<= 0.0) return 1;
+    const double every = 1.0 / (rate_hz * motion_spec::runtime::kControlPeriodS);
+    return every \<= 1.0 ? 1 : static_cast\<int\>(every + 0.5);
+\}
+
+>>
+
+// tf carries a quaternion; KDL carries a rotation matrix.
+
+ros-transform-writer() ::= <<
+inline void write_transform(const KDL::Frame &frame, geometry_msgs::msg::Transform &out) {
+    double qx, qy, qz, qw;
+    frame.M.GetQuaternion(qx, qy, qz, qw);
+    out.translation.x = frame.p.x();
+    out.translation.y = frame.p.y();
+    out.translation.z = frame.p.z();
+    out.rotation.x = qx;
+    out.rotation.y = qy;
+    out.rotation.z = qz;
+    out.rotation.w = qw;
+\}
+
+>>
+
+ros-io-members(ros) ::= <<
+    rclcpp::Node::SharedPtr ros_node = nullptr;
+    std::shared_ptr\<rclcpp::executors::SingleThreadedExecutor\> ros_executor = nullptr;
+    std::thread ros_spin_thread;
+<if(ros.scenario_context_id)>
+<if(!ros.action_server)>
+    rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr ros_param_handle = nullptr;
+    std::mutex ros_context_id_mutex;
+    std::array\<std::uint8_t, 16\> ros_context_id{};
+<endif>
+<endif>
+<if(ros.action_server)>
+    rclcpp_action::Server\<motion_spec::ros::ServedAction\>::SharedPtr goal_server = nullptr;
+    std::mutex goal_mutex;
+    std::shared_ptr\<motion_spec::ros::ServedGoalHandle\> staged_goal = nullptr;
+    std::atomic\<bool\> goal_taken{false\};
+<endif>
+<ros.publishers:{p |     std::shared_ptr\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\> <p.pub_id> = nullptr;
+    <p.cpp_type> <p.pub_id>_msg{\};}; separator="\n">
+<ros.action_clients:{c | <ros-action-members(c)>}; separator="\n">
+<ros.subscriptions:{s | <ros-subscription-members(s)>}; separator="\n">
+<if(ros.joint_states)>
+    std::shared_ptr\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\> joint_states_pub = nullptr;
+    sensor_msgs::msg::JointState joint_states_msg{};
+    int joint_states_divider = 1;
+<endif>
+<if(ros.tf)>
+    rclcpp::Publisher\<tf2_msgs::msg::TFMessage\>::SharedPtr tf_static_pub = nullptr;
+    std::shared_ptr\<realtime_tools::RealtimePublisher\<tf2_msgs::msg::TFMessage\>\> tf_pub = nullptr;
+    tf2_msgs::msg::TFMessage tf_msg{};
+    std::vector\<int\> tf_roots;
+    std::vector\<int\> tf_moving;
+    int tf_divider = 1;
+<endif>
+<if(ros.clock)>
+    std::shared_ptr\<realtime_tools::RealtimePublisher\<rosgraph_msgs::msg::Clock\>\> clock_pub = nullptr;
+    rosgraph_msgs::msg::Clock clock_msg{};
+    int clock_divider = 1;
+    double sim_time_s = 0.0;
+
+    // Every stamp this node writes comes from the clock it publishes on /clock, so subscribers
+    // running on use_sim_time read one epoch. Taking it from ros_node->now() instead would need
+    // this node to subscribe to its own clock.
+    rclcpp::Time stamp_now() const
+    {
+        return rclcpp::Time(static_cast\<std::int64_t\>(sim_time_s * 1e9));
+    \}
+<else>
+    rclcpp::Time stamp_now() const { return ros_node->now(); \}
+<endif>
+>>
+
+ros-setup(ros) ::= <<
+    rclcpp::init(argc, argv);
+    robot.ros_node = std::make_shared\<rclcpp::Node\>("<ros.node_name>");
+<if(ros.scenario_context_id)>
+<if(!ros.action_server)>
+<ros-context-id-setup()>
+<endif>
+<endif>
+<ros.publishers:{p |     robot.<p.pub_id> = std::make_shared\<realtime_tools::RealtimePublisher\<<p.cpp_type>\>\>(
+        robot.ros_node->create_publisher\<<p.cpp_type>\>("<p.channel>", rclcpp::QoS(10)));}; separator="\n">
+<ros.action_clients:{c |     robot.<c.client_id> = rclcpp_action::create_client\<<c.cpp_type>\>(robot.ros_node, "<c.channel>");}; separator="\n">
+<ros.subscriptions:{s | <ros-subscription-setup(s)>}; separator="\n">
+<ros.standing:{s | <ros-standing-setup(s)>}>
+<if(ros.action_server)>
+
+<ros-goal-server-setup(ros.action_server)>
+<endif>
+>>
+
+// An act's client, the goal it currently has in flight, and the one result it stages for the
+// loop. The executor thread writes the staged fields; the loop copies them out under try_lock,
+// so a cycle never waits on the network.
+
+ros-action-members(c) ::= <<
+    rclcpp_action::Client\<<c.cpp_type>\>::SharedPtr <c.client_id> = nullptr;
+    rclcpp_action::ClientGoalHandle\<<c.cpp_type>\>::SharedPtr <c.client_id>_goal = nullptr;
+    std::mutex <c.client_id>_mutex;
+    bool <c.client_id>_staged = false;
+    int <c.client_id>_staged_status = action_msgs::msg::GoalStatus::STATUS_UNKNOWN;
+<c.written_poses:{w |     KDL::Frame <c.client_id>_staged_<w.pose_id>;}; separator="\n">
+>>
+
+// A standing channel's subscription, the poses it stages for the loop, and whether each has ever
+// arrived. The executor thread writes the staged fields; the loop copies them out under try_lock,
+// so a cycle never waits on the network.
+
+ros-subscription-members(s) ::= <<
+    rclcpp::Subscription\<<s.cpp_type>\>::SharedPtr <s.sub_id>_sub = nullptr;
+    std::mutex <s.sub_id>_mutex;
+    bool <s.sub_id>_staged = false;
+<s.written_poses:{w |     KDL::Frame <s.sub_id>_staged_<w.pose_id>;
+    bool <s.sub_id>_seen_<w.pose_id> = false;
+    // The two segments a staged reading is composed between: the frame the sender stated it in,
+    // which is whatever its header named, and the one this pose is stated against.
+    int <s.sub_id>_staged_from_<w.pose_id> = -1;
+    int <s.sub_id>_segment_<w.pose_id> = -1;<if(w.reframed)>
+    // The reading places a body, not a pose: it is of one frame on that body, so the body's
+    // root is what the world model binds and every other frame on it follows from the tree.
+    int <s.sub_id>_observed_of_<w.pose_id> = -1;
+    int <s.sub_id>_target_of_<w.pose_id> = -1;
+    int <s.sub_id>_observed_body_<w.pose_id> = -1;
+    KDL::Frame <s.sub_id>_base_<w.pose_id>;
+    KDL::Frame <s.sub_id>_observed_on_body_<w.pose_id>;
+    KDL::Frame <s.sub_id>_target_on_body_<w.pose_id>;
+    bool <s.sub_id>_body_frames_initialized_<w.pose_id> = false;<endif>}; separator="\n">
+>>
+
+// The pose's own frame is the model's statement, so it is resolved once here and read by index
+// on the hot path. A name the world model does not hold is a broken model and stops the run.
+
+ros-subscription-wiring(s) ::= <<
+<s.written_poses:{w |     robot.<s.sub_id>_segment_<w.pose_id> = world.index_of("<w.frame_segment>");
+    if (robot.<s.sub_id>_segment_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.frame_segment>'" \<\< std::endl;
+        return 1;
+    \}<if(w.reframed)>
+    robot.<s.sub_id>_staged_from_<w.pose_id> = world.index_of("<w.observed_wrt_segment>");
+    if (robot.<s.sub_id>_staged_from_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.observed_wrt_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    robot.<s.sub_id>_observed_of_<w.pose_id> = world.index_of("<w.observed_of_segment>");
+    if (robot.<s.sub_id>_observed_of_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.observed_of_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    robot.<s.sub_id>_target_of_<w.pose_id> = world.index_of("<w.target_of_segment>");
+    if (robot.<s.sub_id>_target_of_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.target_of_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    robot.<s.sub_id>_observed_body_<w.pose_id> = world.index_of("<w.observed_body_segment>");
+    if (robot.<s.sub_id>_observed_body_<w.pose_id> \< 0) {
+        std::cerr \<\< "[world] no segment is named '<w.observed_body_segment>'" \<\< std::endl;
+        return 1;
+    \}
+    if (!world.bind_base("<w.observed_body_segment>", &robot.<s.sub_id>_base_<w.pose_id>, world_error)
+            || !world.require_base("<w.observed_body_segment>", world_error)) {
+        std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;
+        return 1;
+    \}<endif>}; separator="\n">
+>>
+
+// Staging is per message, not all-or-nothing: a goal asked one question and either answered it or
+// failed, but a stream reports whatever it currently sees, and a message carrying two of three
+// objects is not a failure.
+//
+ros-subscription-setup(s) ::= <<
+    robot.<s.sub_id>_sub = robot.ros_node->create_subscription\<<s.cpp_type>\>(
+        "<s.channel>", rclcpp::QoS(10),
+        [&robot](const <s.cpp_type>::SharedPtr msg) {
+            const std::lock_guard\<std::mutex\> lock(robot.<s.sub_id>_mutex);
+            for (const auto &detection : msg-><s.detections_path>) {
+                if (detection.<s.pose_container>.empty()) continue;
+                const auto &pose = detection.<s.pose_path>;
+<s.written_poses:{w |                 if (detection.<s.id_path> == "<w.match_iri>") {
+                    robot.<s.sub_id>_staged_<w.pose_id> = KDL::Frame(
+                        KDL::Rotation::Quaternion(pose.orientation.x, pose.orientation.y,
+                                                  pose.orientation.z, pose.orientation.w),
+                        KDL::Vector(pose.position.x, pose.position.y, pose.position.z));<if(!w.reframed)>
+                    robot.<s.sub_id>_staged_from_<w.pose_id> = robot.<s.sub_id>_segment_<w.pose_id>;<endif>
+                    robot.<s.sub_id>_seen_<w.pose_id> = true;
+                    robot.<s.sub_id>_staged = true;
+                \}}; separator="\n">
+            \}
+        \});
+>>
+
+// Nothing has stated where the objects are until perception has published each of them once.
+// Entering the loop before that snapshots an identity pose, and the arm drives at the origin of
+// its own base frame. The wait is deployment data, so its bound comes from the config file.
+
+// Every early exit taken after the executor is spinning shares this. The node is reachable from
+// the moment the executor starts, so a goal may already be parked: rclcpp_action throws when an
+// accepted goal is finalized unanswered, and a joinable spin thread destructing is its own
+// std::terminate. A run that stops here established none of what the model authored, so the goal
+// is aborted rather than answered -- `_active_goal` is a loop local that does not exist yet.
+
+ros-stop-before-loop(ros) ::= <<
+<if(ros.action_server)>
+{
+    const std::lock_guard\<std::mutex\> lock(robot.goal_mutex);
+    if (robot.staged_goal) {
+        <ros-goal-result-unset(ros.action_server)>
+        robot.staged_goal->abort(_result);
+        robot.staged_goal.reset();
+    \}
+\}
+<endif>
+robot.ros_executor->cancel();
+if (robot.ros_spin_thread.joinable()) robot.ros_spin_thread.join();
+rclcpp::shutdown();
+>>
+
+// Sent on the entry edge of the motion that owns the act, never per tick: `async_send_goal` only
+// enqueues, and the executor thread carries it from there.
+//
+// A rejected goal has no GoalStatus of its own; the model asked whether the server will deliver,
+// and it will not, so it stages the same answer an abort does.
+//
+// A detection is the pose the model asked for only when it names the target and arrives in the
+// frame that pose is stated against; anything else is dropped, and a result that does not carry
+// every pose the goal asked for is an abort.
+
+ros-action-send(c) ::= <<
+        data.<c.status_id> = action_msgs::msg::GoalStatus::STATUS_UNKNOWN;
+        {
+            <c.cpp_type>::Goal _goal;
+            _goal.<c.targets_path> = {
+<c.target_iris:{iri |                 "<iri>"}; separator=",\n">
+            \};
+            rclcpp_action::Client\<<c.cpp_type>\>::SendGoalOptions _options;
+            _options.goal_response_callback =
+                [&robot](rclcpp_action::ClientGoalHandle\<<c.cpp_type>\>::SharedPtr handle) {
+                    const std::lock_guard\<std::mutex\> lock(robot.<c.client_id>_mutex);
+                    robot.<c.client_id>_goal = handle;
+                    if (!handle) {
+                        robot.<c.client_id>_staged_status =
+                            action_msgs::msg::GoalStatus::STATUS_ABORTED;
+                        robot.<c.client_id>_staged = true;
+                    \}
+                \};
+            _options.result_callback =
+                [&robot](const rclcpp_action::ClientGoalHandle\<<c.cpp_type>\>::WrappedResult &result) {
+                    const std::lock_guard\<std::mutex\> lock(robot.<c.client_id>_mutex);
+                    robot.<c.client_id>_goal.reset();
+                    robot.<c.client_id>_staged = true;
+                    if (result.code == rclcpp_action::ResultCode::CANCELED) {
+                        robot.<c.client_id>_staged_status =
+                            action_msgs::msg::GoalStatus::STATUS_CANCELED;
+                        return;
+                    \}
+                    if (result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+                        robot.<c.client_id>_staged_status =
+                            action_msgs::msg::GoalStatus::STATUS_ABORTED;
+                        return;
+                    \}
+<c.written_poses:{w |                     bool _got_<w.pose_id> = false;}; separator="\n">
+                    for (const auto &detection : result.result-><c.detections_path>) {
+                        if (detection.<c.pose_container>.empty()) continue;
+                        const auto &pose = detection.<c.pose_path>;
+<c.written_poses:{w |                         if (detection.<c.id_path> == "<w.target_iri>" && detection.<c.frame_path> == "<w.frame_id>") {
+                            robot.<c.client_id>_staged_<w.pose_id> = KDL::Frame(
+                                KDL::Rotation::Quaternion(pose.orientation.x, pose.orientation.y,
+                                                          pose.orientation.z, pose.orientation.w),
+                                KDL::Vector(pose.position.x, pose.position.y, pose.position.z));
+                            _got_<w.pose_id> = true;
+                        \}}; separator="\n">
+                    \}
+                    // Every object the goal asked about, not merely as many detections as it
+                    // asked for: one object seen twice must not stand in for another unseen.
+                    robot.<c.client_id>_staged_status =
+                        <c.written_poses:{w | _got_<w.pose_id>}; separator=" && ">
+                            ? action_msgs::msg::GoalStatus::STATUS_SUCCEEDED
+                            : action_msgs::msg::GoalStatus::STATUS_ABORTED;
+                \};
+            robot.<c.client_id>->async_send_goal(_goal, _options);
+        \}
+>>
+
+// Cancelling on the exit edge: a goal still in flight is answering a question the model has
+// stopped asking.
+
+ros-action-cancel(c) ::= <<
+            {
+                const std::lock_guard\<std::mutex\> lock(robot.<c.client_id>_mutex);
+                if (robot.<c.client_id>_goal) {
+                    robot.<c.client_id>->async_cancel_goal(robot.<c.client_id>_goal);
+                    robot.<c.client_id>_goal.reset();
+                \}
+            \}
+>>
+
+// Cancelled on the exit edge, from the loop thread: `async_cancel_goal` only enqueues too.
+
+ros-action-cancel-on-exit(motion) ::= <<
+<if(motion.action_clients)>
+            if (<motion.id>_state_instance.active) {
+<motion.action_clients:{c | <ros-action-cancel(c)>}; separator="\n">
+            \}
+<endif>
+>>
+
+// One try_lock per cycle: a staged result moves into the algorithm data, and a cycle that cannot
+// take the lock reads the previous answer and tries again next tick. Only a succeeded act stamps
+// the observation instant: a failed one carries no reading.
+
+ros-actions-tick(ros) ::= <<
+<ros.action_clients:{c |         if (robot.<c.client_id>_mutex.try_lock()) {
+            if (robot.<c.client_id>_staged) {
+                data.<c.status_id> = robot.<c.client_id>_staged_status;
+<c.written_poses:{w |                 data.<w.pose_id> = robot.<c.client_id>_staged_<w.pose_id>;
+<if(w.observed_at_id)>                if (robot.<c.client_id>_staged_status == action_msgs::msg::GoalStatus::STATUS_SUCCEEDED) {
+                    data.<w.observed_at_id> = data.clock_time_s;
+                \}
+<endif>}; separator="\n">
+                robot.<c.client_id>_staged = false;
+            \}
+            robot.<c.client_id>_mutex.unlock();
+        \}}; separator="\n">
+>>
+
+// The same try_lock, for a channel that keeps reporting: whatever the last message staged moves
+// into the algorithm data, and a cycle that cannot take the lock reads the previous pose.
+//
+// The staged reading is stated in the sender's frame, so it is composed here, where kinematics
+// exist: X(pose frame -> sender frame) * X(sender frame -> target). Composing on arrival and not
+// every cycle is the point -- the result is where the object is, which does not move when the
+// camera does, and re-composing an old reading against a newer camera pose would drag the object
+// along with the arm. The camera pose used is the arriving cycle's rather than the image's, so a
+// reading taken while the arm was elsewhere lands where the arm is now: true while the arm is
+// still when it looks, and an arm that detects while moving needs the camera pose at the image
+// stamp, which nothing here keeps.
+//
+// A pose no message has ever carried is left alone rather than written as the identity, which
+// would put the object at the origin of its own reference frame and say nothing about it.
+//
+// The observation instant is the loop clock at commit: what the controller can act on is what it
+// has, and the message header's clock is not the run's.
+
+ros-subscriptions-tick(ros) ::= <<
+<ros.subscriptions:{s |         if (robot.<s.sub_id>_mutex.try_lock()) {
+            if (robot.<s.sub_id>_staged) {
+<s.written_poses:{w |                 if (robot.<s.sub_id>_seen_<w.pose_id>) {<if(w.reframed)>
+                    // Body-local frames are rigid. Cache them before changing the bound base;
+                    // recomputing them from that base feeds floating-point error back every reading.
+                    if (!robot.<s.sub_id>_body_frames_initialized_<w.pose_id>) {
+                        const KDL::Frame _body_inverse =
+                            robot.world->pose(robot.<s.sub_id>_observed_body_<w.pose_id>, robot.control_cycle).Inverse();
+                        robot.<s.sub_id>_observed_on_body_<w.pose_id> = _body_inverse
+                            * robot.world->pose(robot.<s.sub_id>_observed_of_<w.pose_id>, robot.control_cycle);
+                        robot.<s.sub_id>_target_on_body_<w.pose_id> = _body_inverse
+                            * robot.world->pose(robot.<s.sub_id>_target_of_<w.pose_id>, robot.control_cycle);
+                        robot.<s.sub_id>_body_frames_initialized_<w.pose_id> = true;
+                    \}
+                    // The body's placement, which the world model reads on its next update.
+                    robot.<s.sub_id>_base_<w.pose_id> =
+                        robot.world->pose(robot.<s.sub_id>_staged_from_<w.pose_id>, robot.control_cycle)
+                        * robot.<s.sub_id>_staged_<w.pose_id>
+                        * robot.<s.sub_id>_observed_on_body_<w.pose_id>.Inverse();
+                    // Composed off the placement just computed, not off the world model's, which
+                    // still carries the previous cycle's: the first reading would otherwise report
+                    // the body at the origin and a motion would aim at it.
+                    data.<w.pose_id> =
+                        robot.world->pose(robot.<s.sub_id>_segment_<w.pose_id>, robot.control_cycle).Inverse()
+                        * robot.<s.sub_id>_base_<w.pose_id>
+                        * robot.<s.sub_id>_target_on_body_<w.pose_id>;
+<else>
+                    data.<w.pose_id> =
+                        robot.world->pose(robot.<s.sub_id>_segment_<w.pose_id>, robot.control_cycle).Inverse()
+                        * robot.world->pose(robot.<s.sub_id>_staged_from_<w.pose_id>, robot.control_cycle)
+                        * robot.<s.sub_id>_staged_<w.pose_id>;<endif>
+<if(w.observed_at_id)>                    data.<w.observed_at_id> = data.clock_time_s;
+<endif>                \}}; separator="\n">
+                robot.<s.sub_id>_staged = false;
+            \}
+            robot.<s.sub_id>_mutex.unlock();
+        \}}; separator="\n">
+>>
+
+// One goal per process run. The FSM parks where the model holds it and the goal event is what
+// arms it; nothing routes it back to the parked state, so a second goal would start nothing.
+// A goal may carry more than this run reads; what it carries and ignores is reported, never
+// mapped, because the run answers the specification it was generated from.
+
+ros-goal-server-setup(server) ::= <<
+    robot.goal_server = rclcpp_action::create_server\<motion_spec::ros::ServedAction\>(
+        robot.ros_node,
+        "<server.action_name>",
+        [&robot](const rclcpp_action::GoalUUID &,
+                 std::shared_ptr\<const motion_spec::ros::ServedAction::Goal\> goal) {
+            if (robot.goal_taken.exchange(true)) {
+                RCLCPP_WARN(robot.ros_node->get_logger(),
+                            "a goal was already served this run; rejecting");
+                return rclcpp_action::GoalResponse::REJECT;
+            \}
+<server.ignored_goal_fields:{f |             if (!goal-><f>.empty()) {
+                RCLCPP_WARN(robot.ros_node->get_logger(),
+                            "ignoring %zu entries in goal field '<f>'", goal-><f>.size());
+            \}}; separator="\n">
+            return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+        \},
+        [](const std::shared_ptr\<motion_spec::ros::ServedGoalHandle\>) {
+            // Accepted so the goal ends up CANCELED, but nothing is routed into the FSM: the run
+            // plays out to its end state either way.
+            return rclcpp_action::CancelResponse::ACCEPT;
+        \},
+        [&robot](const std::shared_ptr\<motion_spec::ros::ServedGoalHandle\> handle) {
+            const std::lock_guard\<std::mutex\> lock(robot.goal_mutex);
+            robot.staged_goal = handle;
+        \});
+>>
+
+// Parsed on the executor thread and handed to the loop under a lock the loop never waits on.
+
+ros-context-id-setup() ::= <<
+    robot.ros_node->declare_parameter\<std::string\>("scenario_context_id", "");
+    robot.ros_param_handle = robot.ros_node->add_on_set_parameters_callback(
+        [&robot](const std::vector\<rclcpp::Parameter\> &params) {
+            rcl_interfaces::msg::SetParametersResult result;
+            result.successful = true;
+            for (const auto &param : params) {
+                if (param.get_name() != "scenario_context_id") continue;
+                std::array\<std::uint8_t, 16\> parsed{};
+                if (!motion_spec::ros::parse_uuid(param.as_string(), parsed)) {
+                    result.successful = false;
+                    result.reason = "scenario_context_id must be a hex UUID";
+                    continue;
+                \}
+                const std::lock_guard\<std::mutex\> lock(robot.ros_context_id_mutex);
+                robot.ros_context_id = parsed;
+            \}
+            return result;
+        \});
+>>
+
+// The executor answers parameter services; it starts once every publisher exists so a client
+// that sees the node also sees the topics.
+
+ros-spin-start() ::= <<
+    robot.ros_executor = std::make_shared\<rclcpp::executors::SingleThreadedExecutor\>();
+    robot.ros_executor->add_node(robot.ros_node);
+    robot.ros_spin_thread = std::thread([&robot]() { robot.ros_executor->spin(); \});
+>>
+
+// Sized once, from the joints the model drives; the topic and the rate are deployment data,
+// so they are read from the config file at launch rather than baked in.
+
+ros-joint-states-setup(ros) ::= <<
+<if(ros.joint_states)>
+    {
+        // Named, not a literal: `section` returns a reference into robot_config, and gcc reads a
+        // temporary argument as the thing the reference could dangle to.
+        const std::string _js_key = "<ros.joint_states.config_key>";
+        const toml::table &_js_cfg = motion_spec::config::section(robot_config, _js_key);
+        robot.joint_states_divider =
+            motion_spec::ros::publish_divider(_js_cfg["rate"].value_or(0.0));
+        robot.joint_states_msg.name = {
+<ros.joint_states.joints:{j |             "<j.name>"}; separator=",\n">
+        \};
+        const std::size_t _js_n = robot.joint_states_msg.name.size();
+        robot.joint_states_msg.position.assign(_js_n, 0.0);
+        // sensor_msgs/JointState has no per-joint "not reported" -- its arrays are equal-length
+        // or empty -- so a joint nothing measures a velocity or an effort for keeps the NaN it
+        // was filled with, rather than a zero claiming it is standing still and unloaded.
+        robot.joint_states_msg.velocity.assign(_js_n, std::numeric_limits\<double\>::quiet_NaN());
+        robot.joint_states_msg.effort.assign(_js_n, std::numeric_limits\<double\>::quiet_NaN());
+        robot.joint_states_pub =
+            std::make_shared\<realtime_tools::RealtimePublisher\<sensor_msgs::msg::JointState\>\>(
+                robot.ros_node->create_publisher\<sensor_msgs::msg::JointState\>(
+                    _js_cfg["topic"].value_or(std::string("/joint_states")), rclcpp::QoS(10)));
+    \}
+<endif>
+>>
+
+// Walked off the sealed world model, not off a generated list: the forest already knows every
+// segment, its parent and the joint it moves.
+
+ros-tf-setup(ros, resources) ::= <<
+<if(ros.tf)>
+    {
+        const std::string _tf_key = "<ros.tf.config_key>";
+        const toml::table &_tf_cfg = motion_spec::config::section(robot_config, _tf_key);
+        robot.tf_divider = motion_spec::ros::publish_divider(_tf_cfg["rate"].value_or(0.0));
+        // The trees the driven chains stand in and those of the free roots the program measures;
+        // a tree perception places is its publisher's.
+        std::vector\<int\> _tf_trees;
+<resources.by_kind.serial_chain:{solver |<if(solver.runtime.owner)>        _tf_trees.push_back(world.tree_of(robot.<solver.id>.world_root));
+<endif>}>
+<ros.tf.free_roots:{name |         _tf_trees.push_back(world.tree_of(world.index_of("<name>")));}; separator="\n">
+        // A free root hangs from the anchor at the pose its provider bound; every placed root
+        // stands on the anchor already.
+<ros.tf.free_roots:{name |         {
+            geometry_msgs::msg::TransformStamped t;
+            t.header.frame_id = "<ros.tf.anchor>";
+            t.child_frame_id = "<name>";
+            robot.tf_roots.push_back(world.index_of("<name>"));
+            robot.tf_msg.transforms.push_back(t);
+        \}}; separator="\n">
+        // Perception places what the run observes; the tree stops above each such frame.
+        std::vector\<char\> _tf_observed(world.count(), 0);
+<ros.tf.observed:{name |         {
+            const int observed = world.index_of("<name>");
+            if (observed \< 0) {
+                std::cerr \<\< "[world] no segment is named '<name>'" \<\< std::endl;
+                return 1;
+            \}
+            _tf_observed[observed] = 1;
+        \}}; separator="\n">
+        tf2_msgs::msg::TFMessage _tf_static;
+        for (int i = 0; i \< world.count(); ++i) {
+            const int parent = world.parent_of(i);
+            if (parent >= 0 && _tf_observed[parent]) {
+                _tf_observed[i] = 1;
+            \}
+            if (parent \< 0 || _tf_observed[i] || std::find(_tf_trees.begin(), _tf_trees.end(), world.tree_of(i)) == _tf_trees.end()) {
+                continue;
+            \}
+            geometry_msgs::msg::TransformStamped t;
+            t.header.frame_id = world.name_of(parent);
+            t.child_frame_id = world.name_of(i);
+            if (world.moving(i)) {
+                robot.tf_moving.push_back(i);
+                robot.tf_msg.transforms.push_back(t);
+            \} else {
+                t.header.stamp = robot.stamp_now();
+                motion_spec::ros::write_transform(world.local_pose(i), t.transform);
+                _tf_static.transforms.push_back(t);
+            \}
+        \}
+        robot.tf_static_pub = robot.ros_node->create_publisher\<tf2_msgs::msg::TFMessage\>(
+            "/tf_static", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local());
+        robot.tf_static_pub->publish(_tf_static);
+        robot.tf_pub =
+            std::make_shared\<realtime_tools::RealtimePublisher\<tf2_msgs::msg::TFMessage\>\>(
+                robot.ros_node->create_publisher\<tf2_msgs::msg::TFMessage\>(
+                    _tf_cfg["topic"].value_or(std::string("/tf")), rclcpp::QoS(10)));
+    \}
+<endif>
+>>
+
+ros-clock-setup(ros) ::= <<
+<if(ros.clock)>
+    {
+        const std::string _clk_key = "<ros.clock.config_key>";
+        const toml::table &_clk_cfg = motion_spec::config::section(robot_config, _clk_key);
+        robot.clock_divider = motion_spec::ros::publish_divider(_clk_cfg["rate"].value_or(0.0));
+        // ClockQoS: best-effort keep-last-1, so a late subscriber reads now, not a stale queue.
+        robot.clock_pub =
+            std::make_shared\<realtime_tools::RealtimePublisher\<rosgraph_msgs::msg::Clock\>\>(
+                robot.ros_node->create_publisher\<rosgraph_msgs::msg::Clock\>(
+                    _clk_cfg["topic"].value_or(std::string("/clock")), rclcpp::ClockQoS()));
+    \}
+<endif>
+>>
+
+// One tick per control cycle, for every publishing monitor whose motion is scheduled. Each
+// state block writes the fields the model authored for it; a cycle whose polarity authored
+// nothing publishes nothing, and an unscheduled monitor says nothing at all -- silence is what
+// a reader takes for "not evaluated".
+
+ros-publish-tick(coordination, communication, views) ::= <<
+<if(communication.ros.scenario_context_id)>
+<if(!communication.ros.action_server)>
+        if (robot.ros_context_id_mutex.try_lock()) {
+            _scenario_context_id = robot.ros_context_id;
+            robot.ros_context_id_mutex.unlock();
+        \}
+<endif>
+<endif>
+<coordination.motions:{m | <m.when_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.while_monitors:{mon | <ros-monitor-publish(m, mon)>}><m.until_monitors:{mon | <ros-monitor-publish(m, mon)>}>}>
+<ros-joint-states-tick(communication.ros)>
+<ros-tf-tick(communication.ros)>
+<ros-clock-tick(communication.ros)>
+<ros-actions-tick(communication.ros)>
+<ros-subscriptions-tick(communication.ros)>
+<ros-standing-tick(communication.ros, views)>
+>>
+
+// A topic the run publishes rather than a motion: it keeps reporting whichever motion is
+// active, so its rate is its own. The authored rate is already the number of cycles between two
+// messages, and the quantity is written whole -- a field the model mapped itself overrides the
+// component that field would otherwise carry.
+
+ros-standing-tick(ros, views) ::= <<
+<ros.standing:{s |         if ((_step % <s.divider>) == 0) {
+<s.entries:{e |<standing-payload(e)>
+<e.auto_time:{p |             robot.<e.pub_id>_msg.<p> = robot.stamp_now();
+}>}>
+<s.fields:{f |             robot.<s.pub_id>_msg.<f.path> = <access-expr(f.ref, views)>;}; separator="\n">
+<s.auto_time:{p |             robot.<s.pub_id>_msg.<p> = robot.stamp_now();}; separator="\n">
+<s.auto_context_id:{p |             robot.<s.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+            robot.<s.pub_id>->try_publish(robot.<s.pub_id>_msg);
+        \}}; separator="\n">
+>>
+
+// What the model already settles stays out of the loop: how many entries there are, which
+// entity each is about, and the frame each states it in are the model's own statements, so they
+// are written once and only the quantity itself is written per cycle.
+
+ros-standing-setup(s) ::= <<
+<s.resize:{r |     robot.<s.pub_id>_msg.<r.path>.resize(<r.size>);}; separator="\n">
+<if(s.frame_id)>    robot.<s.pub_id>_msg.<s.frame_path> = "<s.frame_id>";<endif>
+<s.entries:{e | <if(e.id_path)>    robot.<e.pub_id>_msg.<e.id_path> = "<e.id_value>";
+<endif><if(e.frame_id)>    robot.<e.pub_id>_msg.<e.frame_path> = "<e.frame_id>";
+<endif>}>
+>>
+
+standing-payload(s) ::= <<
+<({standing-payload-<s.carrier>})(s)>
+>>
+
+standing-payload-Wrench(s) ::= <<
+            robot.<s.pub_id>_msg.<s.payload_path>force.x = data.<s.value_id>.force.x();
+            robot.<s.pub_id>_msg.<s.payload_path>force.y = data.<s.value_id>.force.y();
+            robot.<s.pub_id>_msg.<s.payload_path>force.z = data.<s.value_id>.force.z();
+            robot.<s.pub_id>_msg.<s.payload_path>torque.x = data.<s.value_id>.torque.x();
+            robot.<s.pub_id>_msg.<s.payload_path>torque.y = data.<s.value_id>.torque.y();
+            robot.<s.pub_id>_msg.<s.payload_path>torque.z = data.<s.value_id>.torque.z();
+>>
+
+standing-payload-Twist(s) ::= <<
+            robot.<s.pub_id>_msg.<s.payload_path>linear.x = data.<s.value_id>.vel.x();
+            robot.<s.pub_id>_msg.<s.payload_path>linear.y = data.<s.value_id>.vel.y();
+            robot.<s.pub_id>_msg.<s.payload_path>linear.z = data.<s.value_id>.vel.z();
+            robot.<s.pub_id>_msg.<s.payload_path>angular.x = data.<s.value_id>.rot.x();
+            robot.<s.pub_id>_msg.<s.payload_path>angular.y = data.<s.value_id>.rot.y();
+            robot.<s.pub_id>_msg.<s.payload_path>angular.z = data.<s.value_id>.rot.z();
+>>
+
+standing-payload-Pose(s) ::= <<
+            {
+                double _qx, _qy, _qz, _qw;
+                data.<s.value_id>.M.GetQuaternion(_qx, _qy, _qz, _qw);
+                robot.<s.pub_id>_msg.<s.payload_path>position.x = data.<s.value_id>.p.x();
+                robot.<s.pub_id>_msg.<s.payload_path>position.y = data.<s.value_id>.p.y();
+                robot.<s.pub_id>_msg.<s.payload_path>position.z = data.<s.value_id>.p.z();
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.x = _qx;
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.y = _qy;
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.z = _qz;
+                robot.<s.pub_id>_msg.<s.payload_path>orientation.w = _qw;
+            \}
+>>
+
+standing-payload-Transform(s) ::= <<
+            {
+                double _qx, _qy, _qz, _qw;
+                data.<s.value_id>.M.GetQuaternion(_qx, _qy, _qz, _qw);
+                robot.<s.pub_id>_msg.<s.payload_path>translation.x = data.<s.value_id>.p.x();
+                robot.<s.pub_id>_msg.<s.payload_path>translation.y = data.<s.value_id>.p.y();
+                robot.<s.pub_id>_msg.<s.payload_path>translation.z = data.<s.value_id>.p.z();
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.x = _qx;
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.y = _qy;
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.z = _qz;
+                robot.<s.pub_id>_msg.<s.payload_path>rotation.w = _qw;
+            \}
+>>
+
+// Taking the goal arms the FSM: the loop produces the goal event once -- only while the FSM
+// sits in a state that reacts to it, since an event lives one tick -- and from then on stamps
+// every message with the scenario the goal names.
+
+ros-goal-arm-tick(coordination, server) ::= <<
+        if (robot.goal_mutex.try_lock()) {
+            if (robot.staged_goal) {
+                _active_goal = robot.staged_goal;
+                robot.staged_goal.reset();
+            \}
+            robot.goal_mutex.unlock();
+        \}
+        if (_active_goal && !_goal_armed
+                && (<server.goal_states:{s | fsm->currentStateIndex == <coordination.fsm.cpp_namespace>::<s>}; separator=" || ">)) {
+            _goal_armed = true;
+<server.goal_context_id:{p |             _scenario_context_id = _active_goal->get_goal()-><p>.uuid;}; separator="\n">
+            produce_event(robot.fsm_events, <coordination.fsm.cpp_namespace>::<server.goal_event>);
+        \}
+>>
+
+// The fields the node owns rather than the model: when the run ended, and the scenario it
+// belonged to. Both are answered whether or not the run reached its end.
+
+ros-goal-result-own(server) ::= <<
+<server.result_auto_time:{p | _result-><p> = robot.stamp_now();}; separator="\n">
+<server.result_auto_context_id:{p | _result-><p>.uuid = _scenario_context_id;}; separator="\n">
+>>
+
+// Stopping early establishes none of what the model authored, so none of it is stated: every
+// field keeps the default its own message type gives it.
+
+ros-goal-result-unset(server) ::= <<
+auto _result = std::make_shared\<<server.result_cpp_type>\>();
+<ros-goal-result-own(server)>
+>>
+
+ros-publish-tick-locals(ros) ::= <<
+<if(ros.scenario_context_id)>
+    std::array\<std::uint8_t, 16\> _scenario_context_id{};
+<endif>
+<if(ros.action_server)>
+    std::shared_ptr\<motion_spec::ros::ServedGoalHandle\> _active_goal = nullptr;
+    bool _goal_armed = false;
+<endif>
+>>
+
+// An announced event is the event firing, so it rides the event itself rather than the
+// constraint: one message per event on the cycle the FSM sees it, whatever state the motion is
+// in. The URI comes from the FSM's own table, so what a scenario observes is the IRI the model
+// declared.
+
+ros-monitor-announce(monitor, event) ::= <<
+        if (robot.fsm_events && consume_event(robot.fsm_events, <monitor.ros.occurrence_namespace>::<event>)) {
+            robot.<monitor.ros.pub_id>_msg.<monitor.ros.occurrence_path> =
+                <monitor.ros.occurrence_namespace>::EVENT_URIS[<monitor.ros.occurrence_namespace>::<event>];
+<monitor.ros.auto_time:{p |             robot.<monitor.ros.pub_id>_msg.<p> = robot.stamp_now();}; separator="\n">
+<monitor.ros.auto_context_id:{p |             robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+            robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
+        \}
+>>
+
+// Reaching this monitor's state is what the model calls the goal finished, so the goal is
+// answered there and once: the handle is dropped, and nothing else in the run still holds it.
+// A goal whose cancel was accepted is reported CANCELED whatever the model states, because that
+// is what the client was told to expect.
+
+// An edge-triggered monitor already decided when its state was reached, debounce and all, and
+// said so as an occurrence. Re-deriving that from the raw constraint here would answer the goal
+// on a graze the coordination rejected -- the client told the run finished while the run carries
+// on. So the answer keys off the occurrence, which reaches this block the tick after it fires.
+answer-condition(monitor) ::= <<
+<if(monitor.answer.satisfied && monitor.fsm_namespace)>consume_event(robot.fsm_events, <monitor.fsm_namespace>::<monitor.event_name>)<else><if(!monitor.answer.satisfied)>!<endif>(<monitor-satisfied-expr(monitor)>)<endif>
+>>
+
+ros-monitor-answer(motion, monitor) ::= <<
+        if (_active_goal && <motion.id>_state_instance.active
+                && <answer-condition(monitor)>) {
+            auto _result = std::make_shared\<<monitor.answer.result_cpp_type>\>();
+<monitor.answer.fields:{f |             _result-><f.path> = <f.cpp_value>;}; separator="\n">
+<monitor.answer.auto_time:{p |             _result-><p> = robot.stamp_now();}; separator="\n">
+<monitor.answer.auto_context_id:{p |             _result-><p>.uuid = _scenario_context_id;}; separator="\n">
+            if (_active_goal->is_canceling()) {
+                _active_goal->canceled(_result);
+            \} else {
+                _active_goal-><monitor.answer.method>(_result);
+            \}
+            _active_goal.reset();
+        \}
+>>
+
+// What the monitor says while its motion runs, and then the goal it answers: a scenario sees
+// every occurrence the run states before it is told the run is over.
+
+ros-monitor-publish(motion, monitor) ::= <<
+<if(monitor.ros.occurrence_path)>
+<monitor.ros.occurrence_events:{e | <ros-monitor-announce(monitor, e)>}; separator="\n">
+<elseif(monitor.ros)>
+        if (<motion.id>_state_instance.active<if(monitor.ros.divider)> && (_step % <monitor.ros.divider>) == 0<endif>) {
+            const bool _satisfied = <monitor-satisfied-expr(monitor)>;
+            bool _authored = false;
+<if(monitor.ros.on_satisfied)>
+            if (_satisfied) {
+<monitor.ros.on_satisfied:{f |                 robot.<monitor.ros.pub_id>_msg.<f.path> = <f.cpp_value>;}; separator="\n">
+                _authored = true;
+            \}
+<endif>
+<if(monitor.ros.on_violated)>
+            if (!_satisfied) {
+<monitor.ros.on_violated:{f |                 robot.<monitor.ros.pub_id>_msg.<f.path> = <f.cpp_value>;}; separator="\n">
+                _authored = true;
+            \}
+<endif>
+            if (_authored) {
+<monitor.ros.auto_time:{p |                 robot.<monitor.ros.pub_id>_msg.<p> = robot.stamp_now();}; separator="\n">
+<monitor.ros.auto_context_id:{p |                 robot.<monitor.ros.pub_id>_msg.<p>.uuid = _scenario_context_id;}; separator="\n">
+                robot.<monitor.ros.pub_id>->try_publish(robot.<monitor.ros.pub_id>_msg);
+            \}
+        \}
+<endif>
+<if(monitor.answer)>
+<ros-monitor-answer(motion, monitor)>
+<endif>
+>>
+
+ros-joint-states-tick(ros) ::= <<
+<if(ros.joint_states)>
+        if (robot.joint_states_pub && (_step % robot.joint_states_divider) == 0) {
+            robot.joint_states_msg.header.stamp = robot.stamp_now();
+<ros.joint_states.joints:{j |             robot.joint_states_msg.position[<i0>] = data.<j.position>;<if(j.velocity)>
+            robot.joint_states_msg.velocity[<i0>] = data.<j.velocity>;<endif><if(j.effort)>
+            robot.joint_states_msg.effort[<i0>] = data.<j.effort>;<endif>}; separator="\n">
+            robot.joint_states_pub->try_publish(robot.joint_states_msg);
+        \}
+<endif>
+>>
+
+ros-tf-tick(ros) ::= <<
+<if(ros.tf)>
+        if (robot.tf_pub && (_step % robot.tf_divider) == 0) {
+            std::size_t k = 0;
+            for (std::size_t r = 0; r \< robot.tf_roots.size(); ++r, ++k) {
+                geometry_msgs::msg::TransformStamped &t = robot.tf_msg.transforms[k];
+                t.header.stamp = robot.stamp_now();
+                motion_spec::ros::write_transform(robot.world->pose(robot.tf_roots[r], robot.control_cycle), t.transform);
+            \}
+            for (std::size_t m = 0; m \< robot.tf_moving.size(); ++m, ++k) {
+                geometry_msgs::msg::TransformStamped &t = robot.tf_msg.transforms[k];
+                t.header.stamp = robot.stamp_now();
+                motion_spec::ros::write_transform(robot.world->local_pose(robot.tf_moving[m]), t.transform);
+            \}
+            robot.tf_pub->try_publish(robot.tf_msg);
+        \}
+<endif>
+>>
+
+ros-clock-tick(ros) ::= <<
+<if(ros.clock)>
+        if (robot.clock_pub && (_step % robot.clock_divider) == 0) {
+            robot.clock_msg.clock.sec = static_cast\<std::int32_t\>(data.clock_time_s);
+            robot.clock_msg.clock.nanosec = static_cast\<std::uint32_t\>(
+                (data.clock_time_s - static_cast\<double\>(robot.clock_msg.clock.sec)) * 1e9);
+            robot.clock_pub->try_publish(robot.clock_msg);
+        \}
+<endif>
+>>
+
+ros-shutdown(ros) ::= <<
+<if(ros.action_server)>
+    if (_active_goal && _active_goal->is_active()) {
+        // Stopping before the end state: the run never reached what the model calls done.
+        <ros-goal-result-unset(ros.action_server)>
+        if (_active_goal->is_canceling()) {
+            _active_goal->canceled(_result);
+        \} else {
+            _active_goal->abort(_result);
+        \}
+    \}
+    _active_goal.reset();
+<endif>
+    if (robot.ros_executor) {
+        robot.ros_executor->cancel();
+    \}
+    if (robot.ros_spin_thread.joinable()) {
+        robot.ros_spin_thread.join();
+    \}
+<ros.publishers:{p |     robot.<p.pub_id>.reset();}; separator="\n">
+<ros.action_clients:{c |     robot.<c.client_id>_goal.reset();
+    robot.<c.client_id>.reset();}; separator="\n">
+<ros.subscriptions:{s |     robot.<s.sub_id>_sub.reset();}; separator="\n">
+<if(ros.joint_states)>
+    robot.joint_states_pub.reset();
+<endif>
+<if(ros.tf)>
+    robot.tf_pub.reset();
+    robot.tf_static_pub.reset();
+<endif>
+<if(ros.action_server)>
+    robot.goal_server.reset();
+<endif>
+    robot.ros_executor.reset();
+    robot.ros_node.reset();
+    rclcpp::shutdown();
+>>

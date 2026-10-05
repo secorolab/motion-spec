@@ -1,0 +1,173 @@
+# SPDX-License-Identifier: MPL-2.0
+# SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+"""What the loop/device handoff promises: the loop reads whole measurements in publication
+order, even if it skips intermediate ones. Those are claims about two threads, so they are
+checked by compiling the shipped primitives and running them against each other."""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+IO_TEMPLATE = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "motion_spec"
+    / "templates"
+    / "backend"
+    / "robif2b"
+    / "devices.stg"
+).read_text()
+
+# The C++ of the handoff buffer and of the F/T worker, with the StringTemplate escapes undone.
+SAMPLED_BUFFER, FT_IO = (
+    re.search(rf"^{rule} ::= <<\n(.*?)\n>>", IO_TEMPLATE, re.DOTALL | re.MULTILINE)
+    .group(1)
+    .replace("\\<", "<")
+    .replace("\\>", ">")
+    .replace("\\}", "}")
+    for rule in (
+        r"sampled-buffer\(state, sample\)",
+        r"device-io-section-RobotiqFT300s\(solver, device\)",
+    )
+)
+
+COMPILER = shutil.which("g++") or shutil.which("c++")
+
+pytestmark = pytest.mark.skipif(COMPILER is None, reason="no C++ compiler")
+
+
+HAMMER = """
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <thread>
+#include <type_traits>
+
+// Every field derives from the counter, so a mixture of two publications is visible, and the
+// counter is the sequence the publication must arrive under.
+struct Reading {
+    std::uint64_t a = 0;
+    std::uint32_t b = 0;
+    float c = 0.0f;
+    bool ok = false;
+};
+
+/* SAMPLED_BUFFER */
+
+int main() {
+    reading_sample sampled;
+    constexpr std::uint64_t kPublications = 1000;
+    // Pace the writer so the hammer runs at the ratio a serial device actually imposes.
+    constexpr auto kTransaction = std::chrono::microseconds(100);
+    std::atomic<bool> done{false};
+
+    std::jthread writer([&] {
+        for (std::uint64_t n = 1; n <= kPublications; ++n) {
+            const auto until = std::chrono::steady_clock::now() + kTransaction;
+            while (std::chrono::steady_clock::now() < until) {}
+            sampled.publish(Reading{n, static_cast<std::uint32_t>(n), static_cast<float>(n),
+                                    (n & 1) == 0});
+        }
+        done.store(true);
+    });
+
+    std::uint64_t previous = 0;
+    std::uint64_t reads = 0;
+    while (!done.load()) {
+        const auto snapshot = sampled.read();
+        if (snapshot.seq == 0) continue;
+        ++reads;
+        if (snapshot.seq < previous) { std::puts("sequence went backwards"); return 1; }
+        previous = snapshot.seq;
+        const Reading &value = snapshot.value;
+        if (value.b != static_cast<std::uint32_t>(value.a) ||
+            value.c != static_cast<float>(value.a) ||
+            value.ok != ((value.a & 1) == 0)) {
+            std::puts("torn measurement");
+            return 1;
+        }
+        // The nth publication is the one published under sequence n: a slot indexed the other
+        // way round hands back a whole, consistent, wrong reading.
+        if (value.a != snapshot.seq) { std::puts("wrong slot"); return 1; }
+    }
+    writer.join();
+    const auto last = sampled.read();
+    if (last.seq != kPublications || last.value.a != kPublications) {
+        std::puts("lost a publication");
+        return 1;
+    }
+    if (reads == 0) { std::puts("the reader never observed a publication"); return 1; }
+    return 0;
+}
+"""
+
+
+def test_a_reader_never_sees_a_torn_measurement(tmp_path: Path) -> None:
+    """A delayed reader still sees one complete publication, never a reused slot."""
+    source = tmp_path / "device_io.cpp"
+    source.write_text(
+        HAMMER.replace(
+            "/* SAMPLED_BUFFER */",
+            SAMPLED_BUFFER.replace("<state>", "Reading").replace("<sample>", "reading_sample"),
+        )
+    )
+    binary = tmp_path / "device_io"
+    subprocess.run(
+        [COMPILER, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
+    )
+    for _ in range(10):
+        subprocess.run([str(binary)], check=True)
+
+
+def test_ft_worker_publishes_failure_then_recovers(tmp_path: Path) -> None:
+    source = tmp_path / "ft_failure.cpp"
+    source.write_text(
+        """
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <stop_token>
+#include <thread>
+#include <type_traits>
+
+namespace motion_spec::io { struct Staleness {}; }
+
+struct robif2b_robotiq_ft_sensor_nbx { bool *success = nullptr; };
+inline std::atomic<int> calls{0};
+inline void robif2b_robotiq_ft_update(robif2b_robotiq_ft_sensor_nbx *driver) {
+    *driver->success = ++calls > 1;
+}
+
+/* FT_IO */
+
+int main() {
+    ft_sensor_io io;
+    robif2b_robotiq_ft_sensor_nbx driver{&io.state.success};
+    io.state.success = true;
+    io.start(driver, 1.0);
+    while (calls.load() < 2) std::this_thread::yield();
+    io.stop();
+    const auto recovered = io.sample.read();
+    return calls.load() >= 2 && recovered.seq >= 2 && recovered.value.success ? 0 : 1;
+}
+""".replace(
+            "/* FT_IO */",
+            FT_IO.replace(
+                "<sampled-buffer({ft_sensor_state}, {ft_sensor_sample})>",
+                SAMPLED_BUFFER.replace("<state>", "ft_sensor_state").replace(
+                    "<sample>", "ft_sensor_sample"
+                ),
+            ),
+        )
+    )
+    binary = tmp_path / "ft_failure"
+    subprocess.run(
+        [COMPILER, "-std=c++20", "-O2", "-pthread", str(source), "-o", str(binary)], check=True
+    )
+    subprocess.run([str(binary)], check=True)

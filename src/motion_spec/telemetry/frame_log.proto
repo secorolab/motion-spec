@@ -1,0 +1,247 @@
+// SPDX-License-Identifier: MPL-2.0
+// SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
+
+syntax = "proto3";
+
+package motion_spec.telemetry.log;
+
+// What a list index names: the index, the generated id, and the model IRI. An id is a lossy
+// projection of its IRI, so both travel.
+message Slot {
+  uint32 number = 1;
+  string id = 2;
+  string iri = 3;
+}
+
+// A motion's controller: the constraint it serves, and the quantity slots its signals are in.
+message Controller {
+  reserved 5, 7, 13, 18;
+  uint32 number = 1;
+  string id = 2;
+  string iri = 3;
+  string constraint_iri = 4;
+  string constraint_id = 6;
+  string error_id = 8;
+  string output_id = 9;
+  string measured_id = 10;
+  string setpoint_id = 11;
+  string tolerance_id = 12;
+  // Literals folded into the controller, so no quantity slot carries them.
+  repeated SlotGain gains = 14;
+  // The two quantities the evaluator compares, the difference it writes, and the function itself.
+  repeated string operand_ids = 15;
+  string difference_id = 16;
+  string evaluator_id = 17;
+}
+
+// A motion's monitor: the event it fires, and what it watches -- one constraint, several, or
+// none (an elapsed time).
+message Monitor {
+  reserved 9, 10, 11, 14;
+  uint32 number = 1;
+  string id = 2;
+  string iri = 3;
+  // Set only when it watches exactly one constraint.
+  string constraint_iri = 4;
+  string event_iri = 5;
+  string constraint_id = 6;
+  // "while" | "until" | "when".
+  string phase = 7;
+  string error_id = 8;
+  string tolerance_id = 12;
+  repeated string constraint_iris = 13;
+  // Each watched constraint with the error it is judged by, so a conjunction reads member by member.
+  repeated WatchedConstraint watched = 18;
+  repeated string operand_ids = 15;
+  string difference_id = 16;
+  string evaluator_id = 17;
+}
+
+// One constraint an aggregate monitor watches, and the error its evaluator writes.
+message WatchedConstraint {
+  string id = 1;
+  string iri = 2;
+  string error_id = 3;
+  string tolerance_id = 4;
+}
+
+message SlotGain {
+  string role = 1;
+  double value = 2;
+}
+
+message Transition {
+  uint32 index = 1;
+  string id = 2;
+  string iri = 3;
+  int32 from_state = 4;
+  int32 to_state = 5;
+  int32 event_index = 6;
+  repeated uint32 event_indices = 7;
+}
+
+// Which slots a motion drives: a zero is not written, so absence on the wire cannot tell an
+// inactive slot from a zero one -- the frame carries active_motion and this says what it writes.
+message MotionGate {
+  uint32 index = 1;
+  string id = 2;
+  string iri = 3;
+  int32 fsm_state = 4;
+  repeated uint32 quantities = 5;
+  repeated uint32 poses = 6;
+  repeated uint32 twists = 7;
+  repeated uint32 wrenches = 8;
+  repeated Controller controllers = 9;
+  repeated Monitor monitors = 10;
+}
+
+message Constant {
+  string id = 1;
+  string source_id = 2;
+  double value = 3;
+  // The model term this number projects, and the blocks that read it.
+  string uri = 4;
+  repeated ConstantReader readers = 5;
+}
+
+// A data access constraint reading the constant: the block, and the port it reads it through.
+message ConstantReader {
+  string id = 1;
+  string kind = 2;
+  string port = 3;
+}
+
+message FrameLogHeader {
+  reserved 2, 3, 5, 12;
+  // Which version of this file wrote the log.
+  uint32 format_version = 23;
+  string schema_hash = 1;
+  // This file as a FileDescriptorSet: the log carries the schema it was written against.
+  bytes descriptor_set = 4;
+  repeated MotionGate motions = 6;
+  uint32 trigger_pool = 7;
+  repeated Slot fsm_states = 8;
+  repeated Slot fsm_events = 9;
+  repeated Transition fsm_transitions = 10;
+  // Written once at init; repeating them per tick would say nothing new.
+  repeated Constant constants = 11;
+  string platform_name = 13;
+  bool simulated = 14;
+  int32 end_state = 15;
+  int64 nominal_period_ns = 16;
+  string fsm_namespace = 17;
+  // What each RuntimeFrame list index names, per list.
+  repeated Slot quantities = 18;
+  repeated Slot poses = 19;
+  repeated Slot twists = 20;
+  repeated Slot wrenches = 21;
+  repeated Slot devices = 22;
+}
+
+// Which samples are active follows from the header, so a sample carries no flag of its own.
+message ControllerSample {
+  reserved 1;
+  double error = 2;
+  double output = 3;
+  sfixed64 satisfied = 4;
+  double sat_t = 5;
+  double measured = 6;
+  double setpoint = 7;
+}
+
+message MonitorSample {
+  reserved 1;
+  double value = 2;
+  sfixed64 satisfied = 3;
+  double sat_t = 4;
+}
+
+message DeviceSlot {
+  uint64 seq = 1;
+  bool success = 2;
+}
+
+message Trigger {
+  sfixed64 kind = 1;
+  sfixed64 idx = 2;
+  sfixed64 fsm_state = 3;
+  double t = 4;
+  sfixed64 wall_ns = 5;
+}
+
+message PoseSlot {
+  double px = 1;
+  double py = 2;
+  double pz = 3;
+  double qx = 4;
+  double qy = 5;
+  double qz = 6;
+  double qw = 7;
+}
+
+message TwistSlot {
+  double lx = 1;
+  double ly = 2;
+  double lz = 3;
+  double ax = 4;
+  double ay = 5;
+  double az = 6;
+}
+
+message WrenchSlot {
+  double fx = 1;
+  double fy = 2;
+  double fz = 3;
+  double tx = 4;
+  double ty = 5;
+  double tz = 6;
+}
+
+message RuntimeFrame {
+  double t = 1;
+  uint64 step = 2;
+  sfixed64 fsm_state = 3;
+  sfixed64 active_motion = 4;
+  sfixed64 last_event = 5;
+  double state_since_t = 6;
+  sfixed64 state_since_wall_ns = 7;
+  double event_t = 8;
+  sfixed64 event_wall_ns = 9;
+  sfixed64 wall_ns = 10;
+  sfixed64 period_ns = 11;
+  sfixed64 compute_ns = 12;
+  sfixed64 trigger_count = 17;
+  // The active motion's controller and monitor samples, in slot order.
+  repeated ControllerSample constraints = 18;
+  repeated MonitorSample monitors = 19;
+  // The non-zero quantity slots, by the index the header names, and their values.
+  repeated uint32 quantity_slots = 26;
+  repeated double quantities = 20;
+  // Every slot in slot order; the header names each index.
+  repeated DeviceSlot devices = 21;
+  // The trigger slots this tick filled.
+  repeated Trigger triggers = 22;
+  // Every slot in slot order; one the active motion does not write is empty.
+  repeated PoseSlot poses = 23;
+  repeated TwistSlot twists = 24;
+  repeated WrenchSlot wrenches = 25;
+}
+
+message Draw {
+  string quantity = 1;
+  repeated double values = 2;
+}
+
+message SamplingDraw {
+  uint64 seed = 1;
+  sfixed64 drawn_at_ns = 2;
+  repeated Draw draws = 3;
+}
+
+message FrameLogRecord {
+  oneof record {
+    FrameLogHeader header = 1;
+    RuntimeFrame frame = 2;
+    SamplingDraw sampling = 3;
+  }
+}

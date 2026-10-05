@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: MPL-2.0
+// FSM dispatch and the per-state step functions.
+
+import "motion.stg"
+import "../computation/controllers.stg"
+import "../computation/values.stg"
+import "../communication/ros.stg"
+
+// Coordination state, not algorithm data: the monitors record occurrences into it and the frame
+// sampler drains it, so no model value is produced or consumed here.
+
+event-buffer-struct() ::= <<
+struct motion_spec_event_buffer {
+    static constexpr int size =
+        motion_spec::telemetry::kNumTriggers > 0
+            ? static_cast\<int\>(motion_spec::telemetry::kNumTriggers)
+            : 1;
+    int count = 0;
+    int buffer[size] = {};
+    void record(int event_idx) {
+        if (event_idx \< 0) return;
+        buffer[count % size] = event_idx;
+        ++count;
+    \}
+};
+>>
+
+fsm-step-function(motion) ::= <<
+<if(motion.fsm_state || motion.is_when_gate_hold)>
+static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, algorithm_data &data, robot_io &robot<if(motion.step_needs_events)>, motion_spec_event_buffer &events<endif>) {
+    if (!<motion.id>_state_instance.active) {
+        <motion.id>_state_instance.active = true;
+        <motion.id>_state_instance.active_steps = 0;
+<if(motion.entry_snapshots)>        <motion.id>_state_instance.snapshot_taken = false;
+<endif><if(motion.active_elapsed_ids)>        <motion.id>_state_instance.motion_start_time = -1.0;
+<endif><if(motion.when_elapsed_ids)>        <motion.id>_state_instance.when_start_time = -1.0;
+<endif><motion.action_clients:{c | <ros-action-send(c)>}; separator="\n">
+<motion.when_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
+<motion.while_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
+<motion.until_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
+<motion.perturbations:{p | <perturbation-rearm(motion.id, p)>}; separator="\n">
+<motion.controllers:{controller |         <controller-reset(motion.id, controller, motion.entry_snapshots)>}; separator="\n">
+<motion.path_projections:{proj |         data.<proj.parameter> = 0.0;
+        data.<proj.along_speed> = 0.0;}; separator="\n">
+    }
+    update_<motion.id>(<motion.id>_state_instance, data, robot);
+    monitor_until_<motion.id>(<sig-args(motion.id, motion.until_needs_state, motion.until_needs_data, motion.until_needs_robot, motion.until_needs_events)>);
+    control_<motion.id>(<motion.id>_state_instance, data, robot<if(motion.control_needs_events)>, events<endif>);
+    apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_data, motion.apply_needs_robot)>);
+    ++<motion.id>_state_instance.active_steps;
+\}
+<endif>
+>>
+
+fsm-dispatch-case(motion, fsm) ::= <<
+<if(motion.fsm_state)>
+        case <fsm.cpp_namespace>::<motion.fsm_state>:
+<if(motion.has_when_gate)>
+            // Held inside this state until the WHEN monitor's edge; the gated motion steps from
+            // the tick after, when the event the edge fired is current for its snapshots.
+            if (<motion.id>_state_instance.active || <motion.id>_state_instance.when_gate_open) {
+                step_<motion.id>(<motion.id>_state_instance, data, robot<if(motion.step_needs_events)>, events<endif>);
+            } else {
+                monitor_when_<motion.id>(<sig-args(motion.id, motion.when_needs_state, motion.when_needs_data, motion.when_needs_robot, motion.when_needs_events)>);
+                step_<motion.when_gate_hold.id>(<motion.when_gate_hold.id>_state_instance, data, robot<if(motion.when_gate_hold.needs_events)>, events<endif>);
+            }
+<else>
+            step_<motion.id>(<motion.id>_state_instance, data, robot<if(motion.step_needs_events)>, events<endif>);
+<endif>
+<motion.fsm_when_gate_calls:{c |             monitor_when_<c.gid>(<sig-args(c.gid, c.needs_state, c.needs_data, c.needs_robot, c.needs_events)>);}; separator="\n">
+            break;
+<endif>
+>>
+
+// The frame log records which motion ran, not which coordinator state selected it. Mapping the
+// FSM's state to that motion is symbolic on both sides -- the enum constant by name, the motion by
+// its ir_gen index -- so neither side depends on the other's numbering.
+
+fsm-active-motion(motions, fsm) ::= <<
+    auto fsm_active_motion = [&](struct fsm_nbx *fsm) -> int {
+        switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-active-motion-case(motion, fsm)>}; separator="\n">
+        default: return -1;
+        \}
+    \};
+>>
+
+fsm-active-motion-case(motion, fsm) ::= <<
+<if(motion.fsm_state)>
+<if(motion.has_when_gate)>
+        case <fsm.cpp_namespace>::<motion.fsm_state>: return (<motion.id>_state_instance.active || <motion.id>_state_instance.when_gate_open) ? <motion.index> : <motion.when_gate_hold.index>;
+<else>
+        case <fsm.cpp_namespace>::<motion.fsm_state>: return <motion.index>;
+<endif>
+<endif>
+>>
+
+fsm-dispatch(motions, fsm) ::= <<
+    // The FSM's current state selects which motion runs; the motion's monitor advances the FSM. A
+    // fallback hold state additionally re-evaluates the gated motion's WHEN precondition each tick.
+    auto fsm_dispatch = [&](struct fsm_nbx *fsm) {
+        switch (fsm->currentStateIndex) {
+<motions:{motion | <fsm-dispatch-case(motion, fsm)>}; separator="\n">
+<fsm-dispatch-start(motions, fsm)>        default: break;
+        \}
+    \};
+>>
+
+// Before the first transition no motion has staged a command, so the joints would be driven to
+// the zero the array starts at. One motion holds them: every motion driving a chain writes the
+// same command array.
+fsm-dispatch-start(motions, fsm) ::= <<
+<if(first(motions).serial_chain_solvers)>        case <fsm.cpp_namespace>::<fsm.start_state>:
+            hold_gravity_<first(motions).id>(robot);
+            break;
+<endif>
+>>

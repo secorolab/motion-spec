@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: MPL-2.0
+// One generated header per motion.
+
+import "../coordination/motion.stg"
+import "../computation/monitors.stg"
+import "../computation/poses.stg"
+import "../computation/functions.stg"
+import "../computation/controllers.stg"
+import "../computation/values.stg"
+import "../resources/serial_chain.stg"
+
+motion_header(motion, functions, views, solvers) ::= <<
+/// Motion: <motion.name>
+<motion.description:{line | /// <line>}; separator="\n">
+#pragma once
+
+#include "controllers.hpp"
+#include "algorithm_data.hpp"
+
+struct <motion.id>_state {
+    bool active = false;
+    int active_steps = 0;
+<if(motion.active_elapsed_ids)>    double motion_start_time = -1.0;
+<endif>
+<if(motion.when_elapsed_ids)>    double when_start_time = -1.0;
+<endif>
+<if(motion.has_when_gate)>    bool when_gate_open = false;
+<endif>
+<if(motion.entry_snapshots)>    bool snapshot_taken = false;
+<endif>
+<motion.controllers:{controller | <controller-member(controller)>}; separator="\n">
+<motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.until_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
+<motion.perturbations:{p | <perturbation-member(p)>}; separator="\n">
+};
+
+inline void reset_<motion.id>(<motion.id>_state &state) {
+    state = <motion.id>_state{};
+}
+
+inline void update_<motion.id>(
+    [[maybe_unused]] <motion.id>_state &state,
+    [[maybe_unused]] algorithm_data &data,
+    robot_io &robot) {
+<if(motion.active_elapsed_ids)>    if (state.motion_start_time \< 0.0) {
+        state.motion_start_time = data.clock_time_s;
+    }
+<motion.active_elapsed_ids:{c |     data.<c> = data.clock_time_s - state.motion_start_time;
+}><endif>
+<motion.active_observation_ages:{a |     data.<a.coordinate> = data.clock_time_s - data.<a.observed_at>;
+}><if(motion.serial_chain_solvers)><chain-prepare-block(motion.serial_chain_solvers, solvers)><endif>
+<if(motion.entry_snapshots)>
+    if (!state.snapshot_taken) {
+<motion.entry_snapshots:{snap | <emit-snapshot(snap, functions, views)>}; separator="\n">
+        state.snapshot_taken = true;
+    }
+<endif>
+<motion.task_snapshots:{snap |     if (!data.<snap.captured_id>) {
+<emit-snapshot(snap, functions, views)>
+        data.<snap.captured_id> = true;
+    \}}; separator="\n">
+<motion.snapshots:{snap | <emit-triggered-snapshot(snap, functions, views)>}; separator="">
+<motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
+}
+
+inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_state, motion.when_needs_data, motion.when_needs_robot, motion.when_needs_events)>) {
+<if(motion.when_elapsed_ids)>    if (state.when_start_time \< 0.0) {
+        state.when_start_time = data.clock_time_s;
+    }
+<motion.when_elapsed_ids:{c |     data.<c> = data.clock_time_s - state.when_start_time;
+}><endif>
+<motion.when_observation_ages:{a |     data.<a.coordinate> = data.clock_time_s - data.<a.observed_at>;
+}><motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
+<schedule-block(motion.when_schedule, functions, views)>
+<if(motion.when_monitors)>
+<monitor-block(motion.when_monitors)>
+<endif>
+}
+
+inline void monitor_until_<motion.id>(<sig-params(motion.id, motion.until_needs_state, motion.until_needs_data, motion.until_needs_robot, motion.until_needs_events)>) {
+<schedule-block(motion.until_schedule, functions, views)>
+<if(motion.until_monitors)>
+<monitor-block(motion.until_monitors)>
+<endif>
+}
+
+inline void control_<motion.id>(
+    <motion.id>_state &state,
+    algorithm_data &data,
+    [[maybe_unused]] robot_io &robot<if(motion.control_needs_events)>,
+    motion_spec_event_buffer &events<endif>) {
+<schedule-block(motion.while_pre_schedule, functions, views)>
+<motion.pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
+<schedule-block(motion.while_schedule, functions, views)>
+<if(motion.while_monitors)>
+
+<monitor-block(motion.while_monitors)>
+<endif>
+<if(motion.serial_chain_solvers)>
+
+<chain-run-block(motion.serial_chain_solvers, solvers)>
+<endif>
+}
+
+inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, motion.apply_needs_data, motion.apply_needs_robot)>) {
+<if(motion.serial_chain_solvers)>
+<chain-stage-block(motion.serial_chain_solvers, solvers)>
+<endif>
+<command-forwarding(motion)>
+<if(motion.perturbations)>
+<perturbation-apply-block(motion, views)>
+<endif>
+}
+<if(motion.serial_chain_solvers)>
+
+// Holds this motion's chains where they stand, for the coordinator states that select no motion.
+inline void hold_gravity_<motion.id>(robot_io &robot) {
+<chain-gravity-block(motion.serial_chain_solvers, solvers)>
+}
+<endif>
+>>

@@ -5,7 +5,7 @@ Sim/real parity
 
 Where the mj_kdl (simulation) and robif2b (hardware) paths are allowed to differ, where they
 are not, and the external-wrench law. Established 2026-08-06. The authoritative
-background for the simulation torque path is mjkdl's
+background for the simulation torque path is mj_kdl_wrapper's
 ``docs/howto/torque_control.md`` — read it before touching any of this.
 
 The fork surface

@@ -71,7 +71,7 @@ What setup installs
      - Everything a model needs: ``thirdparty/rec``,
        ``thirdparty/motion-spec-dsl``, ``thirdparty/coord-dsl``,
        ``thirdparty/scene-dsl``, ``thirdparty/rdf-utils``,
-       ``orocos_kinematics_dynamics``, ``coord2b``, ``mjkdl`` and
+       ``orocos_kinematics_dynamics``, ``coord2b``, ``mj_kdl_wrapper`` and
        ``thirdparty/STSTv4``. Always installed.
    * - ``motion_spec.real.repos``
      - The device drivers a real platform needs: ``serial``,
@@ -86,7 +86,7 @@ The order is the install order. The Python packages come first and go
 *dependents first*: their own ``pyproject.toml`` files pin each other by git URL,
 so each install pulls its dependencies from git, and the local checkout installed
 after it replaces that copy. ``rdf-utils``, which all of them pin, is last. The
-CMake packages follow in link order — ``mjkdl`` links ``orocos_kdl``.
+CMake packages follow in link order — ``mj_kdl_wrapper`` links ``orocos_kdl``.
 
 A run goes through the same steps every time:
 
@@ -95,7 +95,7 @@ A run goes through the same steps every time:
    A checkout already at a manifest path is left exactly as it is.
 #. For each entry in order: what the checkout holds decides how it is built.
    A ``CMakeLists.txt`` is a CMake package, a ``pyproject.toml`` or ``setup.py``
-   a Python one, both (``mjkdl``) means CMake and then its bindings.
+   a Python one, both (``mj_kdl_wrapper``) means CMake and then its bindings.
    A checkout with neither at its root is searched one level down, as colcon
    does: ``orocos_kinematics_dynamics`` yields ``orocos_kdl`` and then
    ``python_orocos_kdl``, in ``package.xml`` dependency order.
@@ -103,7 +103,7 @@ A run goes through the same steps every time:
    a launcher in ``PREFIX/bin/stst``.
 #. The environment file.
 
-``motion-spec setup mjkdl`` narrows the build to the named entries, by
+``motion-spec setup mj_kdl_wrapper`` narrows the build to the named entries, by
 manifest path or by the last component of it; the import still brings in any
 listed repository that is missing.
 
@@ -181,8 +181,8 @@ then on it is yours to edit, and ``setup`` never rewrites it:
 
    {
        "names": {
-           "mjkdl": {
-               "cmake-args": ["-DMJKDL_OROCOS_KDL_FROM_PACKAGE=ON"]
+           "mj_kdl_wrapper": {
+               "cmake-args": ["-DMJ_KDL_OROCOS_KDL_FROM_PACKAGE=ON"]
            },
            "robif2b": {
                "cmake-args": ["-DENABLE_INSTALL_TARGETS=ON", "-DENABLE_KORTEX=ON"]
@@ -210,7 +210,7 @@ picking a location. Everything installs into ``WORKSPACE/install``.
    $ export MOTION_SPEC_WS="$PWD/ws"      # or pass --workspace to each command below
    $ motion-spec setup --dev              # motion_spec.repos, into $MOTION_SPEC_WS/install
    $ motion-spec setup --dev --real       # plus the device drivers
-   $ motion-spec setup mjkdl     # build only that entry
+   $ motion-spec setup mj_kdl_wrapper     # build only that entry
    $ motion-spec setup --force            # rebuild regardless, from a cleared CMake cache
    $ motion-spec setup --clean            # trash build/, install/, log/ and the env files
    $ motion-spec setup --build-type Debug
@@ -474,7 +474,7 @@ Dependencies
 ============
 
 These tables mirror what ``motion-spec health`` checks. What ``setup`` provides —
-rdf-utils, the DSL compilers, rec, STSTv4, coord2b, Orocos KDL, mjkdl and
+rdf-utils, the DSL compilers, rec, STSTv4, coord2b, Orocos KDL, mj_kdl_wrapper and
 the device drivers — is fetched from the URL its manifest pins, which ``health``
 also names as its source.
 
@@ -542,7 +542,7 @@ Generation and common runtime
 Orocos KDL must be the secorolab fork: generated controllers call the
 Vereshchagin solvers with fixed joints, which ``liborocos-kdl-dev`` does not
 carry. ``motion-spec setup`` installs that fork, along with ``coord2b`` and
-``mjkdl``; Eigen and toml++ come from apt.
+``mj_kdl_wrapper``; Eigen and toml++ come from apt.
 
 Target dependencies
 -------------------
@@ -554,7 +554,7 @@ Target dependencies
    * - Target
      - Dependencies
    * - MuJoCo
-     - `mjkdl <https://github.com/vamsikalagaturu/mjkdl>`_,
+     - `mj_kdl_wrapper <https://github.com/vamsikalagaturu/mj_kdl_wrapper>`_,
        at the version the generated ``CMakeLists.txt`` pins, with what its own
        build asks the system for: `GLFW <https://www.glfw.org/>`_ and OpenGL
        for the viewer, `EGL <https://www.khronos.org/egl>`_ for the headless

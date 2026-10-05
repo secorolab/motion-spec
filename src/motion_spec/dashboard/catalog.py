@@ -78,12 +78,12 @@ def build_toolchain(generation_dir: Path) -> dict:
     cache = generation_dir / "build" / "CMakeCache.txt"
     if not cache.is_file():
         return {}
-    found = re.search(r"^mjkdl_DIR:PATH=(.+)$", cache.read_text(), re.MULTILINE)
+    found = re.search(r"^mj_kdl_wrapper_DIR:PATH=(.+)$", cache.read_text(), re.MULTILINE)
     if not found:
         return {}
     config_dir = Path(found.group(1).strip())
     toolchain = {}
-    version_file = config_dir / "mjkdlConfigVersion.cmake"
+    version_file = config_dir / "mj_kdl_wrapperConfigVersion.cmake"
     if version_file.is_file():
         version = re.search(r'set\(PACKAGE_VERSION\s+"([^"]+)"', version_file.read_text())
         if version:

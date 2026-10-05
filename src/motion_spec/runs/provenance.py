@@ -486,7 +486,7 @@ def record_execution(
     generation = read_generation_dataset(generation_document)
     # A simulated run steps the wrapper's physics; a real one runs on the platform it names.
     if platform_facts.get("simulated"):
-        runtime = add_package(graph, "mjkdl")
+        runtime = add_package(graph, "mj_kdl_wrapper")
     else:
         runtime = uri(f"agent:runtime_{_slug(platform_facts.get('backend') or 'runtime')}")
         add_agent(graph, runtime, (PROV.SoftwareAgent,), platform_facts.get("backend") or "runtime")

@@ -210,16 +210,16 @@ class MissingAssets(RuntimeError):
 
 # The same prefixes the generated find_asset_path maps into the wrapper's cache.
 _VENDOR_MARKERS = (
-    ("src/mjkdl/assets/", "assets"),
+    ("src/mj_kdl_wrapper/assets/", "assets"),
     ("src/examples/assets/", "assets"),
 )
 
 
 def _cache_root() -> Path | None:
     if xdg := os.environ.get("XDG_CACHE_HOME"):
-        return Path(xdg) / "mjkdl"
+        return Path(xdg) / "mj_kdl_wrapper"
     if home := os.environ.get("HOME"):
-        return Path(home) / ".cache" / "mjkdl"
+        return Path(home) / ".cache" / "mj_kdl_wrapper"
     return None
 
 

@@ -102,7 +102,7 @@ constant with a stated ceiling makes that visible in review instead of emergent 
 Who paces the loop
 ------------------
 
-Exactly one component may pace a loop. Before mjkdl 0.3.2, ``mjkdl::step()`` also slept
+Exactly one component may pace a loop. Before mj_kdl_wrapper 0.3.2, ``mj_kdl::step()`` also slept
 until wall time caught up, so a windowed run had two pacers: MuJoCo's sleep consumed the period
 and the control loop found its deadline already gone on **6506 of 9967 cycles**, against 0
 headless. The measured period was 1.016 ms windowed versus 1.000 ms headless — the loop that won

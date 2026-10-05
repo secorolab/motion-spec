@@ -18,10 +18,11 @@ the ``.repos`` manifest it ships:
 
    $ mkdir -p ws/src
    $ git clone git@github.com:secorolab/motion-spec.git ws/src/motion-spec
+   $ vcs import ws/src < ws/src/motion-spec/motion_spec.repos
    $ python3 -m venv ws/.venv && source ws/.venv/bin/activate
    $ pip install -e ws/src/motion-spec            # the CLI, PyPI dependencies only
    $ motion-spec health                           # the one apt line for what is missing
-   $ motion-spec setup --workspace ws --dev       # everything motion_spec.repos lists
+   $ motion-spec setup --workspace ws --dev       # builds and installs what ws/src holds
    $ source ws/setup-motion-spec.bash             # or .zsh, whichever setup wrote
 
 ROS is optional, and the robot hardware drivers are installed only with

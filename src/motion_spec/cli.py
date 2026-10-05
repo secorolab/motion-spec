@@ -57,7 +57,7 @@ def _editable_here(root: Path) -> bool:
     import motion_spec
 
     running = Path(motion_spec.__file__).resolve()
-    return (root / "src" / "motion-spec").resolve() in running.parents
+    return (root / "src").resolve() in running.parents
 
 
 def _internal_failure(what: str, exc: Exception) -> click.ClickException:
@@ -695,7 +695,8 @@ def setup(
 ) -> None:
     """Install what the .repos manifests list, in their order.
 
-    Sources come in by `vcs import`, Python packages go into the active virtual environment
+    Sources are imported by hand first (`vcs import src < motion_spec.repos`); setup fetches
+    nothing. Python packages go into the active virtual environment
     (else WORKSPACE/.venv, made here), and CMake packages into WORKSPACE/install with the
     arguments in WORKSPACE/colcon.meta. REPOSITORIES narrows the run to those entries, by
     manifest path or by name.
@@ -708,7 +709,6 @@ def setup(
         build_jobs,
         discover_packages,
         ignore_thirdparty,
-        import_sources,
         install_package,
         install_prefix,
         install_stst,
@@ -716,6 +716,8 @@ def setup(
         manifest_in_force,
         missing_prerequisites,
         package_installed,
+        source_directory,
+        source_root,
         source_state,
         stst_installed,
         target_environment,
@@ -775,11 +777,11 @@ def setup(
         _say(
             "warn",
             f"--dev leaves motion-spec itself installed from {Path(motion_spec.__file__).parent}; "
-            f"clone it into {root / 'src' / 'motion-spec'} and reinstall it with `pip install -e` "
+            f"clone it under {root / 'src'} and reinstall it with `pip install -e` "
             "to edit it too",
         )
-    # Before the first import: a prerequisite setup cannot install itself is a failure the
-    # operator has to act on, and finding it after four checkouts and a build helps nobody.
+    # Before the first build: a prerequisite setup cannot install itself is a failure the
+    # operator has to act on, and finding it after a build helps nobody.
     _say("info", "checking prerequisites")
     packages, others = missing_prerequisites(selected, ros)
     if packages or others:
@@ -787,16 +789,20 @@ def setup(
             _say("error", requirement)
         if packages:
             _say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
-        raise _Reported("setup needs these before it can start; nothing was imported or built.")
+        raise _Reported("setup needs these before it can start; nothing was built.")
+    if not any((source_directory(root, r.path) / ".git").is_dir() for r in selected):
+        raise _Reported(
+            f"nothing imported under {source_root(root)}: run "
+            f"`vcs import {source_root(root)} < {files[0]}` first; nothing was built."
+        )
     skipped: list[str] = []
     try:
         python = target_environment(root, ros, dev, log)
         _say("info", f"python packages into {python}")
         if ros:
             ignore_thirdparty(root)
-        imported = import_sources(files, listed, root, log)
         for repository in selected:
-            state = source_state(repository, root, repository.path in imported)
+            state = source_state(repository, root)
             if not state.usable:
                 _say("warn", f"skipped {repository.name}: {state.path} {state.reason}")
                 skipped.append(repository.name)

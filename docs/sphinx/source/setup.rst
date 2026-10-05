@@ -4,17 +4,19 @@ Setup
 
 ``motion-spec`` itself is the one thing installed by hand. Everything it builds
 against — rdf-utils, the DSL compilers, rec, the kinematics fork, the simulator
-wrapper and STST — is listed in a ``.repos`` manifest, and ``motion-spec setup``
-imports and installs exactly that list.
+wrapper and STST — is listed in a ``.repos`` manifest at the root of the
+motion-spec repository. You import it with ``vcs``; ``motion-spec setup`` fetches
+nothing and installs exactly what the manifest lists.
 
 .. code-block:: console
 
    $ mkdir -p ws/src
    $ git clone git@github.com:secorolab/motion-spec.git ws/src/motion-spec
+   $ vcs import ws/src < ws/src/motion-spec/motion_spec.repos
    $ python3 -m venv ws/.venv && source ws/.venv/bin/activate
    $ pip install -e ws/src/motion-spec            # the CLI and its PyPI dependencies
    $ motion-spec health                           # the one apt line for what is missing
-   $ motion-spec setup --workspace ws --dev       # everything motion_spec.repos lists
+   $ motion-spec setup --workspace ws --dev       # builds and installs what ws/src holds
    $ source ws/setup-motion-spec.bash             # or .zsh
 
 ``pip install`` of motion-spec pulls in only what PyPI has. The packages that are
@@ -24,8 +26,8 @@ manifest, into the same environment.
 
 :ref:`health <health-checks>` gathers everything apt provides into a single
 ``sudo apt-get install -y`` line — that line is the only step needing ``sudo``.
-Run it before ``setup``, which needs ``vcs`` (``python3-vcstool``), ``cmake``, a
-C++ compiler, a JDK and Ant to build what it installs.
+Run it before ``setup``, which needs ``cmake``, a C++ compiler, a JDK and Ant to
+build what it installs; importing the sources needs ``vcs`` (``python3-vcstool``).
 
 The Python environment
 ======================
@@ -91,8 +93,8 @@ CMake packages follow in link order — ``mj_kdl_wrapper`` links ``orocos_kdl``.
 A run goes through the same steps every time:
 
 #. The Python environment, as above.
-#. ``vcs import --skip-existing`` of each manifest into the source directory.
-   A checkout already at a manifest path is left exactly as it is.
+#. For each entry in order, the checkout at its manifest path, as it stands; a
+   missing one is skipped with a warning to import it.
 #. For each entry in order: what the checkout holds decides how it is built.
    A ``CMakeLists.txt`` is a CMake package, a ``pyproject.toml`` or ``setup.py``
    a Python one, both (``mj_kdl_wrapper``) means CMake and then its bindings.
@@ -104,8 +106,7 @@ A run goes through the same steps every time:
 #. The environment file.
 
 ``motion-spec setup mj_kdl_wrapper`` narrows the build to the named entries, by
-manifest path or by the last component of it; the import still brings in any
-listed repository that is missing.
+manifest path or by the last component of it.
 
 Normal and ``--dev``
 --------------------
@@ -125,8 +126,8 @@ the Python packages are installed:
      - installed editable (``pip install -e``)
 
 A checkout you already have is used when it sits at its manifest path — the
-Python ones under ``src/thirdparty/`` — and a checkout anywhere else is not seen,
-so ``vcs import`` clones a fresh copy there. motion-spec itself is in no
+Python ones under ``src/thirdparty/`` — and a checkout anywhere else is not seen.
+motion-spec itself is in no
 manifest: it is the code running, cloned by hand into ``src/motion-spec``.
 
 .. list-table::
@@ -224,12 +225,6 @@ its environment files to the desktop trash rather than deleting them, the same
 way the dashboard clears a generation; sources and generations stay. This needs
 ``gio``; without it ``--clean`` says so and removes nothing.
 
-The manifests import by hand too, into the same place ``--dev`` uses:
-
-.. code-block:: console
-
-   $ vcs import ws/src < ws/src/motion-spec/src/motion_spec/motion_spec.repos
-
 How many compilers at once
 --------------------------
 
@@ -269,7 +264,7 @@ Python packages and STST are installed the same way either way; only the CMake
 build changes.
 
 ``--ros`` and ``--no-ros`` apply to one run; ``[ros] workspace`` is what keeps
-the choice. Before anything is imported, ``setup`` checks that a
+the choice. Before anything is built, ``setup`` checks that a
 distribution is resolvable, that ``colcon`` is on ``PATH`` and that the
 environment can see the distribution's Python packages.
 
@@ -386,7 +381,7 @@ generation it was about:
 
    * - Command
      - Console kept in
-   * - ``setup`` (vcs, cmake, colcon, ant, pip)
+   * - ``setup`` (cmake, colcon, ant, pip)
      - ``$MOTION_SPEC_WS/.motion-spec/logs/<stamp>-setup.log``
    * - ``gen`` (the DSL)
      - ``<generation>/logs/gen.log``
@@ -475,7 +470,7 @@ Dependencies
 
 These tables mirror what ``motion-spec health`` checks. What ``setup`` provides —
 rdf-utils, the DSL compilers, rec, STSTv4, coord2b, Orocos KDL, mj_kdl_wrapper and
-the device drivers — is fetched from the URL its manifest pins, which ``health``
+the device drivers — is imported from the URL its manifest pins, which ``health``
 also names as its source.
 
 Python profiles

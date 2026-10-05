@@ -1,7 +1,7 @@
-# What `motion-spec setup` installs, in the order it installs it. vcstool's format, so the
-# same file also imports by hand:
+# What `motion-spec setup` installs, in the order it installs it. Import it first; setup
+# fetches nothing:
 #
-#   vcs import ws/src < .../motion_spec/motion_spec.repos
+#   vcs import ws/src < ws/src/motion-spec/motion_spec.repos
 #
 # thirdparty/ holds what colcon must not build -- the Python packages and the ant-built
 # STSTv4 -- and setup marks it with a COLCON_IGNORE in a ROS workspace. Everything else is

@@ -4,9 +4,9 @@
 
 """Install what the .repos manifests list, in their order, with the workspace's colcon.meta.
 
-`vcs import` fetches what the workspace has no checkout of; a checkout already there is built
-as it stands and never moved. Python packages go into one environment, CMake ones into
-install/, and src/thirdparty/ holds what colcon must not build.
+The sources are the operator's: `vcs import` the manifests into src/ first, and each checkout
+is built as it stands. Python packages go into one environment, CMake ones into install/, and
+src/thirdparty/ holds what colcon must not build.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ from urllib.request import urlretrieve
 
 from motion_spec.utils import tee, total_memory, trash, usable_cores
 
+# An editable install has no shipped copy of the manifests: they are at the clone's root.
+CHECKOUT = Path(__file__).resolve().parents[2]
 MANIFEST = "motion_spec.repos"
 REAL_MANIFEST = "motion_spec.real.repos"
 COLCON_META = "colcon.meta"
@@ -33,7 +35,7 @@ JARS = {
     ),
 }
 WORKSPACE_VARIABLE = "MOTION_SPEC_WS"
-# The layout `vcs import` produces, so either route gives the same workspace.
+# Where `vcs import src < motion_spec.repos` puts the checkouts.
 SOURCE_DIRECTORY = "src"
 BUILD_DIRECTORY = "build"
 INSTALL_DIRECTORY = "install"
@@ -94,8 +96,9 @@ def read_manifest(path: Path) -> list[Repository]:
 
 
 def manifest_files(real: bool = False) -> list[Path]:
-    """The manifests a setup reads: the shipped one, then the real layer."""
-    return [shipped(MANIFEST), *([shipped(REAL_MANIFEST)] if real else [])]
+    """The manifests a setup reads: the base one, then the real layer."""
+    names = [MANIFEST, *([REAL_MANIFEST] if real else [])]
+    return [shipped(name) if shipped(name).exists() else CHECKOUT / name for name in names]
 
 
 def manifest_in_force(files: list[Path]) -> list[Repository]:
@@ -359,8 +362,6 @@ def missing_prerequisites(
         else []
     )
     others = []
-    if repositories and shutil.which("vcs") is None:
-        others.append("vcs: apt install python3-vcstool")
     if ros:
         # The environment file is written last, so an unresolved distro would surface only
         # after everything is built -- and the build would have used whatever was sourced.
@@ -530,33 +531,16 @@ def _pinned_commit(repository: Path, ref: str) -> str | None:
     return None
 
 
-def import_sources(
-    files: list[Path], listed: list[Repository], root: Path, log: Path | None = None
-) -> set[str]:
-    """`vcs import --skip-existing` each manifest in FILES into ROOT/src.
-
-    A checkout already there is the operator's, and vcs leaves it as it is. Returns the paths
-    that had none before, which are the ones setup cloned.
-    """
-    if shutil.which("vcs") is None:
-        raise RuntimeError("required command missing: vcs (apt install python3-vcstool)")
-    missing = {r.path for r in listed if not (source_directory(root, r.path) / ".git").is_dir()}
-    target = source_root(root)
-    target.mkdir(parents=True, exist_ok=True)
-    for path in files:
-        tee(["vcs", "import", "--skip-existing", "--input", str(path), str(target)], log=log)
-    return missing
-
-
-def source_state(pinned: Repository, root: Path, imported: bool = False) -> SourceState:
+def source_state(pinned: Repository, root: Path) -> SourceState:
     """What PINNED's checkout holds now, read-only: the commit to record and any drift."""
     repository = source_directory(root, pinned.path)
     if not (repository / ".git").is_dir():
-        reason = "is not a git checkout" if repository.exists() else "was not imported"
+        reason = (
+            "is not a git checkout"
+            if repository.exists()
+            else "is missing; vcs import the manifests into src/ first"
+        )
         return SourceState(repository, False, reason)
-    if imported:
-        # The commit, not the branch it was named by: the marker is compared against HEAD.
-        return SourceState(repository, True, ref=_git(repository, "rev-parse", "HEAD") or "")
     commit = _pinned_commit(repository, pinned.version)
     head = _git(repository, "rev-parse", "HEAD")
     if head is None:

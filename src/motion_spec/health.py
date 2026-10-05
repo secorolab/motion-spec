@@ -416,15 +416,9 @@ DETAILS: dict[str, dict[str, str]] = {
 
 def _manifest_sources() -> None:
     """Fill in where each dependency `setup` provides comes from, as the manifests pin it."""
-    from motion_spec.setup import (
-        REAL_MANIFEST,
-        manifest_files,
-        manifest_in_force,
-        read_manifest,
-        shipped,
-    )
+    from motion_spec.setup import manifest_files, manifest_in_force, read_manifest
 
-    real = {r.name for r in read_manifest(shipped(REAL_MANIFEST))}
+    real = {r.name for r in read_manifest(manifest_files(real=True)[-1])}
     for repository in manifest_in_force(manifest_files(real=True)):
         dependency = _PROVIDED_AS.get(repository.name, repository.name.replace("-", "_"))
         SETUP_PROVIDES[dependency] = repository.name

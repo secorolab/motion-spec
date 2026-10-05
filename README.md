@@ -18,19 +18,32 @@ into RDF.
 ```bash
 mkdir -p ~/ws/src && cd ~/ws
 git clone https://github.com/secorolab/motion-spec.git src/motion-spec
+vcs import src < src/motion-spec/motion_spec.repos
+vcs import src < src/motion-spec/motion_spec.real.repos             # with --real only
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e src/motion-spec                                   # the CLI, PyPI dependencies only
-motion-spec setup --workspace . --dev                            # everything motion_spec.repos lists
+motion-spec setup --workspace . --dev                            # builds and installs what src/ holds
 source setup-motion-spec.bash                                    # .zsh under zsh
 motion-spec health
 motion-spec examples                                             # models to run, in src/ms-examples
 ```
 
+With ROS, `--ros` builds the CMake packages with colcon, and the environment file sources the
+distribution and the overlay; the venv has to see the distribution's Python packages:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+python3 -m venv --system-site-packages .venv && source .venv/bin/activate
+pip install -e src/motion-spec
+motion-spec setup --workspace . --dev --ros
+source setup-motion-spec.bash
+```
+
 What motion-spec builds against is listed in one place: the vcstool manifest
-`src/motion_spec/motion_spec.repos` — rdf-utils, the DSL compilers and rec under `thirdparty/`,
+`motion_spec.repos` — rdf-utils, the DSL compilers and rec under `thirdparty/`,
 then Orocos KDL, coord2b, mj_kdl_wrapper and STSTv4 — with the device drivers in
-`motion_spec.real.repos`. `setup` runs `vcs import --skip-existing` on it, pip-installs the
-Python packages into the active environment (or a `.venv` it creates), builds the CMake ones
+`motion_spec.real.repos`. `setup` fetches nothing: it pip-installs the Python packages the
+imported checkouts hold into the active environment (or a `.venv` it creates), builds the CMake ones
 into `install/` with the arguments in the workspace's `colcon.meta`, and writes the environment
 file that is the one step between a new shell and a working workspace.
 
@@ -45,15 +58,6 @@ A checkout already at a manifest path is never moved: it is built as it stands, 
 when it is not on the pinned commit, and rebuilt on every run while it has uncommitted changes.
 `--clean` removes builds, installed files and markers, never a source tree. Details:
 **[Setup](https://secorolab.github.io/motion-spec/setup.html)**.
-
-To fetch the sources yourself, import the manifests before `setup`; it then builds what is in
-`src/` and fetches nothing already there:
-
-```bash
-vcs import src < src/motion-spec/src/motion_spec/motion_spec.repos
-vcs import src < src/motion-spec/src/motion_spec/motion_spec.real.repos   # with --real only
-motion-spec setup --workspace . --dev
-```
 
 ## Requirements
 

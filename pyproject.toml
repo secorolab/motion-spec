@@ -50,6 +50,11 @@ motion-spec = "motion_spec.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/motion_spec"]
 
+# The manifests live at the repository root for `vcs import`; setup and health read them.
+[tool.hatch.build.targets.wheel.force-include]
+"motion_spec.repos" = "motion_spec/motion_spec.repos"
+"motion_spec.real.repos" = "motion_spec/motion_spec.real.repos"
+
 [tool.pytest.ini_options]
 # rdflib's Dataset.parse() internally reads its deprecated default_context
 # property. pytest forces "always" on warnings, so the package-level filter in

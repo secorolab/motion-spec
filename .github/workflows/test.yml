@@ -29,12 +29,12 @@ jobs:
       - name: Install the manifest's Python packages
         run: |
           mkdir -p "$RUNNER_TEMP/ws/src"
-          vcs import --input src/motion_spec/motion_spec.repos "$RUNNER_TEMP/ws/src"
+          vcs import --input motion_spec.repos "$RUNNER_TEMP/ws/src"
           python - <<'EOF'
           import os, subprocess, sys
-          from motion_spec.setup import MANIFEST, STST_REPOSITORY, is_thirdparty, read_manifest, shipped
+          from motion_spec.setup import STST_REPOSITORY, is_thirdparty, manifest_files, read_manifest
           src = os.path.join(os.environ["RUNNER_TEMP"], "ws", "src")
-          for repository in read_manifest(shipped(MANIFEST)):
+          for repository in read_manifest(manifest_files()[0]):
               if is_thirdparty(repository) and repository.path != STST_REPOSITORY:
                   subprocess.run([sys.executable, "-m", "pip", "install", os.path.join(src, repository.path)], check=True)
           EOF

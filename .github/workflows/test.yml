@@ -11,9 +11,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      MOTION_SPEC_GEN: ${{ github.workspace }}/../generations
+      MOTION_SPEC_GEN: ${{ github.workspace }}/generations
     steps:
+      # Where the manifest's layout puts it, so the test fixtures find thirdparty/motion-spec-dsl.
       - uses: actions/checkout@v4
+        with:
+          path: thirdparty/motion-spec
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -22,26 +25,20 @@ jobs:
       - name: Install motion_spec
         run: |
           sudo apt-get update -q && sudo apt-get install -y vcstool protobuf-compiler
-          pip install -e ".[test]"
+          pip install -e "thirdparty/motion-spec[test]"
 
       # The Python packages motion_spec.repos lists, in its order: none are on PyPI, and most
       # test modules import one, so leaving them out fails collection rather than a test.
-      - name: Install the manifest's Python packages
+      - name: Import the manifest and install its Python packages
         run: |
-          mkdir -p "$RUNNER_TEMP/ws/src"
-          vcs import --input motion_spec.repos "$RUNNER_TEMP/ws/src"
+          vcs import --input thirdparty/motion-spec/motion_spec.repos .
           python - <<'EOF'
-          import os, subprocess, sys
+          import subprocess, sys
           from motion_spec.setup import STST_REPOSITORY, is_thirdparty, manifest_files, read_manifest
-          src = os.path.join(os.environ["RUNNER_TEMP"], "ws", "src")
           for repository in read_manifest(manifest_files()[0]):
               if is_thirdparty(repository) and repository.path != STST_REPOSITORY:
-                  subprocess.run([sys.executable, "-m", "pip", "install", os.path.join(src, repository.path)], check=True)
+                  subprocess.run([sys.executable, "-m", "pip", "install", repository.path], check=True)
           EOF
 
-      # The test fixtures import the DSL's example scenes from a sibling checkout.
-      - name: Clone motion-spec-dsl next to this checkout
-        run: git clone --depth 1 --branch v0.1.0 https://github.com/secorolab/motion-spec-dsl.git ../motion-spec-dsl
-
       - name: Run tests
-        run: pytest -q tests
+        run: pytest -q thirdparty/motion-spec/tests

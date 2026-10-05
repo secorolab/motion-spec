@@ -46,6 +46,15 @@ when it is not on the pinned commit, and rebuilt on every run while it has uncom
 `--clean` removes builds, installed files and markers, never a source tree. Details:
 **[Setup](https://secorolab.github.io/motion-spec/setup.html)**.
 
+To fetch the sources yourself, import the manifests before `setup`; it then builds what is in
+`src/` and fetches nothing already there:
+
+```bash
+vcs import src < src/motion-spec/src/motion_spec/motion_spec.repos
+vcs import src < src/motion-spec/src/motion_spec/motion_spec.real.repos   # with --real only
+motion-spec setup --workspace . --dev
+```
+
 ## Requirements
 
 What every model needs, whichever target it drives:

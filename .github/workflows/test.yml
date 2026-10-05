@@ -21,7 +21,7 @@ jobs:
       # PyPI's vcstool imports pkg_resources, which current setuptools no longer ships.
       - name: Install motion_spec
         run: |
-          sudo apt-get update -q && sudo apt-get install -y vcstool
+          sudo apt-get update -q && sudo apt-get install -y vcstool protobuf-compiler
           pip install -e ".[test]"
 
       # The Python packages motion_spec.repos lists, in its order: none are on PyPI, and most

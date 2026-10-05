@@ -140,19 +140,19 @@ The normal motions are:
 
 ## 5. Trace one motion end to end
 
-`pick-above` captures the current TCP pose and the cube's initial x/y position,
-then constructs a Cartesian goal:
+`pick-above` captures the current TCP pose and the cube's x/y position each time
+the state is entered, then constructs a Cartesian goal:
 
 ```robmot
-pose start-pose = snapshot of <shared.world.pose-ee-base>,
+pose start-pose = snapshot of <shared.world.pose-ee-base> on event <fsm.E_PICK_ABOVE_ENTERED>,
 linear-velocity min-approach-speed = 0.005 m/s,
 velocity-profile approach-profile = profile {
     max-velocity: 0.08 m/s,
     max-acceleration: 0.05 m/s^2,
     shape: trapezoidal
 },
-length start-cube-x = snapshot of <shared.world.pose-cube-base>.position.x,
-length start-cube-y = snapshot of <shared.world.pose-cube-base>.position.y,
+length start-cube-x = snapshot of <shared.world.pose-cube-base>.position.x on event <fsm.E_PICK_ABOVE_ENTERED>,
+length start-cube-y = snapshot of <shared.world.pose-cube-base>.position.y on event <fsm.E_PICK_ABOVE_ENTERED>,
 path approach-path = lerp {
     start: <spec.start-pose>,
     goal: <spec.goal-pose>
@@ -186,7 +186,7 @@ until all {
 
 `handler-pick-above` gives those declarative constraints runtime behavior:
 
-- the monitor on `<pick-above.until>` emits `E_PICK_READY` once the TCP is above the cube;
+- the monitor on `<pick-above.until>` emits `E_PICK_ABOVE_READY` once the TCP is above the cube;
 - three PID controllers regulate the tangential, lateral, and orientation constraints;
 - the handler reuses the ACHD arm solver from `handler-home`.
 
@@ -227,7 +227,8 @@ motion-spec gen ir \
   -o generation/pick-place-ir
 ```
 
-Open `generation/pick-place-ir/generated/model/ir.json`. Search for
+Open `generated/model/ir.json` under the generation `gen` printed
+(`generation/pick-place-ir/pick_and_place/<timestamp>/`). Search for
 `pick-above`, `ctrl-pick-above-follow-lat`, `E_PICK_ABOVE_READY`, and
 `gripper-solver` to verify that the motion, handler, event, and solver
 all reached IR.
@@ -260,8 +261,8 @@ run.
 Inspect the record:
 
 ```bash
-motion-spec replay generation/pick-place-run/runs/tutorial
-motion-spec replay generation/pick-place-run/runs/tutorial --verify
+motion-spec replay generation/pick-place-run/pick_and_place/<timestamp>/runs/tutorial
+motion-spec replay generation/pick-place-run/pick_and_place/<timestamp>/runs/tutorial --verify
 ```
 
 The run owns logs, runtime RDF, REC provenance, and its manifest. It references

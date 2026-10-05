@@ -116,8 +116,9 @@ hardware alike, and the real-time factor scales its period:
    effective period = nominal period / rtf     (rtf > 0)
    uncapped                                    (rtf == 0)
 
-The factor comes from ``mj_env.viewer.realtime_factor`` in simulation, so the viewer's ``,`` and
-``.`` speed keys keep working mid-run, and is the literal ``1.0`` on hardware. This is a named
+The factor comes from ``mj_env.viewer.realtime_factor`` in a simulation with a window, so the
+viewer's ``,`` and ``.`` speed keys keep working mid-run; headless, it is the ``--rtf`` value
+scaled by the dashboard speed; on hardware it is the literal ``1.0``. This is a named
 backend dispatch (``loop-rtf-source``), not an inline conditional, for the same reason
 ``clock-time-source`` is.
 
@@ -134,7 +135,7 @@ headless ``--rtf x``       ``x``                                      scales wit
 =========================  =========================================  ==========================
 
 Uncapped headless is safe because the simulation clock, not the wall clock, drives
-``dt_measured_s``: ``clock-time-source-mj_kdl`` reads ``robot->data->time``. A run that finishes
+``dt_measured_s``: ``clock-time-source`` in ``backend/mj_kdl/robot.stg`` reads ``mj_env.data->time``. A run that finishes
 ten times sooner produces the identical frame count and the identical final state — only wall time
 changes. On hardware the clock is monotonic wall time and there is nothing to uncap.
 
@@ -174,7 +175,7 @@ in its header:
 .. code-block:: console
 
    $ motion-spec run <model>.robmot -o <generations>
-   $ python -c "from motion_spec.runs.replay import summarize; print(summarize('<log>.pb'))"
+   $ motion-spec replay <generation>/runs/<run-id>
 
 The summary reports mean and maximum period alongside mean and maximum compute time. Compare the
 two: if compute is a small fraction of the period and the period still overshoots, the cause is

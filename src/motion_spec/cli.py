@@ -278,22 +278,16 @@ class MotionSpecGroup(click.Group):
                 (
                     "Generate and build a model",
                     (
-                        ("motion-spec gen model.robmot -o generation/demo",),
-                        ("motion-spec build generation/demo",),
+                        ("motion-spec gen model.robmot",),
+                        ('motion-spec build "$MOTION_SPEC_GEN/latest"',),
                     ),
                 ),
-                (
-                    "Generate only the IR",
-                    (("motion-spec gen ir model.robmot -o generation/demo-ir",),),
-                ),
+                ("Generate only the IR", (("motion-spec gen ir model.robmot -o scratch",),)),
                 (
                     "Generate, build, run, and inspect",
                     (
-                        (
-                            "motion-spec run model.robmot -o generation/demo \\",
-                            "  --run-id run-1 --headless",
-                        ),
-                        ("motion-spec replay generation/demo/runs/run-1",),
+                        ("motion-spec run model.robmot --run-id run-1 --headless",),
+                        ('motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"',),
                     ),
                 ),
             )
@@ -486,7 +480,7 @@ def _environment(
 @click.option(
     "--logs",
     type=click.Path(file_okay=False, path_type=Path),
-    help=f"Generation root to browse. Default: ${GENERATION_VARIABLE}, else the working directory.",
+    help=f"Generation root to browse. Default: ${GENERATION_VARIABLE}.",
 )
 @click.option(
     "--sources",
@@ -928,7 +922,7 @@ def examples(into: Path | None) -> None:
     if source is None:
         raise click.ClickException(
             "no example models in this motion_spec_dsl: it predates the ones that ship with "
-            "the package; reinstall it with `motion-spec setup --force motion_spec_dsl`"
+            "the package; reinstall it with `motion-spec setup --force motion-spec-dsl`"
         )
     if into is None:
         try:

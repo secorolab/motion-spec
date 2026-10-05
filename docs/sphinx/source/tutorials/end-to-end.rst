@@ -9,19 +9,18 @@ and ownership boundary of every command visible before using the combined
 Choose the model and generation
 ===============================
 
-Run from the workspace root and define two paths used throughout this page.
-``motion-spec examples`` copies the models that ship with motion-spec-dsl into
-``src/ms-examples``, which is where ``MODEL_PATH`` points:
+Run from the workspace root. ``motion-spec examples`` copies the models that ship
+with motion-spec-dsl into ``src/ms-examples``, which is where ``MODEL_PATH``
+points:
 
 .. code-block:: console
 
    $ motion-spec examples
    $ MODEL_PATH=src/ms-examples/01_pick_and_place/pick_and_place.robmot
-   $ GENERATION_DIR=generation/pick-place
 
-``MODEL_PATH`` is authored input. ``GENERATION_DIR`` will own the generated model,
-controller, contracts, provenance, build, and every run made from that build. It
-must not already exist.
+``MODEL_PATH`` is authored input. The generation directory, made in the next
+step, will own the generated model, controller, contracts, provenance, build, and
+every run made from that build.
 
 Check the required toolchain
 ============================
@@ -38,24 +37,26 @@ Resolve missing ``dsl`` or ``codegen`` checks before generation. Resolve MuJoCo
 
 .. code-block:: console
 
-   $ motion-spec gen "$MODEL_PATH" -o "$GENERATION_DIR"
+   $ GENERATION_DIR=$(motion-spec gen "$MODEL_PATH" -o generation/pick-place)
 
 ``gen`` parses the ``.robmot`` model and its scene/FSM imports, emits JSON-LD,
 lowers the RDF dataset to motion-spec IR, and generates C++ plus runtime contracts.
-It does not compile or execute the controller.
+It does not compile or execute the controller. ``-o`` is a base directory: the
+generation lands at ``generation/pick-place/pick_and_place/<timestamp>``, and
+``gen`` prints that path on stdout.
 
 The important outputs are:
 
 .. code-block:: text
 
-   generation/pick-place/
+   generation/pick-place/pick_and_place/<timestamp>/
      generated/source/       authored input snapshot
      generated/model/        JSON-LD, FSM artifacts, and ir.json
      generated/controller/   generated C++ and CMake project
      generated/contract/     schema and frame-log contract
      generated/provenance/   generation and derivation provenance
 
-To stop after RDF and IR, use a different generation directory:
+To stop after RDF and IR, use a different base directory:
 
 .. code-block:: console
 
@@ -106,25 +107,21 @@ To run that same build again, without naming it:
 
    $ motion-spec rerun
 
-``gen`` and ``run`` point a ``latest`` symlink at what they make -- one beside
-the generation and one over all the models -- the way a colcon workspace carries
-``log/latest``:
+``gen`` and ``run`` point one ``latest`` symlink, under ``$MOTION_SPEC_GEN``, at
+the generation they make, the way a colcon workspace carries ``log/latest``:
 
 .. code-block:: text
 
-   $MOTION_SPEC_GEN/latest                -> base_rotation/20260815T155542360467Z
-   $MOTION_SPEC_GEN/base_rotation/latest  -> 20260815T155542360467Z
+   $MOTION_SPEC_GEN/latest  -> base_rotation/20260815T155542360467Z
 
-``rerun`` follows the first of those: it is ``run`` for the generation already
-built, under a run id of its own, taking the same options. It generates and
-builds nothing, so it is the command to reach for while tuning a deployment
-config or a scene the controller reads at startup.
+``rerun`` follows it: it is ``run`` for the generation already built, under a
+run id of its own, taking the same options. It generates and builds nothing, so
+it is the command to reach for while tuning a deployment config or a scene the
+controller reads at startup.
 
-The links are ordinary paths, so they work with every other command too --
-``motion-spec run "$MOTION_SPEC_GEN/base_rotation/latest"`` goes back to one
-model after another has been generated since. Name a ``GENERATION`` to repeat
-that one instead. A generation that has never been run has nothing to repeat, so
-it is launched with no arguments.
+The link is an ordinary path, so it works with every other command too. To go
+back to one model after another has been generated since, name its generation
+directory instead.
 
 4. Inspect the run
 ==================
@@ -134,8 +131,9 @@ it is launched with no arguments.
    $ motion-spec replay "$GENERATION_DIR/runs/run-1"
    $ motion-spec replay "$GENERATION_DIR/runs/run-1" --verify
 
-The first command prints a summary. The second verifies the manifest and the
-frame-log header against the generation contract.
+The first command prints a summary. The second checks the files the manifest
+names, the log's schema hash against the generation's frame layout, and its frame
+count against what the writer reported.
 
 Combined shortcut
 =================

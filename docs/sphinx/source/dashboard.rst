@@ -80,8 +80,8 @@ Verification
 Run the dashboard Python tests with the workspace environment and
 ``PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/test_dashboard_*.py``. The optional browser
 integration test requires Playwright and ``MOTION_SPEC_BROWSER_EXECUTABLE`` pointing to a
-Chromium executable. Give pytest a fresh ``--basetemp`` directory under
-``/home/batsy/work/ms/generations/``; the browser test moves and restores only its own fixtures.
+Chromium executable. Give pytest a fresh ``--basetemp`` directory of your own; the browser test
+moves and restores only its own fixtures.
 
 Driving a simulated run
 -----------------------

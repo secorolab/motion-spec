@@ -55,7 +55,7 @@ Force constraints use `outside` to detect either sign:
 
 ```robmot
 force-x: <shared.world.ext-force>.force.x
-         outside <shared.spec.neg-force-threshold>
+         outside (-<shared.spec.force-threshold>)
          and <shared.spec.force-threshold>
 ```
 
@@ -85,6 +85,7 @@ no defaults; zero stiffness in this example explicitly disables the spring term.
 ## 5. Inspect the record
 
 ```bash
-motion-spec replay /tmp/admittance-arc/runs/tutorial --verify
-motion-spec replay /tmp/admittance-arc/runs/tutorial --jsonl
+RUN_DIR=/tmp/admittance-arc/arc_tracing_with_admittance/<timestamp>/runs/tutorial
+motion-spec replay "$RUN_DIR" --verify
+motion-spec replay "$RUN_DIR" --jsonl
 ```

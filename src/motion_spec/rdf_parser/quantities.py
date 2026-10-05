@@ -1308,7 +1308,8 @@ def _reject_sampled_placement(model, frame, wrt) -> None:
                     raise ConstraintViolation(
                         "geometry",
                         f"'{pose.id}' places '{frame}' by the drawn coordinate '{node}': a "
-                        f"placement cannot be drawn, sample a frame on the body instead",
+                        f"placement read as numbers cannot be drawn; only a free scene object's "
+                        f"position can, or a frame on the body",
                     )
 
 

@@ -28,8 +28,10 @@ Generations and runs
 
 A generation is immutable input plus reusable generated and compiled artifacts.
 It receives its own directory because separate generations may differ even when
-they came from the same model. Without ``-o``, ``gen`` and ``run`` create a unique
-directory under ``generation/``.
+they came from the same model. A new generation goes to
+``<base>/<model stem or --name>/<timestamp>/``, where the base is ``-o`` or
+``$MOTION_SPEC_GEN``; with neither, ``gen`` and ``run`` stop. ``gen`` prints the
+generation's path on stdout, and ``$MOTION_SPEC_GEN/latest`` points at the newest.
 
 A generation may be executed many times. Each execution belongs under that
 generation's ``runs/<run-id>/`` directory. Runs contain runtime data only; they
@@ -38,7 +40,7 @@ instead of copying them.
 
 .. code-block:: text
 
-   generation/<generation-id>/
+   <base>/<model>/<timestamp>/
      generated/
        source/       authored DSL snapshot
        model/        application JSON-LD, imported graphs, scene and FSM graphs, motion IR
@@ -48,7 +50,7 @@ instead of copying them.
          generation.ld.json  one document, one named graph per tool
          derived.ld.json     what IR generation derived, and from what
      build/           reusable compiled controller
-     logs/            gen.log and build.log: what the DSL, stst and cmake said
+     logs/            console.log: what the DSL, stst and cmake said
      runs/<run-id>/
        logs/          frame_log.pb (zstd-packed to frame_log.pb.zst once archived),
                       console.log and health information
@@ -90,9 +92,10 @@ High-level commands
      - Compose a scene in MuJoCo and view it, without generating or building anything
 
 Use ``--prefix`` on ``build`` or ``run`` to add CMake package prefixes. It is
-repeatable for ``build``. ``-o``, ``--prefix``, and ``-j`` configure generation
-and build, so they require a ``.robmot`` model; ``--headless``, ``--steps``, and
-``--run-id`` apply to both forms, and ``--steps`` requires ``--headless``.
+repeatable for ``build``. ``-o``, ``--name``, ``--prefix``, and ``-j`` configure
+generation and build, so they require a ``.robmot`` model; ``--headless``,
+``--steps``, and ``--run-id`` apply to both forms, ``--steps`` requires
+``--headless``, and both are refused for a hardware generation.
 
 Low-level commands
 ==================
@@ -143,9 +146,9 @@ root as its ``@base``, so a reader resolves it to the file.
 Replay
 ======
 
-With no option, ``replay`` prints a run summary. ``--verify`` checks the manifest's
-required files and PROV/REC provenance, then validates the frame-log header --
-the log embeds its own schema hash, so there is no separate generation contract
-to cross-check it against. Without a manifest (a run recorded before archiving
-finished), ``--verify`` falls back to the header check alone rather than
-rejecting the run. ``--jsonl`` streams decoded frames for external analysis.
+With no option, ``replay`` prints a run summary. ``--verify`` requires the run's
+``manifest.json``: it checks that every file the manifest names exists, that the
+log's schema hash matches the generation's ``frame_layout.json``, and that the
+log holds as many frames as the writer reported. A run without a manifest can
+still be summarized and decoded, but not verified. ``--jsonl`` streams decoded
+frames for external analysis.

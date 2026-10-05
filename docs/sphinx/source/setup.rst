@@ -60,7 +60,8 @@ distribution's, so ``--system-site-packages`` reaches nothing from apt.
 What setup installs
 ===================
 
-``motion-spec setup`` reads two manifests that ship inside the package, both in
+``motion-spec setup`` reads the two manifests at the repository root (shipped
+inside the wheel as well), both in
 `vcstool <https://github.com/dirk-thomas/vcstool>`_'s format:
 
 .. list-table::
@@ -94,7 +95,8 @@ A run goes through the same steps every time:
 
 #. The Python environment, as above.
 #. For each entry in order, the checkout at its manifest path, as it stands; a
-   missing one is skipped with a warning to import it.
+   missing one is skipped with a warning to import it. If none is checked out,
+   ``setup`` stops before building anything and prints the ``vcs import`` line.
 #. For each entry in order: what the checkout holds decides how it is built.
    A ``CMakeLists.txt`` is a CMake package, a ``pyproject.toml`` or ``setup.py``
    a Python one, both (``mj_kdl_wrapper``) means CMake and then its bindings.
@@ -176,7 +178,8 @@ cmake arguments: ``colcon.meta``
 
 Per-package cmake arguments live in ``WORKSPACE/colcon.meta``, colcon's own
 format, and nowhere else. The first ``setup`` seeds it from the shipped one; from
-then on it is yours to edit, and ``setup`` never rewrites it:
+then on it is yours to edit, and ``setup`` never rewrites it. For example, with
+the Kortex wrapper turned on:
 
 .. code-block:: json
 
@@ -210,6 +213,7 @@ picking a location. Everything installs into ``WORKSPACE/install``.
 
    $ export MOTION_SPEC_WS="$PWD/ws"      # or pass --workspace to each command below
    $ motion-spec setup --dev              # motion_spec.repos, into $MOTION_SPEC_WS/install
+   $ vcs import "$MOTION_SPEC_WS/src" < "$MOTION_SPEC_WS/src/motion-spec/motion_spec.real.repos"
    $ motion-spec setup --dev --real       # plus the device drivers
    $ motion-spec setup mj_kdl_wrapper     # build only that entry
    $ motion-spec setup --force            # rebuild regardless, from a cleared CMake cache
@@ -382,11 +386,9 @@ generation it was about:
    * - Command
      - Console kept in
    * - ``setup`` (cmake, colcon, ant, pip)
-     - ``$MOTION_SPEC_WS/.motion-spec/logs/<stamp>-setup.log``
-   * - ``gen`` (the DSL)
-     - ``<generation>/logs/gen.log``
-   * - ``build`` (cmake)
-     - ``<generation>/logs/build.log``
+     - ``$MOTION_SPEC_WS/.motion-spec/logs/<stamp>Z-setup.log``
+   * - ``gen``, ``build`` (the DSL, stst, cmake)
+     - ``<generation>/logs/console.log``
    * - ``run`` (the controller)
      - ``<generation>/runs/<run-id>/logs/console.log``
 
@@ -400,8 +402,8 @@ build type, the job count and the machine's cores and RAM, and closes with the
 exit status — or with the signal, which is what identifies a build the kernel
 killed for memory.
 
-Sourcing it by hand is not the only way to use it. ``build``, ``run``, ``rerun``
-and ``health`` source a file themselves and run everything under what it left:
+Sourcing it by hand is not the only way to use it. ``build``, ``run``, ``rerun``,
+``dashboard`` and ``health`` source a file themselves and run everything under what it left:
 
 .. code-block:: console
 
@@ -410,7 +412,8 @@ and ``health`` source a file themselves and run everything under what it left:
    $ motion-spec run gen-1 --no-env        # inherit this shell, whatever files sit above
 
 With no ``--env`` the file is found the same way twice: ``$MOTION_SPEC_ENV``
-first, then the nearest ``setup-motion-spec.bash`` above the generation, then
+first, then ``[workspace] environment`` in the config file, then the nearest
+``setup-motion-spec.<shell>`` above the generation, then
 above the working directory. So an installation made with ``--workspace ws``
 works from a fresh shell with no flags and nothing sourced. Each command says on
 stderr which file it used; ``--no-env`` turns the whole mechanism off.

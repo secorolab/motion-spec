@@ -51,8 +51,10 @@ file that is the one step between a new shell and a working workspace.
 |---|---|
 | `--dev` | Python packages installed editable (`pip install -e`); without it they install as snapshots. Sources are in `WORKSPACE/src` either way |
 | `--real` | also install `motion_spec.real.repos`: serial, robotiq_driver_noros, robif2b |
-| `--repos FILE` | install other manifests instead of the shipped one |
 | `--ros` | build with colcon, and source the distro and the overlay instead of exporting paths |
+| `--force` | rebuild regardless, from a cleared CMake cache |
+| `--build-type`, `-j` | CMake build type; parallel compile jobs |
+| `REPOSITORIES...` | narrow the run to these manifest entries, by path or by name |
 
 A checkout already at a manifest path is never moved: it is built as it stands, with a warning
 when it is not on the pinned commit, and rebuilt on every run while it has uncommitted changes.
@@ -65,7 +67,7 @@ What every model needs, whichever target it drives:
 
 | Stage | Needs | For |
 |---|---|---|
-| Python | 3.11+, with Click, RDFLib, rdf-utils, Jinja, pySHACL and protobuf | the CLI, RDF loading, validation, the IR |
+| Python | 3.11+, with Click, RDFLib, rdf-utils, pySHACL, protobuf, PyYAML, zstandard and NumPy | the CLI, RDF loading, validation, the IR |
 | Authoring | motion-spec-dsl, scene-dsl, coord-dsl, textX | compiling `.robmot`, `.fsm` and `.scenex` sources |
 | Generation | STSTv4 and `protoc` | rendering the C++, and the frame-log codec |
 | | Git, a JDK and Ant | building STSTv4 itself — a JRE is not enough |
@@ -99,7 +101,7 @@ Full documentation: **<https://secorolab.github.io/motion-spec/>**
 ## Contributors
 
 * [Sven Schneider](https://github.com/svenschneider)
-* [Vamsi Kalaagaturu](https://github.com/vamsikalagaturu)
+* [Vamsi Kalagaturu](https://github.com/vamsikalagaturu)
 
 ## License
 

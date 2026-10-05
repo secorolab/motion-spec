@@ -29,7 +29,7 @@ The top-level specifications are:
 
 Names become RDF identifiers under the declared namespace. Angle brackets refer
 to named model elements, for example `<shared.spec.speed>` or
-`<kinova.base_link>`.
+`<kinova.base_link.base_link_origin>`.
 
 Because a name is appended directly to its namespace, the declared URI must be
 absolute and must end with `/` or `#`; it cannot carry a query or a fragment
@@ -74,7 +74,8 @@ alias a declaration with `<shared.spec>`.
 
 ### World quantities
 
-World quantities are `pose`, `velocity-twist`, `wrench`, or `joint-position`.
+World quantities are `pose`, `velocity-twist`, `wrench`, `joint-position`,
+`joint-velocity`, or `joint-force`.
 Their geometric properties bind them to imported scene elements:
 
 | Property | Target |
@@ -87,8 +88,8 @@ Their geometric properties bind them to imported scene elements:
 world {
     pose tcp-base {
         of: <gripper.g_base.g_pinch>,
-        wrt: <kinova.base_link>,
-        as-seen-by: <kinova.base_link>
+        wrt: <kinova.base_link.base_link_origin>,
+        as-seen-by: <kinova.base_link.base_link_origin>
     },
     joint-position gripper-pos { joint: <gripper.g_left_driver_joint> }
 }
@@ -109,7 +110,7 @@ Context quantities support:
   `direction`, `free-vector`;
 - motion: `velocity-twist`, `acceleration-twist`, `angular-velocity`,
   `linear-velocity`, `linear-acceleration`, `angular-acceleration`, `linear-jerk`;
-- dynamics: `wrench`, `force`, `torque`;
+- dynamics: `wrench`, `force`, `torque`, `mass`;
 - scalar/control: `dimensionless`, `duration`, `path-parameter`;
 - generators: `velocity-profile`, `admittance`.
 
@@ -176,7 +177,7 @@ and may resample on an FSM event:
 pose start = snapshot of <shared.world.tcp-base>,
 length target-x = snapshot of <shared.world.tcp-base>.position.x
                            + <shared.spec.offset>,
-pose entered = snapshot of <shared.world.tcp-base> on event task.E_ENTERED
+pose entered = snapshot of <shared.world.tcp-base> on event <task.E_ENTERED>
 ```
 
 A reference value can also be a named reference under a full arithmetic expression -- standard
@@ -1115,6 +1116,13 @@ instances. A `.robmot` model consumes those semantic identities; it does not use
 MuJoCo names directly. Multiple instances of one kinematic tree remain distinct
 through their instance names and generated runtime prefixes.
 
+A scene may give a position as `xyz: sample <distrib> m` instead of numbers. The
+controller draws it once at startup, seeded from `[sampling] seed`, and records the
+draw in the frame log and the run's provenance. Two positions can be drawn: a frame
+on a body, which scene-dsl leaves unplaced, and the placing pose of a free scene
+object, stated against a frame placed by numbers. A reset returns the object to the
+same draw. Robots, cameras, the base frame and orientations cannot be drawn.
+
 The FSM owns states, events, transitions, and reactions. Motion monitors emit those
 events, and the generated controller runs only the handler associated with the
 current FSM state. Event-triggered snapshots are sampled when their named event is
@@ -1127,7 +1135,7 @@ Authored unit spellings are deliberately compact; every exponentiated unit uses 
 bare digit:
 
 `rad/s^2`, `rad/s`, `deg/s^2`, `deg/s`, `m/s^3`, `m/s^2`, `m/s`, `cm/s`, `Nm`, `N`, `rad`, `deg`,
-`mm`, `cm`, `m`, `ms`, `s`, `Hz`, and `1`.
+`mm`, `cm`, `m`, `ms`, `s`, `Hz`, `kg`, and `1`.
 
 The generated RDF uses the corresponding QUDT terms.
 

@@ -164,7 +164,8 @@ data access constraint connects an F-block's port to a D-block, for reading or w
 
 1. **`quantities.py`, the readers** — every quantity and geometry node the DSL emits: positions,
    orientations, poses, twists, wrenches, durations, joint quantities, frames, constraints, and
-   where a body or frame is placed (`anchor_frame`, `frame_placement`, `placement_of`);
+   where a body or frame is placed (`anchor_frame`, `frame_placement`, `placement_of`, and
+   `drawn_placement_of` for a free scene object whose position the run draws);
 2. **`views.py`, what a motion reads** — the MAP views and data structures, and per motion its
    references, snapshots, pose-axis error groups and pose components;
 3. **`data_access.py`, who accesses it** — the computation indexes, which data structures are the
@@ -184,7 +185,8 @@ Public:
 
 - `quantities.py` — `quantity`, `pose`, `position`, `orientation`, `velocity_twist`,
   `acceleration_twist`, `wrench`, `joint_quantity`, `frame`, `position_values`,
-  `orientation_quaternion`, `anchor_frame`, `frame_placement`, `placement_of`;
+  `orientation_quaternion`, `anchor_frame`, `frame_placement`, `placement_of`,
+  `drawn_placement_of`;
 - `views.py` — `read_views`, `read_data_structures`, `views_for_access`, `views_by_subobject`,
   `snapshots_for_motion`, `pose_axis_error_groups_for_motion`, `declared_pose_component_entries`,
   `collect_motion_references`, `elapsed_coordinate_ids`, `expanded_constraints`,

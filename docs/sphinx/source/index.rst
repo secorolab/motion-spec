@@ -11,8 +11,9 @@ Quick start
 ===========
 
 ``motion-spec`` needs the rest of what it builds against — the authoring DSLs,
-the kinematics fork, the simulator wrapper — and installs all of it itself, from
-the ``.repos`` manifest it ships:
+the kinematics fork, the simulator wrapper — listed in the ``.repos`` manifests at
+the repository root. You import them with ``vcs``; ``motion-spec setup`` builds
+and installs what was imported:
 
 .. code-block:: console
 
@@ -25,15 +26,16 @@ the ``.repos`` manifest it ships:
    $ motion-spec setup --workspace ws --dev       # builds and installs what ws/src holds
    $ source ws/setup-motion-spec.bash             # or .zsh, whichever setup wrote
 
-ROS is optional, and the robot hardware drivers are installed only with
+ROS is optional, and the robot hardware drivers are installed only after
+``vcs import ws/src < ws/src/motion-spec/motion_spec.real.repos`` and
 ``setup --real``. Then run a model, replay the run it recorded, and run the same
 generation again:
 
 .. code-block:: console
 
    $ motion-spec run model.robmot --run-id run-1 --headless
-   $ motion-spec replay "$MOTION_SPEC_GEN/model/latest/runs/run-1"
-   $ motion-spec run "$MOTION_SPEC_GEN/model/latest" --run-id run-2 --headless
+   $ motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"
+   $ motion-spec rerun --run-id run-2 --headless
 
 Run ``motion-spec --help`` or ``motion-spec COMMAND --help`` for the exact
 options supported by the installed version.

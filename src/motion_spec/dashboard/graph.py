@@ -1,47 +1,34 @@
 # SPDX-License-Identifier: MPL-2.0
-"""SPARQL over a run's model graph.
+"""SPARQL over a run's model dataset.
 
-One named graph, ``urn:model``, parsed once from the generation's app manifest and its imports,
-and the scene and FSM graphs beside it.
+The DSL's document, found through the generation's provenance, with the scene and FSM graphs
+beside it, each document its own named graph.
 The dashboard mints no vocabulary of its own.
 """
 
 from __future__ import annotations
 
-import urllib.request
-import urllib.response
 from functools import lru_cache
 from pathlib import Path
 
 import rdflib
-from motion_spec_dsl.rdf_parser.manifest import build_url_map, install_metamodel_resolver
-from motion_spec_dsl.rdf_parser.vocab import APP, EXEC
+from motion_spec_dsl.rdf_parser.vocab import EXEC
 from rdflib.namespace import SDO
 
-MODEL_GRAPH = rdflib.URIRef("urn:model")
+from motion_spec.runs.provenance import (
+    GENERATION_DOCUMENT,
+    GRAPH_DSL,
+    dsl_document,
+    read_generation_dataset,
+)
+
 MODEL_REL = Path("generated") / "model"
 
 
-def model_manifest(generation_dir: Path | str) -> Path | None:
-    """The generation's `-app` manifest, the root the rest of the model graph hangs off."""
-    return next((Path(generation_dir) / MODEL_REL).glob("*-app.ld.json"), None)
-
-
-def resolved_file(iri: str) -> str | None:
-    """The local file an IRI resolves to, asked of the installed resolver.
-
-    Its prefix rules decide this; a second copy of them here would be a second thing to keep
-    right. Asked through the process-wide opener rather than a resolver of our own -- the one
-    opener lives in the DSL package, and callers only swap the model-specific part of its map.
-    Only ever called for an IRI the parse above already read through it.
-    """
-    try:
-        with urllib.request.urlopen(iri) as response:
-            # addinfourl names itself "<urllib response>"; the file it wraps knows its path
-            name = response.fp.name if isinstance(response, urllib.response.addinfourl) else None
-    except OSError:
-        return None
-    return name if isinstance(name, str) and Path(name).is_file() else None
+def model_document(generation_dir: Path | str) -> Path | None:
+    """The document the DSL generated, as the generation's provenance records it."""
+    generated = Path(generation_dir) / "generated"
+    return dsl_document(read_generation_dataset(generated / GENERATION_DOCUMENT).graph(GRAPH_DSL))
 
 
 def graph_sizes(dataset: rdflib.Dataset) -> dict[str, int]:
@@ -59,37 +46,15 @@ def graph_growth(before: dict[str, int], after: dict[str, int]) -> dict:
     }
 
 
-def load_model_graph(
-    manifest_path: Path | str, dataset: rdflib.Dataset, graph: rdflib.Graph
-) -> list[dict]:
-    """Parse an app manifest and everything it imports, resolving IRIs the way
-    `motion-spec check` does: the shared metamodel resolver merged with the model's own
-    iri-map, longest prefix first.
+def load_document(path: Path | str, dataset: rdflib.Dataset) -> dict:
+    """Parse one document into DATASET, in a graph named by its file unless it names its own.
 
-    Returns what it read: one entry per file, with the triples that file put in the dataset.
+    Returns what it read: the file, and the triples it put in each named graph.
     """
-    manifest_path = Path(manifest_path).resolve()
+    path = Path(path).resolve()
     before = graph_sizes(dataset)
-    graph.parse(manifest_path, format="json-ld")
-    read: list[dict] = [
-        {
-            "iri": manifest_path.as_uri(),
-            "path": str(manifest_path),
-            **graph_growth(before, graph_sizes(dataset)),
-        }
-    ]
-    install_metamodel_resolver(build_url_map(dataset, manifest_path))
-    for target in {o for _s, _p, o, _g in dataset.quads((None, APP["import"], None, None))}:
-        before = graph_sizes(dataset)
-        graph.parse(location=str(target), format="json-ld")
-        read.append(
-            {
-                "iri": str(target),
-                "path": resolved_file(str(target)),
-                **graph_growth(before, graph_sizes(dataset)),
-            }
-        )
-    return read
+    dataset.graph(rdflib.URIRef(path.as_uri())).parse(path, format="json-ld")
+    return {"iri": path.as_uri(), "path": str(path), **graph_growth(before, graph_sizes(dataset))}
 
 
 @lru_cache(maxsize=64)
@@ -99,42 +64,36 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
     This is what a real platform is made of; a simulation carries a name of its own instead, so
     nothing here has to tell one platform kind from another.
     """
-    manifest = model_manifest(generation_dir)
-    if manifest is None:
+    document = model_document(generation_dir)
+    if document is None:
         return ()
     dataset = rdflib.Dataset(default_union=True)
-    model = dataset.graph(MODEL_GRAPH)
-    load_model_graph(manifest, dataset, model)
+    load_document(document, dataset)
     return tuple(
         {
-            str(model.value(device, SDO.model))
-            for device in model.subjects(EXEC["realizes"], None)
-            if model.value(device, SDO.model)
+            str(dataset.value(device, SDO.model))
+            for device in dataset.subjects(EXEC["realizes"], None)
+            if dataset.value(device, SDO.model)
         }
     )
 
 
 class GraphService:
-    """One run's queryable model graph."""
+    """One run's queryable model dataset."""
 
     def __init__(
         self,
         generation_dir: Path | str,
         *,
-        manifest: Path | None = None,
+        document: Path | None = None,
         graphs: list[Path] | None = None,
     ):
         self.generation_dir = Path(generation_dir)
         self.dataset = rdflib.Dataset(default_union=True)
-        self.model = self.dataset.graph(MODEL_GRAPH)
-        self.sources: list[dict] = []
-        # A run names its own model graph; the generation is only where one is found without it.
-        manifest = (
-            manifest if manifest and manifest.is_file() else model_manifest(self.generation_dir)
-        )
-        if manifest is not None:
-            self.sources = load_model_graph(manifest, self.dataset, self.model)
-        # The scene and FSM graphs the IR names nodes of, which the manifest imports none of.
+        # A run names its own model document; the generation is only where one is found without it.
+        if not (document and document.is_file()):
+            document = model_document(self.generation_dir)
+        # The scene and FSM graphs the IR names nodes of, which the DSL's document holds none of.
         if graphs is None:
             model_dir = self.generation_dir / MODEL_REL
             graphs = [
@@ -142,16 +101,8 @@ class GraphService:
                 for pattern in ("*.scenex.ld.json", "*.fsm.ld.json")
                 for path in model_dir.glob(pattern)
             ]
-        for path in graphs:
-            before = graph_sizes(self.dataset)
-            self.model.parse(path, format="json-ld")
-            self.sources.append(
-                {
-                    "iri": path.resolve().as_uri(),
-                    "path": str(path.resolve()),
-                    **graph_growth(before, graph_sizes(self.dataset)),
-                }
-            )
+        documents = [document, *graphs] if document is not None else graphs
+        self.sources = [load_document(path, self.dataset) for path in documents]
 
     def query(self, sparql: str) -> tuple[str, object]:
         """(result type, payload) for a SPARQL query over the current dataset.

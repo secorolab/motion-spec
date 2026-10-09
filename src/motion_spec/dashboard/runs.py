@@ -114,7 +114,7 @@ class GenerationInfo:
 
     @property
     def built(self) -> bool:
-        return (self.dir / "build" / "main").exists()
+        return (self.dir / "build" / self.dir.parent.name).exists()
 
     @property
     def layout(self) -> FrameLayout:

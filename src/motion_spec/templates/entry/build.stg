@@ -35,16 +35,16 @@ find_package(rclcpp_action REQUIRED)
 <if(composition.scene.cameras)><cmake-camera-check()><endif>
 <endif>
 
-add_executable(main
+add_executable(<configuration.name>
     main.cpp
 )
-target_include_directories(main PRIVATE
+target_include_directories(<configuration.name> PRIVATE
     ${EIGEN3_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/headers
     ${coord2b_INCLUDE_DIRS}
 )
-target_link_libraries(main PRIVATE
+target_link_libraries(<configuration.name> PRIVATE
     orocos-kdl
     tomlplusplus::tomlplusplus
     Threads::Threads
@@ -70,10 +70,10 @@ target_link_libraries(main PRIVATE
 <endif>
 )
 find_package(Protobuf REQUIRED)
-target_sources(main PRIVATE frame_log.pb.cc)
-target_include_directories(main PRIVATE ${Protobuf_INCLUDE_DIRS})
-target_link_libraries(main PRIVATE Threads::Threads protobuf::libprotobuf)
-target_compile_options(main PRIVATE -Wall -Wextra -ftemplate-depth=2048)
+target_sources(<configuration.name> PRIVATE frame_log.pb.cc)
+target_include_directories(<configuration.name> PRIVATE ${Protobuf_INCLUDE_DIRS})
+target_link_libraries(<configuration.name> PRIVATE Threads::Threads protobuf::libprotobuf)
+target_compile_options(<configuration.name> PRIVATE -Wall -Wextra -ftemplate-depth=2048)
 >>
 
 // A backend whose cameras need no target of their own leaves these empty.

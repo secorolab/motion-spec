@@ -11,11 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import rdflib
-from motion_spec_dsl.rdf_parser.manifest import (
-    build_url_map,
-    install_metamodel_resolver,
-    metamodels_root,
-)
+from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver, metamodels_root
 from pyshacl import validate
 from rdflib.namespace import PROV
 from rec import State
@@ -24,13 +20,16 @@ from motion_spec.runs.provenance import (
     DERIVED_DOCUMENT,
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
+    GRAPH_DSL,
     GRAPH_EXECUTION,
     PROVENANCE_DIR,
     RUN_IRI_BASE,
     artifact_sha256,
+    dsl_document,
     file_path,
     parse_rec_time,
     prov_uri,
+    read_generation_dataset,
     rec_document,
     rec_run_lifecycle_from_file,
     record_execution,
@@ -83,12 +82,12 @@ def create_archive_manifest(
     run_dir.mkdir(parents=True, exist_ok=True)
     proto_path = generated / "contract" / "frame_log.proto"
     provenance_path = generated / GENERATION_DOCUMENT
-    model_manifests = list((generated / "model").glob("*-app.ld.json"))
     for required in (proto_path, provenance_path, generated / "model" / "ir.json"):
         if not required.is_file():
             raise ArchiveError(f"{required}: required generated artifact is missing")
-    if len(model_manifests) != 1:
-        raise ArchiveError(f"{generated / 'model'}: expected exactly one application manifest")
+    model_document = dsl_document(read_generation_dataset(provenance_path).graph(GRAPH_DSL))
+    if model_document is None or not model_document.is_file():
+        raise ArchiveError(f"{provenance_path}: records no model document the DSL generated")
     if recorded:
         frame_log_path = Path(frame_log) if frame_log else run_dir / "logs" / "frame_log.pb"
         if (
@@ -123,7 +122,7 @@ def create_archive_manifest(
     files = {
         "frame_log_proto": os.path.relpath(proto_path, run_dir),
         "provenance": os.path.relpath(provenance_path, run_dir),
-        "model": os.path.relpath(model_manifests[0], run_dir),
+        "model": os.path.relpath(model_document, run_dir),
         # Without it the log's derived slot IRIs resolve to nothing.
         "derived": (
             os.path.relpath(generated / DERIVED_DOCUMENT, run_dir)
@@ -214,7 +213,6 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
     model_rel = manifest.get("files", {}).get("model")
     if model_rel and (run_dir / model_rel).exists():
         _parse_rdf(run_dir / model_rel, "json-ld")
-        _verify_model_imports(run_dir / model_rel)
     rec_rel = manifest.get("files", {}).get("rec")
     if rec_rel and (run_dir / rec_rel).exists():
         rec_graph = _parse_rdf(run_dir / rec_rel, "json-ld")
@@ -249,34 +247,6 @@ def _verify_checksums(rec_graph: rdflib.Graph, run_dir: Path, errors: list[str])
             errors.append(f"{location or entity}: missing")
         elif expected is not None and artifact_sha256(path) != str(expected):
             errors.append(f"{location}: sha256 mismatch")
-
-
-def _verify_model_imports(model_path: Path) -> None:
-    """Assert every app:import in the archived model resolves offline within the bundle.
-
-    Metamodel prefixes resolve through the local checkout; the model's own iri-map
-    resolves its imported graphs to model/'s directory (where they were vendored).
-    A dangling import — the graph left behind in the build tree — fails here.
-    """
-    from motion_spec_dsl.rdf_parser.vocab import APP
-
-    install_metamodel_resolver()
-    dataset = rdflib.Dataset()
-    try:
-        dataset.parse(str(model_path), format="json-ld")
-    except Exception as exc:
-        raise ArchiveError(f"{model_path.name}: model RDF parse failed: {exc}") from exc
-    imports = {str(o) for _, _, o, _ in dataset.quads((None, APP["import"], None, None))}
-    if not imports:
-        return
-    install_metamodel_resolver(build_url_map(dataset, model_path))
-    for iri in imports:
-        try:
-            rdflib.Graph().parse(location=iri, format="json-ld")
-        except Exception as exc:
-            raise ArchiveError(
-                f"{model_path.name}: import '{iri}' does not resolve within the archive: {exc}"
-            ) from exc
 
 
 def _parse_rdf(path: Path, fmt: str) -> rdflib.Graph:
@@ -344,7 +314,13 @@ def _write_rec_snapshot(
         # and nothing knows the command line it was given.
         generation_document = run_dir / manifest["files"].get("provenance", GENERATION_DOCUMENT)
         record_execution(
-            run_dir, run_id, generation_document, schema.get("platform") or {}, [], run.start_time
+            run_dir,
+            run_id,
+            generation_document,
+            Path(manifest["files"]["log_producer_executable"]),
+            schema.get("platform") or {},
+            [],
+            run.start_time,
         )
     run.log_host_info(host_info())
     record_software(run, run_dir)

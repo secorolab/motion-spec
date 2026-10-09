@@ -24,7 +24,7 @@ from rdf_utils.models.prov import (
     load_sampling_prov,
     load_transformation_prov,
 )
-from rdf_utils.models.vocab import URI_AGN_TYPE_MOD_AGN
+from rdf_utils.models.vocab import URI_AGN_TYPE_MOD_AGN, URI_PROV_EXT_TYPE_TRANSFORMATION
 from rdf_utils.namespace import NS_MM_QUDT, URL_MM_PROV_EXT_JSON, URL_MM_PROV_JSON
 from rdflib import Dataset, Graph, Literal, Namespace, URIRef
 from rdflib.namespace import PROV, RDF, SDO
@@ -121,6 +121,14 @@ def file_path(location) -> Path | None:
     """The local path a `file:` IRI names, or None for any other IRI."""
     parsed = urllib.parse.urlparse(str(location))
     return Path(urllib.parse.unquote(parsed.path)) if parsed.scheme == "file" else None
+
+
+def dsl_document(graph: Graph) -> Path | None:
+    """The document the DSL generated, as its provenance GRAPH records it: its transformation's output."""
+    for document, activity in graph.subject_objects(PROV.wasGeneratedBy):
+        if (activity, RDF.type, URI_PROV_EXT_TYPE_TRANSFORMATION) in graph:
+            return file_path(graph.value(document, PROV.atLocation))
+    return None
 
 
 def _mtime(path: Path) -> datetime:
@@ -227,7 +235,7 @@ def generated_file(graph: Graph, generated: Path, path: Path) -> URIRef:
 def record_ir_generation(
     graph: Graph,
     generated: Path,
-    manifest: URIRef,
+    document: URIRef,
     inputs: list[URIRef],
     ir: dict,
     ir_path: Path,
@@ -236,20 +244,20 @@ def record_ir_generation(
     started: datetime,
     ended: datetime,
 ) -> None:
-    """The IR's transformation from the manifest and its documents, by the DSL's nodes for them."""
+    """The IR's transformation from the DSL's document and the scene and FSM sources, by the DSL's nodes for them."""
     activity = generation_scope(generated.parent)["activity/motion_spec_ir_generation"]
     package = add_package(graph, "motion_spec")
     ir_entity = generated_file(graph, generated, ir_path)
     load_transformation_prov(
         graph,
         activity,
-        [manifest, *inputs],
+        [document, *inputs],
         [ir_entity, generated_file(graph, generated, derived_path)],
         package,
         started,
         ended,
     )
-    graph.add((ir_entity, PROV.wasDerivedFrom, manifest))
+    graph.add((ir_entity, PROV.wasDerivedFrom, document))
 
     # The robots the scene models, by the scene's own nodes for them.
     for robot in (ir["composition"]["scene"] or {}).get("robots") or ():
@@ -418,7 +426,7 @@ def parse_rec_time(value: str) -> datetime:
 
 
 # The process one run started, which produced its logs: another run is another process.
-CONTROLLER_PROCESS = RUN_IRI_BASE + "{run_id}/controller_process"
+PROCESS = RUN_IRI_BASE + "{run_id}/process"
 
 
 def record_run_file(graph: Graph, run_id: str, path: Path, role: str, *, generated: bool) -> None:
@@ -471,6 +479,7 @@ def record_execution(
     run_dir: Path,
     run_id: str,
     generation_document: Path,
+    executable: Path,
     platform_facts: dict,
     arguments: list[str],
     started: datetime,
@@ -490,8 +499,8 @@ def record_execution(
     else:
         runtime = uri(f"agent:runtime_{_slug(platform_facts.get('backend') or 'runtime')}")
         add_agent(graph, runtime, (PROV.SoftwareAgent,), platform_facts.get("backend") or "runtime")
-    controller = URIRef(CONTROLLER_PROCESS.format(run_id=run_id))
-    add_agent(graph, controller, (PROV.SoftwareAgent,), "controller", acted_on_behalf_of=runtime)
+    process = URIRef(PROCESS.format(run_id=run_id))
+    add_agent(graph, process, (PROV.SoftwareAgent,), executable.name, acted_on_behalf_of=runtime)
     for agent in set(generation.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         add_agent(graph, agent, (URI_AGN_TYPE_MOD_AGN,), str(generation.value(agent, SDO.name)))
     run = uri(f"run:{run_id}")
@@ -504,12 +513,16 @@ def record_execution(
     load_execution_prov(
         graph,
         run,
-        [record_arguments(graph, run_id, arguments), *executables],
+        [
+            record_arguments(graph, run_id, arguments),
+            *executables,
+            *([URIRef(platform_facts["uri"])] if platform_facts.get("uri") else []),
+        ],
         add_package(graph, "motion_spec"),
         started,
     )
-    # The controller process carried the run out, driving the robots the scene models.
-    for agent in (controller, *graph.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
+    # The process carried the run out, driving the robots the scene models.
+    for agent in (process, *graph.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         graph.add((run, PROV.wasAssociatedWith, agent))
     write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
 

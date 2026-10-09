@@ -280,12 +280,17 @@ def unresolved_assets(ir) -> list[str]:
 
 
 def generate_code(
-    ir_path: Path, output_dir: Path, contract_dir: Path, stst_bin: str, fsm: dict | None
+    ir_path: Path,
+    output_dir: Path,
+    contract_dir: Path,
+    stst_bin: str,
+    fsm: dict | None,
+    program: str,
 ) -> list[Path]:
     """Render every C++/artifact file for an IR: telemetry headers, runtime and
     shared-state headers, the frame-log proto (compiled to C++), per-motion headers and
     main.cpp into OUTPUT_DIR, the frame-log contract into CONTRACT_DIR, and return the files
-    written.
+    written. PROGRAM names the executable, so the process list shows it.
 
     ir.json carries every codegen-facing field but the FSM's own tables, which come from
     coord-dsl's framed FSM `fsm`.
@@ -316,6 +321,7 @@ def generate_code(
     # is needed — copying it there just duplicated the file in the tree and the archive.
 
     ir["computation"]["uses"] = runtime_uses(ir)
+    ir["configuration"]["name"] = program
     # What stst renders from is scratch, not part of the generation.
     scratch = tempfile.TemporaryDirectory(prefix="motion-spec-stst-")
     payload_dir = Path(scratch.name)

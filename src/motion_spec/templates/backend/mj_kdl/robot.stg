@@ -293,6 +293,10 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
             steps_limited = true;
         } else if (std::strcmp(argv[i], "--rtf") == 0 && i + 1 \< argc) {
             _headless_rtf = std::atof(argv[++i]);
+        } else {
+            std::cerr \<\< "[run] '" \<\< argv[i] \<\< "' is not an option here -- this program takes "
+                      \<\< "--headless, --steps N, --rtf X and --start-paused\n";
+            return 1;
         }
     }
 

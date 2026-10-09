@@ -19,7 +19,7 @@ from rdflib import RDF, BNode, Literal
 from rec import Verdict
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.graph import MODEL_GRAPH, deployed_devices
+from motion_spec.dashboard.graph import deployed_devices
 from motion_spec.dashboard.metadata import annotations, baseline
 from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
@@ -282,7 +282,6 @@ def rdf_name(term: object) -> str:
     return str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
 
 
-GRAPH_NAMES = {str(MODEL_GRAPH): "model"}
 PROV_NS = "http://www.w3.org/ns/prov#"
 
 
@@ -297,14 +296,9 @@ def _term_kind(term) -> str:
 
 
 def graph_name(context) -> str:
-    """A quad's named graph, named as compactly as it can be.
-
-    `urn:model` is the dashboard's own. A JSON-LD file that declares a graph of its own lands in
-    that graph instead -- the whole FSM is one -- and calling those "model" too would hide the
-    split from every reader downstream.
-    """
+    """A quad's named graph, named as compactly as it can be."""
     identifier = str(context)
-    return GRAPH_NAMES.get(identifier) or rdf_name(identifier.rstrip("/")) or identifier
+    return rdf_name(identifier.rstrip("/")) or identifier
 
 
 def term_graphs(dataset) -> dict[str, list[str]]:

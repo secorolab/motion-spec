@@ -22,10 +22,10 @@ from rec import State, Verdict
 from motion_spec.runs.archive import create_archive_manifest, verify_manifest
 from motion_spec.runs.lifecycle_events import publish_lifecycle
 from motion_spec.runs.provenance import (
-    CONTROLLER_PROCESS,
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
     GRAPH_EXECUTION,
+    PROCESS,
     PROVENANCE_DIR,
     RUN_IRI_BASE,
     parse_rec_time,
@@ -328,6 +328,7 @@ def start_rec_run(
         run_dir,
         run_id,
         source_dir / GENERATION_DOCUMENT,
+        executable,
         schema.get("platform") or {},
         executable_args,
         run.start_time,
@@ -604,7 +605,7 @@ def _record_sampling(rec_path: Path, run_id: str, sampling: dict) -> None:
         record_draw(
             graph,
             run_id,
-            URIRef(CONTROLLER_PROCESS.format(run_id=run_id)),
+            URIRef(PROCESS.format(run_id=run_id)),
             quantity,
             values,
             drawn_at,

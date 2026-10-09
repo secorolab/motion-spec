@@ -13,7 +13,7 @@ from pathlib import Path
 import rdflib
 
 from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
-from motion_spec.dashboard.graph import MODEL_GRAPH, GraphService, load_model_graph, model_manifest
+from motion_spec.dashboard.graph import GraphService, load_document, model_document
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
@@ -51,7 +51,7 @@ def run_graph(run_dir: Path) -> GraphService:
         named = json_file(run_dir / "manifest.json").get("files", {}).get("graphs")
         _GRAPHS[key] = GraphService(
             run_dir.parent.parent,
-            manifest=run_model_manifest(run_dir),
+            document=run_model_manifest(run_dir),
             graphs=[(run_dir / path).resolve() for path in named] if named else None,
         )
     return _GRAPHS[key]
@@ -157,7 +157,7 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
         kind, headers, rows = _query_rows(service, sparql)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
-        if not len(service.model):
+        if not len(service.dataset):
             # no prefixes, no model triples: the generation this run names is not there
             detail += (
                 ". This run's model graph is unavailable -- the generation it names is missing, "
@@ -168,7 +168,7 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     offset = max(0, min(int(offset), max(0, len(rows) - 1)))
     return {
         "type": kind,
-        "model_triples": len(service.model),
+        "model_triples": len(service.dataset),
         "headers": headers or ["result"],
         "rows": [
             [curie(term, prefixes) for term in row] for row in rows[offset : offset + PAGE_SIZE]
@@ -273,18 +273,16 @@ LINT_SEVERITY = "warn"
 def model_lint(generation_dir: Path) -> dict:
     """What the design graph says about itself: terms declared and read by nothing.
 
-    Design graph only -- no run, no frame log. A generation with no model manifest lints to
+    Design graph only -- no run, no frame log. A generation with no model document lints to
     nothing rather than failing, so the page can ask about any generation it lists.
 
-    Asked of the whole dataset, not of `urn:model`: a JSON-LD file that declares a graph of its
-    own lands there instead, and a term those triples name is read, not unused. Nothing but the
-    design is loaded here, so the union is the design.
+    Asked of the whole dataset: nothing but the design is loaded here, so the union is the design.
     """
-    manifest = model_manifest(generation_dir)
-    if manifest is None:
+    document = model_document(generation_dir)
+    if document is None:
         return {"items": []}
     dataset = rdflib.Dataset(default_union=True)
-    load_model_graph(manifest, dataset, dataset.graph(MODEL_GRAPH))
+    load_document(document, dataset)
     authored = next((generation_dir / "generated/source").glob("*.robmot"), None)
     lines = declaration_lines(authored.read_text()) if authored else {}
     items = [

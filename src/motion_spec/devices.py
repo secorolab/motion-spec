@@ -120,15 +120,3 @@ def _answered(endpoint: dict, replies: list[dict]) -> dict:
         return {**endpoint, **replies[0]}
     # A host named with no port to knock on is listed, and answers for nothing.
     return {**endpoint, "ports": replies, "ok": all(p["ok"] for p in replies) if replies else None}
-
-
-def unreachable(report: dict) -> list[dict]:
-    """The devices in a report that did not answer. A device with nothing to knock on did."""
-    return [device for device in report["devices"] if device["ok"] is False]
-
-
-def where(device: dict) -> str:
-    """Where a device was looked for, as one line: host and ports, or the device node."""
-    if device["kind"] != "network":
-        return device["device"]
-    return f"{device['host']}:{','.join(str(probe['port']) for probe in device['ports'])}"

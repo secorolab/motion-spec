@@ -73,7 +73,8 @@ An IR-only generation cannot be built because it has no generated controller.
        --prefix /path/to/workspace/install
 
 ``build`` consumes ``generated/controller/`` and creates the reusable
-``build/main`` executable. It does not regenerate the model and does not create a
+``build/<model>`` executable, named after the generation so the process list shows
+it. It does not regenerate the model and does not create a
 run. Add another ``--prefix`` for each additional CMake package prefix when
 required.
 
@@ -93,7 +94,7 @@ For an existing build:
 
 - the positional input is the generation directory, which already holds the
   model, contracts, and provenance under ``generated/`` and the built controller
-  at ``build/main``;
+  at ``build/<model>``;
 - the run is created under ``runs/``, named by ``--run-id`` or by a timestamp;
 - arguments after ``--`` are passed to the executable.
 

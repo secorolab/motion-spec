@@ -15,10 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import rdflib
-from motion_spec_dsl.rdf_parser.vocab import APP
 from rdflib.namespace import PROV
 
-from motion_spec.runs.provenance import file_path
+from motion_spec.runs.provenance import GRAPH_DSL, dsl_document, file_path
 from motion_spec.setup import build_jobs
 from motion_spec.utils import generation_log, tee
 
@@ -32,8 +31,6 @@ class LoadedModel:
     FSM graphs, read as a `Model`, and coord-dsl's framed FSM."""
 
     dataset: rdflib.Dataset
-    # The DSL's record of what it read and wrote.
-    provenance: rdflib.Graph
     model: Model
     fsm: dict | None
     # Each imported scene or FSM document: its source file, the document, and its graph.
@@ -130,7 +127,7 @@ def load_model(model: Path, model_dir: Path) -> LoadedModel:
 
     try:
         authored = metamodel_for_file(str(model)).model_from_file(str(model))
-        dataset, dsl_provenance = generate(authored, model_dir)
+        dataset = generate(authored, model_dir)
     except TextXError as problem:
         raise RuntimeError(f"the DSL rejected {model.name}: {problem}") from problem
     imports, fsms = [], []
@@ -157,10 +154,10 @@ def load_model(model: Path, model_dir: Path) -> LoadedModel:
         fsm = {**gen_json(fsm_graph, fsm_ref), "namespace_uri": fsm_document.fsm.ns.uri}
     loaded = Model(
         graph=dataset,
-        app_path=(model_dir / f"{model.stem}-app.ld.json").resolve(),
+        app_path=dsl_document(dataset.graph(GRAPH_DSL)).resolve(),
         namespaces=tuple(namespace.uri for namespace in authored.namespaces),
     )
-    return LoadedModel(dataset, dsl_provenance, loaded, fsm, imports, started, ended)
+    return LoadedModel(dataset, loaded, fsm, imports, started, ended)
 
 
 def generate_model(
@@ -172,7 +169,6 @@ def generate_model(
     workspace tool is found rather than whatever this process happens to have first.
     """
     from coord_dsl.registration import gen_cpp, gen_fsm_dot_file
-    from motion_spec_dsl.gens import IMPORT_BASE
     from motion_spec_dsl.rdf_parser.check import validate_dataset
     from scene_dsl.gens import scenex_kdl_gen
 
@@ -182,7 +178,6 @@ def generate_model(
         DERIVED_DOCUMENT,
         GENERATION_DOCUMENT,
         GRAPH_COORD_DSL,
-        GRAPH_DSL,
         GRAPH_MOTION_SPEC,
         build_derivation_document,
         record_code_generation,
@@ -196,8 +191,8 @@ def generate_model(
     model_dir = generated / "model"
     root = generations_root().resolve()
     loaded = load_model(model, model_dir)
-    dataset, dsl_provenance, fsm = loaded.dataset, loaded.provenance, loaded.fsm
-    manifest = model_dir / f"{model.stem}-app.ld.json"
+    dataset, fsm, document = loaded.dataset, loaded.fsm, loaded.model.app_path
+    dsl_provenance = dataset.graph(GRAPH_DSL)
     # The authored sources the DSL read, kept with the generation before anything records them.
     source_dir = generated / "source"
     source_dir.mkdir()
@@ -260,9 +255,9 @@ def generate_model(
     derived_path = generated / DERIVED_DOCUMENT
     derived_path.parent.mkdir(parents=True, exist_ok=True)
     authored = [
-        document
-        for document in dataset.graphs()
-        if document.identifier != loaded.model.derived.identifier
+        graph
+        for graph in dataset.graphs()
+        if graph.identifier not in (loaded.model.derived.identifier, GRAPH_DSL)
     ]
     derived_path.write_text(
         json.dumps(
@@ -273,16 +268,10 @@ def generate_model(
     record_ir_generation(
         provenance[GRAPH_MOTION_SPEC],
         generated,
-        node_at[rdflib.URIRef(os.path.relpath(manifest, root))],
+        node_at[rdflib.URIRef(os.path.relpath(document, root))],
         [
-            node_at[rdflib.URIRef(os.path.relpath(path, root))]
-            for path in (
-                *(
-                    model_dir / str(location).removeprefix(IMPORT_BASE)
-                    for location in dataset.objects(predicate=APP["import"])
-                ),
-                *(sources[source] for source, _, _ in loaded.imports),
-            )
+            node_at[rdflib.URIRef(os.path.relpath(sources[source], root))]
+            for source, _, _ in loaded.imports
         ],
         ir,
         ir_path,
@@ -303,7 +292,9 @@ def generate_model(
         controller_dir.mkdir()
         started = datetime.now(UTC)
         stst = find_stst((env or {}).get("PATH")) or "stst"
-        written = generate_code(ir_path, controller_dir, generated / "contract", stst, fsm)
+        written = generate_code(
+            ir_path, controller_dir, generated / "contract", stst, fsm, generation.parent.name
+        )
         record_code_generation(
             provenance[GRAPH_MOTION_SPEC],
             generated,
@@ -381,7 +372,7 @@ def build_generation(
     started = datetime.now(UTC)
     tee(configure, log=log, env=env)
     tee(["cmake", "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log, env=env)
-    executable = build / "main"
+    executable = build / generation.parent.name
     if not executable.is_file():
         raise RuntimeError(f"controller executable not found after build: {executable}")
     record_build(

@@ -18,7 +18,7 @@ from rdf_utils.models.common import get_node_types
 from rdf_utils.models.geom_rel import relation_neighbors
 from rdf_utils.models.vocab import URI_GEOM_TYPE_POSE
 from rdflib import Graph, URIRef
-from rdflib.namespace import RDF, SDO
+from rdflib.namespace import RDF, SDO, SSN
 
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.agents import DRIVEN_DEVICES, device_of, model_mappings
@@ -78,7 +78,7 @@ def read_platform(model) -> dict:
             "config": str(_config_path(model, real)) if real is not None else None,
         }
 
-    name = str(graph.value(simulation, SDO.name) or "")
+    name = str(graph.value(graph.value(simulation, SSN.deployedOnPlatform), SDO.name) or "")
     backend = SIMULATION_BACKENDS.get(name.casefold())
     if backend is None:
         raise ConstraintViolation("platform", f"Unsupported simulation platform '{name}'.")

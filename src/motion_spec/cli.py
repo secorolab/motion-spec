@@ -172,7 +172,7 @@ def _latest_generation() -> Path:
             f"${GENERATION_VARIABLE} when it is set, else ${{{WORKSPACE_VARIABLE}}}/generations."
         )
     generation = link.resolve()
-    if not (generation / "build" / "main").is_file():
+    if not (generation / "build" / generation.parent.name).is_file():
         raise click.ClickException(
             f"{generation}: the latest generation is not built. Build it with `motion-spec "
             "build`, or name a generation directory."
@@ -1259,36 +1259,6 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
         raise click.ClickException(str(exc)) from exc
 
 
-def _require_devices(generation: Path) -> None:
-    """Refuse a hardware run whose devices do not answer, before anything names a run.
-
-    A driver handed an address nothing listens on does not fail, it waits -- so the run would
-    exist as a directory with no frames in it, and have to be killed. Knocking first costs one
-    connect attempt per endpoint and turns that into a sentence.
-    """
-    from motion_spec.devices import probe_devices, unreachable, where
-
-    missing = unreachable(probe_devices(generation))
-    if not missing:
-        return
-    raise click.ClickException(
-        "these devices did not answer:\n"
-        + "\n".join(f"  {device['name']} at {where(device)}" for device in missing)
-    )
-
-
-def _is_simulated(generation: Path) -> bool:
-    """Whether this generation's controller drives a simulator.
-
-    The platform the model declared, read back from the IR the generation carries -- the backend
-    token is an implementation detail and never the thing asked about.
-    """
-    ir_path = generation / "generated" / "model" / "ir.json"
-    if not ir_path.is_file():
-        raise click.ClickException(f"generation has no IR to read the platform from: {ir_path}")
-    platform = json.loads(ir_path.read_text())["configuration"]["platform"]
-    return bool(platform["simulated"])
-
 
 @main.command(context_settings={"ignore_unknown_options": True})
 @click.argument("input", type=click.Path(exists=True, path_type=Path))
@@ -1374,15 +1344,6 @@ def run(
         generation = input.resolve()
         env, environment_record = _environment(env_script, no_env, generation)
 
-    if (headless or steps is not None) and not _is_simulated(generation):
-        raise click.UsageError(
-            "--headless and --steps are simulator options; this generation runs on hardware"
-        )
-    # Probing before a hardware run is off for now: start the controller directly and let a
-    # device that does not answer say so in the run's own console.
-    # if not _is_simulated(generation):
-    #     _require_devices(generation)
-
     run_dir = generation / "runs" / (run_id or new_id("run"))
     _say("step", f"running {generation.name}")
     _say("info", f"run directory {run_dir}")
@@ -1397,7 +1358,7 @@ def run(
         returncode = run_cataloged(
             run_dir,
             source_dir=generation / "generated",
-            executable=generation / "build" / "main",
+            executable=generation / "build" / generation.parent.name,
             executable_args=arguments,
             run_id=run_id,
             cwd=cwd,

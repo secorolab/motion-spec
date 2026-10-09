@@ -3,7 +3,7 @@ Run one generation repeatedly
 =============================
 
 This page continues from :doc:`end-to-end`. It assumes the generation at
-``$GENERATION_DIR`` already contains ``generated/`` and ``build/main``.
+``$GENERATION_DIR`` already contains ``generated/`` and ``build/<model>``.
 
 Why generation and run IDs differ
 =================================

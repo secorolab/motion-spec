@@ -82,6 +82,14 @@ class AdmittanceFilter {
 };
 
 <endif>
+// A feed-forward controller keeps state only for the admittance filter producing its reference.
+struct FeedForwardControl {
+<if(computation.uses.("Admittance"))>    AdmittanceFilter adm_filter;
+    void reset(bool = false) { adm_filter = AdmittanceFilter{}; }
+<else>    void reset(bool = false) {}
+<endif>    void clear_error_history() {}
+};
+
 <if(computation.uses.("ProportionalIntegralDerivative"))>
 // The tuning a step applies, handed in per call like dt. Kept out of the controller so the
 // numbers stay algorithm data a run artifact can report rather than construction-time state.
@@ -258,9 +266,10 @@ integral-bound-upper(saturation) ::= <<
 >>
 
 controller-member-FeedForwardController(controller) ::= <<
+    motion_spec::runtime::FeedForwardControl <controller.id>;
 >>
 
-// Re-arm a controller when its motion is entered. FeedForward carries no state.
+// Re-arm a controller when its motion is entered. FeedForward carries state only for a filter.
 // resamples: the motion re-captures a snapshot on entry, so its setpoint may have moved and
 // the accumulated integral no longer describes the error it was built from.
 controller-reset(motion_id, controller, resamples) ::= <<
@@ -276,6 +285,7 @@ controller-reset-ImpedanceController(motion_id, controller, resamples) ::= <<
 >>
 
 controller-reset-FeedForwardController(motion_id, controller, resamples) ::= <<
+<motion_id>_state_instance.<controller.id>.reset();
 >>
 
 emit-call-Admittance(function, views) ::= <<

@@ -32,6 +32,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     KC_OP_EXT,
     KC_STAT,
     MAP,
+    MOT,
     QUDT_SCHEMA,
     RBDYN_OP,
     RBDYN_OP_EXT,
@@ -43,7 +44,7 @@ from rdf_utils.models.common import ModelBase, get_node_types
 from rdf_utils.models.geom_coord import get_coord_vectorxyz
 from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdflib import Literal, URIRef
-from rdflib.namespace import PROV, RDF
+from rdflib.namespace import PROV, RDF, split_uri
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri, ensure_one_typed_subject_uri
 
 from motion_spec.classes.dynamics import Saturation
@@ -61,6 +62,7 @@ from motion_spec.classes.solvers import (
     CartesianForceSpecification,
     JointForceSpecification,
     MotionDrivers,
+    PoseTarget,
     SolverFamily,
 )
 from motion_spec.rdf_parser import quantities
@@ -71,8 +73,8 @@ _MOBILE_PLATFORM = SolverFamily()
 # Every solver family the code generator can run, keyed by the term that identifies it -- the
 # algorithm a solver names, or the type a command-forwarding or mobile-platform solver carries.
 # ACHD (Vereshchagin) drives each constrained direction by an acceleration energy, RNE by the
-# Cartesian acceleration itself; forward kinematics only reads its chain. An unmapped algorithm
-# (`slv:ArticulatedBodyAlgorithm`) is unsupported.
+# Cartesian acceleration itself, IVK by a velocity; forward kinematics only reads its chain. An
+# unmapped algorithm (`slv:ArticulatedBodyAlgorithm`) is unsupported.
 SOLVER_FAMILIES = {
     SLV["AccelerationConstrainedHybridDynamicsAlgorithm"]: SolverFamily(
         name="ACHD",
@@ -96,6 +98,18 @@ SOLVER_FAMILIES = {
     ),
     KC_OP.ForwardPositionKinematics: SolverFamily(name="FPK", read_only=True),
     KC_OP_EXT.ForwardVelocityKinematics: SolverFamily(name="FVK", read_only=True),
+    # IVK integrates the joint velocity it resolves from a twist; IPK solves for a pose target.
+    KC_OP_EXT.InverseVelocityKinematics: SolverFamily(
+        name="IVK",
+        driver_field="cartesian_velocity",
+        payload_field="velocity",
+        payload_kinds={
+            Subspace.Linear: ("LinearVelocity", "M-PER-SEC"),
+            Subspace.Angular: ("AngularVelocity", "RAD-PER-SEC"),
+        },
+        command_mode="position",
+    ),
+    KC_OP_EXT.InversePositionKinematics: SolverFamily(name="IPK", command_mode="position"),
     SLV_EXT.CommandForwardingSolver: SolverFamily(forwards_commands=True),
     SLV.VelocityCompositionSolver: _MOBILE_PLATFORM,
     SLV.ForceDistributionSolver: _MOBILE_PLATFORM,
@@ -183,6 +197,20 @@ class SolverIdFactory:
             f"cart-acc-{kebab(axis.suffix)}",
             PROV.wasDerivedFrom,
             types=(SLV.AccelerationConstraint,),
+        )
+        return id_
+
+    def component_velocity(self, axis: quantities.SpatialAxis) -> str:
+        id_ = f"vel_{self.model.id(self.controller)}_{axis.suffix}"
+        self.model.register_derived(
+            id_, str(self.controller), f"vel-{kebab(axis.suffix)}", PROV.wasDerivedFrom
+        )
+        return id_
+
+    def component_velocity_specification(self, axis: quantities.SpatialAxis) -> str:
+        id_ = f"cart_vel_{self.model.id(self.controller)}_{axis.suffix}"
+        self.model.register_derived(
+            id_, str(self.controller), f"cart-vel-{kebab(axis.suffix)}", PROV.wasDerivedFrom
         )
         return id_
 
@@ -564,6 +592,8 @@ class SolverDerivationContext:
     controllers_by_handler: dict
     controllers_by_solver: dict
     algorithm_by_solver: dict
+    # Per (handler, IPK solver) node pair, the impedance controller acting on its joints.
+    joint_impedance_by_handler: dict = field(default_factory=dict)
     _derived: dict = field(default_factory=dict, compare=False, repr=False)
 
     def controllers_for(self, plan: ControllerDerivation) -> tuple:
@@ -589,6 +619,7 @@ def solver_derivation_context(model) -> SolverDerivationContext:
     axes_by_controller = _authored_controller_axes(model)
     by_handler = {}
     by_solver = collections.defaultdict(list)
+    joint_impedances = {}
     for handler in graph.subjects(RDF.type, CSTR_HDL.ConstraintHandler):
         motion = ensure_one_obj_uri(graph, handler, CSTR_HDL.motion)
         if motion is None:
@@ -614,6 +645,10 @@ def solver_derivation_context(model) -> SolverDerivationContext:
                     f"Authored controller '{controller}' needs explicit solver, constraint, "
                     "and constraint quantity relations.",
                 )
+            # The pose target it drives is read with the solver's drivers.
+            if solver_algorithm(model, solver).name == "IPK":
+                joint_impedances[(handler, solver)] = controller
+                continue
             directions = axes_by_controller.get(controller) or ControlDirections(
                 (), quantities.view_of(graph, quantity)
             )
@@ -642,6 +677,7 @@ def solver_derivation_context(model) -> SolverDerivationContext:
         controllers_by_handler=by_handler,
         controllers_by_solver={node: tuple(plans) for node, plans in by_solver.items()},
         algorithm_by_solver=algorithms,
+        joint_impedance_by_handler=joint_impedances,
     )
 
 
@@ -730,7 +766,11 @@ def _controller_signal_id(model, context, plan) -> str:
     # produced it; only a command that goes straight to a device is named `cmd_`.
     elif CSTR_HDL.ImpedanceController in types or command_type == "Force":
         signal_id = f"force_{controller_id}"
-    elif CSTR_HDL_EXT.FeedForwardController in types:
+    # Fed forward into a velocity solver, the reference is that solver's velocity payload.
+    elif (
+        CSTR_HDL_EXT.FeedForwardController in types
+        and context.algorithm_by_solver[plan.solver].payload_field != "velocity"
+    ):
         signal_id = f"cmd_{controller_id}"
     elif command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(
         graph, target
@@ -992,6 +1032,10 @@ _DRIVER_ID_METHODS = {
         SolverIdFactory.component_acceleration_specification,
         SolverIdFactory.component_acceleration,
     ),
+    "IVK": (
+        SolverIdFactory.component_velocity_specification,
+        SolverIdFactory.component_velocity,
+    ),
 }
 
 
@@ -1041,11 +1085,13 @@ def _derived_acceleration_drivers(model, context, plan, family) -> list:
     return records
 
 
-def motion_drivers(model, context, solver: URIRef) -> list:
-    """A solver's drivers: the accelerations its controllers imply, plus its authored forces.
+def motion_drivers(model, context, solver: URIRef, chain) -> list:
+    """A solver's drivers: the accelerations or velocities its controllers imply, the pose an
+    IPK solver solves for, plus its authored forces.
 
     Parameters:
         solver: the `slv:SolverWithInputAndOutput` node whose drivers these are
+        chain: the `ChainBinding` it runs on, which an IPK target must be the tip of
 
     Returns:
         one `MotionDrivers` record per authored `slv:motion-drivers` node
@@ -1063,9 +1109,9 @@ def motion_drivers(model, context, solver: URIRef) -> list:
         if driven
         else []
     )
-    # Both slots default empty; only the family's own slot (driver_field) takes the drivers, so
+    # Every slot defaults empty; only the family's own slot (driver_field) takes the drivers, so
     # `MotionDrivers.acceleration_constraint` -- which has no default -- is always supplied.
-    driver_slots = {"acceleration_constraint": [], "cartesian_acceleration": []}
+    driver_slots = {"acceleration_constraint": [], "cartesian_acceleration": [], "cartesian_velocity": []}
     if driven:
         driver_slots[family.driver_field] = accelerations
 
@@ -1082,10 +1128,102 @@ def motion_drivers(model, context, solver: URIRef) -> list:
             ],
             has_cartesian_force=bool(list(model.graph.objects(node, SLV["cartesian-force"]))),
             handler=model.id(model.graph.value(node, PROV.wasDerivedFrom)),
+            pose_target=(
+                _pose_target(model, context, solver, node, chain) if family.name == "IPK" else None
+            ),
             **driver_slots,
         )
         for node in model.graph.objects(solver, SLV["motion-drivers"])
     ]
+
+
+def _pose_target(model, context, solver: URIRef, driver: URIRef, chain) -> PoseTarget:
+    """What an IPK solver solves for in its handler's motion, and the joint impedance toward it.
+
+    The target is a world pose's `.position` and `.orientation` held equal to one reference
+    pose's: the pair its impedance controller drives one of, or, without one, the uncontrolled
+    pair of the motion whose pose is on the chain. Both poses are stated in one frame.
+
+    Raises:
+        ConstraintViolation: no single such pair, a pose not of the chain tip, or a joint gain for
+            a joint the chain does not articulate.
+    """
+    graph = model.graph
+    handler = graph.value(driver, PROV.wasDerivedFrom)
+    impedance = context.joint_impedance_by_handler.get((handler, solver))
+    parts = collections.defaultdict(dict)
+    for constraint in graph.objects(graph.value(handler, CSTR_HDL.motion), MOT["while"]):
+        view = graph.value(constraint, CSTR.quantity)
+        reference = graph.value(constraint, CSTR["reference-value"])
+        subspace = local_name(graph.value(view, MAP.subspace))
+        measured = graph.value(view, MAP.superobject)
+        if (
+            (constraint, RDF.type, CSTR.EqualityConstraint) in graph
+            and subspace in ("position", "orientation")
+            and graph.value(view, MAP.axis) is None
+            and measured is not None
+            and GEOM_COORD.PoseCoordinate in get_node_types(graph, measured)
+            and local_name(graph.value(reference, MAP.subspace)) == subspace
+            and (target := graph.value(reference, MAP.superobject)) is not None
+        ):
+            parts[(measured, target)][subspace] = constraint
+    pairs = {key: set(pair.values()) for key, pair in parts.items() if len(pair) == 2}
+    if impedance is not None:
+        driven = graph.value(impedance, CSTR_HDL.constraint)
+        candidates = [key for key, pair in pairs.items() if driven in pair]
+    else:
+        controlled = {
+            graph.value(controller, CSTR_HDL.constraint)
+            for controller in graph.objects(handler, CSTR_HDL.controllers)
+        }
+        candidates = [
+            key
+            for key, pair in pairs.items()
+            if not pair & controlled
+            and (of := quantities.pose(model, key[0]).of) is not None
+            and of.uri in chain.frames
+        ]
+    if len(candidates) != 1:
+        raise ConstraintViolation(
+            "solver",
+            f"IPK solver '{model.id(solver)}' finds {len(candidates)} pose targets of its chain tip "
+            f"in handler '{model.id(handler)}' -- it solves for exactly one",
+        )
+    measured, target = candidates[0]
+    of = quantities.pose(model, measured).of
+    placement = chain.frames.get(of.uri) if of is not None else None
+    if placement is None or placement["index"] != chain.tip_segment or placement["offset"] is not None:
+        raise ConstraintViolation(
+            "solver",
+            f"IPK solver '{model.id(solver)}' solves for '{model.id(measured)}', which is not the "
+            f"pose of its chain tip '{chain.tip}' -- inverse kinematics solves for the tip",
+        )
+    gains = {"stiffness": [], "damping": []}
+    for name, predicate in (("stiffness", CSTR_HDL.stiffness), ("damping", CSTR_HDL.damping)):
+        nodes = list(graph.objects(impedance, predicate)) if impedance is not None else []
+        by_joint = {
+            split_uri(graph.value(node, KC_STAT["of-joint"]))[1]: float(graph.value(node, QUDT_SCHEMA.value))
+            for node in nodes
+            if graph.value(node, KC_STAT["of-joint"]) is not None
+        }
+        unknown = set(by_joint) - set(chain.joints)
+        if unknown or (by_joint and len(by_joint) != len(chain.joints)):
+            raise ConstraintViolation(
+                "controller",
+                f"joint impedance '{model.id(impedance)}' states {name} for joints "
+                f"{sorted(by_joint)} -- chain '{chain.name}' articulates {chain.joints}, each once",
+            )
+        if by_joint:
+            gains[name] = [by_joint[joint] for joint in chain.joints]
+        elif nodes:
+            gains[name] = [float(graph.value(nodes[0], QUDT_SCHEMA.value))] * len(chain.joints)
+
+    return PoseTarget(
+        id=f"pose_target_{model.id(driver)}",
+        measured=model.id(measured),
+        reference=model.id(target),
+        **gains,
+    )
 
 
 def _bind_alignment_band(model, plan, function) -> None:
@@ -1118,6 +1256,9 @@ def augment_functions(model, context, functions: dict) -> None:
     needs.
     """
     graph = model.graph
+    # A joint impedance is the IPK solver's own law, run where the solver runs.
+    for controller in context.joint_impedance_by_handler.values():
+        functions.pop(model.id(controller), None)
     for plans in context.controllers_by_handler.values():
         for plan in plans:
             ids = SolverIdFactory(model, plan.controller)

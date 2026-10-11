@@ -148,7 +148,7 @@ struct manipulator_robot {
 >>
 
 world-chain-port-address(solver, index) ::= <<
-world_ports{.position = &kinova_<solver.runtime.id>_state.pos_msr[<index>], .velocity = &kinova_<solver.runtime.id>_state.vel_msr[<index>], .effort = &kinova_<solver.runtime.id>_state.eff_msr[<index>], .effort_cmd = &kinova_<solver.runtime.id>_state.eff_cmd[<index>]\}
+world_ports{.position = &kinova_<solver.runtime.id>_state.pos_msr[<index>], .velocity = &kinova_<solver.runtime.id>_state.vel_msr[<index>], .effort = &kinova_<solver.runtime.id>_state.eff_msr[<index>], .effort_cmd = &kinova_<solver.runtime.id>_state.eff_cmd[<index>], .position_cmd = &kinova_<solver.runtime.id>_state.pos_cmd[<index>]\}
 >>
 
 // A joint the chain does not articulate is the bound gripper's to report, in radians the device
@@ -172,9 +172,21 @@ wrench-raw(solver, out) ::= <<
         KDL::Vector(-<out.id>_sample.value.moment[0], -<out.id>_sample.value.moment[1], -<out.id>_sample.value.moment[2]));
 >>
 
+// A runtime only read has no mode and is held in position.
+kinova-ctrl-mode ::= [
+    "torque": "ROBIF2B_CTRL_MODE_FORCE",
+    "position": "ROBIF2B_CTRL_MODE_POSITION",
+    default: "ROBIF2B_CTRL_MODE_POSITION"
+]
+
+// The driver's update switches every actuator when ctrl_mode changes.
+runtime-ctrl-mode-type() ::= "enum robif2b_ctrl_mode"
+runtime-ctrl-mode-address(solver) ::= "&kinova_<solver.runtime.id>_state.ctrl_mode"
+runtime-ctrl-mode(mode) ::= "<kinova-ctrl-mode.(mode)>"
+
 robot-state-init-KinovaGen3(solver) ::= <<
 <if(solver.runtime.owner)>    kinova_state kinova_<solver.runtime.id>_state{};
-    kinova_<solver.runtime.id>_state.ctrl_mode = <if(solver.runtime.commanded)>ROBIF2B_CTRL_MODE_FORCE<else>ROBIF2B_CTRL_MODE_POSITION<endif>;
+    kinova_<solver.runtime.id>_state.ctrl_mode = <kinova-ctrl-mode.(solver.runtime.command_mode)>;
 <solver.devices:{device | <({<device-state-init-impl.(device.kind)>})(solver, device)>}; separator="\n">
 <endif>
 >>
@@ -397,11 +409,10 @@ device-configure-KinovaGen3(solver, device) ::= <<
     <robif2b-recover-kinova(solver.runtime.id)>
     <robif2b-start-kinova(solver.runtime.id)>
 <device-configure-check({kinova_<solver.runtime.id>_state}, device.config_key)>
-<if(!solver.runtime.commanded)>    // Only read: hold where configure found the arm.
+    // Held where configure found the arm until a position command moves it; torque ignores it.
     for (int i = 0; i \< ROBIF2B_KINOVA_GEN3_NR_JOINTS; ++i) {
         kinova_<solver.runtime.id>_state.pos_cmd[i] = kinova_<solver.runtime.id>_state.pos_msr[i];
     \}
-<endif>
 >>
 
 device-configure-KinovaGen3-2F85(solver, device) ::= <<

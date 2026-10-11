@@ -40,6 +40,7 @@ static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, algo
 <motion.until_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
 <motion.perturbations:{p | <perturbation-rearm(motion.id, p)>}; separator="\n">
 <motion.controllers:{controller |         <controller-reset(motion.id, controller, motion.entry_snapshots)>}; separator="\n">
+<motion.serial_chain_solvers:{solver | <solver-enter(solver, resources.by_id.(solver.solver_id))>}; separator="">
 <motion.path_projections:{proj |         data.<proj.parameter> = 0.0;
         data.<proj.along_speed> = 0.0;}; separator="\n">
     }

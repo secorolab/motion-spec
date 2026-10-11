@@ -45,6 +45,8 @@ struct <solver.id>_solver_state {
 solver-state-algorithm-fields ::= [
     "ACHD": "solver-state-algorithm-fields-ACHD",
     "RNE": "solver-state-algorithm-fields-RNE",
+    "IVK": "solver-state-algorithm-fields-IVK",
+    "IPK": "solver-state-algorithm-fields-IPK",
     default: "solver-no-extra"
 ]
 
@@ -67,6 +69,28 @@ solver-state-algorithm-fields-RNE(solver) ::= <<
     std::unique_ptr\<KDL::ChainJntToJacDotSolver\> jac_dot_solver;
 >>
 
+// q_cmd: the resolved joint velocity integrated from where the arm stood when first commanded.
+solver-state-algorithm-fields-IVK(solver) ::= <<
+    KDL::JntArray cartesian_velocity;
+    KDL::Jacobian jac;
+    KDL::JntArray qd_des;
+    KDL::JntArray q_cmd;
+    bool q_cmd_seeded = false;
+    motion_spec::runtime::CartesianAccelerationWorkspace accel_work;
+    std::unique_ptr\<KDL::ChainJntToJacSolver\> jac_solver;
+>>
+
+// The posture solved for, the seed of the next solve, and the gravity a joint impedance adds.
+solver-state-algorithm-fields-IPK(solver) ::= <<
+    KDL::JntArray q_des;
+    KDL::JntArray q_solved;
+    bool q_des_seeded = false;
+    KDL::JntArray gravity_torque;
+    std::unique_ptr\<KDL::ChainFkSolverPos_recursive\> fk_solver;
+    std::unique_ptr\<KDL::ChainIkSolverPos_LMA\> ik_solver;
+    std::unique_ptr\<KDL::ChainDynParam\> dyn_param;
+>>
+
 // What an ACHD solver needs beyond its own fields is the backend's: each states
 // `solver-state-extra-ACHD` and `solver-init-extra-ACHD`.
 solver-state-extra ::= [
@@ -82,6 +106,8 @@ solver-init-extra ::= [
 solver-init-algorithm ::= [
     "ACHD": "solver-init-algorithm-ACHD",
     "RNE": "solver-init-algorithm-RNE",
+    "IVK": "solver-init-algorithm-IVK",
+    "IPK": "solver-init-algorithm-IPK",
     default: "solver-no-extra"
 ]
 
@@ -149,6 +175,11 @@ assign-cartesian-acceleration(specification, solver_state, column, owner) ::= <<
     robot.<solver_state>_state.cartesian_acceleration(<column>) = data.<specification.acceleration.id>;
 >>
 
+assign-cartesian-velocity(specification, solver_state, column, owner) ::= <<
+<assign-spatial-direction(specification, solver_state, column, owner)>
+    robot.<solver_state>_state.cartesian_velocity(<column>) = data.<specification.velocity.id>;
+>>
+
 // Once per solver, before the loop, at the widest motion's row count. Zero rows is valid for
 // posture-only handlers: Vereshchagin passes tau_ff through to tau_ctrl unchanged.
 solver-init(solver) ::= <<
@@ -197,6 +228,27 @@ solver-init-algorithm-RNE(solver) ::= <<
     robot.<solver.id>_state.jac_dot_solver = std::make_unique\<KDL::ChainJntToJacDotSolver\>(*robot.<solver.id>.chain);
 >>
 
+solver-init-algorithm-IVK(solver) ::= <<
+    robot.<solver.id>_state.num_spatial_directions = <solver.constraint_rows>;
+    robot.<solver.id>_state.spatial_directions = KDL::Jacobian(robot.<solver.id>_state.num_spatial_directions);
+    robot.<solver.id>_state.cartesian_velocity = KDL::JntArray(robot.<solver.id>_state.num_spatial_directions);
+    robot.<solver.id>_state.jac = KDL::Jacobian(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.qd_des = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.q_cmd = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.accel_work.resize(robot.<solver.id>_state.num_spatial_directions, robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.jac_solver = std::make_unique\<KDL::ChainJntToJacSolver\>(*robot.<solver.id>.chain);
+>>
+
+// Levenberg-Marquardt: the scene states no joint limits, so no solver can respect them.
+solver-init-algorithm-IPK(solver) ::= <<
+    robot.<solver.id>_state.q_des = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.q_solved = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.gravity_torque = KDL::JntArray(robot.<solver.id>_state.num_joints);
+    robot.<solver.id>_state.fk_solver = std::make_unique\<KDL::ChainFkSolverPos_recursive\>(*robot.<solver.id>.chain);
+    robot.<solver.id>_state.ik_solver = std::make_unique\<KDL::ChainIkSolverPos_LMA\>(*robot.<solver.id>.chain, 1e-5, 100);
+    robot.<solver.id>_state.dyn_param = std::make_unique\<KDL::ChainDynParam\>(*robot.<solver.id>.chain, KDL::Vector(<if(solver.gravity)><solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
+>>
+
 // The turn a measured joint angle is read onto. Applied to the measurement a model names and
 // constraints read -- not to the solver's own joint array, which FK and the dynamics see only
 // through sin/cos and which a joint resting on the interval's edge would make discontinuous.
@@ -215,9 +267,43 @@ for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
 }
 >>
 
+// On entry the arm takes this motion's mode, and a position command restarts from where it stands.
+solver-enter(solver, chain_solver) ::= <<
+<if(solver.command_mode)>        *robot.ctrl_mode_<chain_solver.runtime.id> = <runtime-ctrl-mode(solver.command_mode)>;
+<endif><({<solver-enter-algorithm.(chain_solver.algorithm_name)>})(solver)>
+>>
+
+solver-enter-algorithm ::= [
+    "IVK": "solver-enter-IVK",
+    "IPK": "solver-enter-IPK",
+    default: "solver-enter-nothing"
+]
+
+solver-enter-nothing(solver) ::= <<>>
+
+solver-enter-IVK(solver) ::= <<
+        robot.<solver.id>_state.q_cmd_seeded = false;
+>>
+
+solver-enter-IPK(solver) ::= <<
+        robot.<solver.id>_state.q_des_seeded = false;
+>>
+
+// An arm commanded in position stays where its last command put it.
+solver-gravity-hold(solver, chain_solver) ::= <<
+<({<solver-hold-mode.(solver.command_mode)>})(solver, chain_solver)>
+>>
+
+solver-hold-mode ::= [
+    "position": "solver-position-hold",
+    default: "solver-torque-hold"
+]
+
+solver-position-hold(solver, chain_solver) ::= <<>>
+
 // The command that means "stay put": RNE at the measured configuration, at rest, unloaded. Uses
 // the solver's own arrays -- no motion is running, and the next one refills them.
-solver-gravity-hold(solver, chain_solver) ::= <<
+solver-torque-hold(solver, chain_solver) ::= <<
     {
         static KDL::ChainIdSolver_RNE _gravity_<solver.id>(*robot.<solver.id>.chain, KDL::Vector(<if(chain_solver.gravity)><chain_solver.gravity; separator=", "><else>0.0, 0.0, 0.0<endif>));
         <solver-sync-input(solver, chain_solver)>
@@ -535,6 +621,10 @@ solver-clear-external-forces-RNE(solver, motion_driver) ::= <<
     }
 >>
 
+// Inverse kinematics commands joint motion: no wrench enters it.
+solver-clear-external-forces-IVK(solver, motion_driver) ::= <<>>
+solver-clear-external-forces-IPK(solver, motion_driver) ::= <<>>
+
 solver-assign-acceleration-input(solver, chain_solver, motion_driver) ::= <<
 <({solver-assign-acceleration-input-<chain_solver.algorithm_name>})(solver, chain_solver, motion_driver)>
 >>
@@ -546,6 +636,17 @@ solver-assign-acceleration-input-RNE(solver, chain_solver, motion_driver) ::= <<
 <motion_driver.cartesian_acceleration:{a | <assign-cartesian-acceleration(a, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n">
 <endif>
 >>
+
+// The rows this motion leaves are zero, so the resolve decouples them and they add nothing.
+solver-assign-acceleration-input-IVK(solver, chain_solver, motion_driver) ::= <<
+    KDL::SetToZero(robot.<solver.id>_state.cartesian_velocity);
+<if(motion_driver.cartesian_velocity)>
+<motion_driver.cartesian_velocity:{v | <assign-cartesian-velocity(v, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n">
+<endif>
+>>
+
+// The pose target is read where the solve runs.
+solver-assign-acceleration-input-IPK(solver, chain_solver, motion_driver) ::= <<>>
 
 // The rows this motion leaves are zero, and Vereshchagin's truncated SVD drops a zero row.
 solver-assign-acceleration-input-ACHD(solver, chain_solver, motion_driver) ::= <<
@@ -601,6 +702,54 @@ solver-execute-algorithm-RNE(solver, motion_driver) ::= <<
     }
 >>
 
+// RNE's damped resolve on the commanded twist, no bias term, integrated into the commanded position.
+solver-execute-algorithm-IVK(solver, motion_driver) ::= <<
+    if (!robot.<solver.id>_state.q_cmd_seeded) {
+        robot.<solver.id>_state.q_cmd = robot.<solver.id>_state.q;
+        robot.<solver.id>_state.q_cmd_seeded = true;
+    }
+    robot.<solver.id>_state.jac_solver->JntToJac(robot.<solver.id>_state.q, robot.<solver.id>_state.jac);
+    motion_spec::runtime::resolve_cartesian_acceleration(
+        robot.<solver.id>_state.jac,
+        robot.<solver.id>_state.spatial_directions,
+        robot.<solver.id>_state.cartesian_velocity,
+        nullptr,
+        robot.<solver.id>_state.accel_work,
+        robot.<solver.id>_state.qd_des);
+    for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
+        robot.<solver.id>_state.q_cmd(i) += robot.<solver.id>_state.qd_des(i) * data.dt_measured_s;
+    }
+>>
+
+// Seeded from the last solution so the posture stays continuous; a failed solve keeps it.
+solver-execute-algorithm-IPK(solver, motion_driver) ::= <<
+    if (!robot.<solver.id>_state.q_des_seeded) {
+        robot.<solver.id>_state.q_des = robot.<solver.id>_state.q;
+        robot.<solver.id>_state.q_des_seeded = true;
+    }
+    {
+        KDL::Frame tip;
+        robot.<solver.id>_state.fk_solver->JntToCart(robot.<solver.id>_state.q, tip);
+        const KDL::Frame target = tip * data.<motion_driver.pose_target.measured>.Inverse() * data.<motion_driver.pose_target.reference>;
+        if (robot.<solver.id>_state.ik_solver->CartToJnt(robot.<solver.id>_state.q_des, target, robot.<solver.id>_state.q_solved) >= 0) {
+            robot.<solver.id>_state.q_des = robot.<solver.id>_state.q_solved;
+        }
+    }
+<if(motion_driver.pose_target.stiffness)>
+    robot.<solver.id>_state.dyn_param->JntToGravity(robot.<solver.id>_state.q, robot.<solver.id>_state.gravity_torque);
+    {
+        static const double stiffness[] = {<motion_driver.pose_target.stiffness; separator=", ">};
+        static const double damping[] = {<motion_driver.pose_target.damping; separator=", ">};
+        for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
+            robot.<solver.id>_state.tau_ctrl(i) =
+                stiffness[i] * (robot.<solver.id>_state.q_des(i) - robot.<solver.id>_state.q(i))
+                - damping[i] * robot.<solver.id>_state.qd(i)
+                + robot.<solver.id>_state.gravity_torque(i);
+        }
+    }
+<endif>
+>>
+
 // The modelled wrench is one the arm generates on the segment it is attached to, stated in the
 // chain root's orientation about that segment's origin. What each algorithm wants of it differs
 // on both counts, so the two take separate rules. A sensed wrench is the same wrench read the
@@ -641,14 +790,34 @@ solver-assign-f-ext-RNE(solver, chain_solver, force) ::= <<
 }
 >>
 
-// An undriven solver stages a zero torque command on its runtime; the command reaches the
-// platform through the same port either way.
+// What the runtime is commanded with reaches the platform through its own port.
 solver-stage-output(solver, chain_solver) ::= <<
+<({<solver-stage-mode.(solver.command_mode)>})(solver, chain_solver)>
+<solver-log-joint-space-cmd(solver, chain_solver)>
+>>
+
+solver-stage-mode ::= [
+    "position": "solver-stage-position",
+    default: "solver-stage-torque"
+]
+
+// An undriven solver stages a zero torque command on its runtime.
+solver-stage-torque(solver, chain_solver) ::= <<
     for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
         *robot.ports_<chain_solver.runtime.id>[i].effort_cmd = <if(solver.read_only)>0.0<else><solver-torque-command(solver, chain_solver)><endif>;
     }
-<solver-log-joint-space-cmd(solver, chain_solver)>
 >>
+
+solver-stage-position(solver, chain_solver) ::= <<
+    for (int i = 0; i \< robot.<solver.id>_state.num_joints; ++i) {
+        *robot.ports_<chain_solver.runtime.id>[i].position_cmd = motion_spec::runtime::finite_or_stop(robot.<solver.id>_state.<position-command.(chain_solver.algorithm_name)>(i), i);
+    }
+>>
+
+position-command ::= [
+    "IVK": "q_cmd",
+    "IPK": "q_des"
+]
 // The authored torque limit binds on every backend: it protects the joint, so the simulator and
 // the real arm must clamp the same command by the same bound.
 solver-torque-command(solver, chain_solver) ::= <<
@@ -672,7 +841,7 @@ inline double finite_or_stop(double value, int joint) {
     return 0.0;
 \}
 
-<if(uses.("SolverACHD") || uses.("SolverRNE"))>
+<if(uses.("SolverACHD") || uses.("SolverRNE") || uses.("SolverIVK"))>
 enum class Axis {
     X = 0,
     Y = 1,
@@ -689,7 +858,7 @@ inline int constraint_row(Subspace subspace, Axis axis) {
 }
 
 <endif>
-<if(uses.("SolverRNE"))>
+<if(uses.("SolverRNE") || uses.("SolverIVK"))>
 // Every dynamically sized term the task-space resolve needs, at its final size. Sized once when
 // the solver initializes, so the control cycle only writes into it.
 struct CartesianAccelerationWorkspace {

@@ -7,6 +7,8 @@ D-blocks, and the joint-space channels each runtime reports.
 
 from __future__ import annotations
 
+import collections
+
 from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
@@ -313,8 +315,9 @@ def annotate_runtime(
 
     Raises:
         ConstraintViolation: a joint output falls outside the chain with no gripper bound to report
-            it, a frame is named that the solver's chain never reaches, or a motion declares a
-            read-only solver on a runtime torque-commanded elsewhere.
+            it, a frame is named that the solver's chain never reaches, a motion declares a
+            read-only solver on a runtime commanded elsewhere, or two solvers in one motion
+            command one runtime in different modes.
     """
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
@@ -382,17 +385,30 @@ def annotate_runtime(
             )
     world_frames = list(claimed.values())
 
-    # Runtimes a dynamics solver torque-streams; the rest are only read, so they hold position.
-    commanding = {solver.runtime.id for solver in serial_chains if not solver.algorithm.read_only}
+    # Torque from dynamics or a joint impedance, position from inverse kinematics.
+    modes = collections.defaultdict(set)
+    mode_by_driver = {}
     for solver in serial_chains:
-        solver.runtime.commanded = solver.runtime.id in commanding
+        if solver.algorithm.read_only:
+            continue
+        for driver in solver.motion_drivers:
+            joint_impedance = driver.pose_target is not None and driver.pose_target.stiffness
+            mode = "torque" if joint_impedance else solver.algorithm.command_mode
+            mode_by_driver[driver.id] = mode
+            modes[solver.runtime.id].add(mode)
+    commanding = set(modes)
+    for solver in serial_chains:
+        found = modes[solver.runtime.id]
+        solver.runtime.command_mode = (
+            next(iter(found)) if len(found) == 1 else "position" if found else None
+        )
         _refuse_twist_without_velocity_kinematics(solver)
         _split_gripper_outputs(solver, backend)
         # Last, so it sees the outputs a gripper device took over: what the loop answers is
         # decided from the list as it finally stands.
         _split_outputs(solver, backend)
         index_chain_joints(solver)
-    _apply_runtime_to_motions(serial_chains, motions, commanding)
+    _apply_runtime_to_motions(serial_chains, motions, commanding, mode_by_driver)
     health_index = 0
     for solver in serial_chains:
         if not solver.runtime.owner:
@@ -571,18 +587,30 @@ def index_chain_joints(solver) -> None:
                 )
 
 
-def _apply_runtime_to_motions(serial_chains, motions, commanding) -> None:
-    """Copy each runtime's outputs onto the per-motion slices of it.
+def _apply_runtime_to_motions(serial_chains, motions, commanding, mode_by_driver) -> None:
+    """Copy each runtime's outputs onto the per-motion slices of it, with the mode the motion
+    commands it in.
 
     The slice no longer copies `runtime_id`/`runtime_owner`: those are reached through
     `solver_id` once a template resolves the full solver.
     """
     by_id = {solver.id: solver for solver in serial_chains}
     for motion in motions:
+        mode_by_runtime = {}
         for solver in motion.serial_chain_solvers:
             canonical = by_id.get(solver.id)
             if canonical is None:
                 continue
+            solver.command_mode = mode_by_driver.get(solver.motion_driver.id)
+            held = mode_by_runtime.get(canonical.runtime.id)
+            if held and solver.command_mode and held != solver.command_mode:
+                raise ConstraintViolation(
+                    "solver",
+                    f"motion '{motion.id}' commands arm '{canonical.runtime.id}' with both "
+                    f"{held} and {solver.command_mode}; an arm takes one mode at a time",
+                )
+            if solver.command_mode:
+                mode_by_runtime[canonical.runtime.id] = solver.command_mode
             solver.output = canonical.output
             solver.gripper_joint_outputs = [
                 out
@@ -590,14 +618,15 @@ def _apply_runtime_to_motions(serial_chains, motions, commanding) -> None:
                 if device.kind in GRIPPER_DEVICES
                 for out in device.joint_outputs
             ]
-            # One arm is either torque-streamed or held: a kinematics-only motion on a
-            # torque-streamed arm would stage zero torques while active, and the arm drops.
+            # One arm is either commanded or held: a kinematics-only motion on a commanded arm
+            # would stage nothing while active, and a torque-streamed arm drops.
             if solver.read_only and canonical.runtime.id in commanding:
                 raise ConstraintViolation(
                     "solver",
                     f"motion '{motion.id}' only reads arm '{canonical.runtime.id}' through "
                     f"'{solver.id}' ({canonical.algorithm_name}), but another motion drives it "
-                    "with torque; name a dynamics algorithm in both or kinematics in both",
+                    f"with {canonical.runtime.command_mode}; name a driving algorithm in both or "
+                    "forward kinematics in both",
                 )
         for command in motion.forwarded_commands:
             canonical = by_id.get(command.robot_id)

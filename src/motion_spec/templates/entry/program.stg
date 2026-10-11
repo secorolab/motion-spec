@@ -393,7 +393,8 @@ world-model-wiring(resources, communication) ::= <<
 // the world model, the solvers and the backend are readers of one buffer rather than copies.
 chain-port-wiring(solver) ::= <<
 <if(solver.runtime.owner)><solver.chain.joints:{joint |     robot.ports_<solver.runtime.id>[<i0>] = <world-chain-port-address(solver, i0)>;
-}><endif>
+}>    robot.ctrl_mode_<solver.runtime.id> = <runtime-ctrl-mode-address(solver)>;
+<endif>
 >>
 
 // A port a backend has no provider for renders a null address, which startup refuses: the model
@@ -514,6 +515,10 @@ algorithm_data_header(configuration, resources, computation, coordination, commu
 <if(computation.uses.("SolverACHD"))>
 #include \<kdl/chainhdsolver_vereshchagin.hpp\>
 <endif>
+<if(computation.uses.("SolverIPK"))>
+#include \<kdl/chainiksolverpos_lma.hpp\>
+#include \<kdl/chaindynparam.hpp\>
+<endif>
 #include \<kdl/chainjnttojacsolver.hpp\>
 <endif>
 <if(resources.by_kind.serial_chain)><solver-rnea-include()><endif>
@@ -544,6 +549,7 @@ struct world_ports {
     const double *effort = nullptr;
     const std::uint64_t *seq = nullptr;
     double *effort_cmd = nullptr;
+    double *position_cmd = nullptr;
 };
 <endif>
 
@@ -595,5 +601,6 @@ fsm-motion-reentry(m, fsm) ::= <<
 // One array per runtime, not per solver record: the solvers sharing a chain read one set of ports.
 chain-port-member(solver) ::= <<
 <if(solver.runtime.owner)>    world_ports ports_<solver.runtime.id>[<length(solver.chain.joints)>];
+    <runtime-ctrl-mode-type()> *ctrl_mode_<solver.runtime.id> = nullptr;
 <endif>
 >>

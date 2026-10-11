@@ -36,9 +36,9 @@ from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 class AccelerationConstraint:
     """An acceleration constraint (axis- or direction-aligned) on a solver.
 
-    One driver record for both driven families: `acceleration_energy` and `saturation` are set
-    only by ACHD, `acceleration` only by RNE. Absent means the other family built this record --
-    no sentinel, the family that built it is the fact.
+    One driver record for every driven family: `acceleration_energy` and `saturation` are set
+    only by ACHD, `acceleration` only by RNE, `velocity` only by IVK. Absent means another family
+    built this record -- no sentinel, the family that built it is the fact.
     """
 
     id: str
@@ -47,6 +47,7 @@ class AccelerationConstraint:
     axis: Axis | None
     acceleration_energy: Quantity | None = None
     acceleration: Quantity | None = None
+    velocity: Quantity | None = None
     as_seen_by: Frame | None = None
     base_aligned: bool = True
     direction: Direction | None = None
@@ -60,7 +61,8 @@ class AccelerationConstraint:
 @dataclass(frozen=True, eq=False)
 class SolverFamily:
     """What a solver algorithm accepts: the slot its acceleration drivers fill and their payload
-    per subspace, its axis limits, and whether it is only read or only forwards commands.
+    per subspace, its axis limits, whether it is only read or only forwards commands, and what
+    it commands the joints with.
     """
 
     name: str = ""
@@ -72,6 +74,8 @@ class SolverFamily:
     axes_must_be_distinct: bool = False
     read_only: bool = False
     forwards_commands: bool = False
+    # "torque" or "position"; a joint impedance through IPK commands torque instead.
+    command_mode: str = "torque"
 
     def payload(self, id: str, subspace: Subspace) -> Quantity:
         """The quantity one axis's driver carries, in this family's kind and unit."""
@@ -109,15 +113,34 @@ class JointForceSpecification:
 
 
 @dataclass
+class PoseTarget:
+    """What inverse position kinematics solves for: the chain tip's measured pose and the pose it
+    is held equal to, both in one frame, and the joint impedance acting toward the solution.
+
+    Without gains the solution is commanded as joint positions.
+    """
+
+    id: str
+    measured: str
+    reference: str
+    # Per chain joint, in chain order; empty without a joint impedance.
+    stiffness: list[float] = field(default_factory=list)
+    damping: list[float] = field(default_factory=list)
+    type: str = field(default="PoseTarget")
+
+
+@dataclass
 class MotionDrivers:
-    """The physically distinct inputs accepted by a dynamics solver pipeline, for the handler
-    whose controllers state them."""
+    """The physically distinct inputs accepted by a solver pipeline, for the handler whose
+    controllers state them."""
 
     id: str
     acceleration_constraint: list[AccelerationConstraint]
     cartesian_force: list[CartesianForceSpecification]
     handler: str
     cartesian_acceleration: list[AccelerationConstraint] = field(default_factory=list)
+    cartesian_velocity: list[AccelerationConstraint] = field(default_factory=list)
+    pose_target: PoseTarget | None = None
     joint_force: list[JointForceSpecification] = field(default_factory=list)
     has_cartesian_force: bool = False
     type: str = field(default="MotionDrivers")

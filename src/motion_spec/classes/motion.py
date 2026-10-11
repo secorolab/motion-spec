@@ -127,6 +127,8 @@ class MotionSolverSlice:
     output: list
     motion_driver: MotionDrivers
     read_only: bool = False
+    # "torque" or "position", what this motion switches the arm to on entry; None when only read.
+    command_mode: str | None = None
     gripper_joint_outputs: list = field(default_factory=list)
     joint_space_samples: list = field(default_factory=list)
     joint_space_cmd_samples: list = field(default_factory=list)

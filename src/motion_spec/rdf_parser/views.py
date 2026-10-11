@@ -290,7 +290,8 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
         equality-constraint controller drives it
     """
     groups: dict[str, PoseErrorRegroup] = {}
-    indexed = views_by_subobject(views)
+    # Only a per-axis view joins a group; a whole part's view reads its subobject as the pose itself.
+    indexed = views_by_subobject({key: view for key, view in views.items() if view.axis is not None})
     for node, evaluator in evaluators_by_node.items():
         if CSTR_HDL["ErrorEvaluator"] not in get_node_types(model.graph, node):
             continue

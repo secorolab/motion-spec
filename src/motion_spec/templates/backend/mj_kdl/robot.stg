@@ -106,7 +106,7 @@ struct manipulator_robot {
 >>
 
 world-chain-port-address(solver, index) ::= <<
-world_ports{.position = &mj_<solver.runtime.id>.jnt_pos_msr[<index>], .velocity = &mj_<solver.runtime.id>.jnt_vel_msr[<index>], .effort = &mj_<solver.runtime.id>.jnt_trq_msr[<index>], .effort_cmd = &mj_<solver.runtime.id>.jnt_trq_cmd[<index>]\}
+world_ports{.position = &mj_<solver.runtime.id>.jnt_pos_msr[<index>], .velocity = &mj_<solver.runtime.id>.jnt_vel_msr[<index>], .effort = &mj_<solver.runtime.id>.jnt_trq_msr[<index>], .effort_cmd = &mj_<solver.runtime.id>.jnt_trq_cmd[<index>], .position_cmd = &mj_<solver.runtime.id>.jnt_pos_cmd[<index>]\}
 >>
 
 world-port-free-root(port)     ::= "&mj_free_root_<port.slot>->pose"
@@ -225,7 +225,19 @@ robot-init(solver) ::= <<
 <endif>
 >>
 
-ctrl-mode(solver) ::= "<if(solver.runtime.commanded)>TORQUE<else>POSITION<endif>"
+ctrl-mode(solver) ::= "<mj-ctrl-mode.(solver.runtime.command_mode)>"
+
+// update() switches the arm when ctrl_mode changes, before it applies the new mode's command.
+runtime-ctrl-mode-type() ::= "mj_kdl::CtrlMode"
+runtime-ctrl-mode-address(solver) ::= "&mj_<solver.runtime.id>.ctrl_mode"
+runtime-ctrl-mode(mode) ::= "mj_kdl::CtrlMode::<mj-ctrl-mode.(mode)>"
+
+// A runtime only read has no mode and is held by its position servos.
+mj-ctrl-mode ::= [
+    "torque": "TORQUE",
+    "position": "POSITION",
+    default: "POSITION"
+]
 
 robot-chain(solver) ::= <<
 <if(solver.runtime.owner)>    KDL::Chain *chain_<solver.runtime.id> = &mj_<solver.runtime.id>.chain;

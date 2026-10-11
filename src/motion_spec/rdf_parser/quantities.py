@@ -471,7 +471,10 @@ def orientation_representation(model, node) -> str:
     if node is None:
         return "quaternion"
     types = get_node_types(model.graph, node)
-    if _orientation_composition(model, node) is not None:
+    if (
+        _orientation_composition(model, node) is not None
+        or model.graph.value(node, CSTR["reference-value"]) is not None
+    ):
         return "relative"
     if URI_GEOM_TYPE_EULER_ANGLES in types and URI_GEOM_TYPE_ANGLES_ABG not in types:
         return "euler"
@@ -484,6 +487,19 @@ def relative_orientation(model, node) -> list[dict]:
     ordered component values and rotation representation).
     """
     graph = model.graph
+    # An orientation stated by reference is the referenced pose's, composed with nothing.
+    reference = graph.value(node, CSTR["reference-value"])
+    if reference is not None:
+        pose = graph.value(reference, MAP.superobject)
+        if (
+            pose is None
+            or local_name(graph.value(reference, MAP.subspace)) != "orientation"
+            or URI_GEOM_TYPE_POSE_COORD not in get_node_types(graph, pose)
+        ):
+            raise ConstraintViolation(
+                "geometry", f"Orientation '{node}' refers to '{reference}', no pose's orientation."
+            )
+        return [{"pose": model.id(pose)}]
     composition = _orientation_composition(model, node)
     if composition is None:
         raise ConstraintViolation(

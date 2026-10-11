@@ -960,7 +960,11 @@ def place_solver_on_chain(solver, world_index: dict, root_by_segment: dict) -> l
         *(
             constraint
             for driver in solver.motion_drivers
-            for constraint in (*driver.acceleration_constraint, *driver.cartesian_acceleration)
+            for constraint in (
+                *driver.acceleration_constraint,
+                *driver.cartesian_acceleration,
+                *driver.cartesian_velocity,
+            )
         ),
         *(force for driver in solver.motion_drivers for force in driver.cartesian_force),
     ]
@@ -1248,7 +1252,9 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
     for node in _solver_nodes(model, derivation):
         setup = setups.get(graph.value(node, AGN["of-agent"]), default_setup)
         solver = _solver_with_input_and_output(model, node, setup)
-        solver.motion_drivers = constraint_handler.motion_drivers(model, derivation, node)
+        solver.motion_drivers = constraint_handler.motion_drivers(
+            model, derivation, node, solver.chain
+        )
         # An observation the solver also states as an output is that same output, named the way
         # the runtime knows it.
         observed = _world_solver_outputs(model, setup, backend)
@@ -1258,19 +1264,25 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
             for out in [*(out for out in solver.output if out.id not in observed_ids), *observed]
             if out.id not in detect_pose_ids
         ]
-        # An acceleration constraint is base-aligned when its axis frame is the chain root. Both
-        # solver families ask: the row is a direction in the solver's frame either way, and one
+        # A driven direction is base-aligned when its axis frame is the chain root. Every
+        # solver family asks: the row is a direction in the solver's frame either way, and one
         # taken in a frame that moves with the arm has to be turned into the root's axes.
         root_body = _body_name(solver.chain.root)
         for driver in solver.motion_drivers:
-            for constraint in (*driver.acceleration_constraint, *driver.cartesian_acceleration):
+            for constraint in (
+                *driver.acceleration_constraint,
+                *driver.cartesian_acceleration,
+                *driver.cartesian_velocity,
+            ):
                 constraint.base_aligned = (
                     constraint.as_seen_by is None
                     or _body_name(constraint.as_seen_by.id) == root_body
                 )
         solver.constraint_rows = max(
             (
-                len(driver.acceleration_constraint) + len(driver.cartesian_acceleration)
+                len(driver.acceleration_constraint)
+                + len(driver.cartesian_acceleration)
+                + len(driver.cartesian_velocity)
                 for driver in solver.motion_drivers
             ),
             default=0,

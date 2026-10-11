@@ -91,6 +91,8 @@ inline void control_<motion.id>(
     [[maybe_unused]] robot_io &robot<if(motion.control_needs_events)>,
     motion_spec_event_buffer &events<endif>) {
 <schedule-block(motion.while_pre_schedule, functions, views)>
+<! Again here: a component the until or while_pre schedule computes is fresh only after them. !>
+<motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
 <motion.pose_axis_error_groups:{group | <pose-axis-error-group(group, views)>}; separator="\n">
 <schedule-block(motion.while_schedule, functions, views)>
 <if(motion.while_monitors)>

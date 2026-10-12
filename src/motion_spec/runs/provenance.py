@@ -510,14 +510,14 @@ def record_execution(
         for entity, activity in generation.subject_objects(PROV.wasGeneratedBy)
         if str(activity).endswith("/activity/build")
     ]
+    used = [record_arguments(graph, run_id, arguments), *executables]
+    if platform_facts.get("uri"):
+        used.append(URIRef(platform_facts["uri"]))
+        add_entity(graph, used[-1])
     load_execution_prov(
         graph,
         run,
-        [
-            record_arguments(graph, run_id, arguments),
-            *executables,
-            *([URIRef(platform_facts["uri"])] if platform_facts.get("uri") else []),
-        ],
+        used,
         add_package(graph, "motion_spec"),
         started,
     )

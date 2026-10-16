@@ -8,6 +8,7 @@ The graph carries no numbers for these; the generated controller draws them once
 from __future__ import annotations
 
 import math
+from hashlib import sha256
 
 import numpy as np
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
@@ -27,9 +28,10 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_VECTOR_XYZ,
 )
 from rdflib.namespace import RDF
+from scene_dsl.rdf.ktree import SHAPES
 
 from motion_spec.classes.sampling import SampledQuantity
-from motion_spec.rdf_parser.model import seconds, si
+from motion_spec.rdf_parser.model import identifier, local_name, seconds, si
 from motion_spec.rdf_parser.quantities import is_duration
 
 
@@ -74,27 +76,48 @@ def sampled_quantities(
         scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))
         position = frame is not None or str(node) in placements
+        shape_size = (
+            next(model.graph.subjects(SHAPES["has-dimension"], node), None) is not None
+            or next(model.graph.subjects(SHAPES.scale, node), None) is not None
+        )
+        if shape_size and (
+            dist != "uniform_real"
+            or any(
+                not math.isfinite(c["a"])
+                or not math.isfinite(c["b"])
+                or c["a"] <= 0
+                or c["b"] <= c["a"]
+                for c in components
+            )
+        ):
+            raise ConstraintViolation(
+                "sampling", f"Shape size '{node}' needs positive finite uniform bounds."
+            )
+        shape_vector = (
+            SHAPES.DimensionsXYZ in get_node_types(model.graph, node)
+            or SHAPES.ScaleXYZ in get_node_types(model.graph, node)
+        )
         if not position and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
                 "sampling",
                 f"'{node}' is a position with coordinates of its own and a distribution to draw "
                 f"from: the scene places the frame, so nothing should draw it",
             )
-        if len(components) != (3 if position else 1):
+        if len(components) != (3 if position or shape_vector else 1):
             raise ConstraintViolation(
                 "sampling",
                 f"'{node}' draws {len(components)} numbers from '{distribution}', which is not "
-                f"{'a position' if position else 'a scalar'}",
+                f"{'a position or size vector' if position or shape_vector else 'a scalar'}",
             )
         result.append(
             SampledQuantity(
-                id=model.id(node),
+                id=shape_sample_id(node) if shape_size else model.id(node),
                 uri=str(node),
                 dist=dist,
                 components=components,
                 size=len(components),
                 scale=scale,
-                data_member=None if position else model.id(node),
+                data_member=None if position or shape_size else model.id(node),
                 segment=frame["name"] if frame else None,
                 parent=frame["parent"] if frame else None,
                 rotation=frame["rotation_xyzw"] if frame else None,
@@ -102,6 +125,11 @@ def sampled_quantities(
             )
         )
     return result
+
+
+def shape_sample_id(node) -> str:
+    """A stable code name: scene namespaces need not be declared by the motion app."""
+    return f"shape_{identifier(local_name(node))}_{sha256(str(node).encode()).hexdigest()[:12]}"
 
 
 def _components(distribution: DistributionModel) -> tuple[str, list[dict]]:

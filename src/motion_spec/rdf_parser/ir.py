@@ -34,6 +34,7 @@ from motion_spec.rdf_parser.data_access import (
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.sampling import sampled_quantities
 from motion_spec.rdf_parser.scene import read_scene
+from motion_spec.rdf_parser.shapes import read_shape_bodies
 from motion_spec.rdf_parser.views import read_data_structures, read_views, views_for_access
 
 _ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
@@ -59,6 +60,8 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     backend = platform["backend"]
     setups, _ordered, world_trees = agents.robot_setups(model)
     scene = read_scene(model, world_trees)
+    if backend == "mj_kdl":
+        scene.shape_bodies = read_shape_bodies(model, scene)
     derivation = constraint_handler.solver_derivation_context(model)
     sampling = sampled_quantities(
         model, world_trees, {obj.draw_uri for obj in scene.objects if obj.draw_uri}

@@ -243,9 +243,9 @@ def asset_candidates(path: str) -> list[Path]:
 
 
 def _asset_nodes(node) -> Iterator[dict]:
-    """Every mapping in the IR that names an MJCF file, wherever it sits."""
+    """Every mapping in the IR that names an MJCF or STL file, wherever it sits."""
     if isinstance(node, dict):
-        if isinstance(node.get("path"), str) and node["path"].endswith(".xml"):
+        if isinstance(node.get("path"), str) and Path(node["path"]).suffix.lower() in {".xml", ".stl"}:
             yield node
         yield from chain.from_iterable(_asset_nodes(value) for value in node.values())
     elif isinstance(node, list):

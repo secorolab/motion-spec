@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""What the run draws at startup: every `distrib:SampledQuantity`, read as its distribution.
+"""What the run draws at startup: sampled quantities and mesh scales.
 
 The graph carries no numbers for these; the generated controller draws them once per run.
 """
@@ -49,7 +49,7 @@ def unplaced_frames(tree: dict) -> list[dict]:
 def sampled_quantities(
     model, trees: list[dict], placements: set[str] = frozenset()
 ) -> list[SampledQuantity]:
-    """Every sampled quantity of the model, in the order the model states them.
+    """Every sampled quantity and scaled mesh, in graph order.
 
     PLACEMENTS are the drawn positions the scene places an object by: positions too, but on no
     tree, since the simulator places the object.
@@ -60,6 +60,11 @@ def sampled_quantities(
         for frame in unplaced_frames(tree)
     }
     nodes = list(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
+    nodes.extend(
+        shape for shape in model.graph.subjects(RDF.type, SHAPES.Scale)
+        if model.graph.value(shape, URI_DISTRIB_PRED_FROM_DISTRIB) is not None
+        and shape not in nodes
+    )
     sampled = {str(node) for node in nodes}
     for coord in (coord for coord in frames if coord not in sampled):
         _, frame = frames[coord]
@@ -78,7 +83,7 @@ def sampled_quantities(
         position = frame is not None or str(node) in placements
         shape_size = (
             next(model.graph.subjects(SHAPES["has-dimension"], node), None) is not None
-            or next(model.graph.subjects(SHAPES.scale, node), None) is not None
+            or (node, RDF.type, SHAPES.Scale) in model.graph
         )
         if shape_size and (
             dist != "uniform_real"
@@ -93,7 +98,9 @@ def sampled_quantities(
             raise ConstraintViolation(
                 "sampling", f"Shape size '{node}' needs positive finite uniform bounds."
             )
-        shape_vector = shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node)
+        shape_vector = shape_size and bool(
+            {URI_GEOM_TYPE_VECTOR_XYZ, SHAPES.Scale} & get_node_types(model.graph, node)
+        )
         if not position and not shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
                 "sampling",

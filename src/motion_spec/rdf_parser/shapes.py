@@ -19,6 +19,9 @@ from rdf_utils.models.geom_coord import to_metres
 from rdf_utils.models.vocab import (
     URI_DISTRIB_PRED_FROM_DISTRIB,
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_GEOM_PRED_X,
+    URI_GEOM_PRED_Y,
+    URI_GEOM_PRED_Z,
     URI_GEOM_TYPE_VECTOR_XYZ,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
@@ -87,19 +90,33 @@ def _dimension(graph, shape, kind, index=0, factor=1.0) -> ShapeSize:
 
 
 def _scale(graph, shape) -> list[ShapeSize]:
-    sample = list(graph.objects(shape, SHAPES.scale))
-    if sample:
-        if len(sample) != 1 or (sample[0], RDF.type, URI_GEOM_TYPE_VECTOR_XYZ) not in graph:
-            raise ConstraintViolation("scene", f"Mesh '{shape}' needs one sampled scale.")
-        return [_size(graph, sample[0], index=i) for i in range(3)]
-    values = [list(graph.objects(shape, SHAPES[f"scale-{axis}"])) for axis in "xyz"]
-    if not any(values):
+    predicates = (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
+    distributions = list(graph.objects(shape, URI_DISTRIB_PRED_FROM_DISTRIB))
+    if (shape, RDF.type, SHAPES.Scale) not in graph:
+        if distributions or any(
+            graph.value(shape, predicate) is not None for predicate in predicates
+        ):
+            raise ConstraintViolation("scene", f"Mesh '{shape}' needs Scale type for its factors.")
         return [ShapeSize(value=1.0) for _ in range(3)]
-    if any(len(value) != 1 for value in values):
-        raise ConstraintViolation("scene", f"Mesh '{shape}' needs all three scale factors.")
+    if distributions:
+        if len(distributions) != 1 or any(
+            graph.value(shape, predicate) is not None for predicate in predicates
+        ):
+            raise ConstraintViolation("scene", f"Mesh '{shape}' needs only one sampled scale.")
+        kind, components = _components(DistributionModel(distributions[0], graph))
+        if kind != "uniform_real" or len(components) != 3:
+            raise ConstraintViolation("scene", f"Mesh '{shape}' needs a three-component uniform scale.")
+        return [
+            ShapeSize(draw=shape_sample_id(shape), uri=str(shape), index=i)
+            for i in range(3)
+        ]
     result = []
-    for value in values:
-        number = float(value[0])
+    for predicate in predicates:
+        value = _one(graph, shape, predicate, f"Mesh scale '{shape}'")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as error:
+            raise ConstraintViolation("scene", f"Mesh '{shape}' needs numeric scale factors.") from error
         if not math.isfinite(number) or number <= 0:
             raise ConstraintViolation("scene", f"Mesh '{shape}' needs positive finite scale.")
         result.append(ShapeSize(value=number))

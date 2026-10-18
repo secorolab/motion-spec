@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: MPL-2.0
 """Load a .scenex in mj_kdl_wrapper and view it, without generating or building anything.
 
-The scene comes from `motion_spec.rdf_parser.scene.read_scene` -- the same reader the
-generated C++ uses -- so what this shows is what a run of the model would compose: robots,
-attachments, objects and placement. Given a robot config, every driven chain is put at its
-start pose, which is what makes it useful for checking a mount.
+Assets come from `motion_spec.rdf_parser.scene.read_scene`, the same reader the
+generated C++ uses. Scene-authored shapes are assembled at startup. Given a robot config,
+every driven chain is put at its start pose.
 """
 
 from __future__ import annotations
 
+import tempfile
 import tomllib
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import mj_kdl_wrapper as mjk
 import rdflib
@@ -23,6 +24,7 @@ from motion_spec.generation.codegen import asset_candidates
 from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
+from motion_spec.rdf_parser.shapes import draw_shape_sizes, read_shape_bodies, size_value
 
 
 def scenex_model(scenex_path: Path) -> Model:
@@ -93,7 +95,7 @@ def find_asset(relative: str, start: Path) -> str:
     Raises:
         FileNotFoundError: no candidate exists, so the scene cannot be composed.
     """
-    path = Path(relative)
+    path = Path(relative).expanduser()
     if path.is_absolute():
         if path.exists():
             return str(path)
@@ -201,6 +203,56 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
     return spec
 
 
+def _numbers(values) -> str:
+    return " ".join(str(value) for value in values)
+
+
+def add_shape_previews(
+    spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: Path, directory: Path,
+    seed: int | None = None,
+) -> None:
+    """Draw each body of shapes as one fixed MJCF object, using one draw per sampled size."""
+    bodies = read_shape_bodies(model, scene)
+    draws = draw_shape_sizes(model, bodies, seed)
+    previews = []
+    for body in bodies:
+        xml = ET.Element("mujoco")
+        world = ET.SubElement(xml, "worldbody")
+        parent = ET.SubElement(world, "body", name=body.name)
+        for shape in body.geoms:
+            geom = ET.SubElement(parent, "geom", name=shape.name)
+            geom.set("pos", _numbers(shape.pos))
+            geom.set("quat", _numbers(shape.quat_wxyz))
+            geom.set("rgba", _numbers(shape.rgba))
+            if shape.kind == "mesh":
+                asset = xml.find("asset")
+                if asset is None:
+                    asset = ET.Element("asset")
+                    xml.insert(0, asset)
+                name = f"mesh_{shape.name}"
+                ET.SubElement(
+                    asset, "mesh", name=name, file=find_asset(shape.path, start),
+                    scale=_numbers(size_value(value, draws) for value in shape.size),
+                )
+                geom.set("type", "mesh")
+                geom.set("mesh", name)
+            else:
+                geom.set("type", shape.kind)
+                geom.set("size", _numbers(size_value(value, draws) for value in shape.size))
+        path = directory / f"{body.name}.xml"
+        ET.ElementTree(xml).write(path, encoding="utf-8", xml_declaration=True)
+        obj = mjk.SceneObject()
+        obj.name = body.name
+        obj.prefix = f"{body.name}_"
+        obj.attach_to = _target(body.attach_kind, body.attach_name)
+        obj.mjcf_path = str(path)
+        obj.pos = body.pos
+        obj.quat = body.quat
+        obj.fixed = True
+        previews.append(obj)
+    spec.objects = [*spec.objects, *previews]
+
+
 def describe(spec: mjk.SceneSpec, env: mjk.Env) -> None:
     print(f"timestep: {spec.timestep} s, floor at the anchor (z = {spec.floor_z} m)")
     for robot in spec.robots:
@@ -222,18 +274,27 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     model = scenex_model(scenex_path)
     poses = home_poses(model, config) if config else []
     _setups, _ordered, trees = agents.robot_setups(model)
-    spec = build_spec(read_scene(model, trees), scenex_path)
-    env = mjk.Env.build(spec)
-    try:
-        _robots = apply_home_poses(env, poses)
-        describe(spec, env)
-        if headless:
-            return
-        env.open_viewer(scenex_path.name)
-        while True:
-            env.update()
-            if not env.step():
-                break
-            env.pace()  # step() never sleeps; an unpaced loop starves the render thread
-    finally:
-        env.close()
+    scene = read_scene(model, trees)
+    spec = build_spec(scene, scenex_path)
+    seed = None
+    if config:
+        with config.open("rb") as stream:
+            seed = tomllib.load(stream).get("sampling", {}).get("seed")
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
+            raise ValueError("robot config [sampling] 'seed' must be a non-negative integer")
+    with tempfile.TemporaryDirectory(prefix="motion-spec-shapes-") as temporary:
+        add_shape_previews(spec, model, scene, scenex_path, Path(temporary), seed)
+        env = mjk.Env.build(spec)
+        try:
+            _robots = apply_home_poses(env, poses)
+            describe(spec, env)
+            if headless:
+                return
+            env.open_viewer(scenex_path.name)
+            while True:
+                env.update()
+                if not env.step():
+                    break
+                env.pace()  # step() never sleeps; an unpaced loop starves the render thread
+        finally:
+            env.close()

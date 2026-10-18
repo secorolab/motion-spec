@@ -65,19 +65,23 @@ def _color(graph, shape) -> list[float]:
     return rgba
 
 
-def _size(graph, node, unit=None, index=0, factor=1.0) -> ShapeSize:
+def _size(
+    graph, node, unit=None, index=0, factor=1.0, predicate=URI_QUDT_PRED_VALUE
+) -> ShapeSize:
     if (node, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY) in graph:
         return ShapeSize(
             draw=shape_sample_id(node), uri=str(node), index=index, factor=factor
         )
-    value = float(_one(graph, node, URI_QUDT_PRED_VALUE, str(node)))
+    value = float(_one(graph, node, predicate, str(node)))
     metres = to_metres([value], unit, node)[0] if unit is not None else value
     if not math.isfinite(metres) or metres <= 0:
         raise ConstraintViolation("scene", f"Shape size '{node}' must be finite and positive.")
     return ShapeSize(value=metres * factor)
 
 
-def _dimension(graph, shape, kind, index=0, factor=1.0) -> ShapeSize:
+def _dimension(
+    graph, shape, kind, index=0, factor=1.0, predicate=URI_QUDT_PRED_VALUE
+) -> ShapeSize:
     nodes = [
         node for node in graph.objects(shape, SHAPES["has-dimension"])
         if (node, RDF.type, kind) in graph
@@ -86,7 +90,7 @@ def _dimension(graph, shape, kind, index=0, factor=1.0) -> ShapeSize:
         raise ConstraintViolation("scene", f"Shape '{shape}' needs one {local_name(kind)}.")
     node = nodes[0]
     unit = _one(graph, node, URI_QUDT_PRED_UNIT, str(node))
-    return _size(graph, node, unit, index, factor)
+    return _size(graph, node, unit, index, factor, predicate)
 
 
 def _scale(graph, shape) -> list[ShapeSize]:
@@ -195,16 +199,12 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             side = _dimension(graph, shape, ASTRO.length, factor=0.5)
             geom = MjcfShapeGeom(**common, kind="box", size=[side, side, side])
         elif (shape, RDF.type, ASTRO.rectangularPrism) in graph:
-            if any(
-                (node, RDF.type, URI_GEOM_TYPE_VECTOR_XYZ) in graph
-                for node in graph.objects(shape, SHAPES["has-dimension"])
-            ):
-                size = [_dimension(graph, shape, URI_GEOM_TYPE_VECTOR_XYZ, i, 0.5) for i in range(3)]
-            else:
-                size = [
-                    _dimension(graph, shape, SHAPES[f"{axis.upper()}Length"], factor=0.5)
-                    for axis in "xyz"
-                ]
+            size = [
+                _dimension(graph, shape, URI_GEOM_TYPE_VECTOR_XYZ, i, 0.5, predicate)
+                for i, predicate in enumerate(
+                    (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
+                )
+            ]
             geom = MjcfShapeGeom(**common, kind="box", size=size)
         elif (shape, RDF.type, SHAPES.Cylinder) in graph:
             geom = MjcfShapeGeom(

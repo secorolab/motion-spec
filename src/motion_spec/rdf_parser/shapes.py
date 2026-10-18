@@ -19,6 +19,7 @@ from rdf_utils.models.geom_coord import to_metres
 from rdf_utils.models.vocab import (
     URI_DISTRIB_PRED_FROM_DISTRIB,
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_GEOM_TYPE_VECTOR_XYZ,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
     URI_QUDT_PRED_UNIT,
@@ -88,7 +89,7 @@ def _dimension(graph, shape, kind, index=0, factor=1.0) -> ShapeSize:
 def _scale(graph, shape) -> list[ShapeSize]:
     sample = list(graph.objects(shape, SHAPES.scale))
     if sample:
-        if len(sample) != 1 or (sample[0], RDF.type, SHAPES.ScaleXYZ) not in graph:
+        if len(sample) != 1 or (sample[0], RDF.type, URI_GEOM_TYPE_VECTOR_XYZ) not in graph:
             raise ConstraintViolation("scene", f"Mesh '{shape}' needs one sampled scale.")
         return [_size(graph, sample[0], index=i) for i in range(3)]
     values = [list(graph.objects(shape, SHAPES[f"scale-{axis}"])) for axis in "xyz"]
@@ -107,6 +108,8 @@ def _scale(graph, shape) -> list[ShapeSize]:
 
 def _mesh_path(graph, shape) -> str:
     path = str(_one(graph, shape, SHAPES["source-path"], f"Mesh '{shape}'"))
+    if Path(path).suffix.lower() != ".stl":
+        raise ConstraintViolation("scene", f"Mesh '{shape}' requires a .stl path.")
     if Path(path).is_absolute():
         return path
     for _, _, _, source in graph.quads((shape, SHAPES["source-path"], None, None)):
@@ -176,10 +179,10 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             geom = MjcfShapeGeom(**common, kind="box", size=[side, side, side])
         elif (shape, RDF.type, ASTRO.rectangularPrism) in graph:
             if any(
-                (node, RDF.type, SHAPES.DimensionsXYZ) in graph
+                (node, RDF.type, URI_GEOM_TYPE_VECTOR_XYZ) in graph
                 for node in graph.objects(shape, SHAPES["has-dimension"])
             ):
-                size = [_dimension(graph, shape, SHAPES.DimensionsXYZ, i, 0.5) for i in range(3)]
+                size = [_dimension(graph, shape, URI_GEOM_TYPE_VECTOR_XYZ, i, 0.5) for i in range(3)]
             else:
                 size = [
                     _dimension(graph, shape, SHAPES[f"{axis.upper()}Length"], factor=0.5)
@@ -196,11 +199,6 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
                 ],
             )
         elif (shape, RDF.type, SHAPES.MeshShape) in graph:
-            format_ = str(_one(graph, shape, SHAPES["file-format"], f"Mesh '{shape}'"))
-            if format_ != "stl":
-                raise ConstraintViolation(
-                    "scene", f"Mesh '{shape}' has unsupported format '{format_}'."
-                )
             path = _mesh_path(graph, shape)
             geom = MjcfShapeGeom(
                 **common, kind="mesh", size=_scale(graph, shape),

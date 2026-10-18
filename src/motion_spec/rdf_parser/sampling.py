@@ -93,11 +93,8 @@ def sampled_quantities(
             raise ConstraintViolation(
                 "sampling", f"Shape size '{node}' needs positive finite uniform bounds."
             )
-        shape_vector = (
-            SHAPES.DimensionsXYZ in get_node_types(model.graph, node)
-            or SHAPES.ScaleXYZ in get_node_types(model.graph, node)
-        )
-        if not position and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
+        shape_vector = shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node)
+        if not position and not shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
                 "sampling",
                 f"'{node}' is a position with coordinates of its own and a distribution to draw "

@@ -11,6 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import numpy as np
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
@@ -28,7 +29,7 @@ from rdf_utils.models.vocab import (
     URI_QUDT_PRED_UNIT,
     URI_QUDT_PRED_VALUE,
 )
-from rdflib.namespace import RDF
+from rdflib.namespace import RDF, XSD
 from scene_dsl.rdf.ktree import ASTRO, COL, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
@@ -142,6 +143,39 @@ def _mesh_path(graph, shape) -> str:
     return path
 
 
+def _linear_transform(graph, shape) -> list[float] | None:
+    nodes = list(graph.objects(shape, SHAPES["linear-transform"]))
+    if not nodes:
+        return None
+    if len(nodes) != 1:
+        raise ConstraintViolation("scene", f"Shape '{shape}' needs at most one linear transform.")
+    values = []
+    current = nodes[0]
+    for _ in range(9):
+        entries = list(graph.objects(current, RDF.first))
+        tails = list(graph.objects(current, RDF.rest))
+        if (
+            len(entries) != 1 or len(tails) != 1
+            or not isinstance(entries[0], rdflib.Literal)
+            or entries[0].datatype != XSD.double
+        ):
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs nine xsd:double matrix values.")
+        try:
+            values.append(float(entries[0]))
+        except (TypeError, ValueError) as error:
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs numeric matrix values.") from error
+        current = tails[0]
+    if current != RDF.nil:
+        raise ConstraintViolation("scene", f"Shape '{shape}' needs exactly nine matrix values.")
+    matrix = np.asarray(values, dtype=float)
+    if (
+        not np.isfinite(matrix).all()
+        or np.linalg.matrix_rank(matrix.reshape(3, 3)) < 3
+    ):
+        raise ConstraintViolation("scene", f"Shape '{shape}' needs an invertible finite 3x3 transform.")
+    return values
+
+
 def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
     graph = model.graph
     anchor = quantities.anchor_frame(model)
@@ -190,6 +224,7 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             pos=pos,
             quat_wxyz=[quat[3], *quat[:3]],
             rgba=_color(graph, shape),
+            transform=_linear_transform(graph, shape),
         )
         if (shape, RDF.type, ASTRO.sphere) in graph:
             geom = MjcfShapeGeom(
@@ -217,6 +252,8 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             )
         elif (shape, RDF.type, SHAPES.MeshShape) in graph:
             path = _mesh_path(graph, shape)
+            if common["transform"] is not None and (shape, RDF.type, SHAPES.Scale) in graph:
+                raise ConstraintViolation("scene", f"Mesh '{shape}' cannot combine scale and transform.")
             geom = MjcfShapeGeom(
                 **common, kind="mesh", size=_scale(graph, shape),
                 path=path, cpp_path_literal=json.dumps(path, ensure_ascii=False),

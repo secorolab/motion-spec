@@ -309,8 +309,30 @@ def generate_code(
     )
     written = [contract_dir / "frame_layout.json", contract_dir / "frame_log_header.pb"]
 
+    if ir["configuration"]["backend"] == "mj_kdl":
+        from motion_spec.rdf_parser.shape_mesh import base_triangles, write_obj
+
+        for body in ir["composition"]["scene"].get("shape_bodies") or []:
+            for geom in body.get("geoms") or []:
+                if not geom.get("transform"):
+                    continue
+                source = None
+                if geom["kind"] == "mesh":
+                    source = next(
+                        candidate for candidate in asset_candidates(geom["path"])
+                        if candidate.is_file()
+                    )
+                base = (output_dir / "assets" / f"{geom['cpp_name']}.obj").resolve()
+                write_obj(base, base_triangles(geom["kind"], source))
+                geom["cpp_base_mesh_literal"] = json.dumps(str(base))
+                written.append(base)
+
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
+    if ir["configuration"]["backend"] == "mj_kdl":
+        affine_header = headers_dir / "affine_mesh.hpp"
+        shutil.copyfile(TEMPLATES / "backend" / "mj_kdl" / "affine_mesh.hpp", affine_header)
+        written.append(affine_header)
     # coord-dsl's FSM header stays at the source root (like frame_layout.h); the bare
     # include in algorithm_data.hpp resolves it via the root include dir, so no headers/ copy
     # is needed — copying it there just duplicated the file in the tree and the archive.

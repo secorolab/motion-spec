@@ -175,6 +175,8 @@ class MjcfShapeGeom:
     quat_wxyz: list[float]
     rgba: list[float]
     size: list[ShapeSize]
+    transform: list[float] | None = None
+    cpp_base_mesh_literal: str = ""
     path: str = ""
     cpp_path_literal: str = ""
     has_path: bool = False

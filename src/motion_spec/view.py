@@ -25,6 +25,7 @@ from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
 from motion_spec.rdf_parser.shapes import draw_shape_sizes, read_shape_bodies, size_value
+from motion_spec.rdf_parser.shape_mesh import base_triangles, write_obj
 
 
 def scenex_model(scenex_path: Path) -> Model:
@@ -224,16 +225,29 @@ def add_shape_previews(
             geom.set("pos", _numbers(shape.pos))
             geom.set("quat", _numbers(shape.quat_wxyz))
             geom.set("rgba", _numbers(shape.rgba))
-            if shape.kind == "mesh":
+            if shape.kind == "mesh" or shape.transform is not None:
                 asset = xml.find("asset")
                 if asset is None:
                     asset = ET.Element("asset")
                     xml.insert(0, asset)
                 name = f"mesh_{shape.name}"
-                ET.SubElement(
-                    asset, "mesh", name=name, file=find_asset(shape.path, start),
-                    scale=_numbers(size_value(value, draws) for value in shape.size),
-                )
+                if shape.transform is not None:
+                    values = [size_value(value, draws) for value in shape.size]
+                    if shape.kind == "sphere":
+                        factors = values * 3
+                    elif shape.kind == "cylinder":
+                        factors = [values[0], values[0], values[1]]
+                    else:
+                        factors = values
+                    source = Path(find_asset(shape.path, start)) if shape.kind == "mesh" else None
+                    path = directory / f"{body.cpp_name}_{shape.cpp_name}.obj"
+                    write_obj(path, base_triangles(shape.kind, source), shape.transform, factors)
+                    ET.SubElement(asset, "mesh", name=name, file=str(path))
+                else:
+                    ET.SubElement(
+                        asset, "mesh", name=name, file=find_asset(shape.path, start),
+                        scale=_numbers(size_value(value, draws) for value in shape.size),
+                    )
                 geom.set("type", "mesh")
                 geom.set("mesh", name)
             else:

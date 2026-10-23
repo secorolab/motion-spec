@@ -257,6 +257,7 @@ robot-shutdown(solver) ::= <<
 >>
 
 app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
+#include "headers/affine_mesh.hpp"
 <if(has_serial_chain)>
 #include \<algorithm\>
 #include \<cstring\>
@@ -506,7 +507,22 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         \}
         xml \<\< char(60) \<\< "mujoco>";
         xml \<\< char(60) \<\< "asset>";
-<body.geoms:{geom |<if(geom.has_path)>
+<body.geoms:{geom |<if(geom.transform)>
+        const auto source_<geom.cpp_name>_path = find_asset_path({<geom.cpp_base_mesh_literal>\});
+        const auto transformed_<geom.cpp_name>_path = std::filesystem::temp_directory_path() /
+            ("motion-spec-shape-" + std::to_string(getpid()) + "-<geom.cpp_name>.obj");
+        shape_files.paths.push_back(transformed_<geom.cpp_name>_path);
+        const std::vector\<double\> size_<geom.cpp_name> = {<geom.size:{value | <shape-size-value(value)>}; separator=", ">\};
+        const std::array\<double, 9\> transform_<geom.cpp_name> = {<geom.transform; separator=", ">\};
+        if (source_<geom.cpp_name>_path.empty() || !motion_spec::write_affine_mesh(
+                source_<geom.cpp_name>_path, transformed_<geom.cpp_name>_path,
+                "<geom.kind>", size_<geom.cpp_name>, transform_<geom.cpp_name>)) {
+            std::cerr \<\< "cannot transform shape mesh: <geom.name>\n";
+            return 1;
+        \}
+        xml \<\< char(60) \<\< "mesh name=\"mesh_<geom.name>\" file=\""
+            \<\< xml_escape(transformed_<geom.cpp_name>_path.string()) \<\< "\"/>";
+<else><if(geom.has_path)>
         const auto mesh_<geom.cpp_name>_path = find_asset_path({<geom.cpp_path_literal>\});
         if (mesh_<geom.cpp_name>_path.empty()) {
             std::cerr \<\< "STL shape asset not found: " \<\< <geom.cpp_path_literal> \<\< "\n";
@@ -523,12 +539,13 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
             \<\< xml_escape(mesh_<geom.cpp_name>_path.string()) \<\< "\" scale=\"";
         for (const double size : mesh_<geom.cpp_name>_scale) xml \<\< size \<\< ' ';
         xml \<\< "\"/>";
-<endif>}; separator="\n">
+<endif><endif>}; separator="\n">
         xml \<\< char(60) \<\< "/asset>";
         xml \<\< char(60) \<\< "worldbody>" \<\< char(60) \<\< "body name=\"<body.name>\">";
 <body.geoms:{geom |
-        xml \<\< char(60) \<\< "geom name=\"<geom.name>\" type=\"<geom.kind>\" pos=\"<geom.pos; separator=" ">\" quat=\"<geom.quat_wxyz; separator=" ">\" rgba=\"<geom.rgba; separator=" ">\"";
-<if(geom.has_path)>
+        xml \<\< char(60) \<\< "geom name=\"<geom.name>\" type=\"<if(geom.transform)>mesh<else><geom.kind><endif>\" pos=\"<geom.pos; separator=" ">\" quat=\"<geom.quat_wxyz; separator=" ">\" rgba=\"<geom.rgba; separator=" ">\"";
+<if(geom.transform)>        xml \<\< " mesh=\"mesh_<geom.name>\"";
+<else><if(geom.has_path)>
         xml \<\< " mesh=\"mesh_<geom.name>\"";
 <else>
         const std::vector\<double\> geom_<geom.cpp_name>_size = {<geom.size:{value | <shape-size-value(value)>}; separator=", ">\};
@@ -541,7 +558,7 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         xml \<\< " size=\"";
         for (const double size : geom_<geom.cpp_name>_size) xml \<\< size \<\< ' ';
         xml \<\< "\"";
-<endif>
+<endif><endif>
         xml \<\< "/>";
 }; separator="\n">
         xml \<\< char(60) \<\< "/body>" \<\< char(60) \<\< "/worldbody>" \<\< char(60) \<\< "/mujoco>";

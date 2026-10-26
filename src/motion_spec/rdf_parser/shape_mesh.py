@@ -35,11 +35,44 @@ def _cylinder(steps=32):
     return triangles
 
 
+def _cone(steps=32):
+    triangles = []
+    apex, base_center = (0, 0, 1), (0, 0, -1)
+    for j in range(steps):
+        a = (math.cos(2 * math.pi * j / steps), math.sin(2 * math.pi * j / steps), -1)
+        next_phi = 2 * math.pi * ((j + 1) % steps) / steps
+        b = (math.cos(next_phi), math.sin(next_phi), -1)
+        triangles.extend(((a, b, apex), (base_center, b, a)))
+    return triangles
+
+
+def _tetrahedron():
+    a, b, c, d = (1, 1, 1), (1, -1, -1), (-1, 1, -1), (-1, -1, 1)
+    return ((a, b, c), (a, c, d), (a, d, b), (b, d, c))
+
+
+def _triangular_prism():
+    a, b, c = (-1, -1, -1), (1, -1, -1), (-1, 1, -1)
+    d, e, f = (-1, -1, 1), (1, -1, 1), (-1, 1, 1)
+    return (
+        (a, c, b), (d, e, f),
+        (a, b, e), (a, e, d),
+        (b, c, f), (b, f, e),
+        (c, a, d), (c, d, f),
+    )
+
+
 def base_triangles(kind: str):
     if kind == "sphere":
         return _sphere()
     if kind == "cylinder":
         return _cylinder()
+    if kind == "right_circular_cone":
+        return _cone()
+    if kind == "tetrahedron":
+        return _tetrahedron()
+    if kind == "triangular_prism":
+        return _triangular_prism()
     raise ValueError(f"Unsupported scaled shape kind: {kind}")
 
 

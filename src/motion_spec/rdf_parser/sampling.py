@@ -113,7 +113,10 @@ def sampled_quantities(
             if SHAPES.ScaledShape in node_types
             and any(
                 (node, RDF.type, kind) in model.graph
-                for kind in (ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder)
+                for kind in (
+                    ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder,
+                    SHAPES.RightCircularCone, SHAPES.Tetrahedron, SHAPES.TriangularPrism,
+                )
             )
             else (3,) if position or shape_vector else (1,)
         )

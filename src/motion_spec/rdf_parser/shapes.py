@@ -102,7 +102,10 @@ def _scale(graph, shape) -> list[ShapeSize]:
         raise ConstraintViolation("scene", f"Shape '{shape}' uses obsolete scale RDF; re-export the scene.")
     primitive = any(
         (shape, RDF.type, kind) in graph
-        for kind in (ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder)
+        for kind in (
+            ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder,
+            SHAPES.RightCircularCone, SHAPES.Tetrahedron, SHAPES.TriangularPrism,
+        )
     )
     distributions = list(graph.objects(shape, URI_DISTRIB_PRED_FROM_DISTRIB))
     if (shape, RDF.type, SHAPES.ScaledShape) not in graph:
@@ -256,6 +259,31 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
                 **common, kind="cylinder",
                 size=[sizes[0], sizes[2]] if circular else sizes,
                 generated_mesh=not circular,
+            )
+        elif (shape, RDF.type, SHAPES.RightCircularCone) in graph:
+            _unit_dimension(graph, shape, ASTRO.radius, 0.5)
+            _unit_dimension(graph, shape, ASTRO.height, 1.0)
+            geom = MjcfShapeGeom(
+                **common,
+                kind="right_circular_cone",
+                size=[_half_scale(s) for s in _scale(graph, shape)],
+                generated_mesh=True,
+            )
+        elif (shape, RDF.type, SHAPES.Tetrahedron) in graph:
+            _unit_dimension(graph, shape, ASTRO.length, 1.0)
+            geom = MjcfShapeGeom(
+                **common,
+                kind="tetrahedron",
+                size=[_half_scale(s) for s in _scale(graph, shape)],
+                generated_mesh=True,
+            )
+        elif (shape, RDF.type, SHAPES.TriangularPrism) in graph:
+            _unit_dimension(graph, shape, ASTRO.length, 1.0)
+            geom = MjcfShapeGeom(
+                **common,
+                kind="triangular_prism",
+                size=[_half_scale(s) for s in _scale(graph, shape)],
+                generated_mesh=True,
             )
         elif (shape, RDF.type, SHAPES.MeshShape) in graph:
             path = _mesh_path(graph, shape)

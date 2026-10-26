@@ -93,17 +93,22 @@ def _dimension(
 
 
 def _scale(graph, shape) -> list[ShapeSize]:
-    predicates = (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
+    predicates = (SHAPES["scale-x"], SHAPES["scale-y"], SHAPES["scale-z"])
+    if (shape, RDF.type, SHAPES.Scale) in graph or any(
+        graph.value(shape, predicate) is not None
+        for predicate in (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
+    ):
+        raise ConstraintViolation("scene", f"Shape '{shape}' uses obsolete scale RDF; re-export the scene.")
     primitive = any(
         (shape, RDF.type, kind) in graph
         for kind in (ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder)
     )
     distributions = list(graph.objects(shape, URI_DISTRIB_PRED_FROM_DISTRIB))
-    if (shape, RDF.type, SHAPES.Scale) not in graph:
+    if (shape, RDF.type, SHAPES.ScaledShape) not in graph:
         if distributions or any(
             graph.value(shape, predicate) is not None for predicate in predicates
         ):
-            raise ConstraintViolation("scene", f"Shape '{shape}' needs Scale type for its factors.")
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs ScaledShape type for its factors.")
         if primitive:
             raise ConstraintViolation("scene", f"Primitive shape '{shape}' needs scale.")
         return [ShapeSize(value=1.0) for _ in range(3)]

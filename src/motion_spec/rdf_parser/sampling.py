@@ -61,7 +61,7 @@ def sampled_quantities(
     }
     nodes = list(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
     nodes.extend(
-        shape for shape in model.graph.subjects(RDF.type, SHAPES.Scale)
+        shape for shape in model.graph.subjects(RDF.type, SHAPES.ScaledShape)
         if model.graph.value(shape, URI_DISTRIB_PRED_FROM_DISTRIB) is not None
         and shape not in nodes
     )
@@ -83,7 +83,7 @@ def sampled_quantities(
         position = frame is not None or str(node) in placements
         shape_size = (
             next(model.graph.subjects(SHAPES["has-dimension"], node), None) is not None
-            or (node, RDF.type, SHAPES.Scale) in model.graph
+            or (node, RDF.type, SHAPES.ScaledShape) in model.graph
         )
         if shape_size and (
             dist != "uniform_real"
@@ -100,7 +100,7 @@ def sampled_quantities(
             )
         node_types = get_node_types(model.graph, node)
         shape_vector = shape_size and bool(
-            {URI_GEOM_TYPE_VECTOR_XYZ, SHAPES.Scale} & node_types
+            {URI_GEOM_TYPE_VECTOR_XYZ, SHAPES.ScaledShape} & node_types
         )
         if not position and not shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
@@ -110,7 +110,7 @@ def sampled_quantities(
             )
         allowed_sizes = (
             (1, 3)
-            if SHAPES.Scale in node_types
+            if SHAPES.ScaledShape in node_types
             and any(
                 (node, RDF.type, kind) in model.graph
                 for kind in (ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder)

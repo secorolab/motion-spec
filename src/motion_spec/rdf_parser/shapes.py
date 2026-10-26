@@ -23,7 +23,6 @@ from rdf_utils.models.vocab import (
     URI_GEOM_PRED_X,
     URI_GEOM_PRED_Y,
     URI_GEOM_PRED_Z,
-    URI_GEOM_TYPE_VECTOR_XYZ,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
     URI_QUDT_PRED_UNIT,
@@ -101,31 +100,47 @@ def _scale(graph, shape) -> list[ShapeSize]:
         if distributions or any(
             graph.value(shape, predicate) is not None for predicate in predicates
         ):
-            raise ConstraintViolation("scene", f"Mesh '{shape}' needs Scale type for its factors.")
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs Scale type for its factors.")
         return [ShapeSize(value=1.0) for _ in range(3)]
     if distributions:
         if len(distributions) != 1 or any(
             graph.value(shape, predicate) is not None for predicate in predicates
         ):
-            raise ConstraintViolation("scene", f"Mesh '{shape}' needs only one sampled scale.")
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs only one sampled scale.")
         kind, components = _components(DistributionModel(distributions[0], graph))
         if kind != "uniform_real" or len(components) != 3:
-            raise ConstraintViolation("scene", f"Mesh '{shape}' needs a three-component uniform scale.")
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs a three-component uniform scale.")
         return [
             ShapeSize(draw=shape_sample_id(shape), uri=str(shape), index=i)
             for i in range(3)
         ]
     result = []
     for predicate in predicates:
-        value = _one(graph, shape, predicate, f"Mesh scale '{shape}'")
+        value = _one(graph, shape, predicate, f"Shape scale '{shape}'")
         try:
             number = float(value)
         except (TypeError, ValueError) as error:
-            raise ConstraintViolation("scene", f"Mesh '{shape}' needs numeric scale factors.") from error
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs numeric scale factors.") from error
         if not math.isfinite(number) or number <= 0:
-            raise ConstraintViolation("scene", f"Mesh '{shape}' needs positive finite scale.")
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs positive finite scale.")
         result.append(ShapeSize(value=number))
     return result
+
+
+def _scaled_size(side: ShapeSize, scale: ShapeSize, shape) -> ShapeSize:
+    if side.draw and scale.draw:
+        raise ConstraintViolation("scene", f"Cube '{shape}' cannot sample both side and scale.")
+    if side.draw:
+        return ShapeSize(
+            draw=side.draw, uri=side.uri, index=side.index,
+            factor=side.factor * scale.value,
+        )
+    if scale.draw:
+        return ShapeSize(
+            draw=scale.draw, uri=scale.uri, index=scale.index,
+            factor=scale.factor * side.value,
+        )
+    return ShapeSize(value=side.value * scale.value)
 
 
 def _mesh_path(graph, shape) -> str:
@@ -232,15 +247,18 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             )
         elif (shape, RDF.type, ASTRO.cube) in graph:
             side = _dimension(graph, shape, ASTRO.length, factor=0.5)
-            geom = MjcfShapeGeom(**common, kind="box", size=[side, side, side])
-        elif (shape, RDF.type, ASTRO.rectangularPrism) in graph:
-            size = [
-                _dimension(graph, shape, URI_GEOM_TYPE_VECTOR_XYZ, i, 0.5, predicate)
-                for i, predicate in enumerate(
-                    (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
-                )
-            ]
-            geom = MjcfShapeGeom(**common, kind="box", size=size)
+            sizes = [_scaled_size(side, factor, shape) for factor in _scale(graph, shape)]
+            if common["transform"] is not None:
+                matrix = np.asarray(common["transform"]).reshape(3, 3)
+                if np.all(matrix == np.diag(np.diag(matrix))):
+                    sizes = [
+                        _scaled_size(size, ShapeSize(value=float(abs(matrix[i, i]))), shape)
+                        for i, size in enumerate(sizes)
+                    ]
+                    common["transform"] = None
+            geom = MjcfShapeGeom(
+                **common, kind="box", size=sizes,
+            )
         elif (shape, RDF.type, SHAPES.Cylinder) in graph:
             geom = MjcfShapeGeom(
                 **common,

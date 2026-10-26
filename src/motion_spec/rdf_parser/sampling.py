@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""What the run draws at startup: sampled quantities and mesh scales.
+"""What the run draws at startup: sampled quantities and shape scales.
 
 The graph carries no numbers for these; the generated controller draws them once per run.
 """
@@ -49,7 +49,7 @@ def unplaced_frames(tree: dict) -> list[dict]:
 def sampled_quantities(
     model, trees: list[dict], placements: set[str] = frozenset()
 ) -> list[SampledQuantity]:
-    """Every sampled quantity and scaled mesh, in graph order.
+    """Every sampled quantity and scaled shape, in graph order.
 
     PLACEMENTS are the drawn positions the scene places an object by: positions too, but on no
     tree, since the simulator places the object.

@@ -28,7 +28,7 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_VECTOR_XYZ,
 )
 from rdflib.namespace import RDF
-from scene_dsl.rdf.ktree import SHAPES
+from scene_dsl.rdf.ktree import ASTRO, SHAPES
 
 from motion_spec.classes.sampling import SampledQuantity
 from motion_spec.rdf_parser.model import identifier, local_name, seconds, si
@@ -98,8 +98,9 @@ def sampled_quantities(
             raise ConstraintViolation(
                 "sampling", f"Shape size '{node}' needs positive finite uniform bounds."
             )
+        node_types = get_node_types(model.graph, node)
         shape_vector = shape_size and bool(
-            {URI_GEOM_TYPE_VECTOR_XYZ, SHAPES.Scale} & get_node_types(model.graph, node)
+            {URI_GEOM_TYPE_VECTOR_XYZ, SHAPES.Scale} & node_types
         )
         if not position and not shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
@@ -107,11 +108,17 @@ def sampled_quantities(
                 f"'{node}' is a position with coordinates of its own and a distribution to draw "
                 f"from: the scene places the frame, so nothing should draw it",
             )
-        if len(components) != (3 if position or shape_vector else 1):
+        allowed_sizes = (
+            (1, 3)
+            if SHAPES.Scale in node_types
+            and (node, RDF.type, ASTRO.rectangularPrism) in model.graph
+            else (3,) if position or shape_vector else (1,)
+        )
+        if len(components) not in allowed_sizes:
             raise ConstraintViolation(
                 "sampling",
-                f"'{node}' draws {len(components)} numbers from '{distribution}', which is not "
-                f"{'a position or size vector' if position or shape_vector else 'a scalar'}",
+                f"'{node}' draws {len(components)} numbers from '{distribution}'; "
+                f"expected {allowed_sizes} component(s).",
             )
         result.append(
             SampledQuantity(

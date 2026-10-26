@@ -101,6 +101,8 @@ def _scale(graph, shape) -> list[ShapeSize]:
             graph.value(shape, predicate) is not None for predicate in predicates
         ):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs Scale type for its factors.")
+        if (shape, RDF.type, ASTRO.rectangularPrism) in graph:
+            raise ConstraintViolation("scene", f"Rectangular prism '{shape}' needs scale.")
         return [ShapeSize(value=1.0) for _ in range(3)]
     if distributions:
         if len(distributions) != 1 or any(
@@ -108,10 +110,16 @@ def _scale(graph, shape) -> list[ShapeSize]:
         ):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs only one sampled scale.")
         kind, components = _components(DistributionModel(distributions[0], graph))
-        if kind != "uniform_real" or len(components) != 3:
-            raise ConstraintViolation("scene", f"Shape '{shape}' needs a three-component uniform scale.")
+        allowed = (1, 3) if (shape, RDF.type, ASTRO.rectangularPrism) in graph else (3,)
+        if kind != "uniform_real" or len(components) not in allowed:
+            raise ConstraintViolation(
+                "scene", f"Shape '{shape}' needs a uniform scale with {allowed} components."
+            )
         return [
-            ShapeSize(draw=shape_sample_id(shape), uri=str(shape), index=i)
+            ShapeSize(
+                draw=shape_sample_id(shape), uri=str(shape),
+                index=i if len(components) == 3 else 0,
+            )
             for i in range(3)
         ]
     result = []
@@ -129,7 +137,7 @@ def _scale(graph, shape) -> list[ShapeSize]:
 
 def _scaled_size(side: ShapeSize, scale: ShapeSize, shape) -> ShapeSize:
     if side.draw and scale.draw:
-        raise ConstraintViolation("scene", f"Cube '{shape}' cannot sample both side and scale.")
+        raise ConstraintViolation("scene", f"Shape '{shape}' cannot sample both size and scale.")
     if side.draw:
         return ShapeSize(
             draw=side.draw, uri=side.uri, index=side.index,
@@ -245,8 +253,10 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             geom = MjcfShapeGeom(
                 **common, kind="sphere", size=[_dimension(graph, shape, ASTRO.radius)]
             )
-        elif (shape, RDF.type, ASTRO.cube) in graph:
+        elif (shape, RDF.type, ASTRO.rectangularPrism) in graph:
             side = _dimension(graph, shape, ASTRO.length, factor=0.5)
+            if side.draw or side.value != 0.5:
+                raise ConstraintViolation("scene", f"Rectangular prism '{shape}' needs a one-metre base length.")
             sizes = [_scaled_size(side, factor, shape) for factor in _scale(graph, shape)]
             if common["transform"] is not None:
                 matrix = np.asarray(common["transform"]).reshape(3, 3)

@@ -11,7 +11,6 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-import numpy as np
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
@@ -28,7 +27,7 @@ from rdf_utils.models.vocab import (
     URI_QUDT_PRED_UNIT,
     URI_QUDT_PRED_VALUE,
 )
-from rdflib.namespace import RDF, XSD
+from rdflib.namespace import RDF
 from scene_dsl.rdf.ktree import ASTRO, COL, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
@@ -95,14 +94,18 @@ def _dimension(
 
 def _scale(graph, shape) -> list[ShapeSize]:
     predicates = (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
+    primitive = any(
+        (shape, RDF.type, kind) in graph
+        for kind in (ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder)
+    )
     distributions = list(graph.objects(shape, URI_DISTRIB_PRED_FROM_DISTRIB))
     if (shape, RDF.type, SHAPES.Scale) not in graph:
         if distributions or any(
             graph.value(shape, predicate) is not None for predicate in predicates
         ):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs Scale type for its factors.")
-        if (shape, RDF.type, ASTRO.rectangularPrism) in graph:
-            raise ConstraintViolation("scene", f"Rectangular prism '{shape}' needs scale.")
+        if primitive:
+            raise ConstraintViolation("scene", f"Primitive shape '{shape}' needs scale.")
         return [ShapeSize(value=1.0) for _ in range(3)]
     if distributions:
         if len(distributions) != 1 or any(
@@ -110,7 +113,7 @@ def _scale(graph, shape) -> list[ShapeSize]:
         ):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs only one sampled scale.")
         kind, components = _components(DistributionModel(distributions[0], graph))
-        allowed = (1, 3) if (shape, RDF.type, ASTRO.rectangularPrism) in graph else (3,)
+        allowed = (1, 3) if primitive else (3,)
         if kind != "uniform_real" or len(components) not in allowed:
             raise ConstraintViolation(
                 "scene", f"Shape '{shape}' needs a uniform scale with {allowed} components."
@@ -135,20 +138,21 @@ def _scale(graph, shape) -> list[ShapeSize]:
     return result
 
 
-def _scaled_size(side: ShapeSize, scale: ShapeSize, shape) -> ShapeSize:
-    if side.draw and scale.draw:
-        raise ConstraintViolation("scene", f"Shape '{shape}' cannot sample both size and scale.")
-    if side.draw:
-        return ShapeSize(
-            draw=side.draw, uri=side.uri, index=side.index,
-            factor=side.factor * scale.value,
-        )
+def _half_scale(scale: ShapeSize) -> ShapeSize:
     if scale.draw:
         return ShapeSize(
             draw=scale.draw, uri=scale.uri, index=scale.index,
-            factor=scale.factor * side.value,
+            factor=0.5 * scale.factor,
         )
-    return ShapeSize(value=side.value * scale.value)
+    return ShapeSize(value=0.5 * scale.value)
+
+
+def _unit_dimension(graph, shape, kind, expected: float) -> None:
+    size = _dimension(graph, shape, kind)
+    if size.draw or size.value != expected:
+        raise ConstraintViolation(
+            "scene", f"Primitive shape '{shape}' needs a fixed {local_name(kind)} of {expected} m."
+        )
 
 
 def _mesh_path(graph, shape) -> str:
@@ -166,39 +170,6 @@ def _mesh_path(graph, shape) -> str:
     return path
 
 
-def _linear_transform(graph, shape) -> list[float] | None:
-    nodes = list(graph.objects(shape, SHAPES["linear-transform"]))
-    if not nodes:
-        return None
-    if len(nodes) != 1:
-        raise ConstraintViolation("scene", f"Shape '{shape}' needs at most one linear transform.")
-    values = []
-    current = nodes[0]
-    for _ in range(9):
-        entries = list(graph.objects(current, RDF.first))
-        tails = list(graph.objects(current, RDF.rest))
-        if (
-            len(entries) != 1 or len(tails) != 1
-            or not isinstance(entries[0], rdflib.Literal)
-            or entries[0].datatype != XSD.double
-        ):
-            raise ConstraintViolation("scene", f"Shape '{shape}' needs nine xsd:double matrix values.")
-        try:
-            values.append(float(entries[0]))
-        except (TypeError, ValueError) as error:
-            raise ConstraintViolation("scene", f"Shape '{shape}' needs numeric matrix values.") from error
-        current = tails[0]
-    if current != RDF.nil:
-        raise ConstraintViolation("scene", f"Shape '{shape}' needs exactly nine matrix values.")
-    matrix = np.asarray(values, dtype=float)
-    if (
-        not np.isfinite(matrix).all()
-        or np.linalg.matrix_rank(matrix.reshape(3, 3)) < 3
-    ):
-        raise ConstraintViolation("scene", f"Shape '{shape}' needs an invertible finite 3x3 transform.")
-    return values
-
-
 def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
     graph = model.graph
     anchor = quantities.anchor_frame(model)
@@ -210,6 +181,8 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
     }
     bodies: dict[rdflib.URIRef, MjcfShapeBody] = {}
     for shape in graph.subjects(SHAPES["attached-to-frame"], None):
+        if graph.value(shape, SHAPES["linear-transform"]) is not None:
+            raise ConstraintViolation("scene", f"Shape '{shape}' uses unsupported linear-transform.")
         frame = _one(graph, shape, SHAPES["attached-to-frame"], f"Shape '{shape}'")
         body = body_of_frame(frame, graph)
         if body in joined and str(body) not in mapped:
@@ -247,41 +220,33 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             pos=pos,
             quat_wxyz=[quat[3], *quat[:3]],
             rgba=_color(graph, shape),
-            transform=_linear_transform(graph, shape),
         )
         if (shape, RDF.type, ASTRO.sphere) in graph:
+            _unit_dimension(graph, shape, ASTRO.radius, 0.5)
+            sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
+            uniform = sizes[0] == sizes[1] == sizes[2]
             geom = MjcfShapeGeom(
-                **common, kind="sphere", size=[_dimension(graph, shape, ASTRO.radius)]
+                **common, kind="sphere", size=sizes[:1] if uniform else sizes,
+                generated_mesh=not uniform,
             )
         elif (shape, RDF.type, ASTRO.rectangularPrism) in graph:
-            side = _dimension(graph, shape, ASTRO.length, factor=0.5)
-            if side.draw or side.value != 0.5:
-                raise ConstraintViolation("scene", f"Rectangular prism '{shape}' needs a one-metre base length.")
-            sizes = [_scaled_size(side, factor, shape) for factor in _scale(graph, shape)]
-            if common["transform"] is not None:
-                matrix = np.asarray(common["transform"]).reshape(3, 3)
-                if np.all(matrix == np.diag(np.diag(matrix))):
-                    sizes = [
-                        _scaled_size(size, ShapeSize(value=float(abs(matrix[i, i]))), shape)
-                        for i, size in enumerate(sizes)
-                    ]
-                    common["transform"] = None
+            _unit_dimension(graph, shape, ASTRO.length, 1.0)
+            sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
             geom = MjcfShapeGeom(
                 **common, kind="box", size=sizes,
             )
         elif (shape, RDF.type, SHAPES.Cylinder) in graph:
+            _unit_dimension(graph, shape, ASTRO.radius, 0.5)
+            _unit_dimension(graph, shape, ASTRO.height, 1.0)
+            sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
+            circular = sizes[0] == sizes[1]
             geom = MjcfShapeGeom(
-                **common,
-                kind="cylinder",
-                size=[
-                    _dimension(graph, shape, ASTRO.radius),
-                    _dimension(graph, shape, ASTRO.height, factor=0.5),
-                ],
+                **common, kind="cylinder",
+                size=[sizes[0], sizes[2]] if circular else sizes,
+                generated_mesh=not circular,
             )
         elif (shape, RDF.type, SHAPES.MeshShape) in graph:
             path = _mesh_path(graph, shape)
-            if common["transform"] is not None and (shape, RDF.type, SHAPES.Scale) in graph:
-                raise ConstraintViolation("scene", f"Mesh '{shape}' cannot combine scale and transform.")
             geom = MjcfShapeGeom(
                 **common, kind="mesh", size=_scale(graph, shape),
                 path=path, cpp_path_literal=json.dumps(path, ensure_ascii=False),

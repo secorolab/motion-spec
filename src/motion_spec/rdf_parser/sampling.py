@@ -111,7 +111,10 @@ def sampled_quantities(
         allowed_sizes = (
             (1, 3)
             if SHAPES.Scale in node_types
-            and (node, RDF.type, ASTRO.rectangularPrism) in model.graph
+            and any(
+                (node, RDF.type, kind) in model.graph
+                for kind in (ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder)
+            )
             else (3,) if position or shape_vector else (1,)
         )
         if len(components) not in allowed_sizes:

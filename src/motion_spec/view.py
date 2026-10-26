@@ -225,23 +225,16 @@ def add_shape_previews(
             geom.set("pos", _numbers(shape.pos))
             geom.set("quat", _numbers(shape.quat_wxyz))
             geom.set("rgba", _numbers(shape.rgba))
-            if shape.kind == "mesh" or shape.transform is not None:
+            if shape.kind == "mesh" or shape.generated_mesh:
                 asset = xml.find("asset")
                 if asset is None:
                     asset = ET.Element("asset")
                     xml.insert(0, asset)
                 name = f"mesh_{shape.name}"
-                if shape.transform is not None:
+                if shape.generated_mesh:
                     values = [size_value(value, draws) for value in shape.size]
-                    if shape.kind == "sphere":
-                        factors = values * 3
-                    elif shape.kind == "cylinder":
-                        factors = [values[0], values[0], values[1]]
-                    else:
-                        factors = values
-                    source = Path(find_asset(shape.path, start)) if shape.kind == "mesh" else None
                     path = directory / f"{body.cpp_name}_{shape.cpp_name}.obj"
-                    write_obj(path, base_triangles(shape.kind, source), shape.transform, factors)
+                    write_obj(path, base_triangles(shape.kind), values)
                     ET.SubElement(asset, "mesh", name=name, file=str(path))
                 else:
                     ET.SubElement(

@@ -94,6 +94,7 @@ def _dimension(
 
 def _scale(graph, shape) -> list[ShapeSize]:
     predicates = (SHAPES["scale-x"], SHAPES["scale-y"], SHAPES["scale-z"])
+    uniform = list(graph.objects(shape, SHAPES["uniform-scale"]))
     if (shape, RDF.type, SHAPES.Scale) in graph or any(
         graph.value(shape, predicate) is not None
         for predicate in (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
@@ -105,7 +106,7 @@ def _scale(graph, shape) -> list[ShapeSize]:
     )
     distributions = list(graph.objects(shape, URI_DISTRIB_PRED_FROM_DISTRIB))
     if (shape, RDF.type, SHAPES.ScaledShape) not in graph:
-        if distributions or any(
+        if distributions or uniform or any(
             graph.value(shape, predicate) is not None for predicate in predicates
         ):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs ScaledShape type for its factors.")
@@ -113,7 +114,7 @@ def _scale(graph, shape) -> list[ShapeSize]:
             raise ConstraintViolation("scene", f"Primitive shape '{shape}' needs scale.")
         return [ShapeSize(value=1.0) for _ in range(3)]
     if distributions:
-        if len(distributions) != 1 or any(
+        if len(distributions) != 1 or uniform or any(
             graph.value(shape, predicate) is not None for predicate in predicates
         ):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs only one sampled scale.")
@@ -130,6 +131,12 @@ def _scale(graph, shape) -> list[ShapeSize]:
             )
             for i in range(3)
         ]
+    if uniform:
+        if not primitive or len(uniform) != 1 or any(
+            graph.value(shape, predicate) is not None for predicate in predicates
+        ):
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs one uniform scale factor only.")
+        predicates = (SHAPES["uniform-scale"],) * 3
     result = []
     for predicate in predicates:
         value = _one(graph, shape, predicate, f"Shape scale '{shape}'")

@@ -170,21 +170,21 @@ def _unit_dimension(graph, shape, kind, expected: float) -> None:
         )
 
 
-def _mesh_path(graph, shape) -> str:
-    source = _one(graph, shape, PROV.wasDerivedFrom, f"Mesh '{shape}'")
-    location = _one(graph, source, PROV.atLocation, f"Mesh source '{source}'")
-    relative = str(_one(graph, location, PROV_EXT["rel-path"], f"Mesh location '{location}'"))
-    base = str(_one(graph, location, PROV.atLocation, f"Mesh location '{location}'"))
+def _stl_path(graph, shape) -> str:
+    source = _one(graph, shape, PROV.wasDerivedFrom, f"File shape '{shape}'")
+    location = _one(graph, source, PROV.atLocation, f"File shape source '{source}'")
+    relative = str(_one(graph, location, PROV_EXT["rel-path"], f"File location '{location}'"))
+    base = str(_one(graph, location, PROV.atLocation, f"File location '{location}'"))
     ref, root = urlparse(relative), urlparse(base)
     if (
         ref.scheme or ref.netloc or ref.path.startswith("/") or ref.query or ref.fragment
         or root.scheme != "file" or root.netloc not in ("", "localhost")
         or not root.path.endswith("/")
     ):
-        raise ConstraintViolation("scene", f"Mesh '{shape}' needs a relative STL path at a file directory.")
+        raise ConstraintViolation("scene", f"File shape '{shape}' needs a relative STL path at a file directory.")
     path = Path(unquote(urlparse(urljoin(base, relative)).path))
     if path.suffix.lower() != ".stl" or not path.is_file():
-        raise ConstraintViolation("scene", f"Mesh '{shape}' STL asset was not found: {path}.")
+        raise ConstraintViolation("scene", f"File shape '{shape}' STL asset was not found: {path}.")
     return str(path.resolve())
 
 
@@ -288,8 +288,8 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
                 size=[_half_scale(s) for s in _scale(graph, shape)],
                 generated_mesh=True,
             )
-        elif (shape, RDF.type, SHAPES.MeshShape) in graph:
-            path = _mesh_path(graph, shape)
+        elif (shape, RDF.type, SHAPES.FileBasedShape) in graph:
+            path = _stl_path(graph, shape)
             geom = MjcfShapeGeom(
                 **common, kind="mesh", size=_scale(graph, shape),
                 path=path, cpp_path_literal=json.dumps(path, ensure_ascii=False),

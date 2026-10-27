@@ -327,6 +327,10 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         }
         std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
         roots.push_back(std::filesystem::path(__FILE__).parent_path());
+        // shortcut: Linux /proc locates moved generations; use a portable resolver for other OS targets.
+        std::error_code executable_error;
+        const auto executable = std::filesystem::read_symlink("/proc/self/exe", executable_error);
+        if (!executable_error) roots.push_back(executable.parent_path().parent_path() / "generated");
         const auto cache = cache_root();
         const auto append_cache_candidate = [&cache](std::vector\<std::filesystem::path\> &candidates,
                                                      const std::filesystem::path &relative) {

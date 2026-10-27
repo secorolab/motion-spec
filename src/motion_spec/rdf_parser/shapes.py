@@ -9,7 +9,7 @@ import random
 from collections import Counter
 from hashlib import sha256
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
@@ -28,7 +28,7 @@ from rdf_utils.models.vocab import (
     URI_QUDT_PRED_VALUE,
 )
 from rdflib.namespace import RDF
-from scene_dsl.rdf.ktree import ASTRO, COL, SHAPES
+from scene_dsl.rdf.ktree import ASTRO, COL, PROV, PROV_EXT, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom, ShapeSize
@@ -171,18 +171,21 @@ def _unit_dimension(graph, shape, kind, expected: float) -> None:
 
 
 def _mesh_path(graph, shape) -> str:
-    path = str(_one(graph, shape, SHAPES["source-path"], f"Mesh '{shape}'"))
-    if Path(path).suffix.lower() != ".stl":
-        raise ConstraintViolation("scene", f"Mesh '{shape}' requires a .stl path.")
-    if Path(path).is_absolute():
-        return path
-    for _, _, _, source in graph.quads((shape, SHAPES["source-path"], None, None)):
-        uri = urlparse(str(source))
-        if uri.scheme == "file":
-            candidate = Path(unquote(uri.path)).parent / path
-            if candidate.is_file():
-                return str(candidate.resolve())
-    return path
+    source = _one(graph, shape, PROV.wasDerivedFrom, f"Mesh '{shape}'")
+    location = _one(graph, source, PROV.atLocation, f"Mesh source '{source}'")
+    relative = str(_one(graph, location, PROV_EXT["rel-path"], f"Mesh location '{location}'"))
+    base = str(_one(graph, location, PROV.atLocation, f"Mesh location '{location}'"))
+    ref, root = urlparse(relative), urlparse(base)
+    if (
+        ref.scheme or ref.netloc or ref.path.startswith("/") or ref.query or ref.fragment
+        or root.scheme != "file" or root.netloc not in ("", "localhost")
+        or not root.path.endswith("/")
+    ):
+        raise ConstraintViolation("scene", f"Mesh '{shape}' needs a relative STL path at a file directory.")
+    path = Path(unquote(urlparse(urljoin(base, relative)).path))
+    if path.suffix.lower() != ".stl" or not path.is_file():
+        raise ConstraintViolation("scene", f"Mesh '{shape}' STL asset was not found: {path}.")
+    return str(path.resolve())
 
 
 def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:

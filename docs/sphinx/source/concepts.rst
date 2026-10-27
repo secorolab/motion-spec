@@ -142,6 +142,9 @@ the execution document. Everything generation recorded lives in one document,
 Every ``prov:atLocation`` is a path from the generations root (``$MOTION_SPEC_GEN``), such as
 ``pick_and_place/20261004T114752754313Z/generated/model/ir.json``; each document states the
 root as its ``@base``, so a reader resolves it to the file.
+Scene-authored STL meshes use a separate PROV relative location rooted at their source
+``.scenex`` directory. Generation copies each STL into ``generated/assets`` and records a
+relative path in the IR, so a controller moved with its generation can still find the mesh.
 
 Replay
 ======

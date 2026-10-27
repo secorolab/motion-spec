@@ -230,7 +230,7 @@ def asset_roots() -> list[Path]:
 
 
 def asset_candidates(path: str) -> list[Path]:
-    """Every place the generated program will look for PATH, in its order."""
+    """Working-directory and wrapper-cache candidates for an authored asset."""
     declared = Path(path).expanduser()
     if declared.is_absolute():
         return [declared]
@@ -269,13 +269,15 @@ def resolve_model_assets(ir, model_dir: Path) -> list[str]:
     return rewritten
 
 
-def unresolved_assets(ir) -> list[str]:
+def unresolved_assets(ir, generated_root: Path | None = None) -> list[str]:
     """The MJCF assets the IR names that nothing on this machine can supply."""
     declared = {node["path"] for node in _asset_nodes(ir)}
     return [
         path
         for path in declared
-        if not any(candidate.exists() for candidate in asset_candidates(path))
+        if not (
+            generated_root and (generated_root / path).is_file()
+        ) and not any(candidate.exists() for candidate in asset_candidates(path))
     ]
 
 
@@ -300,9 +302,9 @@ def generate_code(
             "Coordinate the model with an FSM to generate C++."
         )
     # Here, not at run time: a controller that cannot load its scene must not build at all.
-    missing = unresolved_assets(ir)
+    missing = unresolved_assets(ir, ir_path.parent.parent)
     if missing:
-        raise MissingAssets(Path(ir_path), missing, asset_roots())
+        raise MissingAssets(Path(ir_path), missing, [ir_path.parent.parent, *asset_roots()])
 
     ir["communication"]["telemetry_artifacts"] = write_telemetry_artifacts(
         ir, ir_path=ir_path, output_dir=contract_dir, fsm_ir=fsm
@@ -318,7 +320,9 @@ def generate_code(
                     continue
                 base = (output_dir / "assets" / f"{geom['cpp_name']}.obj").resolve()
                 write_obj(base, base_triangles(geom["kind"]))
-                geom["cpp_base_mesh_literal"] = json.dumps(str(base))
+                geom["cpp_base_mesh_literal"] = json.dumps(
+                    f"controller/assets/{base.name}"
+                )
                 written.append(base)
 
     headers_dir = output_dir / "headers"

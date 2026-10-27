@@ -116,6 +116,7 @@ def sampled_quantities(
                 for kind in (
                     ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder,
                     SHAPES.RightCircularCone, SHAPES.Tetrahedron, SHAPES.TriangularPrism,
+                    SHAPES.FileBasedShape,
                 )
             )
             else (3,) if position or shape_vector else (1,)

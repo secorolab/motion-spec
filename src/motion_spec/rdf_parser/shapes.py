@@ -125,7 +125,7 @@ def _scale(graph, shape) -> list[ShapeSize]:
         ):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs only one sampled scale.")
         kind, components = _components(DistributionModel(distributions[0], graph))
-        allowed = (1, 3) if primitive else (3,)
+        allowed = (1, 3)
         if kind != "uniform_real" or len(components) not in allowed:
             raise ConstraintViolation(
                 "scene", f"Shape '{shape}' needs a uniform scale with {allowed} components."

@@ -17,6 +17,7 @@ from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.distribution import DistributionModel
 from rdf_utils.models.vocab import (
     URI_DISTRIB_PRED_FROM_DISTRIB,
+    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_PRED_X,
     URI_GEOM_PRED_Y,
     URI_GEOM_PRED_Z,
@@ -24,7 +25,7 @@ from rdf_utils.models.vocab import (
     URI_KC_TYPE_JOINT,
 )
 from rdflib.namespace import RDF
-from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, SHAPES
+from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, QKIND, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom, ShapeSize
@@ -87,26 +88,37 @@ def _scale(graph, shape) -> list[ShapeSize]:
             raise ConstraintViolation("scene", f"Primitive shape '{shape}' needs scale.")
         return [ShapeSize(value=1.0) for _ in range(3)]
     if distributions:
-        if len(distributions) != 1 or any(
-            graph.value(shape, predicate) is not None for predicate in predicates
-        ):
-            raise ConstraintViolation("scene", f"Shape '{shape}' needs only one sampled scale.")
-        kind, components = _components(DistributionModel(distributions[0], graph))
-        allowed = (1, 3)
-        if kind != "uniform_real" or len(components) not in allowed:
-            raise ConstraintViolation(
-                "scene", f"Shape '{shape}' needs a uniform scale with {allowed} components."
-            )
-        return [
-            ShapeSize(
-                draw=shape_sample_id(shape), uri=str(shape),
-                index=i if len(components) == 3 else 0,
-            )
-            for i in range(3)
-        ]
+        raise ConstraintViolation(
+            "scene", f"Shape '{shape}' uses obsolete sampled scale RDF; re-export the scene."
+        )
     result = []
     for predicate in predicates:
-        value = _one(graph, shape, predicate, f"Shape scale '{shape}'")
+        factor = _one(graph, shape, predicate, f"Shape scale '{shape}'")
+        if not isinstance(factor, rdflib.URIRef) or (factor, RDF.type, QUDT_SCHEMA.Quantity) not in graph:
+            raise ConstraintViolation(
+                "scene", f"Shape '{shape}' needs scale factor quantity nodes; re-export the scene."
+            )
+        if graph.value(factor, QUDT_SCHEMA.hasQuantityKind) != QKIND.Dimensionless:
+            raise ConstraintViolation("scene", f"Shape scale '{factor}' must be dimensionless.")
+        if (factor, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY) in graph:
+            distribution = _one(
+                graph, factor, URI_DISTRIB_PRED_FROM_DISTRIB, f"Shape scale '{factor}'"
+            )
+            if graph.value(factor, QUDT_SCHEMA.value) is not None:
+                raise ConstraintViolation("scene", f"Sampled scale '{factor}' cannot also have a fixed value.")
+            kind, components = _components(DistributionModel(distribution, graph))
+            if kind != "uniform_real" or len(components) != 1:
+                raise ConstraintViolation("scene", f"Shape scale '{factor}' needs a scalar uniform distribution.")
+            bounds = components[0]
+            if not all(math.isfinite(bounds[key]) for key in ("a", "b")) or not (
+                0 < bounds["a"] < bounds["b"]
+            ):
+                raise ConstraintViolation("scene", f"Shape scale '{factor}' needs positive finite bounds.")
+            result.append(ShapeSize(draw=shape_sample_id(factor), uri=str(factor)))
+            continue
+        if graph.value(factor, URI_DISTRIB_PRED_FROM_DISTRIB) is not None:
+            raise ConstraintViolation("scene", f"Sampled scale '{factor}' needs SampledQuantity type.")
+        value = _one(graph, factor, QUDT_SCHEMA.value, f"Shape scale '{factor}'")
         try:
             number = float(value)
         except (TypeError, ValueError) as error:

@@ -49,7 +49,7 @@ def unplaced_frames(tree: dict) -> list[dict]:
 def sampled_quantities(
     model, trees: list[dict], placements: set[str] = frozenset()
 ) -> list[SampledQuantity]:
-    """Every sampled quantity and scaled shape, in graph order.
+    """Every sampled quantity, including shape scale factors, in graph order.
 
     PLACEMENTS are the drawn positions the scene places an object by: positions too, but on no
     tree, since the simulator places the object.
@@ -60,11 +60,11 @@ def sampled_quantities(
         for frame in unplaced_frames(tree)
     }
     nodes = list(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
-    nodes.extend(
-        shape for shape in model.graph.subjects(RDF.type, SHAPES.ScaledShape)
-        if model.graph.value(shape, URI_DISTRIB_PRED_FROM_DISTRIB) is not None
-        and shape not in nodes
-    )
+    shape_factors = {
+        factor
+        for axis in "xyz"
+        for factor in model.graph.objects(None, SHAPES[f"scale-{axis}"])
+    }
     sampled = {str(node) for node in nodes}
     for coord in (coord for coord in frames if coord not in sampled):
         _, frame = frames[coord]
@@ -81,7 +81,7 @@ def sampled_quantities(
         scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))
         position = frame is not None or str(node) in placements
-        shape_size = (node, RDF.type, SHAPES.ScaledShape) in model.graph
+        shape_size = node in shape_factors
         if shape_size and (
             dist != "uniform_real"
             or any(
@@ -95,26 +95,13 @@ def sampled_quantities(
             raise ConstraintViolation(
                 "sampling", f"Shape size '{node}' needs positive finite uniform bounds."
             )
-        node_types = get_node_types(model.graph, node)
-        shape_vector = shape_size
         if not position and not shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
                 "sampling",
                 f"'{node}' is a position with coordinates of its own and a distribution to draw "
                 f"from: the scene places the frame, so nothing should draw it",
             )
-        allowed_sizes = (
-            (1, 3)
-            if SHAPES.ScaledShape in node_types
-            and any(
-                (node, RDF.type, kind) in model.graph
-                for kind in (
-                    SHAPES.UnitCube, SHAPES.UnitCylinder, SHAPES.UnitSphere,
-                    SHAPES.FileBasedShape,
-                )
-            )
-            else (3,) if position or shape_vector else (1,)
-        )
+        allowed_sizes = (3,) if position else (1,)
         if len(components) not in allowed_sizes:
             raise ConstraintViolation(
                 "sampling",

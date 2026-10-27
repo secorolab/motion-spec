@@ -15,20 +15,16 @@ import rdflib
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.distribution import DistributionModel
-from rdf_utils.models.geom_coord import to_metres
 from rdf_utils.models.vocab import (
     URI_DISTRIB_PRED_FROM_DISTRIB,
-    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_PRED_X,
     URI_GEOM_PRED_Y,
     URI_GEOM_PRED_Z,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
-    URI_QUDT_PRED_UNIT,
-    URI_QUDT_PRED_VALUE,
 )
 from rdflib.namespace import RDF
-from scene_dsl.rdf.ktree import ASTRO, COL, PROV, PROV_EXT, SHAPES
+from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom, ShapeSize
@@ -64,34 +60,6 @@ def _color(graph, shape) -> list[float]:
     return rgba
 
 
-def _size(
-    graph, node, unit=None, index=0, factor=1.0, predicate=URI_QUDT_PRED_VALUE
-) -> ShapeSize:
-    if (node, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY) in graph:
-        return ShapeSize(
-            draw=shape_sample_id(node), uri=str(node), index=index, factor=factor
-        )
-    value = float(_one(graph, node, predicate, str(node)))
-    metres = to_metres([value], unit, node)[0] if unit is not None else value
-    if not math.isfinite(metres) or metres <= 0:
-        raise ConstraintViolation("scene", f"Shape size '{node}' must be finite and positive.")
-    return ShapeSize(value=metres * factor)
-
-
-def _dimension(
-    graph, shape, kind, index=0, factor=1.0, predicate=URI_QUDT_PRED_VALUE
-) -> ShapeSize:
-    nodes = [
-        node for node in graph.objects(shape, SHAPES["has-dimension"])
-        if (node, RDF.type, kind) in graph
-    ]
-    if len(nodes) != 1:
-        raise ConstraintViolation("scene", f"Shape '{shape}' needs one {local_name(kind)}.")
-    node = nodes[0]
-    unit = _one(graph, node, URI_QUDT_PRED_UNIT, str(node))
-    return _size(graph, node, unit, index, factor, predicate)
-
-
 def _scale(graph, shape) -> list[ShapeSize]:
     predicates = (SHAPES["scale-x"], SHAPES["scale-y"], SHAPES["scale-z"])
     if (
@@ -106,8 +74,7 @@ def _scale(graph, shape) -> list[ShapeSize]:
     primitive = any(
         (shape, RDF.type, kind) in graph
         for kind in (
-            ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder,
-            SHAPES.RightCircularCone, SHAPES.Tetrahedron, SHAPES.TriangularPrism,
+            SHAPES.UnitCube, SHAPES.UnitCylinder, SHAPES.UnitSphere,
         )
     )
     distributions = list(graph.objects(shape, URI_DISTRIB_PRED_FROM_DISTRIB))
@@ -157,14 +124,6 @@ def _half_scale(scale: ShapeSize) -> ShapeSize:
             factor=0.5 * scale.factor,
         )
     return ShapeSize(value=0.5 * scale.value)
-
-
-def _unit_dimension(graph, shape, kind, expected: float) -> None:
-    size = _dimension(graph, shape, kind)
-    if size.draw or size.value != expected:
-        raise ConstraintViolation(
-            "scene", f"Primitive shape '{shape}' needs a fixed {local_name(kind)} of {expected} m."
-        )
 
 
 def _stl_path(graph, shape) -> str:
@@ -236,54 +195,25 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             quat_wxyz=[quat[3], *quat[:3]],
             rgba=_color(graph, shape),
         )
-        if (shape, RDF.type, ASTRO.sphere) in graph:
-            _unit_dimension(graph, shape, ASTRO.radius, 0.5)
+        if (shape, RDF.type, SHAPES.UnitSphere) in graph:
             sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
             uniform = sizes[0] == sizes[1] == sizes[2]
             geom = MjcfShapeGeom(
                 **common, kind="sphere", size=sizes[:1] if uniform else sizes,
                 generated_mesh=not uniform,
             )
-        elif (shape, RDF.type, ASTRO.rectangularPrism) in graph:
-            _unit_dimension(graph, shape, ASTRO.length, 1.0)
+        elif (shape, RDF.type, SHAPES.UnitCube) in graph:
             sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
             geom = MjcfShapeGeom(
                 **common, kind="box", size=sizes,
             )
-        elif (shape, RDF.type, SHAPES.Cylinder) in graph:
-            _unit_dimension(graph, shape, ASTRO.radius, 0.5)
-            _unit_dimension(graph, shape, ASTRO.height, 1.0)
+        elif (shape, RDF.type, SHAPES.UnitCylinder) in graph:
             sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
             circular = sizes[0] == sizes[1]
             geom = MjcfShapeGeom(
                 **common, kind="cylinder",
                 size=[sizes[0], sizes[2]] if circular else sizes,
                 generated_mesh=not circular,
-            )
-        elif (shape, RDF.type, SHAPES.RightCircularCone) in graph:
-            _unit_dimension(graph, shape, ASTRO.radius, 0.5)
-            _unit_dimension(graph, shape, ASTRO.height, 1.0)
-            geom = MjcfShapeGeom(
-                **common,
-                kind="right_circular_cone",
-                size=[_half_scale(s) for s in _scale(graph, shape)],
-                generated_mesh=True,
-            )
-        elif (shape, RDF.type, SHAPES.Tetrahedron) in graph:
-            _unit_dimension(graph, shape, ASTRO.length, 1.0)
-            geom = MjcfShapeGeom(
-                **common,
-                kind="tetrahedron",
-                size=[_half_scale(s) for s in _scale(graph, shape)],
-                generated_mesh=True,
-            )
-        elif (shape, RDF.type, SHAPES.TriangularPrism) in graph:
-            _unit_dimension(graph, shape, ASTRO.length, 1.0)
-            geom = MjcfShapeGeom(
-                **common,
-                kind="triangular_prism",
-                size=[_half_scale(s) for s in _scale(graph, shape)],
-                generated_mesh=True,
             )
         elif (shape, RDF.type, SHAPES.FileBasedShape) in graph:
             path = _stl_path(graph, shape)

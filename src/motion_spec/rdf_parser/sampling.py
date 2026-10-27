@@ -28,7 +28,7 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_VECTOR_XYZ,
 )
 from rdflib.namespace import RDF
-from scene_dsl.rdf.ktree import ASTRO, SHAPES
+from scene_dsl.rdf.ktree import SHAPES
 
 from motion_spec.classes.sampling import SampledQuantity
 from motion_spec.rdf_parser.model import identifier, local_name, seconds, si
@@ -81,10 +81,7 @@ def sampled_quantities(
         scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))
         position = frame is not None or str(node) in placements
-        shape_size = (
-            next(model.graph.subjects(SHAPES["has-dimension"], node), None) is not None
-            or (node, RDF.type, SHAPES.ScaledShape) in model.graph
-        )
+        shape_size = (node, RDF.type, SHAPES.ScaledShape) in model.graph
         if shape_size and (
             dist != "uniform_real"
             or any(
@@ -99,9 +96,7 @@ def sampled_quantities(
                 "sampling", f"Shape size '{node}' needs positive finite uniform bounds."
             )
         node_types = get_node_types(model.graph, node)
-        shape_vector = shape_size and bool(
-            {URI_GEOM_TYPE_VECTOR_XYZ, SHAPES.ScaledShape} & node_types
-        )
+        shape_vector = shape_size
         if not position and not shape_size and URI_GEOM_TYPE_VECTOR_XYZ in get_node_types(model.graph, node):
             raise ConstraintViolation(
                 "sampling",
@@ -114,8 +109,7 @@ def sampled_quantities(
             and any(
                 (node, RDF.type, kind) in model.graph
                 for kind in (
-                    ASTRO.sphere, ASTRO.rectangularPrism, SHAPES.Cylinder,
-                    SHAPES.RightCircularCone, SHAPES.Tetrahedron, SHAPES.TriangularPrism,
+                    SHAPES.UnitCube, SHAPES.UnitCylinder, SHAPES.UnitSphere,
                     SHAPES.FileBasedShape,
                 )
             )

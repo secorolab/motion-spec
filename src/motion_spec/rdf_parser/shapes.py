@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import math
-import random
 from collections import Counter
 from hashlib import sha256
 from pathlib import Path
@@ -14,10 +13,7 @@ from urllib.parse import unquote, urljoin, urlparse
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.models.distribution import DistributionModel
 from rdf_utils.models.vocab import (
-    URI_DISTRIB_PRED_FROM_DISTRIB,
-    URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
     URI_GEOM_PRED_X,
     URI_GEOM_PRED_Y,
     URI_GEOM_PRED_Z,
@@ -28,10 +24,9 @@ from rdflib.namespace import RDF
 from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, QKIND, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
-from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom, ShapeSize
+from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.model import identifier, local_name, si
-from motion_spec.rdf_parser.sampling import _components, shape_sample_id
+from motion_spec.rdf_parser.model import identifier, local_name
 
 
 def _one(graph, subject, predicate, claim: str):
@@ -61,7 +56,7 @@ def _color(graph, shape) -> list[float]:
     return rgba
 
 
-def _scale(graph, shape) -> list[ShapeSize]:
+def _scale(graph, shape) -> list[float]:
     predicates = (SHAPES["scale-x"], SHAPES["scale-y"], SHAPES["scale-z"])
     if (
         (shape, RDF.type, SHAPES.Scale) in graph
@@ -78,19 +73,12 @@ def _scale(graph, shape) -> list[ShapeSize]:
             SHAPES.UnitCube, SHAPES.UnitCylinder, SHAPES.UnitSphere,
         )
     )
-    distributions = list(graph.objects(shape, URI_DISTRIB_PRED_FROM_DISTRIB))
     if (shape, RDF.type, SHAPES.ScaledShape) not in graph:
-        if distributions or any(
-            graph.value(shape, predicate) is not None for predicate in predicates
-        ):
+        if any(graph.value(shape, predicate) is not None for predicate in predicates):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs ScaledShape type for its factors.")
         if primitive:
             raise ConstraintViolation("scene", f"Primitive shape '{shape}' needs scale.")
-        return [ShapeSize(value=1.0) for _ in range(3)]
-    if distributions:
-        raise ConstraintViolation(
-            "scene", f"Shape '{shape}' uses obsolete sampled scale RDF; re-export the scene."
-        )
+        return [1.0] * 3
     result = []
     for predicate in predicates:
         factor = _one(graph, shape, predicate, f"Shape scale '{shape}'")
@@ -100,24 +88,6 @@ def _scale(graph, shape) -> list[ShapeSize]:
             )
         if graph.value(factor, QUDT_SCHEMA.hasQuantityKind) != QKIND.Dimensionless:
             raise ConstraintViolation("scene", f"Shape scale '{factor}' must be dimensionless.")
-        if (factor, RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY) in graph:
-            distribution = _one(
-                graph, factor, URI_DISTRIB_PRED_FROM_DISTRIB, f"Shape scale '{factor}'"
-            )
-            if graph.value(factor, QUDT_SCHEMA.value) is not None:
-                raise ConstraintViolation("scene", f"Sampled scale '{factor}' cannot also have a fixed value.")
-            kind, components = _components(DistributionModel(distribution, graph))
-            if kind != "uniform_real" or len(components) != 1:
-                raise ConstraintViolation("scene", f"Shape scale '{factor}' needs a scalar uniform distribution.")
-            bounds = components[0]
-            if not all(math.isfinite(bounds[key]) for key in ("a", "b")) or not (
-                0 < bounds["a"] < bounds["b"]
-            ):
-                raise ConstraintViolation("scene", f"Shape scale '{factor}' needs positive finite bounds.")
-            result.append(ShapeSize(draw=shape_sample_id(factor), uri=str(factor)))
-            continue
-        if graph.value(factor, URI_DISTRIB_PRED_FROM_DISTRIB) is not None:
-            raise ConstraintViolation("scene", f"Sampled scale '{factor}' needs SampledQuantity type.")
         value = _one(graph, factor, QUDT_SCHEMA.value, f"Shape scale '{factor}'")
         try:
             number = float(value)
@@ -125,17 +95,12 @@ def _scale(graph, shape) -> list[ShapeSize]:
             raise ConstraintViolation("scene", f"Shape '{shape}' needs numeric scale factors.") from error
         if not math.isfinite(number) or number <= 0:
             raise ConstraintViolation("scene", f"Shape '{shape}' needs positive finite scale.")
-        result.append(ShapeSize(value=number))
+        result.append(number)
     return result
 
 
-def _half_scale(scale: ShapeSize) -> ShapeSize:
-    if scale.draw:
-        return ShapeSize(
-            draw=scale.draw, uri=scale.uri, index=scale.index,
-            factor=0.5 * scale.factor,
-        )
-    return ShapeSize(value=0.5 * scale.value)
+def _half_scale(scale: float) -> float:
+    return 0.5 * scale
 
 
 def _stl_path(graph, shape) -> str:
@@ -251,41 +216,3 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
         if names[body.name] > 1:
             body.name = body.cpp_name
     return result
-
-
-def draw_shape_sizes(
-    model, bodies: list[MjcfShapeBody], seed: int | None = None
-) -> dict[str, list[float]]:
-    """One draw per sampled quantity, shared by each component that reads it."""
-    rng = random.Random(seed)
-    draws = {}
-    for body in bodies:
-        for geom in body.geoms:
-            for size in geom.size:
-                if not size.draw or size.uri in draws:
-                    continue
-                node = rdflib.URIRef(size.uri)
-                distribution = model.graph.value(node, URI_DISTRIB_PRED_FROM_DISTRIB)
-                kind, components = _components(DistributionModel(distribution, model.graph))
-                if kind != "uniform_real" or any(
-                    not math.isfinite(c["a"])
-                    or not math.isfinite(c["b"])
-                    or c["a"] <= 0
-                    or c["b"] <= c["a"]
-                    for c in components
-                ):
-                    raise ConstraintViolation(
-                        "scene", f"Shape size '{node}' needs positive finite uniform bounds."
-                    )
-                unit = model.graph.value(node, QUDT_SCHEMA.unit)
-                draws[size.uri] = [
-                    si(rng.uniform(c["a"], c["b"]), unit) for c in components
-                ]
-    return draws
-
-
-def size_value(size: ShapeSize, draws: dict[str, list[float]]) -> float:
-    value = size.value if not size.draw else draws[size.uri][size.index] * size.factor
-    if not math.isfinite(value) or value <= 0:
-        raise ConstraintViolation("scene", "A sampled shape size must be finite and positive.")
-    return value

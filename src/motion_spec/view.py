@@ -24,7 +24,7 @@ from motion_spec.generation.codegen import asset_candidates
 from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
-from motion_spec.rdf_parser.shapes import draw_shape_sizes, read_shape_bodies, size_value
+from motion_spec.rdf_parser.shapes import read_shape_bodies
 from motion_spec.rdf_parser.shape_mesh import base_triangles, write_obj
 
 
@@ -210,11 +210,9 @@ def _numbers(values) -> str:
 
 def add_shape_previews(
     spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: Path, directory: Path,
-    seed: int | None = None,
 ) -> None:
-    """Draw each body of shapes as one fixed MJCF object, using one draw per sampled size."""
+    """Draw each body of shapes as one fixed MJCF object."""
     bodies = read_shape_bodies(model, scene)
-    draws = draw_shape_sizes(model, bodies, seed)
     previews = []
     for body in bodies:
         xml = ET.Element("mujoco")
@@ -232,20 +230,19 @@ def add_shape_previews(
                     xml.insert(0, asset)
                 name = f"mesh_{shape.name}"
                 if shape.generated_mesh:
-                    values = [size_value(value, draws) for value in shape.size]
                     path = directory / f"{body.cpp_name}_{shape.cpp_name}.obj"
-                    write_obj(path, base_triangles(shape.kind), values)
+                    write_obj(path, base_triangles(shape.kind), shape.size)
                     ET.SubElement(asset, "mesh", name=name, file=str(path))
                 else:
                     ET.SubElement(
                         asset, "mesh", name=name, file=find_asset(shape.path, start),
-                        scale=_numbers(size_value(value, draws) for value in shape.size),
+                        scale=_numbers(shape.size),
                     )
                 geom.set("type", "mesh")
                 geom.set("mesh", name)
             else:
                 geom.set("type", shape.kind)
-                geom.set("size", _numbers(size_value(value, draws) for value in shape.size))
+                geom.set("size", _numbers(shape.size))
         path = directory / f"{body.name}.xml"
         ET.ElementTree(xml).write(path, encoding="utf-8", xml_declaration=True)
         obj = mjk.SceneObject()
@@ -283,14 +280,8 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     _setups, _ordered, trees = agents.robot_setups(model)
     scene = read_scene(model, trees)
     spec = build_spec(scene, scenex_path)
-    seed = None
-    if config:
-        with config.open("rb") as stream:
-            seed = tomllib.load(stream).get("sampling", {}).get("seed")
-        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
-            raise ValueError("robot config [sampling] 'seed' must be a non-negative integer")
     with tempfile.TemporaryDirectory(prefix="motion-spec-shapes-") as temporary:
-        add_shape_previews(spec, model, scene, scenex_path, Path(temporary), seed)
+        add_shape_previews(spec, model, scene, scenex_path, Path(temporary))
         env = mjk.Env.build(spec)
         try:
             _robots = apply_home_poses(env, poses)

@@ -158,15 +158,6 @@ class MjcfSceneCamera:
 
 
 @dataclass
-class ShapeSize:
-    value: float | None = None
-    draw: str | None = None
-    uri: str = ""
-    index: int = 0
-    factor: float = 1.0
-
-
-@dataclass
 class MjcfShapeGeom:
     name: str
     cpp_name: str
@@ -174,7 +165,7 @@ class MjcfShapeGeom:
     pos: list[float]
     quat_wxyz: list[float]
     rgba: list[float]
-    size: list[ShapeSize]
+    size: list[float]
     generated_mesh: bool = False
     cpp_base_mesh_literal: str = ""
     path: str = ""

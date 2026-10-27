@@ -516,7 +516,7 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         const auto scaled_<geom.cpp_name>_path = std::filesystem::temp_directory_path() /
             ("motion-spec-shape-" + std::to_string(getpid()) + "-<geom.cpp_name>.obj");
         shape_files.paths.push_back(scaled_<geom.cpp_name>_path);
-        const std::vector\<double\> size_<geom.cpp_name> = {<geom.size:{value | <shape-size-value(value)>}; separator=", ">\};
+        const std::vector\<double\> size_<geom.cpp_name> = {<geom.size; separator=", ">\};
         if (source_<geom.cpp_name>_path.empty() || !motion_spec::write_scaled_mesh(
                 source_<geom.cpp_name>_path, scaled_<geom.cpp_name>_path,
                 size_<geom.cpp_name>)) {
@@ -531,13 +531,7 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
             std::cerr \<\< "STL shape asset not found: " \<\< <geom.cpp_path_literal> \<\< "\n";
             return 1;
         \}
-        const std::vector\<double\> mesh_<geom.cpp_name>_scale = {<geom.size:{value | <shape-size-value(value)>}; separator=", ">\};
-        for (const double size : mesh_<geom.cpp_name>_scale) {
-            if (!std::isfinite(size) || size \<= 0.0) {
-                std::cerr \<\< "sampled mesh scale must be positive: <geom.name>\n";
-                return 1;
-            \}
-        \}
+        const std::vector\<double\> mesh_<geom.cpp_name>_scale = {<geom.size; separator=", ">\};
         xml \<\< char(60) \<\< "mesh name=\"mesh_<geom.name>\" file=\""
             \<\< xml_escape(mesh_<geom.cpp_name>_path.string()) \<\< "\" scale=\"";
         for (const double size : mesh_<geom.cpp_name>_scale) xml \<\< size \<\< ' ';
@@ -551,13 +545,7 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
 <else><if(geom.has_path)>
         xml \<\< " mesh=\"mesh_<geom.name>\"";
 <else>
-        const std::vector\<double\> geom_<geom.cpp_name>_size = {<geom.size:{value | <shape-size-value(value)>}; separator=", ">\};
-        for (const double size : geom_<geom.cpp_name>_size) {
-            if (!std::isfinite(size) || size \<= 0.0) {
-                std::cerr \<\< "sampled shape size must be positive: <geom.name>\n";
-                return 1;
-            \}
-        \}
+        const std::vector\<double\> geom_<geom.cpp_name>_size = {<geom.size; separator=", ">\};
         xml \<\< " size=\"";
         for (const double size : geom_<geom.cpp_name>_size) xml \<\< size \<\< ' ';
         xml \<\< "\"";
@@ -772,8 +760,6 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
 }; separator="\n">
 <endif>
 >>
-
-shape-size-value(value) ::= "<if(value.draw)><value.factor> * <value.draw>_draw[<value.index>]<else><value.value><endif>"
 
 app-chain-post-setup(serial_chain_solvers, motions, agent_homes) ::= <<
     // The FSM is built after this hook, so the loop restarts it when it sees a reset happened.

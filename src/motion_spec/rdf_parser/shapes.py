@@ -170,19 +170,26 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
         if graph.value(shape, SHAPES["linear-transform"]) is not None:
             raise ConstraintViolation("scene", f"Shape '{shape}' uses unsupported linear-transform.")
         frame = _one(graph, shape, SHAPES["attached-to-frame"], f"Shape '{shape}'")
-        body = body_of_frame(frame, graph)
+        body = quantities.body_of(model, frame)
+        free = body is None
+        key = frame if free else body
         if body in joined and str(body) not in mapped:
             raise ConstraintViolation(
                 "scene", f"Shape '{shape}' is on a joined body without a mapped scene object."
             )
-        root = quantities.placement_frame(model, body)
+        root = anchor if free else quantities.placement_frame(model, body)
         pos, quat = quantities.frame_placement(model, frame, root)
         if pos is None or quat is None:
             raise ConstraintViolation(
-                "scene", f"Shape '{shape}' has no placement from its body's root frame."
+                "scene", f"Shape '{shape}' has no placement from its frame to the scene anchor."
+                if free else f"Shape '{shape}' has no placement from its body's root frame."
             )
-        if body not in bodies:
-            if str(body) in mapped:
+        if key not in bodies:
+            if free:
+                name = f"{local_name(frame)}_shapes"
+                attach_kind, attach_name = "World", ""
+                body_pos, body_quat = [0.0] * 3, [0.0, 0.0, 0.0, 1.0]
+            elif str(body) in mapped:
                 name = mapped[str(body)] + "_shapes"
                 attach_kind, attach_name = "Body", mapped[str(body)]
                 body_pos, body_quat = [0.0] * 3, [0.0, 0.0, 0.0, 1.0]
@@ -194,9 +201,9 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
                     raise ConstraintViolation(
                         "scene", f"Shape body '{body}' has no placement from the scene anchor."
                     )
-            bodies[body] = MjcfShapeBody(
-                name, str(body), attach_kind, attach_name, body_pos, body_quat,
-                cpp_name=f"{identifier(name)}_{sha256(str(body).encode()).hexdigest()[:8]}",
+            bodies[key] = MjcfShapeBody(
+                name, str(key), attach_kind, attach_name, body_pos, body_quat,
+                cpp_name=f"{identifier(name)}_{sha256(str(key).encode()).hexdigest()[:8]}",
             )
         common = dict(
             name=local_name(shape),
@@ -237,7 +244,7 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             )
         else:
             raise ConstraintViolation("scene", f"Shape '{shape}' has no supported type.")
-        bodies[body].geoms.append(geom)
+        bodies[key].geoms.append(geom)
     result = list(bodies.values())
     names = Counter([body.name for body in result] + [obj.body for obj in scene.objects])
     for body in result:

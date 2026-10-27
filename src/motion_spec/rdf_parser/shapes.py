@@ -196,7 +196,7 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             rgba=_color(graph, shape),
         )
         if (shape, RDF.type, SHAPES.UnitSphere) in graph:
-            sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
+            sizes = _scale(graph, shape)
             uniform = sizes[0] == sizes[1] == sizes[2]
             geom = MjcfShapeGeom(
                 **common, kind="sphere", size=sizes[:1] if uniform else sizes,
@@ -208,7 +208,8 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
                 **common, kind="box", size=sizes,
             )
         elif (shape, RDF.type, SHAPES.UnitCylinder) in graph:
-            sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
+            sizes = _scale(graph, shape)
+            sizes[2] = _half_scale(sizes[2])
             circular = sizes[0] == sizes[1]
             geom = MjcfShapeGeom(
                 **common, kind="cylinder",

@@ -117,16 +117,25 @@ def _unit_scale(graph, shape) -> float:
 def _stl_path(graph, shape) -> str:
     source = _one(graph, shape, PROV.wasDerivedFrom, f"File shape '{shape}'")
     location = _one(graph, source, PROV.atLocation, f"File shape source '{source}'")
-    relative = str(_one(graph, location, PROV_EXT["rel-path"], f"File location '{location}'"))
-    base = str(_one(graph, location, PROV.atLocation, f"File location '{location}'"))
-    ref, root = urlparse(relative), urlparse(base)
-    if (
-        ref.scheme or ref.netloc or ref.path.startswith("/") or ref.query or ref.fragment
-        or root.scheme != "file" or root.netloc not in ("", "localhost")
-        or not root.path.endswith("/")
-    ):
-        raise ConstraintViolation("scene", f"File shape '{shape}' needs a relative STL path at a file directory.")
-    path = Path(unquote(urlparse(urljoin(base, relative)).path))
+    if (location, RDF.type, PROV_EXT.RelativeLocation) in graph:
+        relative = str(_one(graph, location, PROV_EXT["rel-path"], f"File location '{location}'"))
+        base = str(_one(graph, location, PROV.atLocation, f"File location '{location}'"))
+        ref, root = urlparse(relative), urlparse(base)
+        if (
+            ref.scheme or ref.netloc or ref.path.startswith("/") or ref.query or ref.fragment
+            or root.scheme != "file" or root.netloc not in ("", "localhost")
+            or not root.path.endswith("/")
+        ):
+            raise ConstraintViolation("scene", f"File shape '{shape}' needs a relative STL path at a file directory.")
+        path = Path(unquote(urlparse(urljoin(base, relative)).path))
+    else:
+        ref = urlparse(str(location))
+        if (
+            ref.scheme != "file" or ref.netloc not in ("", "localhost")
+            or not ref.path.startswith("/") or ref.params or ref.query or ref.fragment
+        ):
+            raise ConstraintViolation("scene", f"File shape '{shape}' needs a local absolute file location.")
+        path = Path(unquote(ref.path))
     if path.suffix.lower() != ".stl" or not path.is_file():
         raise ConstraintViolation("scene", f"File shape '{shape}' STL asset was not found: {path}.")
     return str(path.resolve())

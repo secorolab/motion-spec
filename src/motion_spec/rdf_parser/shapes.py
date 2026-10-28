@@ -19,6 +19,10 @@ from rdf_utils.models.vocab import (
     URI_GEOM_PRED_Z,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
+    URI_QUDT_PRED_UNIT,
+    URI_QUDT_UNIT_CM,
+    URI_QUDT_UNIT_M,
+    URI_QUDT_UNIT_MM,
 )
 from rdflib.namespace import RDF
 from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, QKIND, SHAPES
@@ -26,7 +30,7 @@ from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.model import identifier, local_name
+from motion_spec.rdf_parser.model import identifier, local_name, si
 
 
 def _one(graph, subject, predicate, claim: str):
@@ -101,6 +105,13 @@ def _scale(graph, shape) -> list[float]:
 
 def _half_scale(scale: float) -> float:
     return 0.5 * scale
+
+
+def _unit_scale(graph, shape) -> float:
+    unit = _one(graph, shape, URI_QUDT_PRED_UNIT, f"Shape '{shape}'")
+    if unit not in (URI_QUDT_UNIT_M, URI_QUDT_UNIT_CM, URI_QUDT_UNIT_MM):
+        raise ConstraintViolation("scene", f"Shape '{shape}' needs a supported length unit (m, cm, or mm).")
+    return si(1.0, unit)
 
 
 def _stl_path(graph, shape) -> str:
@@ -179,20 +190,20 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
             quat_wxyz=[quat[3], *quat[:3]],
             rgba=_color(graph, shape),
         )
+        unit_scale = _unit_scale(graph, shape)
+        sizes = [factor * unit_scale for factor in _scale(graph, shape)]
         if (shape, RDF.type, SHAPES.UnitSphere) in graph:
-            sizes = _scale(graph, shape)
             uniform = sizes[0] == sizes[1] == sizes[2]
             geom = MjcfShapeGeom(
                 **common, kind="sphere", size=sizes[:1] if uniform else sizes,
                 generated_mesh=not uniform,
             )
         elif (shape, RDF.type, SHAPES.UnitCube) in graph:
-            sizes = [_half_scale(scale) for scale in _scale(graph, shape)]
+            sizes = [_half_scale(size) for size in sizes]
             geom = MjcfShapeGeom(
                 **common, kind="box", size=sizes,
             )
         elif (shape, RDF.type, SHAPES.UnitCylinder) in graph:
-            sizes = _scale(graph, shape)
             sizes[2] = _half_scale(sizes[2])
             circular = sizes[0] == sizes[1]
             geom = MjcfShapeGeom(
@@ -203,12 +214,14 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
         elif (shape, RDF.type, SHAPES.FileBasedShape) in graph:
             path = _stl_path(graph, shape)
             geom = MjcfShapeGeom(
-                **common, kind="mesh", size=_scale(graph, shape),
+                **common, kind="mesh", size=sizes,
                 path=path, cpp_path_literal=json.dumps(path, ensure_ascii=False),
                 has_path=True,
             )
         else:
             raise ConstraintViolation("scene", f"Shape '{shape}' has no supported type.")
+        if any(not math.isfinite(size) or size <= 0 for size in geom.size):
+            raise ConstraintViolation("scene", f"Shape '{shape}' has invalid dimensions after unit conversion.")
         bodies[key].geoms.append(geom)
     result = list(bodies.values())
     names = Counter([body.name for body in result] + [obj.body for obj in scene.objects])

@@ -144,6 +144,7 @@ def _stl_path(graph, shape) -> str:
 def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
     graph = model.graph
     anchor = quantities.anchor_frame(model)
+    anchor_body = quantities.body_of(model, anchor)
     mapped = {obj.body_iri: obj.body for obj in scene.objects}
     joined = {
         body_of_frame(frame, graph)
@@ -158,7 +159,8 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
         body = quantities.body_of(model, frame)
         free = body is None
         key = frame if free else body
-        if body in joined and str(body) not in mapped:
+        # The scene anchor is stationary even when a joint names its body.
+        if body in joined and body != anchor_body and str(body) not in mapped:
             raise ConstraintViolation(
                 "scene", f"Shape '{shape}' is on a joined body without a mapped scene object."
             )

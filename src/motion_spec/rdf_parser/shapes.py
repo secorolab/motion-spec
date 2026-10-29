@@ -11,7 +11,6 @@ from pathlib import Path
 from urllib.parse import unquote, urljoin, urlparse
 
 import rdflib
-from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.vocab import (
     URI_GEOM_PRED_X,
@@ -24,8 +23,8 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_M,
     URI_QUDT_UNIT_MM,
 )
-from rdflib.namespace import RDF
-from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, QKIND, SHAPES
+from rdflib.namespace import RDF, XSD
+from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom
@@ -85,14 +84,11 @@ def _scale(graph, shape) -> list[float]:
         return [1.0] * 3
     result = []
     for predicate in predicates:
-        factor = _one(graph, shape, predicate, f"Shape scale '{shape}'")
-        if not isinstance(factor, rdflib.URIRef) or (factor, RDF.type, QUDT_SCHEMA.Quantity) not in graph:
+        value = _one(graph, shape, predicate, f"Shape scale '{shape}'")
+        if not isinstance(value, rdflib.Literal) or value.datatype != XSD.double:
             raise ConstraintViolation(
-                "scene", f"Shape '{shape}' needs scale factor quantity nodes; re-export the scene."
+                "scene", f"Shape '{shape}' needs xsd:double scale values; re-export the scene."
             )
-        if graph.value(factor, QUDT_SCHEMA.hasQuantityKind) != QKIND.Dimensionless:
-            raise ConstraintViolation("scene", f"Shape scale '{factor}' must be dimensionless.")
-        value = _one(graph, factor, QUDT_SCHEMA.value, f"Shape scale '{factor}'")
         try:
             number = float(value)
         except (TypeError, ValueError) as error:

@@ -11,6 +11,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,21 @@ class LoadedModel:
     # When the scene and FSM graphs were built, for their generation records.
     graphs_started: datetime
     graphs_ended: datetime
+
+
+def _bundle_shape_meshes(ir: dict, generated: Path) -> None:
+    """Keep authored STL assets beside the generated controller, with relocatable IR paths."""
+    for body in ir["composition"]["scene"].get("shape_bodies") or []:
+        for geom in body.get("geoms") or []:
+            if geom.get("kind") != "mesh" or not geom.get("has_path"):
+                continue
+            source = Path(geom["path"])
+            relative = Path("assets") / f"{sha256(str(source).encode()).hexdigest()[:16]}.stl"
+            target = generated / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            geom["path"] = relative.as_posix()
+            geom["cpp_path_literal"] = json.dumps(geom["path"], ensure_ascii=False)
 
 
 def _placed(
@@ -255,6 +271,7 @@ def generate_model(
     ir_path = model_dir / "ir.json"
     started = datetime.now(UTC)
     ir = json.loads(json.dumps(generate_ir(loaded.model, fsm), cls=DataclassJSONEncoder))
+    _bundle_shape_meshes(ir, generated)
     resolve_model_assets(ir, model.resolve().parent)
     ir_path.write_text(json.dumps(ir, indent=4))
     derived_path = generated / DERIVED_DOCUMENT

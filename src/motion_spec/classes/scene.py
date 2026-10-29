@@ -158,11 +158,40 @@ class MjcfSceneCamera:
 
 
 @dataclass
+class MjcfShapeGeom:
+    name: str
+    cpp_name: str
+    kind: str
+    pos: list[float]
+    quat_wxyz: list[float]
+    rgba: list[float]
+    size: list[float]
+    generated_mesh: bool = False
+    cpp_base_mesh_literal: str = ""
+    path: str = ""
+    cpp_path_literal: str = ""
+    has_path: bool = False
+
+
+@dataclass
+class MjcfShapeBody:
+    name: str
+    body_iri: str
+    attach_kind: str
+    attach_name: str
+    pos: list[float]
+    quat: list[float]
+    geoms: list[MjcfShapeGeom] = field(default_factory=list)
+    cpp_name: str = ""
+
+
+@dataclass
 class MjcfSceneSpec:
     """The scene: robots, objects, cameras and the control timestep."""
 
     robots: list[MjcfSceneRobot] = field(default_factory=list)
     objects: list[MjcfSceneObject] = field(default_factory=list)
+    shape_bodies: list[MjcfShapeBody] = field(default_factory=list)
     # Cameras are rendered against the composed scene, not read by a solver, so they belong here
     # and not on the agent that hosts them.
     cameras: list[CameraBinding] = field(default_factory=list)

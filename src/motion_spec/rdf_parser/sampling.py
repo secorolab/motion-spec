@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
-"""What the run draws at startup: every `distrib:SampledQuantity`, read as its distribution.
+"""What the run draws at startup: sampled quantities.
 
 The graph carries no numbers for these; the generated controller draws them once per run.
 """
@@ -47,7 +47,7 @@ def unplaced_frames(tree: dict) -> list[dict]:
 def sampled_quantities(
     model, trees: list[dict], placements: set[str] = frozenset()
 ) -> list[SampledQuantity]:
-    """Every sampled quantity of the model, in the order the model states them.
+    """Every sampled quantity in graph order.
 
     PLACEMENTS are the drawn positions the scene places an object by: positions too, but on no
     tree, since the simulator places the object.
@@ -80,11 +80,12 @@ def sampled_quantities(
                 f"'{node}' is a position with coordinates of its own and a distribution to draw "
                 f"from: the scene places the frame, so nothing should draw it",
             )
-        if len(components) != (3 if position else 1):
+        allowed_sizes = (3,) if position else (1,)
+        if len(components) not in allowed_sizes:
             raise ConstraintViolation(
                 "sampling",
-                f"'{node}' draws {len(components)} numbers from '{distribution}', which is not "
-                f"{'a position' if position else 'a scalar'}",
+                f"'{node}' draws {len(components)} numbers from '{distribution}'; "
+                f"expected {allowed_sizes} component(s).",
             )
         result.append(
             SampledQuantity(

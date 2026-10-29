@@ -257,12 +257,16 @@ robot-shutdown(solver) ::= <<
 >>
 
 app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
+#include "headers/scaled_mesh.hpp"
 <if(has_serial_chain)>
 #include \<algorithm\>
 #include \<cstring\>
 #include \<cstdlib\>
+#include \<array\>
+#include \<cmath\>
 #include \<deque\>
 #include \<filesystem\>
+#include \<fstream\>
 #include \<iostream\>
 #include \<string\>
 #include \<vector\>
@@ -323,6 +327,10 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         }
         std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
         roots.push_back(std::filesystem::path(__FILE__).parent_path());
+        // shortcut: Linux /proc locates moved generations; use a portable resolver for other OS targets.
+        std::error_code executable_error;
+        const auto executable = std::filesystem::read_symlink("/proc/self/exe", executable_error);
+        if (!executable_error) roots.push_back(executable.parent_path().parent_path() / "generated");
         const auto cache = cache_root();
         const auto append_cache_candidate = [&cache](std::vector\<std::filesystem::path\> &candidates,
                                                      const std::filesystem::path &relative) {
@@ -467,6 +475,100 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
 <endif>        mj_scene.objects.push_back(object_spec);
     \}
 }; separator="\n">
+<if(scene.shape_bodies)>
+    struct ShapeFiles {
+        std::vector\<std::filesystem::path\> paths;
+        ~ShapeFiles() {
+            for (const auto &path : paths) {
+                std::error_code error;
+                std::filesystem::remove(path, error);
+            \}
+        \}
+    \} shape_files;
+    const auto xml_escape = [](const std::string &value) {
+        std::string result;
+        for (const char c : value) {
+            switch (c) {
+            case '&': result += "&amp;"; break;
+            case '"': result += "&quot;"; break;
+            case '\'': result += "&apos;"; break;
+            case 60: result += "&lt;"; break;
+            case 62: result += "&gt;"; break;
+            default: result += c;
+            \}
+        \}
+        return result;
+    \};
+<scene.shape_bodies:{body |
+    {
+        const auto shape_path = std::filesystem::temp_directory_path() /
+            ("motion-spec-shapes-" + std::to_string(getpid()) + "-<body.cpp_name>.xml");
+        shape_files.paths.push_back(shape_path);
+        std::ofstream xml(shape_path);
+        if (!xml) {
+            std::cerr \<\< "cannot write shape asset: " \<\< shape_path \<\< "\n";
+            return 1;
+        \}
+        xml \<\< char(60) \<\< "mujoco>";
+        xml \<\< char(60) \<\< "asset>";
+<body.geoms:{geom |<if(geom.generated_mesh)>
+        const auto source_<geom.cpp_name>_path = find_asset_path({<geom.cpp_base_mesh_literal>\});
+        const auto scaled_<geom.cpp_name>_path = std::filesystem::temp_directory_path() /
+            ("motion-spec-shape-" + std::to_string(getpid()) + "-<geom.cpp_name>.obj");
+        shape_files.paths.push_back(scaled_<geom.cpp_name>_path);
+        const std::vector\<double\> size_<geom.cpp_name> = {<geom.size; separator=", ">\};
+        if (source_<geom.cpp_name>_path.empty() || !motion_spec::write_scaled_mesh(
+                source_<geom.cpp_name>_path, scaled_<geom.cpp_name>_path,
+                size_<geom.cpp_name>)) {
+            std::cerr \<\< "cannot scale shape mesh: <geom.name>\n";
+            return 1;
+        \}
+        xml \<\< char(60) \<\< "mesh name=\"mesh_<geom.name>\" file=\""
+            \<\< xml_escape(scaled_<geom.cpp_name>_path.string()) \<\< "\"/>";
+<else><if(geom.has_path)>
+        const auto mesh_<geom.cpp_name>_path = find_asset_path({<geom.cpp_path_literal>\});
+        if (mesh_<geom.cpp_name>_path.empty()) {
+            std::cerr \<\< "STL shape asset not found: " \<\< <geom.cpp_path_literal> \<\< "\n";
+            return 1;
+        \}
+        const std::vector\<double\> mesh_<geom.cpp_name>_scale = {<geom.size; separator=", ">\};
+        xml \<\< char(60) \<\< "mesh name=\"mesh_<geom.name>\" file=\""
+            \<\< xml_escape(mesh_<geom.cpp_name>_path.string()) \<\< "\" scale=\"";
+        for (const double size : mesh_<geom.cpp_name>_scale) xml \<\< size \<\< ' ';
+        xml \<\< "\"/>";
+<endif><endif>}; separator="\n">
+        xml \<\< char(60) \<\< "/asset>";
+        xml \<\< char(60) \<\< "worldbody>" \<\< char(60) \<\< "body name=\"<body.name>\">";
+<body.geoms:{geom |
+        xml \<\< char(60) \<\< "geom name=\"<geom.name>\" type=\"<if(geom.generated_mesh)>mesh<else><geom.kind><endif>\" pos=\"<geom.pos; separator=" ">\" quat=\"<geom.quat_wxyz; separator=" ">\" rgba=\"<geom.rgba; separator=" ">\"";
+<if(geom.generated_mesh)>        xml \<\< " mesh=\"mesh_<geom.name>\"";
+<else><if(geom.has_path)>
+        xml \<\< " mesh=\"mesh_<geom.name>\"";
+<else>
+        const std::vector\<double\> geom_<geom.cpp_name>_size = {<geom.size; separator=", ">\};
+        xml \<\< " size=\"";
+        for (const double size : geom_<geom.cpp_name>_size) xml \<\< size \<\< ' ';
+        xml \<\< "\"";
+<endif><endif>
+        xml \<\< "/>";
+}; separator="\n">
+        xml \<\< char(60) \<\< "/body>" \<\< char(60) \<\< "/worldbody>" \<\< char(60) \<\< "/mujoco>";
+        xml.close();
+        mj_kdl::SceneObject shape_object{\};
+        shape_object.name = "<body.name>";
+        shape_object.prefix = "<body.name>_";
+        shape_object.mjcf_path = shape_path.string();
+        shape_object.fixed = true;
+        shape_object.attach_to.kind = mj_kdl::AttachKind::<body.attach_kind>;
+        shape_object.attach_to.name = "<body.attach_name>";
+        const std::array\<double, 3\> shape_pos = {<body.pos; separator=", ">\};
+        const std::array\<double, 4\> shape_quat = {<body.quat; separator=", ">\};
+        for (int i = 0; i \< 3; ++i) shape_object.pos[i] = shape_pos[i];
+        for (int i = 0; i \< 4; ++i) shape_object.quat[i] = shape_quat[i];
+        mj_scene.objects.push_back(shape_object);
+    \}
+}; separator="\n">
+<endif>
 <scene.frames:{frame |
     {
         mj_kdl::SiteSpec site_spec{\};

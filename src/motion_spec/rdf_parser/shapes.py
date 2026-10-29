@@ -70,17 +70,9 @@ def _scale(graph, shape) -> list[float]:
         )
     ):
         raise ConstraintViolation("scene", f"Shape '{shape}' uses obsolete scale RDF; re-export the scene.")
-    primitive = any(
-        (shape, RDF.type, kind) in graph
-        for kind in (
-            SHAPES.UnitCube, SHAPES.UnitCylinder, SHAPES.UnitSphere,
-        )
-    )
     if (shape, RDF.type, SHAPES.ScaledShape) not in graph:
         if any(graph.value(shape, predicate) is not None for predicate in predicates):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs ScaledShape type for its factors.")
-        if primitive:
-            raise ConstraintViolation("scene", f"Primitive shape '{shape}' needs scale.")
         return [1.0] * 3
     result = []
     for predicate in predicates:

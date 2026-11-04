@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import colorsys
 import json
 import math
 from collections import Counter
@@ -24,7 +25,8 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_MM,
 )
 from rdflib.namespace import RDF, XSD
-from scene_dsl.rdf.ktree import COL, PROV, PROV_EXT, SHAPES
+from scene_dsl.rdf.color import COL
+from scene_dsl.rdf.ktree import PROV, PROV_EXT, SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom
@@ -39,24 +41,43 @@ def _one(graph, subject, predicate, claim: str):
     return values[0]
 
 
+# Channels in each scheme's value, as the color metamodel writes them.
+_COLOR_CHANNELS = {COL.RGBScheme: 3, COL.RGBAScheme: 4, COL.HSVScheme: 3}
+
+
 def _color(graph, shape) -> list[float]:
+    """The shape's colour as MJCF rgba: RGB is taken as opaque, HSV converted."""
     colors = list(graph.objects(shape, COL["has-color"]))
     if not colors:
         return [0.35, 0.65, 0.95, 1.0]
-    if len(colors) != 1 or (colors[0], RDF.type, COL.RGBAScheme) not in graph:
-        raise ConstraintViolation("scene", f"Shape '{shape}' needs one RGBA color.")
-    value = str(_one(graph, colors[0], COL.value, f"Shape '{shape}'"))
-    try:
-        rgba = (
-            [int(value[i : i + 2], 16) / 255 for i in (1, 3, 5, 7)]
-            if value.startswith("#") and len(value) == 9
-            else [float(channel) for channel in value.split()]
+    if len(colors) != 1:
+        raise ConstraintViolation("scene", f"Shape '{shape}' needs at most one color.")
+    [color] = colors
+    schemes = [s for s in _COLOR_CHANNELS if (color, RDF.type, s) in graph]
+    if len(schemes) != 1:
+        raise ConstraintViolation(
+            "scene", f"Shape '{shape}' color needs one scheme: RGB, RGBA, or HSV."
         )
+    [scheme] = schemes
+    name, count = local_name(scheme).removesuffix("Scheme"), _COLOR_CHANNELS[scheme]
+    value = str(_one(graph, color, COL.value, f"Shape '{shape}'"))
+    try:
+        if value.startswith("#") and scheme != COL.HSVScheme and len(value) == 1 + 2 * count:
+            channels = [int(value[i : i + 2], 16) / 255 for i in range(1, len(value), 2)]
+        else:
+            channels = [float(channel) for channel in value.split()]
     except ValueError as error:
-        raise ConstraintViolation("scene", f"Shape '{shape}' has invalid RGBA color.") from error
-    if len(rgba) != 4 or any(not math.isfinite(v) or not 0 <= v <= 1 for v in rgba):
-        raise ConstraintViolation("scene", f"Shape '{shape}' needs four RGBA channels in [0, 1].")
-    return rgba
+        raise ConstraintViolation("scene", f"Shape '{shape}' has invalid {name} color.") from error
+    if len(channels) != count or not all(math.isfinite(v) for v in channels):
+        raise ConstraintViolation("scene", f"Shape '{shape}' needs {count} {name} channels.")
+    if scheme == COL.HSVScheme:
+        hue, saturation, brightness = channels
+        if not 0 <= hue < 360:
+            raise ConstraintViolation("scene", f"Shape '{shape}' needs HSV hue in [0, 360).")
+        channels = [*colorsys.hsv_to_rgb(hue / 360, saturation, brightness)]
+    if any(not 0 <= v <= 1 for v in channels):
+        raise ConstraintViolation("scene", f"Shape '{shape}' needs {name} channels in [0, 1].")
+    return channels if len(channels) == 4 else [*channels, 1.0]
 
 
 def _scale(graph, shape) -> list[float]:

@@ -115,10 +115,6 @@ def _scale(graph, shape) -> list[float]:
     return result
 
 
-def _half_scale(scale: float) -> float:
-    return 0.5 * scale
-
-
 def _unit_scale(graph, shape) -> float:
     unit = _one(graph, shape, URI_QUDT_PRED_UNIT, f"Shape '{shape}'")
     if unit not in (URI_QUDT_UNIT_M, URI_QUDT_UNIT_CM, URI_QUDT_UNIT_MM):
@@ -208,12 +204,10 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
                 size=sizes[:1] if uniform else sizes,
             )
         elif (shape, RDF.type, NS_MM_SHAPES.UnitCube) in graph:
-            sizes = [_half_scale(size) for size in sizes]
-            geom = MjcfShapeGeom(
-                **common, kind="box", size=sizes,
-            )
+            # MuJoCo sizes a box by its half extents.
+            geom = MjcfShapeGeom(**common, kind="box", size=[size / 2 for size in sizes])
         elif (shape, RDF.type, NS_MM_SHAPES.UnitCylinder) in graph:
-            sizes[2] = _half_scale(sizes[2])
+            sizes[2] /= 2  # MuJoCo sizes a cylinder by its half height.
             circular = sizes[0] == sizes[1]
             geom = MjcfShapeGeom(
                 **common, kind="cylinder",

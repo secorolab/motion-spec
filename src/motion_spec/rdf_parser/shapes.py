@@ -13,6 +13,8 @@ import rdflib
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.prov import get_file_path
 from rdf_utils.models.vocab import (
+    URI_COLOR_PRED_HAS_COLOR,
+    URI_COLOR_PRED_VALUE,
     URI_GEOM_PRED_X,
     URI_GEOM_PRED_Y,
     URI_GEOM_PRED_Z,
@@ -22,10 +24,12 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_CM,
     URI_QUDT_UNIT_M,
     URI_QUDT_UNIT_MM,
+    URI_SHAPES_PRED_ATTACHED_TO_FRAME,
+    URI_SHAPES_TYPE_FILE_BASED_SHAPE,
+    URI_SHAPES_TYPE_SCALED_SHAPE,
 )
+from rdf_utils.namespace import NS_MM_COLOR, NS_MM_SHAPES
 from rdflib.namespace import PROV, RDF, XSD
-from scene_dsl.rdf.color import COL
-from scene_dsl.rdf.ktree import SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom
@@ -41,12 +45,12 @@ def _one(graph, subject, predicate, claim: str):
 
 
 # Channels in each scheme's value, as the color metamodel writes them.
-_COLOR_CHANNELS = {COL.RGBScheme: 3, COL.RGBAScheme: 4, COL.HSVScheme: 3}
+_COLOR_CHANNELS = {NS_MM_COLOR.RGBScheme: 3, NS_MM_COLOR.RGBAScheme: 4, NS_MM_COLOR.HSVScheme: 3}
 
 
 def _color(graph, shape) -> list[float]:
     """The shape's colour as MJCF rgba: RGB is taken as opaque, HSV converted."""
-    colors = list(graph.objects(shape, COL["has-color"]))
+    colors = list(graph.objects(shape, URI_COLOR_PRED_HAS_COLOR))
     if not colors:
         return [0.35, 0.65, 0.95, 1.0]
     if len(colors) != 1:
@@ -59,9 +63,9 @@ def _color(graph, shape) -> list[float]:
         )
     [scheme] = schemes
     name, count = local_name(scheme).removesuffix("Scheme"), _COLOR_CHANNELS[scheme]
-    value = str(_one(graph, color, COL.value, f"Shape '{shape}'"))
+    value = str(_one(graph, color, URI_COLOR_PRED_VALUE, f"Shape '{shape}'"))
     try:
-        if value.startswith("#") and scheme != COL.HSVScheme and len(value) == 1 + 2 * count:
+        if value.startswith("#") and scheme != NS_MM_COLOR.HSVScheme and len(value) == 1 + 2 * count:
             channels = [int(value[i : i + 2], 16) / 255 for i in range(1, len(value), 2)]
         else:
             channels = [float(channel) for channel in value.split()]
@@ -69,7 +73,7 @@ def _color(graph, shape) -> list[float]:
         raise ConstraintViolation("scene", f"Shape '{shape}' has invalid {name} color.") from error
     if len(channels) != count or not all(math.isfinite(v) for v in channels):
         raise ConstraintViolation("scene", f"Shape '{shape}' needs {count} {name} channels.")
-    if scheme == COL.HSVScheme:
+    if scheme == NS_MM_COLOR.HSVScheme:
         hue, saturation, brightness = channels
         if not 0 <= hue < 360:
             raise ConstraintViolation("scene", f"Shape '{shape}' needs HSV hue in [0, 360).")
@@ -80,17 +84,17 @@ def _color(graph, shape) -> list[float]:
 
 
 def _scale(graph, shape) -> list[float]:
-    predicates = (SHAPES["scale-x"], SHAPES["scale-y"], SHAPES["scale-z"])
+    predicates = (NS_MM_SHAPES["scale-x"], NS_MM_SHAPES["scale-y"], NS_MM_SHAPES["scale-z"])
     if (
-        (shape, RDF.type, SHAPES.Scale) in graph
-        or graph.value(shape, SHAPES["uniform-scale"]) is not None
+        (shape, RDF.type, NS_MM_SHAPES.Scale) in graph
+        or graph.value(shape, NS_MM_SHAPES["uniform-scale"]) is not None
         or any(
             graph.value(shape, predicate) is not None
             for predicate in (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
         )
     ):
         raise ConstraintViolation("scene", f"Shape '{shape}' uses obsolete scale RDF; re-export the scene.")
-    if (shape, RDF.type, SHAPES.ScaledShape) not in graph:
+    if (shape, RDF.type, URI_SHAPES_TYPE_SCALED_SHAPE) not in graph:
         if any(graph.value(shape, predicate) is not None for predicate in predicates):
             raise ConstraintViolation("scene", f"Shape '{shape}' needs ScaledShape type for its factors.")
         return [1.0] * 3
@@ -146,10 +150,10 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
         for frame in graph.objects(joint, URI_KC_PRED_BETWEEN_ATTACHMENTS)
     }
     bodies: dict[rdflib.URIRef, MjcfShapeBody] = {}
-    for shape in graph.subjects(SHAPES["attached-to-frame"], None):
-        if graph.value(shape, SHAPES["linear-transform"]) is not None:
+    for shape in graph.subjects(URI_SHAPES_PRED_ATTACHED_TO_FRAME, None):
+        if graph.value(shape, NS_MM_SHAPES["linear-transform"]) is not None:
             raise ConstraintViolation("scene", f"Shape '{shape}' uses unsupported linear-transform.")
-        frame = _one(graph, shape, SHAPES["attached-to-frame"], f"Shape '{shape}'")
+        frame = _one(graph, shape, URI_SHAPES_PRED_ATTACHED_TO_FRAME, f"Shape '{shape}'")
         body = quantities.body_of(model, frame)
         free = body is None
         key = frame if free else body
@@ -197,18 +201,18 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
         )
         unit_scale = _unit_scale(graph, shape)
         sizes = [factor * unit_scale for factor in _scale(graph, shape)]
-        if (shape, RDF.type, SHAPES.UnitSphere) in graph:
+        if (shape, RDF.type, NS_MM_SHAPES.UnitSphere) in graph:
             uniform = sizes[0] == sizes[1] == sizes[2]
             geom = MjcfShapeGeom(
-                **common, kind="sphere", size=sizes[:1] if uniform else sizes,
-                generated_mesh=not uniform,
+                **common, kind="sphere" if uniform else "ellipsoid",
+                size=sizes[:1] if uniform else sizes,
             )
-        elif (shape, RDF.type, SHAPES.UnitCube) in graph:
+        elif (shape, RDF.type, NS_MM_SHAPES.UnitCube) in graph:
             sizes = [_half_scale(size) for size in sizes]
             geom = MjcfShapeGeom(
                 **common, kind="box", size=sizes,
             )
-        elif (shape, RDF.type, SHAPES.UnitCylinder) in graph:
+        elif (shape, RDF.type, NS_MM_SHAPES.UnitCylinder) in graph:
             sizes[2] = _half_scale(sizes[2])
             circular = sizes[0] == sizes[1]
             geom = MjcfShapeGeom(
@@ -216,7 +220,7 @@ def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
                 size=[sizes[0], sizes[2]] if circular else sizes,
                 generated_mesh=not circular,
             )
-        elif (shape, RDF.type, SHAPES.FileBasedShape) in graph:
+        elif (shape, RDF.type, URI_SHAPES_TYPE_FILE_BASED_SHAPE) in graph:
             path = _stl_path(graph, shape)
             geom = MjcfShapeGeom(
                 **common, kind="mesh", size=sizes,

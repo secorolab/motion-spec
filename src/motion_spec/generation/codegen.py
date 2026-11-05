@@ -312,25 +312,22 @@ def generate_code(
     written = [contract_dir / "frame_layout.json", contract_dir / "frame_log_header.pb"]
 
     if ir["configuration"]["backend"] == "mj_kdl":
-        from motion_spec.rdf_parser.shape_mesh import base_triangles, write_obj
+        from motion_spec.rdf_parser.shape_mesh import UNIT_CYLINDER_OBJ, write_unit_cylinder
 
+        # One unit mesh for every elliptical cylinder, each sized by its mesh `scale`.
+        cylinder = (output_dir / "assets" / UNIT_CYLINDER_OBJ).resolve()
         for body in ir["composition"]["scene"].get("shape_bodies") or []:
             for geom in body.get("geoms") or []:
                 if not geom.get("generated_mesh"):
                     continue
-                base = (output_dir / "assets" / f"{geom['cpp_name']}.obj").resolve()
-                write_obj(base, base_triangles(geom["kind"]))
-                geom["cpp_base_mesh_literal"] = json.dumps(
-                    f"controller/assets/{base.name}"
-                )
-                written.append(base)
+                if cylinder not in written:
+                    write_unit_cylinder(cylinder)
+                    written.append(cylinder)
+                geom["has_path"] = True
+                geom["cpp_path_literal"] = json.dumps(f"controller/assets/{cylinder.name}")
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
-    if ir["configuration"]["backend"] == "mj_kdl":
-        scaled_header = headers_dir / "scaled_mesh.hpp"
-        shutil.copyfile(TEMPLATES / "backend" / "mj_kdl" / "scaled_mesh.hpp", scaled_header)
-        written.append(scaled_header)
     # coord-dsl's FSM header stays at the source root (like frame_layout.h); the bare
     # include in algorithm_data.hpp resolves it via the root include dir, so no headers/ copy
     # is needed — copying it there just duplicated the file in the tree and the archive.

@@ -167,7 +167,6 @@ class MjcfShapeGeom:
     rgba: list[float]
     size: list[float]
     generated_mesh: bool = False
-    cpp_base_mesh_literal: str = ""
     path: str = ""
     cpp_path_literal: str = ""
     has_path: bool = False

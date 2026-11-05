@@ -24,8 +24,8 @@ from motion_spec.generation.codegen import asset_candidates
 from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
+from motion_spec.rdf_parser.shape_mesh import UNIT_CYLINDER_OBJ, write_unit_cylinder
 from motion_spec.rdf_parser.shapes import read_shape_bodies
-from motion_spec.rdf_parser.shape_mesh import base_triangles, write_obj
 
 
 def scenex_model(scenex_path: Path) -> Model:
@@ -228,16 +228,13 @@ def add_shape_previews(
                 if asset is None:
                     asset = ET.Element("asset")
                     xml.insert(0, asset)
-                name = f"mesh_{shape.name}"
                 if shape.generated_mesh:
-                    path = directory / f"{body.cpp_name}_{shape.cpp_name}.obj"
-                    write_obj(path, base_triangles(shape.kind), shape.size)
-                    ET.SubElement(asset, "mesh", name=name, file=str(path))
+                    file = directory / UNIT_CYLINDER_OBJ
+                    write_unit_cylinder(file)
                 else:
-                    ET.SubElement(
-                        asset, "mesh", name=name, file=find_asset(shape.path, start),
-                        scale=_numbers(shape.size),
-                    )
+                    file = find_asset(shape.path, start)
+                name = f"mesh_{shape.name}"
+                ET.SubElement(asset, "mesh", name=name, file=str(file), scale=_numbers(shape.size))
                 geom.set("type", "mesh")
                 geom.set("mesh", name)
             else:

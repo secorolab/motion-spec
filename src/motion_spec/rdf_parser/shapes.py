@@ -8,11 +8,10 @@ import json
 import math
 from collections import Counter
 from hashlib import sha256
-from pathlib import Path
-from urllib.parse import unquote, urljoin, urlparse
 
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.models.prov import get_file_path
 from rdf_utils.models.vocab import (
     URI_GEOM_PRED_X,
     URI_GEOM_PRED_Y,
@@ -24,9 +23,9 @@ from rdf_utils.models.vocab import (
     URI_QUDT_UNIT_M,
     URI_QUDT_UNIT_MM,
 )
-from rdflib.namespace import RDF, XSD
+from rdflib.namespace import PROV, RDF, XSD
 from scene_dsl.rdf.color import COL
-from scene_dsl.rdf.ktree import PROV, PROV_EXT, SHAPES
+from scene_dsl.rdf.ktree import SHAPES
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom
@@ -125,26 +124,12 @@ def _unit_scale(graph, shape) -> float:
 
 def _stl_path(graph, shape) -> str:
     source = _one(graph, shape, PROV.wasDerivedFrom, f"File shape '{shape}'")
-    location = _one(graph, source, PROV.atLocation, f"File shape source '{source}'")
-    if (location, RDF.type, PROV_EXT.RelativeLocation) in graph:
-        relative = str(_one(graph, location, PROV_EXT["rel-path"], f"File location '{location}'"))
-        base = str(_one(graph, location, PROV.atLocation, f"File location '{location}'"))
-        ref, root = urlparse(relative), urlparse(base)
-        if (
-            ref.scheme or ref.netloc or ref.path.startswith("/") or ref.query or ref.fragment
-            or root.scheme != "file" or root.netloc not in ("", "localhost")
-            or not root.path.endswith("/")
-        ):
-            raise ConstraintViolation("scene", f"File shape '{shape}' needs a relative STL path at a file directory.")
-        path = Path(unquote(urlparse(urljoin(base, relative)).path))
-    else:
-        ref = urlparse(str(location))
-        if (
-            ref.scheme != "file" or ref.netloc not in ("", "localhost")
-            or not ref.path.startswith("/") or ref.params or ref.query or ref.fragment
-        ):
-            raise ConstraintViolation("scene", f"File shape '{shape}' needs a local absolute file location.")
-        path = Path(unquote(ref.path))
+    _one(graph, source, PROV.atLocation, f"File shape source '{source}'")
+    # A path on this system, relative to a directory, or in a ROS or Python package.
+    try:
+        path = get_file_path(graph, source)
+    except (ValueError, LookupError, ImportError) as error:
+        raise ConstraintViolation("scene", f"File shape '{shape}' needs a local STL location: {error}") from error
     if path.suffix.lower() != ".stl" or not path.is_file():
         raise ConstraintViolation("scene", f"File shape '{shape}' STL asset was not found: {path}.")
     return str(path.resolve())

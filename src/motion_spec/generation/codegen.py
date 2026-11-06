@@ -311,21 +311,6 @@ def generate_code(
     )
     written = [contract_dir / "frame_layout.json", contract_dir / "frame_log_header.pb"]
 
-    if ir["configuration"]["backend"] == "mj_kdl":
-        from motion_spec.rdf_parser.shape_mesh import UNIT_CYLINDER_OBJ, write_unit_cylinder
-
-        # One unit mesh for every elliptical cylinder, each sized by its mesh `scale`.
-        cylinder = (output_dir / "assets" / UNIT_CYLINDER_OBJ).resolve()
-        for body in ir["composition"]["scene"].get("shape_bodies") or []:
-            for geom in body.get("geoms") or []:
-                if not geom.get("generated_mesh"):
-                    continue
-                if cylinder not in written:
-                    write_unit_cylinder(cylinder)
-                    written.append(cylinder)
-                geom["has_path"] = True
-                geom["cpp_path_literal"] = json.dumps(f"controller/assets/{cylinder.name}")
-
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
     # coord-dsl's FSM header stays at the source root (like frame_layout.h); the bare

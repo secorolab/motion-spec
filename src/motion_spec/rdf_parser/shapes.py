@@ -32,7 +32,7 @@ from rdf_utils.namespace import NS_MM_COLOR, NS_MM_SHAPES
 from rdflib.namespace import PROV, RDF, XSD
 from scene_dsl.rdf_parser.kinematics import body_of_frame
 
-from motion_spec.classes.scene import MjcfSceneSpec, MjcfShapeBody, MjcfShapeGeom
+from motion_spec.classes.scene import MjcfSceneShape, MjcfSceneSpec
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import identifier, local_name, si
 
@@ -48,11 +48,12 @@ def _one(graph, subject, predicate, claim: str):
 _COLOR_CHANNELS = {NS_MM_COLOR.RGBScheme: 3, NS_MM_COLOR.RGBAScheme: 4, NS_MM_COLOR.HSVScheme: 3}
 
 
-def _color(graph, shape) -> list[float]:
-    """The shape's colour as MJCF rgba: RGB is taken as opaque, HSV converted."""
+def _color(graph, shape) -> list[float] | None:
+    """The shape's colour as MJCF rgba: RGB is taken as opaque, HSV converted. None when the
+    scene states no colour, which leaves MuJoCo's default."""
     colors = list(graph.objects(shape, URI_COLOR_PRED_HAS_COLOR))
     if not colors:
-        return [0.35, 0.65, 0.95, 1.0]
+        return None
     if len(colors) != 1:
         raise ConstraintViolation("scene", f"Shape '{shape}' needs at most one color.")
     [color] = colors
@@ -135,100 +136,148 @@ def _stl_path(graph, shape) -> str:
     return str(path.resolve())
 
 
-def read_shape_bodies(model, scene: MjcfSceneSpec) -> list[MjcfShapeBody]:
+def _compose(outer_pos, outer_quat, inner_pos, inner_quat) -> tuple[list[float], list[float]]:
+    """INNER, posed in a frame that OUTER poses, as one pose: metres and [x, y, z, w]."""
+    ox, oy, oz, ow = outer_quat
+    ix, iy, iz, iw = inner_quat
+    quat = [
+        ow * ix + ox * iw + oy * iz - oz * iy,
+        ow * iy - ox * iz + oy * iw + oz * ix,
+        ow * iz + ox * iy - oy * ix + oz * iw,
+        ow * iw - ox * ix - oy * iy - oz * iz,
+    ]
+    # outer_quat rotates inner_pos: v + 2w(u x v) + 2u x (u x v), u the vector part.
+    u, v = (ox, oy, oz), inner_pos
+    t = [2 * (u[1] * v[2] - u[2] * v[1]), 2 * (u[2] * v[0] - u[0] * v[2]),
+         2 * (u[0] * v[1] - u[1] * v[0])]
+    rotated = [
+        v[0] + ow * t[0] + (u[1] * t[2] - u[2] * t[1]),
+        v[1] + ow * t[1] + (u[2] * t[0] - u[0] * t[2]),
+        v[2] + ow * t[2] + (u[0] * t[1] - u[1] * t[0]),
+    ]
+    return [o + r for o, r in zip(outer_pos, rotated)], quat
+
+
+def _mapped_bodies(scene: MjcfSceneSpec) -> dict[str, str]:
+    return {obj.body_iri: obj.body for obj in scene.objects}
+
+
+def world_bodies(model, objects) -> set[rdflib.URIRef]:
+    """The bodies that stand in the world: they carry shapes and no scene object maps them.
+
+    Nothing else builds such a body, and `read_shapes` only takes one that is static, so its
+    shapes and frames go on MuJoCo's world body at their pose from the scene anchor.
+    """
+    graph = model.graph
+    mapped = {obj.body_iri for obj in objects}
+    return {
+        body
+        for frame in graph.objects(None, URI_SHAPES_PRED_ATTACHED_TO_FRAME)
+        if (body := quantities.body_of(model, frame)) is not None and str(body) not in mapped
+    }
+
+
+def anchor_placement(model, frame, body):
+    """Where FRAME on a world body sits from the scene anchor: its body's placement, then its
+    own on the body, or (None, None) when either is missing."""
+    anchor = quantities.anchor_frame(model)
+    body_pos, body_quat = quantities.frame_placement(model, body, anchor)
+    pos, quat = quantities.frame_placement(model, frame, quantities.placement_frame(model, body))
+    if body_pos is None or body_quat is None or pos is None or quat is None:
+        return None, None
+    return _compose(body_pos, body_quat, pos, quat)
+
+
+def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
+    """Each scene-authored shape, as one fixed SceneObject on its mapped object or the world."""
     graph = model.graph
     anchor = quantities.anchor_frame(model)
     anchor_body = quantities.body_of(model, anchor)
-    mapped = {obj.body_iri: obj.body for obj in scene.objects}
+    mapped = _mapped_bodies(scene)
     joined = {
         body_of_frame(frame, graph)
         for joint in graph.subjects(RDF.type, URI_KC_TYPE_JOINT)
         for frame in graph.objects(joint, URI_KC_PRED_BETWEEN_ATTACHMENTS)
     }
-    bodies: dict[rdflib.URIRef, MjcfShapeBody] = {}
+    shapes: list[MjcfSceneShape] = []
     for shape in graph.subjects(URI_SHAPES_PRED_ATTACHED_TO_FRAME, None):
         if graph.value(shape, NS_MM_SHAPES["linear-transform"]) is not None:
             raise ConstraintViolation("scene", f"Shape '{shape}' uses unsupported linear-transform.")
         frame = _one(graph, shape, URI_SHAPES_PRED_ATTACHED_TO_FRAME, f"Shape '{shape}'")
         body = quantities.body_of(model, frame)
-        free = body is None
-        key = frame if free else body
         # The scene anchor is stationary even when a joint names its body.
         if body in joined and body != anchor_body and str(body) not in mapped:
             raise ConstraintViolation(
                 "scene", f"Shape '{shape}' is on a joined body without a mapped scene object."
             )
-        root = anchor if free else quantities.placement_frame(model, body)
-        pos, quat = quantities.frame_placement(model, frame, root)
+        if body is None:
+            # On a frame no body carries: placed from the scene anchor, on the world.
+            attach_kind, attach_name = "World", ""
+            pos, quat = quantities.frame_placement(model, frame, anchor)
+            missing = f"Shape '{shape}' has no placement from its frame to the scene anchor."
+        elif str(body) in mapped:
+            # Rides the object's body, posed from the frame that body is built on.
+            attach_kind, attach_name = "Body", mapped[str(body)]
+            pos, quat = quantities.frame_placement(
+                model, frame, quantities.placement_frame(model, body)
+            )
+            missing = f"Shape '{shape}' has no placement from its body's root frame."
+        else:
+            # On a static body nothing else builds: it stands in the world.
+            attach_kind, attach_name = "World", ""
+            pos, quat = anchor_placement(model, frame, body)
+            missing = f"Shape '{shape}' has no placement from its body to the scene anchor."
         if pos is None or quat is None:
-            raise ConstraintViolation(
-                "scene", f"Shape '{shape}' has no placement from its frame to the scene anchor."
-                if free else f"Shape '{shape}' has no placement from its body's root frame."
-            )
-        if key not in bodies:
-            if free:
-                name = f"{local_name(frame)}_shapes"
-                attach_kind, attach_name = "World", ""
-                body_pos, body_quat = [0.0] * 3, [0.0, 0.0, 0.0, 1.0]
-            elif str(body) in mapped:
-                name = mapped[str(body)] + "_shapes"
-                attach_kind, attach_name = "Body", mapped[str(body)]
-                body_pos, body_quat = [0.0] * 3, [0.0, 0.0, 0.0, 1.0]
-            else:
-                name = local_name(body)
-                attach_kind, attach_name = "World", ""
-                body_pos, body_quat = quantities.frame_placement(model, body, anchor)
-                if body_pos is None or body_quat is None:
-                    raise ConstraintViolation(
-                        "scene", f"Shape body '{body}' has no placement from the scene anchor."
-                    )
-            bodies[key] = MjcfShapeBody(
-                name, str(key), attach_kind, attach_name, body_pos, body_quat,
-                cpp_name=f"{identifier(name)}_{sha256(str(key).encode()).hexdigest()[:8]}",
-            )
-        common = dict(
-            name=local_name(shape),
-            cpp_name=(
-                f"{identifier(local_name(shape))}_{sha256(str(shape).encode()).hexdigest()[:8]}"
-            ),
-            pos=pos,
-            quat_wxyz=[quat[3], *quat[:3]],
-            rgba=_color(graph, shape),
-        )
+            raise ConstraintViolation("scene", missing)
+
+        common = {
+            "name": local_name(shape),
+            "iri": str(shape),
+            "attach_kind": attach_kind,
+            "attach_name": attach_name,
+            "pos": pos,
+            "quat": quat,
+        }
+        rgba = _color(graph, shape)
+        if rgba is not None:
+            common.update(rgba=rgba, has_rgba=True)
         unit_scale = _unit_scale(graph, shape)
         sizes = [factor * unit_scale for factor in _scale(graph, shape)]
         if (shape, RDF.type, NS_MM_SHAPES.UnitSphere) in graph:
             uniform = sizes[0] == sizes[1] == sizes[2]
-            geom = MjcfShapeGeom(
-                **common, kind="sphere" if uniform else "ellipsoid",
-                size=sizes[:1] if uniform else sizes,
+            entry = MjcfSceneShape(
+                **common, shape="SPHERE" if uniform else "ELLIPSOID",
+                size=[sizes[0], 0.0, 0.0] if uniform else sizes,
             )
         elif (shape, RDF.type, NS_MM_SHAPES.UnitCube) in graph:
             # MuJoCo sizes a box by its half extents.
-            geom = MjcfShapeGeom(**common, kind="box", size=[size / 2 for size in sizes])
+            entry = MjcfSceneShape(**common, shape="BOX", size=[size / 2 for size in sizes])
         elif (shape, RDF.type, NS_MM_SHAPES.UnitCylinder) in graph:
-            sizes[2] /= 2  # MuJoCo sizes a cylinder by its half height.
-            circular = sizes[0] == sizes[1]
-            geom = MjcfShapeGeom(
-                **common, kind="cylinder",
-                size=[sizes[0], sizes[2]] if circular else sizes,
-                generated_mesh=not circular,
-            )
+            if sizes[0] != sizes[1]:
+                raise ConstraintViolation(
+                    "scene",
+                    f"Shape '{shape}' is an elliptical cylinder (X scale != Y scale); MuJoCo's "
+                    "cylinder is circular.",
+                )
+            # MuJoCo sizes a cylinder by its radius and half height.
+            entry = MjcfSceneShape(**common, shape="CYLINDER", size=[sizes[0], sizes[2] / 2, 0.0])
         elif (shape, RDF.type, URI_SHAPES_TYPE_FILE_BASED_SHAPE) in graph:
             path = _stl_path(graph, shape)
-            geom = MjcfShapeGeom(
-                **common, kind="mesh", size=sizes,
-                path=path, cpp_path_literal=json.dumps(path, ensure_ascii=False),
-                has_path=True,
+            entry = MjcfSceneShape(
+                **common, shape="MESH", size=sizes,
+                path=path, cpp_path_literal=json.dumps(path, ensure_ascii=False), has_path=True,
             )
         else:
             raise ConstraintViolation("scene", f"Shape '{shape}' has no supported type.")
-        if any(not math.isfinite(size) or size <= 0 for size in geom.size):
-            raise ConstraintViolation("scene", f"Shape '{shape}' has invalid dimensions after unit conversion.")
-        bodies[key].geoms.append(geom)
-    result = list(bodies.values())
-    names = Counter([body.name for body in result] + [obj.body for obj in scene.objects])
-    for body in result:
-        if names[body.name] > 1:
-            body.name = body.cpp_name
-    return result
+        used = {"SPHERE": 1, "CYLINDER": 2}.get(entry.shape, 3)
+        if any(not math.isfinite(size) or size <= 0 for size in entry.size[:used]):
+            raise ConstraintViolation(
+                "scene", f"Shape '{shape}' has invalid dimensions after unit conversion."
+            )
+        shapes.append(entry)
+    # Each shape is a body of its own: its name must not repeat another shape's or an object's.
+    names = Counter([entry.name for entry in shapes] + [obj.body for obj in scene.objects])
+    for entry in shapes:
+        if names[entry.name] > 1:
+            entry.name = f"{identifier(entry.name)}_{sha256(entry.iri.encode()).hexdigest()[:8]}"
+    return shapes

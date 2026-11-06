@@ -8,10 +8,8 @@ every driven chain is put at its start pose.
 
 from __future__ import annotations
 
-import tempfile
 import tomllib
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 import mj_kdl_wrapper as mjk
 import rdflib
@@ -24,8 +22,7 @@ from motion_spec.generation.codegen import asset_candidates
 from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
-from motion_spec.rdf_parser.shape_mesh import UNIT_CYLINDER_OBJ, write_unit_cylinder
-from motion_spec.rdf_parser.shapes import read_shape_bodies
+from motion_spec.rdf_parser.shapes import read_shapes
 
 
 def scenex_model(scenex_path: Path) -> Model:
@@ -204,54 +201,29 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
     return spec
 
 
-def _numbers(values) -> str:
-    return " ".join(str(value) for value in values)
+def add_shapes(spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: Path) -> None:
+    """Add each scene-authored shape as one fixed SceneObject, as backend/mj_kdl/robot.stg does.
 
-
-def add_shape_previews(
-    spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: Path, directory: Path,
-) -> None:
-    """Draw each body of shapes as one fixed MJCF object."""
-    bodies = read_shape_bodies(model, scene)
-    previews = []
-    for body in bodies:
-        xml = ET.Element("mujoco")
-        world = ET.SubElement(xml, "worldbody")
-        parent = ET.SubElement(world, "body", name=body.name)
-        for shape in body.geoms:
-            geom = ET.SubElement(parent, "geom", name=shape.name)
-            geom.set("pos", _numbers(shape.pos))
-            geom.set("quat", _numbers(shape.quat_wxyz))
-            geom.set("rgba", _numbers(shape.rgba))
-            if shape.kind == "mesh" or shape.generated_mesh:
-                asset = xml.find("asset")
-                if asset is None:
-                    asset = ET.Element("asset")
-                    xml.insert(0, asset)
-                if shape.generated_mesh:
-                    file = directory / UNIT_CYLINDER_OBJ
-                    write_unit_cylinder(file)
-                else:
-                    file = find_asset(shape.path, start)
-                name = f"mesh_{shape.name}"
-                ET.SubElement(asset, "mesh", name=name, file=str(file), scale=_numbers(shape.size))
-                geom.set("type", "mesh")
-                geom.set("mesh", name)
-            else:
-                geom.set("type", shape.kind)
-                geom.set("size", _numbers(shape.size))
-        path = directory / f"{body.name}.xml"
-        ET.ElementTree(xml).write(path, encoding="utf-8", xml_declaration=True)
+    Shapes collide but add no mass: the body's inertia already states it. A shape the scene
+    gives no colour keeps MuJoCo's default.
+    """
+    objects = []
+    for shape in read_shapes(model, scene):
         obj = mjk.SceneObject()
-        obj.name = body.name
-        obj.prefix = f"{body.name}_"
-        obj.attach_to = _target(body.attach_kind, body.attach_name)
-        obj.mjcf_path = str(path)
-        obj.pos = body.pos
-        obj.quat = body.quat
+        obj.name = shape.name
+        obj.attach_to = _target(shape.attach_kind, shape.attach_name)
+        obj.shape = getattr(mjk.Shape, shape.shape)
+        if shape.has_path:
+            obj.mesh_path = find_asset(shape.path, start)
+        obj.size = shape.size
+        obj.pos = shape.pos
+        obj.quat = shape.quat
+        if shape.rgba is not None:
+            obj.rgba = shape.rgba
         obj.fixed = True
-        previews.append(obj)
-    spec.objects = [*spec.objects, *previews]
+        obj.mass = 0.0
+        objects.append(obj)
+    spec.objects = [*spec.objects, *objects]
 
 
 def describe(spec: mjk.SceneSpec, env: mjk.Env) -> None:
@@ -277,19 +249,18 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     _setups, _ordered, trees = agents.robot_setups(model)
     scene = read_scene(model, trees)
     spec = build_spec(scene, scenex_path)
-    with tempfile.TemporaryDirectory(prefix="motion-spec-shapes-") as temporary:
-        add_shape_previews(spec, model, scene, scenex_path, Path(temporary))
-        env = mjk.Env.build(spec)
-        try:
-            _robots = apply_home_poses(env, poses)
-            describe(spec, env)
-            if headless:
-                return
-            env.open_viewer(scenex_path.name)
-            while True:
-                env.update()
-                if not env.step():
-                    break
-                env.pace()  # step() never sleeps; an unpaced loop starves the render thread
-        finally:
-            env.close()
+    add_shapes(spec, model, scene, scenex_path)
+    env = mjk.Env.build(spec)
+    try:
+        _robots = apply_home_poses(env, poses)
+        describe(spec, env)
+        if headless:
+            return
+        env.open_viewer(scenex_path.name)
+        while True:
+            env.update()
+            if not env.step():
+                break
+            env.pace()  # step() never sleeps; an unpaced loop starves the render thread
+    finally:
+        env.close()

@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: MPL-2.0
+"""Scene-authored shapes: one fixed, massless SceneObject each, on its body or on the world.
+
+Read from a copy of scene-dsl's `kinova_with_objects` example, which draws an STL marker on the
+static world body and an ellipsoid, a cylinder and a cube on a mapped table.
+"""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import pytest
+import scene_dsl
+from rdf_utils.constraints import ConstraintViolation
+
+from motion_spec import view
+from motion_spec.rdf_parser.agents import robot_setups
+from motion_spec.rdf_parser.scene import read_scene
+from motion_spec.rdf_parser.shapes import read_shapes
+
+EXAMPLES = Path(scene_dsl.__file__).resolve().parents[2] / "examples"
+SCENEX = "kinova_with_objects.scenex"
+
+
+@pytest.fixture
+def example(tmp_path: Path) -> Path:
+    """A copy of the example, so a test may edit it; its assets keep their relative place."""
+    if not (EXAMPLES / "models" / SCENEX).is_file():
+        pytest.skip(f"scene-dsl example {SCENEX} is not checked out")
+    shutil.copytree(EXAMPLES, tmp_path / "examples")
+    return tmp_path / "examples" / "models" / SCENEX
+
+
+def _scene(path: Path):
+    model = view.scenex_model(path)
+    scene = read_scene(model, robot_setups(model)[2])
+    return model, scene
+
+
+def test_each_shape_is_one_object_on_its_body_or_the_world(example: Path) -> None:
+    model, scene = _scene(example)
+    shapes = {shape.name: shape for shape in read_shapes(model, scene)}
+
+    assert {name: shape.shape for name, shape in shapes.items()} == {
+        "static_marker": "MESH",
+        "ball": "ELLIPSOID",
+        "cylinder": "CYLINDER",
+        "cube": "BOX",
+    }
+    # The static world body is built by nothing else: its shape stands in the world.
+    marker = shapes["static_marker"]
+    assert (marker.attach_kind, marker.attach_name) == ("World", "")
+    assert marker.pos == pytest.approx([0.65, -0.4, 0.7])
+    assert marker.size == pytest.approx([0.05, 0.05, 0.05])  # scale 5 in cm
+    assert marker.has_path and Path(marker.path).name == "tetra.stl"
+    # No colour stated: MuJoCo's default, not one made up here.
+    assert marker.rgba is None and not marker.has_rgba
+    for name in ("ball", "cylinder", "cube"):
+        assert shapes[name].attach_kind == "Body"
+        assert shapes[name].has_rgba
+    assert shapes["cylinder"].size == pytest.approx([0.05, 0.045, 0.0])  # radius, half height
+
+
+def test_a_world_body_frame_is_a_site_on_the_world(example: Path) -> None:
+    _model, scene = _scene(example)
+    [site] = [frame for frame in scene.frames if frame.name == "static_marker_frame"]
+    assert site.body == "world"
+    assert [site.pos_x, site.pos_y, site.pos_z] == pytest.approx([0.65, -0.4, 0.7])
+
+
+def test_an_elliptical_cylinder_is_refused(example: Path) -> None:
+    source = example.read_text()
+    assert "scale: (50, 50, 90)" in source
+    example.write_text(source.replace("scale: (50, 50, 90)", "scale: (50, 40, 90)"))
+    model, scene = _scene(example)
+    with pytest.raises(ConstraintViolation, match="elliptical cylinder"):
+        read_shapes(model, scene)
+
+
+def test_shapes_build_massless_and_colliding(example: Path) -> None:
+    mjk = pytest.importorskip("mj_kdl_wrapper")
+    mujoco = pytest.importorskip("mujoco")
+    model, scene = _scene(example)
+    spec = view.build_spec(scene, example)
+    view.add_shapes(spec, model, scene, example)
+    env = mjk.Env.build(spec)
+    try:
+        m = env.model
+        for name in ("static_marker", "ball", "cylinder", "cube"):
+            geom = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, f"{name}_geom")
+            assert geom >= 0, name
+            assert m.body_mass[m.geom_bodyid[geom]] == 0.0
+            assert m.geom_contype[geom] != 0
+    finally:
+        env.close()

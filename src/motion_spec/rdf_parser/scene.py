@@ -43,6 +43,7 @@ from motion_spec.rdf_parser.agents import (
 )
 from motion_spec.rdf_parser.model import local_name, seconds
 from motion_spec.rdf_parser.sampling import unplaced_frames
+from motion_spec.rdf_parser.shapes import anchor_placement, world_bodies
 
 
 def read_scene(model, trees=()) -> MjcfSceneSpec:
@@ -187,9 +188,13 @@ def _scene_frames(model, objects, trees=()) -> list:
 
     A frame on a body an object maps beyond its root goes on that body under the name the
     composed scene gives it, not under its kgraph name, which names nothing in the scene.
+
+    A frame on a world body (static, drawn only by its shapes, see `shapes.world_bodies`) goes
+    on MuJoCo's world body, posed from the scene anchor: no MuJoCo body is named after it.
     """
     graph = model.graph
     body_names = {uri: name for obj in objects for uri, name in obj.secondary_bodies.items()}
+    in_world = world_bodies(model, objects)
     marked = [
         (body, frame)
         for kgraph in graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH)
@@ -224,14 +229,19 @@ def _scene_frames(model, objects, trees=()) -> list:
                 )
             )
             continue
-        position, orientation = quantities.frame_placement(
-            model, frame, quantities.placement_frame(model, body)
-        )
+        if body in in_world:
+            host = "world"
+            position, orientation = anchor_placement(model, frame, body)
+        else:
+            host = body_name
+            position, orientation = quantities.frame_placement(
+                model, frame, quantities.placement_frame(model, body)
+            )
         if position is None:
             continue
         frames.append(
             MjcfSceneFrame(
-                body=body_name,
+                body=host,
                 name=site,
                 uri=str(frame),
                 **dict(zip(("pos_x", "pos_y", "pos_z"), position)),

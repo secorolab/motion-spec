@@ -53,12 +53,13 @@ def test_each_shape_is_one_object_on_its_body_or_the_world(example: Path) -> Non
     assert (marker.attach_kind, marker.attach_name) == ("World", "")
     assert marker.pos == pytest.approx([0.65, -0.4, 0.7])
     assert marker.size == pytest.approx([0.05, 0.05, 0.05])  # scale 5 in cm
-    assert marker.has_path and Path(marker.path).name == "tetra.stl"
+    assert Path(marker.path).name == "tetra.stl"
     # No colour stated: MuJoCo's default, not one made up here.
-    assert marker.rgba is None and not marker.has_rgba
+    assert marker.rgba is None
     for name in ("ball", "cylinder", "cube"):
         assert shapes[name].attach_kind == "Body"
-        assert shapes[name].has_rgba
+        assert shapes[name].rgba is not None
+        assert shapes[name].path is None
     assert shapes["cylinder"].size == pytest.approx([0.05, 0.045, 0.0])  # radius, half height
 
 

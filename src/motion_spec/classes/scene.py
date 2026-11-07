@@ -166,7 +166,6 @@ class MjcfSceneShape:
     """
 
     name: str
-    iri: str
     # The mj_kdl::Shape enumerator: BOX, SPHERE, CYLINDER, ELLIPSOID or MESH.
     shape: str
     attach_kind: str
@@ -178,11 +177,9 @@ class MjcfSceneShape:
     size: list[float]
     # None leaves MuJoCo's default colour: the scene stated none.
     rgba: list[float] | None = None
-    has_rgba: bool = False
-    # MESH only: the STL file, and the same as a C++ string literal.
-    path: str = ""
-    cpp_path_literal: str = ""
-    has_path: bool = False
+    # MESH only: the STL file. None, not "", on every other shape: a template's `<if()>` holds
+    # an empty string true.
+    path: str | None = None
 
 
 @dataclass

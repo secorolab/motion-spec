@@ -43,7 +43,7 @@ from motion_spec.rdf_parser.agents import (
 )
 from motion_spec.rdf_parser.model import local_name, seconds
 from motion_spec.rdf_parser.sampling import unplaced_frames
-from motion_spec.rdf_parser.shapes import anchor_placement, world_bodies
+from motion_spec.rdf_parser.shapes import world_bodies
 
 
 def read_scene(model, trees=()) -> MjcfSceneSpec:
@@ -231,7 +231,9 @@ def _scene_frames(model, objects, trees=()) -> list:
             continue
         if body in in_world:
             host = "world"
-            position, orientation = anchor_placement(model, frame, body)
+            position, orientation = quantities.frame_placement(
+                model, frame, quantities.anchor_frame(model)
+            )
         else:
             host = body_name
             position, orientation = quantities.frame_placement(

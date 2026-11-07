@@ -47,7 +47,7 @@ class LoadedModel:
 def _bundle_shape_meshes(ir: dict, generated: Path) -> None:
     """Keep authored STL assets beside the generated controller, with relocatable IR paths."""
     for shape in ir["composition"]["scene"].get("shapes") or []:
-        if not shape.get("has_path"):
+        if not shape.get("path"):
             continue
         source = Path(shape["path"])
         relative = Path("assets") / f"{sha256(str(source).encode()).hexdigest()[:16]}.stl"
@@ -55,7 +55,6 @@ def _bundle_shape_meshes(ir: dict, generated: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         shape["path"] = relative.as_posix()
-        shape["cpp_path_literal"] = json.dumps(shape["path"], ensure_ascii=False)
 
 
 def _placed(

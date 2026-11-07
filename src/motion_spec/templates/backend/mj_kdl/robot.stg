@@ -483,9 +483,9 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         shape_spec.attach_to.kind = mj_kdl::AttachKind::<shape.attach_kind>;
         shape_spec.attach_to.name = "<shape.attach_name>";
         shape_spec.shape = mj_kdl::Shape::<shape.shape>;
-<if(shape.has_path)>        shape_spec.mesh_path = find_asset_path({<shape.cpp_path_literal>\}).string();
+<if(shape.path)>        shape_spec.mesh_path = find_asset_path({"<shape.path>"\}).string();
         if (shape_spec.mesh_path.empty()) {
-            std::cerr \<\< "shape mesh asset not found: " \<\< <shape.cpp_path_literal> \<\< "\\n";
+            std::cerr \<\< "shape mesh asset not found: <shape.path>\\n";
             return 1;
         \}
 <endif>        const std::array\<double, 3\> shape_size = {<shape.size; separator=", ">\};
@@ -494,7 +494,7 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         for (int i = 0; i \< 3; ++i) shape_spec.size[i] = shape_size[i];
         for (int i = 0; i \< 3; ++i) shape_spec.pos[i] = shape_pos[i];
         for (int i = 0; i \< 4; ++i) shape_spec.quat[i] = shape_quat[i];
-<if(shape.has_rgba)>        const std::array\<float, 4\> shape_rgba = {<shape.rgba:{channel | <channel>f}; separator=", ">\};
+<if(shape.rgba)>        const std::array\<float, 4\> shape_rgba = {<shape.rgba:{channel | <channel>f}; separator=", ">\};
         for (int i = 0; i \< 4; ++i) shape_spec.rgba[i] = shape_rgba[i];
 <endif>        shape_spec.fixed = true;
         shape_spec.mass = 0.0;

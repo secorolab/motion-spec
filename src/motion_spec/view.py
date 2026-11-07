@@ -213,7 +213,7 @@ def add_shapes(spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: P
         obj.name = shape.name
         obj.attach_to = _target(shape.attach_kind, shape.attach_name)
         obj.shape = getattr(mjk.Shape, shape.shape)
-        if shape.has_path:
+        if shape.path:
             obj.mesh_path = find_asset(shape.path, start)
         obj.size = shape.size
         obj.pos = shape.pos

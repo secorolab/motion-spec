@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MPL-2.0
 """Load a .scenex in mj_kdl_wrapper and view it, without generating or building anything.
 
-Assets come from `motion_spec.rdf_parser.scene.read_scene`, the same reader the
-generated C++ uses. Scene-authored shapes are assembled at startup. Given a robot config,
-every driven chain is put at its start pose.
+The scene comes from `motion_spec.rdf_parser.scene.read_scene` -- the same reader the
+generated C++ uses -- so what this shows is what a run of the model would compose: robots,
+attachments, objects and placement. Given a robot config, every driven chain is put at its
+start pose, which is what makes it useful for checking a mount.
 """
 
 from __future__ import annotations

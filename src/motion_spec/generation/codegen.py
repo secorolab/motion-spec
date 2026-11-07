@@ -230,7 +230,7 @@ def asset_roots() -> list[Path]:
 
 
 def asset_candidates(path: str) -> list[Path]:
-    """Working-directory and wrapper-cache candidates for an authored asset."""
+    """Every place the generated program will look for PATH, in its order."""
     declared = Path(path).expanduser()
     if declared.is_absolute():
         return [declared]
@@ -243,9 +243,9 @@ def asset_candidates(path: str) -> list[Path]:
 
 
 def _asset_nodes(node) -> Iterator[dict]:
-    """Every mapping in the IR that names an MJCF or STL file, wherever it sits."""
+    """Every mapping in the IR that names an MJCF file, wherever it sits."""
     if isinstance(node, dict):
-        if isinstance(node.get("path"), str) and Path(node["path"]).suffix.lower() in {".xml", ".stl"}:
+        if isinstance(node.get("path"), str) and node["path"].endswith(".xml"):
             yield node
         yield from chain.from_iterable(_asset_nodes(value) for value in node.values())
     elif isinstance(node, list):
@@ -269,15 +269,13 @@ def resolve_model_assets(ir, model_dir: Path) -> list[str]:
     return rewritten
 
 
-def unresolved_assets(ir, generated_root: Path | None = None) -> list[str]:
+def unresolved_assets(ir) -> list[str]:
     """The MJCF assets the IR names that nothing on this machine can supply."""
     declared = {node["path"] for node in _asset_nodes(ir)}
     return [
         path
         for path in declared
-        if not (
-            generated_root and (generated_root / path).is_file()
-        ) and not any(candidate.exists() for candidate in asset_candidates(path))
+        if not any(candidate.exists() for candidate in asset_candidates(path))
     ]
 
 
@@ -302,9 +300,9 @@ def generate_code(
             "Coordinate the model with an FSM to generate C++."
         )
     # Here, not at run time: a controller that cannot load its scene must not build at all.
-    missing = unresolved_assets(ir, ir_path.parent.parent)
+    missing = unresolved_assets(ir)
     if missing:
-        raise MissingAssets(Path(ir_path), missing, [ir_path.parent.parent, *asset_roots()])
+        raise MissingAssets(Path(ir_path), missing, asset_roots())
 
     ir["communication"]["telemetry_artifacts"] = write_telemetry_artifacts(
         ir, ir_path=ir_path, output_dir=contract_dir, fsm_ir=fsm

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """Scene-authored shapes: one fixed, massless SceneObject each, on its body or on the world.
 
-Read from a copy of scene-dsl's `kinova_with_objects` example, which draws an STL marker on the
-static world body and an ellipsoid, a cylinder and a cube on a mapped table.
+Read from a copy of the `scene_shapes` fixture, which draws an STL marker on the static world
+body and an ellipsoid, a cylinder and a cube on a free body resting on the table.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import shutil
 from pathlib import Path
 
 import pytest
-import scene_dsl
 from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec import view
@@ -19,17 +18,15 @@ from motion_spec.rdf_parser.agents import robot_setups
 from motion_spec.rdf_parser.scene import read_scene
 from motion_spec.rdf_parser.shapes import read_shapes
 
-EXAMPLES = Path(scene_dsl.__file__).resolve().parents[2] / "examples"
+FIXTURE = Path(__file__).parent / "fixtures" / "scene_shapes"
 SCENEX = "kinova_with_objects.scenex"
 
 
 @pytest.fixture
 def example(tmp_path: Path) -> Path:
-    """A copy of the example, so a test may edit it; its assets keep their relative place."""
-    if not (EXAMPLES / "models" / SCENEX).is_file():
-        pytest.skip(f"scene-dsl example {SCENEX} is not checked out")
-    shutil.copytree(EXAMPLES, tmp_path / "examples")
-    return tmp_path / "examples" / "models" / SCENEX
+    """A copy of the fixture, so a test may edit it; its mesh keeps its relative place."""
+    shutil.copytree(FIXTURE, tmp_path / "scene_shapes")
+    return tmp_path / "scene_shapes" / SCENEX
 
 
 def _scene(path: Path):

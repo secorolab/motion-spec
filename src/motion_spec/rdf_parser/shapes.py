@@ -92,7 +92,7 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
             # None leaves MuJoCo's default: the scene stated no colour.
             "rgba": None if shape.rgba is None else list(shape.rgba),
         }
-        sizes = list(shape.scale_in_metres)
+        sizes = list(shape.scale)
         if shape.primitive is PrimitiveShapeType.SPHERE:
             uniform = sizes[0] == sizes[1] == sizes[2]
             entry = MjcfSceneShape(

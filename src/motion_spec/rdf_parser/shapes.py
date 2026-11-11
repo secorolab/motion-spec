@@ -98,8 +98,9 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
             "attach_name": attach_name,
             "pos": pos,
             "quat": quat,
-            # None leaves MuJoCo's default: the scene stated no colour.
-            "rgba": None if shape.rgba is None else list(shape.rgba),
+            # MuJoCo takes RGBA, so the colour is converted here. None leaves MuJoCo's default:
+            # the scene stated no colour.
+            "rgba": None if shape.color is None else list(shape.color.rgba),
         }
         sizes = list(shape.scale)
         if shape.primitive is PrimitiveShapeType.SPHERE:

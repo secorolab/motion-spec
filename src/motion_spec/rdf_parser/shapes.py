@@ -8,6 +8,7 @@ MuJoCo body and sizes it the way MuJoCo takes each kind.
 from __future__ import annotations
 
 import math
+from collections import Counter
 
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
@@ -63,8 +64,13 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
         for joint in graph.subjects(RDF.type, URI_KC_TYPE_JOINT)
         for frame in graph.objects(joint, URI_KC_PRED_BETWEEN_ATTACHMENTS)
     }
+    found = scene_shapes(graph)
+    # A shape is named after its IRI's last segment, and carries its body only when a shape on
+    # another body ends the same way -- as frame sites are named in `scene.py`: MuJoCo needs the
+    # name unique, and a viewer needs it readable.
+    counts = Counter(local_name(shape.id) for shape in found)
     shapes: list[MjcfSceneShape] = []
-    for shape in scene_shapes(graph):
+    for shape in found:
         body = quantities.body_of(model, shape.frame)
         if body is not None and str(body) in mapped:
             attach_kind, attach_name = "Body", mapped[str(body)]
@@ -83,8 +89,11 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
                 "scene", f"Shape '{shape.id}' has no placement from its frame to '{root}'."
             )
 
+        name = local_name(shape.id)
+        if counts[name] > 1 and body is not None:
+            name = f"{local_name(body)}_{name}"
         common = {
-            "name": local_name(shape.id),
+            "name": name,
             "attach_kind": attach_kind,
             "attach_name": attach_name,
             "pos": pos,

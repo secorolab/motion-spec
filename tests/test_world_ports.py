@@ -25,7 +25,7 @@ _NO_AGENTS = SimpleNamespace(graph=Graph())
 def trees() -> list[dict]:
     scene = EXAMPLES["pick_and_place"] / "pick_and_place.scenex"
     graph = create_scenex_model_graph(scenex_metamodel().model_from_file(scene))
-    return build_kdl_trees(graph, scene.parent)
+    return build_kdl_trees(graph)
 
 
 def test_a_free_body_nothing_places_fails_while_generating(trees) -> None:

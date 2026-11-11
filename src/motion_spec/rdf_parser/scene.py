@@ -16,7 +16,6 @@ from xml.etree import ElementTree
 from motion_spec_dsl.rdf_parser.vocab import AGN, ENV, EXEC, GEOM_ENT, QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.models.execution import get_path_of_node
 from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_KGRAPH,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
@@ -25,7 +24,6 @@ from rdf_utils.models.vocab import (
 from rdflib import URIRef
 from rdflib.namespace import RDF
 from scene_dsl.rdf_parser.kinematics import body_of_frame, root_bodies
-from scene_dsl.rdf_parser.vocab import URI_ROS_PRED_PACKAGE_NAME
 
 from motion_spec.classes.scene import (
     MjcfSceneCamera,
@@ -41,7 +39,7 @@ from motion_spec.rdf_parser.agents import (
     mapped_targets,
     model_mappings,
 )
-from motion_spec.rdf_parser.model import local_name, seconds
+from motion_spec.rdf_parser.model import local_name, model_file, seconds
 from motion_spec.rdf_parser.sampling import unplaced_frames
 from motion_spec.rdf_parser.shapes import world_bodies
 
@@ -303,29 +301,15 @@ def name_object_attachments(model, attach_by_body) -> None:
 
 
 def _asset_path(graph, asset) -> str:
-    """Where an asset file is, from how the model says to find it.
+    """Where an object's asset file is, as the run looks for it (see `model_file`).
 
-    A path in a ROS package is only meaningful against that package's share directory, so it is
-    resolved here; the runtime is handed a path it can open without knowing about ROS. Anything
-    else keeps the path the model authored.
+    A path in a ROS package is resolved to the package's share directory here, so the runtime
+    is handed a path it can open without knowing about ROS.
     """
-    path = get_path_of_node(graph, asset)
-    package = graph.value(asset, URI_ROS_PRED_PACKAGE_NAME)
-    if package is None:
-        return path
-    # Imported here: a model with no ROS asset still generates without ROS on the path.
-    try:
-        from ament_index_python.packages import get_package_share_directory
-    except ImportError as missing:
-        # This is the one thing that made the asset need ROS at all, so it is the only place
-        # that can say which asset, and what to do about it, instead of a bare import error.
-        raise RuntimeError(
-            f"asset '{path}' is in ROS package '{package}', which cannot be located without "
-            f"ROS on the path: source /opt/ros/$ROS_DISTRO/setup.bash (and the workspace's "
-            f"own setup) in the shell this is running from, then try again"
-        ) from missing
-
-    return str(Path(get_package_share_directory(str(package))) / path)
+    path = model_file(graph, asset)
+    if path is None:
+        raise ConstraintViolation("scene", f"model '{asset}' names no file to spawn its object from")
+    return path
 
 
 def _static_body_uris(model) -> set[str]:

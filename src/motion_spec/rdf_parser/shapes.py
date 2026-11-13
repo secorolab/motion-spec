@@ -2,7 +2,7 @@
 """Scene-authored geometry shared by the viewer and generated MuJoCo startup.
 
 scene-dsl reads each shape from the graph (`scene_dsl.rdf_parser.shapes`); this places it on a
-MuJoCo body and sizes it the way MuJoCo takes each kind.
+MuJoCo body and sizes it in metres, the way MuJoCo takes each kind.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from collections import Counter
 
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.models.geom_coord import to_metres
 from rdf_utils.models.vocab import (
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
@@ -102,7 +103,8 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
             # the scene stated no colour.
             "rgba": None if shape.color is None else list(shape.color.rgba),
         }
-        sizes = list(shape.scale)
+        # The scene states the scale in its own length unit; MuJoCo takes metres.
+        sizes = to_metres(shape.scale, shape.unit, shape.id)
         if shape.primitive is PrimitiveShapeType.SPHERE:
             uniform = sizes[0] == sizes[1] == sizes[2]
             entry = MjcfSceneShape(

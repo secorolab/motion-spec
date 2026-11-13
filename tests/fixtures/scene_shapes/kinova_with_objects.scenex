@@ -1,0 +1,154 @@
+// A scene MuJoCo can load, for the scene-shapes tests: a sphere, a cylinder and a cube on a
+// free body, and an STL marker on the world. Adapted from scene-dsl's
+// examples/models/kinova_with_objects.scenex (commit d4a4b8c), which moved here.
+import "kinova_with_objects.scene"
+import "scene_dsl:robots/kinova_gen3_7dof.ktree"
+
+ns shp_mjc='https://example.test/scene-shapes/mjc/'
+
+ktree inst (ns=shp_mjc) arm1 of <kinova_tree>
+
+ktree (ns=shp_mjc) world_tree {
+    root: <world_body.world>
+    tree <arm1>
+
+    body world_body {
+        frame world { }
+        frame static_marker_frame {
+            pose static_marker_in_world {
+                wrt: <world>
+                xyz: (0.65, -0.4, 0.7) m
+                orientation: euler { angles: (0.0, 0.0, 0.0) unit: rad }
+            }
+        }
+        shape file {
+            frame: <static_marker_frame>
+            sys path = "tetra.stl"
+            unit: cm
+            scale: 5
+        }
+    }
+
+    body table_body {
+        frame table_top {
+            pose table_in_world {
+                wrt: <world_body.world>
+                xyz: (0.0, 0.0, 0.7) m
+                orientation: euler { angles: (0.0, 0.0, 0.0) unit: rad }
+            }
+        }
+        inertia {
+            frame: <table_top>
+            mass: 10.0 kg
+            inertia-matrix: (
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0)
+            ) kg*m^2
+        }
+    }
+
+    joints {
+        fixed table_on_world {
+            parent: <world_body.world>
+            child: <table_body.table_top>
+        }
+        fixed arm1_on_table {
+            parent: <table_body.table_top>
+            child: <arm1.base_link.base_link_origin>
+        }
+        serial {
+            root: <arm1.base_link.base_link_origin>
+            tip: <arm1.bracelet_link.pinch_site>
+        }
+    }
+}
+
+scene inst (ns=shp_mjc) kinova_with_objects {
+    scene: <kinova_with_objects_scene>
+
+    kgraph (ns=shp_mjc) kinova_graph {
+        anchor: <world_tree.world_body.world>
+        tree <world_tree>
+
+        body box1_body {
+            frame box1_root {
+                pose box1_on_table {
+                    wrt: <world_tree.table_body.table_top>
+                    xyz: (0.45, 0.1, 0.02) m
+                    orientation: euler { angles: (0.0, 0.0, 0.0) unit: rad }
+                }
+            }
+            // Center offsets place each shape's bottom on the table top.
+            frame sphere_center {
+                pose sphere_offset {
+                    wrt: <box1_root>
+                    xyz: (-0.18, 0.0, 0.02) m
+                    orientation: euler { angles: (0.0, 0.0, 0.0) unit: rad }
+                }
+            }
+            frame cylinder_center {
+                pose cylinder_offset {
+                    wrt: <box1_root>
+                    xyz: (0.18, 0.0, 0.025) m
+                    orientation: euler { angles: (0.0, 0.0, 0.0) unit: rad }
+                }
+            }
+            frame cube_center {
+                pose cube_offset {
+                    wrt: <box1_root>
+                    xyz: (0.0, 0.18, 0.015) m
+                    orientation: euler { angles: (0.0, 0.0, 0.0) unit: rad }
+                }
+            }
+            shape sphere {
+                frame: <sphere_center>
+                unit: m
+                scale: (0.07, 0.05, 0.04)
+                color: rgba(230, 51, 51, 255)
+            }
+            shape cylinder {
+                frame: <cylinder_center>
+                unit: mm
+                scale: (50, 50, 90)
+                color: hsv(210, 0.6, 0.9)
+            }
+            shape cube {
+                frame: <cube_center>
+                unit: cm
+                scale: 7
+                color: #33B34D
+            }
+            inertia {
+                frame: <box1_root>
+                mass: 0.2 kg
+                inertia-matrix: (
+                    (0.001, 0.0, 0.0),
+                    (0.0, 0.001, 0.0),
+                    (0.0, 0.0, 0.001)
+                ) kg*m^2
+            }
+        }
+    }
+
+    obj <pick_objects.box1> {
+        model box1-mjc as mjcf {
+            sys path = '~/.cache/mj_kdl_wrapper/assets/cube.xml'
+            map body <kinova_graph.box1_body> to "root"
+        }
+    }
+
+    obj <ws_objects.dining_table> {
+        model mjc-table as mjcf {
+            sys path = '~/.cache/mj_kdl_wrapper/assets/table.xml'
+            map body <world_tree.table_body> to "root"
+        }
+    }
+
+    agn <agents.arm1> {
+        model arm1-mjc as mjcf {
+            sys path = '~/.cache/mj_kdl_wrapper/assets/kinova_gen3/gen3.xml'
+            map tree <arm1> to "gen3"
+        }
+    }
+}

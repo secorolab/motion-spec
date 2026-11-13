@@ -16,7 +16,6 @@ from xml.etree import ElementTree
 from motion_spec_dsl.rdf_parser.vocab import AGN, ENV, EXEC, GEOM_ENT, QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.models.execution import get_path_of_node
 from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_KGRAPH,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
@@ -25,7 +24,6 @@ from rdf_utils.models.vocab import (
 from rdflib import URIRef
 from rdflib.namespace import RDF
 from scene_dsl.rdf_parser.kinematics import body_of_frame, root_bodies
-from scene_dsl.rdf_parser.vocab import URI_ROS_PRED_PACKAGE_NAME
 
 from motion_spec.classes.scene import (
     MjcfSceneCamera,
@@ -41,8 +39,9 @@ from motion_spec.rdf_parser.agents import (
     mapped_targets,
     model_mappings,
 )
-from motion_spec.rdf_parser.model import local_name, seconds
+from motion_spec.rdf_parser.model import local_name, model_file, seconds
 from motion_spec.rdf_parser.sampling import unplaced_frames
+from motion_spec.rdf_parser.shapes import world_bodies
 
 
 def read_scene(model, trees=()) -> MjcfSceneSpec:
@@ -187,9 +186,13 @@ def _scene_frames(model, objects, trees=()) -> list:
 
     A frame on a body an object maps beyond its root goes on that body under the name the
     composed scene gives it, not under its kgraph name, which names nothing in the scene.
+
+    A frame on a world body (static, drawn only by its shapes, see `shapes.world_bodies`) goes
+    on MuJoCo's world body, posed from the scene anchor: no MuJoCo body is named after it.
     """
     graph = model.graph
     body_names = {uri: name for obj in objects for uri, name in obj.secondary_bodies.items()}
+    in_world = world_bodies(model, objects)
     marked = [
         (body, frame)
         for kgraph in graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH)
@@ -224,14 +227,21 @@ def _scene_frames(model, objects, trees=()) -> list:
                 )
             )
             continue
-        position, orientation = quantities.frame_placement(
-            model, frame, quantities.placement_frame(model, body)
-        )
+        if body in in_world:
+            host = "world"
+            position, orientation = quantities.frame_placement(
+                model, frame, quantities.anchor_frame(model)
+            )
+        else:
+            host = body_name
+            position, orientation = quantities.frame_placement(
+                model, frame, quantities.placement_frame(model, body)
+            )
         if position is None:
             continue
         frames.append(
             MjcfSceneFrame(
-                body=body_name,
+                body=host,
                 name=site,
                 uri=str(frame),
                 **dict(zip(("pos_x", "pos_y", "pos_z"), position)),
@@ -291,29 +301,15 @@ def name_object_attachments(model, attach_by_body) -> None:
 
 
 def _asset_path(graph, asset) -> str:
-    """Where an asset file is, from how the model says to find it.
+    """Where an object's asset file is, as the run looks for it (see `model_file`).
 
-    A path in a ROS package is only meaningful against that package's share directory, so it is
-    resolved here; the runtime is handed a path it can open without knowing about ROS. Anything
-    else keeps the path the model authored.
+    A path in a ROS package is resolved to the package's share directory here, so the runtime
+    is handed a path it can open without knowing about ROS.
     """
-    path = get_path_of_node(graph, asset)
-    package = graph.value(asset, URI_ROS_PRED_PACKAGE_NAME)
-    if package is None:
-        return path
-    # Imported here: a model with no ROS asset still generates without ROS on the path.
-    try:
-        from ament_index_python.packages import get_package_share_directory
-    except ImportError as missing:
-        # This is the one thing that made the asset need ROS at all, so it is the only place
-        # that can say which asset, and what to do about it, instead of a bare import error.
-        raise RuntimeError(
-            f"asset '{path}' is in ROS package '{package}', which cannot be located without "
-            f"ROS on the path: source /opt/ros/$ROS_DISTRO/setup.bash (and the workspace's "
-            f"own setup) in the shell this is running from, then try again"
-        ) from missing
-
-    return str(Path(get_package_share_directory(str(package))) / path)
+    path = model_file(graph, asset)
+    if path is None:
+        raise ConstraintViolation("scene", f"model '{asset}' names no file to spawn its object from")
+    return path
 
 
 def _static_body_uris(model) -> set[str]:

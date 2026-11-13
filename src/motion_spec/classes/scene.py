@@ -158,11 +158,37 @@ class MjcfSceneCamera:
 
 
 @dataclass
+class MjcfSceneShape:
+    """One scene-authored shape, built as a fixed, massless mj_kdl SceneObject.
+
+    It is welded to its mapped scene object's body, or to the world for a shape on a static
+    body no object maps (and for one on a frame no body carries).
+    """
+
+    name: str
+    # The mj_kdl::Shape enumerator: BOX, SPHERE, CYLINDER, ELLIPSOID or MESH.
+    shape: str
+    attach_kind: str
+    attach_name: str
+    pos: list[float]
+    # [x, y, z, w]
+    quat: list[float]
+    # SceneObject::size: half extents, radii or a mesh's scale, padded to three.
+    size: list[float]
+    # None leaves MuJoCo's default colour: the scene stated none.
+    rgba: list[float] | None = None
+    # MESH only: the STL file. None, not "", on every other shape: a template's `<if()>` holds
+    # an empty string true.
+    path: str | None = None
+
+
+@dataclass
 class MjcfSceneSpec:
     """The scene: robots, objects, cameras and the control timestep."""
 
     robots: list[MjcfSceneRobot] = field(default_factory=list)
     objects: list[MjcfSceneObject] = field(default_factory=list)
+    shapes: list[MjcfSceneShape] = field(default_factory=list)
     # Cameras are rendered against the composed scene, not read by a solver, so they belong here
     # and not on the agent that hosts them.
     cameras: list[CameraBinding] = field(default_factory=list)

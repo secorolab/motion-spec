@@ -23,6 +23,7 @@ from motion_spec.generation.codegen import asset_candidates
 from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
+from motion_spec.rdf_parser.shapes import read_shapes
 
 
 def scenex_model(scenex_path: Path) -> Model:
@@ -93,7 +94,7 @@ def find_asset(relative: str, start: Path) -> str:
     Raises:
         FileNotFoundError: no candidate exists, so the scene cannot be composed.
     """
-    path = Path(relative)
+    path = Path(relative).expanduser()
     if path.is_absolute():
         if path.exists():
             return str(path)
@@ -201,6 +202,31 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
     return spec
 
 
+def add_shapes(spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: Path) -> None:
+    """Add each scene-authored shape as one fixed SceneObject, as backend/mj_kdl/robot.stg does.
+
+    Shapes collide but add no mass: the body's inertia already states it. A shape the scene
+    gives no colour keeps MuJoCo's default.
+    """
+    objects = []
+    for shape in read_shapes(model, scene):
+        obj = mjk.SceneObject()
+        obj.name = shape.name
+        obj.attach_to = _target(shape.attach_kind, shape.attach_name)
+        obj.shape = getattr(mjk.Shape, shape.shape)
+        if shape.path:
+            obj.mesh_path = find_asset(shape.path, start)
+        obj.size = shape.size
+        obj.pos = shape.pos
+        obj.quat = shape.quat
+        if shape.rgba is not None:
+            obj.rgba = shape.rgba
+        obj.fixed = True
+        obj.mass = 0.0
+        objects.append(obj)
+    spec.objects = [*spec.objects, *objects]
+
+
 def describe(spec: mjk.SceneSpec, env: mjk.Env) -> None:
     print(f"timestep: {spec.timestep} s, floor at the anchor (z = {spec.floor_z} m)")
     for robot in spec.robots:
@@ -222,7 +248,9 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     model = scenex_model(scenex_path)
     poses = home_poses(model, config) if config else []
     _setups, _ordered, trees = agents.robot_setups(model)
-    spec = build_spec(read_scene(model, trees), scenex_path)
+    scene = read_scene(model, trees)
+    spec = build_spec(scene, scenex_path)
+    add_shapes(spec, model, scene, scenex_path)
     env = mjk.Env.build(spec)
     try:
         _robots = apply_home_poses(env, poses)

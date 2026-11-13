@@ -4,7 +4,7 @@
 backend-name() ::= "mj_kdl"
 
 cmake-languages() ::= "CXX"
-cmake-find() ::= "find_package(mj_kdl_wrapper 0.5.0 REQUIRED CONFIG)"
+cmake-find() ::= "find_package(mj_kdl_wrapper 0.5.1 REQUIRED CONFIG)"
 cmake-link(resources) ::= "    mj_kdl_wrapper::mj_kdl_wrapper"
 
 // The camera publisher is an optional target of the wrapper, so ask for the target rather than a
@@ -261,6 +261,7 @@ app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
 #include \<algorithm\>
 #include \<cstring\>
 #include \<cstdlib\>
+#include \<array\>
 #include \<deque\>
 #include \<filesystem\>
 #include \<iostream\>
@@ -465,6 +466,33 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         object_spec.friction[1] = <object.friction_torsion>;
         object_spec.friction[2] = <object.friction_roll>;
 <endif>        mj_scene.objects.push_back(object_spec);
+    \}
+}; separator="\n">
+<scene.shapes:{shape |
+    {
+        // A scene-authored shape: fixed on its body and colliding, but massless, since the
+        // body's inertia already states its mass.
+        mj_kdl::SceneObject shape_spec{\};
+        shape_spec.name = "<shape.name>";
+        shape_spec.attach_to.kind = mj_kdl::AttachKind::<shape.attach_kind>;
+        shape_spec.attach_to.name = "<shape.attach_name>";
+        shape_spec.shape = mj_kdl::Shape::<shape.shape>;
+<if(shape.path)>        shape_spec.mesh_path = find_asset_path({"<shape.path>"\}).string();
+        if (shape_spec.mesh_path.empty()) {
+            std::cerr \<\< "shape mesh asset not found: <shape.path>\\n";
+            return 1;
+        \}
+<endif>        const std::array\<double, 3\> shape_size = {<shape.size; separator=", ">\};
+        const std::array\<double, 3\> shape_pos = {<shape.pos; separator=", ">\};
+        const std::array\<double, 4\> shape_quat = {<shape.quat; separator=", ">\};
+        for (int i = 0; i \< 3; ++i) shape_spec.size[i] = shape_size[i];
+        for (int i = 0; i \< 3; ++i) shape_spec.pos[i] = shape_pos[i];
+        for (int i = 0; i \< 4; ++i) shape_spec.quat[i] = shape_quat[i];
+<if(shape.rgba)>        const std::array\<float, 4\> shape_rgba = {<shape.rgba:{channel | <channel>f}; separator=", ">\};
+        for (int i = 0; i \< 4; ++i) shape_spec.rgba[i] = shape_rgba[i];
+<endif>        shape_spec.fixed = true;
+        shape_spec.mass = 0.0;
+        mj_scene.objects.push_back(shape_spec);
     \}
 }; separator="\n">
 <scene.frames:{frame |

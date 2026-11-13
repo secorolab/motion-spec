@@ -21,7 +21,7 @@ ktree (ns=shp_mjc) world_tree {
                 orientation: euler { angles: (0.0, 0.0, 0.0) unit: rad }
             }
         }
-        shape mesh {
+        shape file {
             frame: <static_marker_frame>
             sys path = "tetra.stl"
             unit: cm

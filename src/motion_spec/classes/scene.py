@@ -162,7 +162,7 @@ class MjcfSceneShape:
     """One scene-authored shape, built as a fixed, massless mj_kdl SceneObject.
 
     It is welded to its mapped scene object's body, or to the world for a shape on a static
-    body no object maps (and for one on a frame no body carries).
+    body no object maps.
     """
 
     name: str

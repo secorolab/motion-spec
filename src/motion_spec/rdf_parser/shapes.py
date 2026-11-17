@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 """Scene-authored geometry shared by the viewer and generated MuJoCo startup.
 
-scene-dsl reads each shape from the graph (`scene_dsl.rdf_parser.shapes`); this places it on a
-MuJoCo body and sizes it in metres, the way MuJoCo takes each kind.
+scene-dsl reads each shape on the body that carries it (`RigidBodyModel.shapes`); this places it
+on a MuJoCo body and sizes it in metres, the way MuJoCo takes each kind.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from rdf_utils.models.vocab import (
 )
 from rdflib.namespace import RDF
 from scene_dsl.classes.ktree import PrimitiveShapeType
-from scene_dsl.rdf_parser.kinematics import body_of_frame
-from scene_dsl.rdf_parser.shapes import ShapeModel, scene_shapes
+from scene_dsl.rdf_parser.kinematics import RigidBodyModel, body_of_frame
+from scene_dsl.rdf_parser.shapes import ShapeModel
 
 from motion_spec.classes.scene import MjcfSceneShape, MjcfSceneSpec
 from motion_spec.rdf_parser import quantities
@@ -33,6 +33,20 @@ def _stl_path(shape: ShapeModel) -> str:
     if shape.path.suffix.lower() != ".stl":
         raise ConstraintViolation("scene", f"File shape '{shape.id}' is no STL file: {shape.path}.")
     return str(shape.path.resolve())
+
+
+def _scene_shapes(graph) -> list[tuple[rdflib.URIRef, ShapeModel]]:
+    """Each shape with the body that carries it, ordered by the shape's IRI.
+
+    A shape hangs on a frame of a body, so it is read on that body, as scene-dsl reads it; a
+    frame with a shape that is on no body, or on several, is reported by `body_of_frame`.
+    """
+    bodies = {
+        body_of_frame(frame, graph)
+        for frame in graph.objects(None, URI_SHAPES_PRED_ATTACHED_TO_FRAME)
+    }
+    found = [(body, shape) for body in bodies for shape in RigidBodyModel(body, graph).shapes]
+    return sorted(found, key=lambda pair: str(pair[1].id))
 
 
 def world_bodies(model, objects) -> set[rdflib.URIRef]:
@@ -65,15 +79,14 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
         for joint in graph.subjects(RDF.type, URI_KC_TYPE_JOINT)
         for frame in graph.objects(joint, URI_KC_PRED_BETWEEN_ATTACHMENTS)
     }
-    found = scene_shapes(graph)
+    found = _scene_shapes(graph)
     # A shape is named after its IRI's last segment, and carries its body only when a shape on
     # another body ends the same way -- as frame sites are named in `scene.py`: MuJoCo needs the
     # name unique, and a viewer needs it readable.
-    counts = Counter(local_name(shape.id) for shape in found)
+    counts = Counter(local_name(shape.id) for _body, shape in found)
     shapes: list[MjcfSceneShape] = []
-    for shape in found:
-        body = quantities.body_of(model, shape.frame)
-        if body is not None and str(body) in mapped:
+    for body, shape in found:
+        if str(body) in mapped:
             attach_kind, attach_name = "Body", mapped[str(body)]
             root = quantities.placement_frame(model, body)
         # The world only takes a static body; the scene anchor is static even when a joint
@@ -91,7 +104,7 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
             )
 
         name = local_name(shape.id)
-        if counts[name] > 1 and body is not None:
+        if counts[name] > 1:
             name = f"{local_name(body)}_{name}"
         common = {
             "name": name,

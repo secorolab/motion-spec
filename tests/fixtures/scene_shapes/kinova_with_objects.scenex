@@ -1,5 +1,6 @@
 // A scene MuJoCo can load, for the scene-shapes tests: a sphere, a cylinder and a cube on a
-// free body, and an STL marker on the world. Adapted from scene-dsl's
+// free body, and an STL marker on the world. One shape per role: the marker is only drawn, the
+// sphere only touched, the cube both, and the cylinder states none. Adapted from scene-dsl's
 // examples/models/kinova_with_objects.scenex (commit d4a4b8c), which moved here.
 import "kinova_with_objects.scene"
 import "scene_dsl:robots/kinova_gen3_7dof.ktree"
@@ -26,6 +27,7 @@ ktree (ns=shp_mjc) world_tree {
             sys path = "tetra.stl"
             unit: cm
             scale: 5
+            role: visual
         }
     }
 
@@ -106,6 +108,7 @@ scene inst (ns=shp_mjc) kinova_with_objects {
                 unit: m
                 scale: (0.07, 0.05, 0.04)
                 color: rgba(230, 51, 51, 255)
+                role: collision
             }
             shape cylinder {
                 frame: <cylinder_center>
@@ -118,6 +121,7 @@ scene inst (ns=shp_mjc) kinova_with_objects {
                 unit: cm
                 scale: 7
                 color: #33B34D
+                role: visual collision
             }
             inertia {
                 frame: <box1_root>

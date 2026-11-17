@@ -2,7 +2,8 @@
 """Scene-authored shapes: one fixed, massless SceneObject each, on its body or on the world.
 
 Read from a copy of the `scene_shapes` fixture, which draws an STL marker on the static world
-body and an ellipsoid, a cylinder and a cube on a free body resting on the table.
+body and an ellipsoid, a cylinder and a cube on a free body resting on the table: the marker
+only drawn, the ellipsoid only touched, the cube both, and the cylinder with no role.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ MARKER = "static_marker_frame-shape-0"
 BALL = "sphere_center-shape-0"
 CYLINDER = "cylinder_center-shape-0"
 CUBE = "cube_center-shape-0"
+# Each shape's (contype, conaffinity, group), from its role: drawn only, touched only in a group
+# the viewer hides, and drawn and touched, whether the scene says so (cube) or states no role.
+GEOMS = {MARKER: (0, 0, 2), BALL: (1, 1, 3), CYLINDER: (1, 1, 0), CUBE: (1, 1, 0)}
 
 
 @pytest.fixture
@@ -63,6 +67,9 @@ def test_each_shape_is_one_object_on_its_body_or_the_world(example: Path) -> Non
         assert shapes[name].rgba is not None
         assert shapes[name].path is None
     assert shapes[CYLINDER].size == pytest.approx([0.05, 0.045, 0.0])  # radius, half height
+    assert {
+        name: (shape.contype, shape.conaffinity, shape.group) for name, shape in shapes.items()
+    } == GEOMS
 
 
 def test_a_world_body_frame_is_a_site_on_the_world(example: Path) -> None:
@@ -81,7 +88,7 @@ def test_an_elliptical_cylinder_is_refused(example: Path) -> None:
         read_shapes(model, scene)
 
 
-def test_shapes_build_massless_and_colliding(example: Path) -> None:
+def test_shapes_build_massless_and_as_their_role_says(example: Path) -> None:
     mjk = pytest.importorskip("mj_kdl_wrapper")
     mujoco = pytest.importorskip("mujoco")
     model, scene = _scene(example)
@@ -90,11 +97,12 @@ def test_shapes_build_massless_and_colliding(example: Path) -> None:
     env = mjk.Env.build(spec)
     try:
         m = env.model
-        for name in (MARKER, BALL, CYLINDER, CUBE):
+        for name, expected in GEOMS.items():
             geom = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, f"{name}_geom")
             assert geom >= 0, name
             assert m.body_mass[m.geom_bodyid[geom]] == 0.0
-            assert m.geom_contype[geom] != 0
+            built = (m.geom_contype[geom], m.geom_conaffinity[geom], m.geom_group[geom])
+            assert built == expected, name
     finally:
         env.close()
 

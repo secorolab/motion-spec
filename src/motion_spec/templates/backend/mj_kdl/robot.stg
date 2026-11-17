@@ -4,8 +4,13 @@
 backend-name() ::= "mj_kdl"
 
 cmake-languages() ::= "CXX"
-cmake-find() ::= "find_package(mj_kdl_wrapper 0.5.1 REQUIRED CONFIG)"
-cmake-link(resources) ::= "    mj_kdl_wrapper::mj_kdl_wrapper"
+// The window and the recorders are components of their own since 0.6.
+cmake-find() ::= "find_package(mj_kdl_wrapper 0.6.0 REQUIRED CONFIG COMPONENTS render viewer)"
+cmake-link(resources) ::= <<
+    mj_kdl_wrapper::mj_kdl_wrapper
+    mj_kdl_wrapper::render
+    mj_kdl_wrapper::viewer
+>>
 
 // The camera publisher is an optional target of the wrapper, so ask for the target rather than a
 // version: a wrapper built without ROS satisfies the find_package above and still lacks it.
@@ -268,6 +273,8 @@ app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
 #include \<string\>
 #include \<vector\>
 #include "robot_config.hpp"
+#include \<mj_kdl_wrapper/render.hpp\>
+#include \<mj_kdl_wrapper/viewer.hpp\>
 <if(ros && first(cameras).id)>
 #include \<mj_kdl_wrapper/camera_ros.hpp\>
 <endif>
@@ -371,10 +378,12 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
     };
 
     mj_kdl::Env mj_env{};
+    // The window is the caller's; cleanup(&mj_env) closes it with the Env.
+    mj_kdl::Viewer mj_viewer{};
     mj_kdl::SceneSpec mj_scene{};
     mj_scene.timestep = <scene.timestep_s>;
-    mj_scene.add_floor = true;
-    mj_scene.add_skybox = true;
+    // The bundled stage: floor, sky and lights.
+    mj_scene.use_stage = true;
 <scene.robots:{robot |
     {
         const std::filesystem::path robot_mjcf_path = find_asset_path({"<robot.path>"\});
@@ -470,8 +479,8 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
 }; separator="\n">
 <scene.shapes:{shape |
     {
-        // A scene-authored shape: fixed on its body and colliding, but massless, since the
-        // body's inertia already states its mass.
+        // A scene-authored shape: fixed on its body and massless, since the body's inertia
+        // already states its mass. Its role sets whether it collides and which group draws it.
         mj_kdl::SceneObject shape_spec{\};
         shape_spec.name = "<shape.name>";
         shape_spec.attach_to.kind = mj_kdl::AttachKind::<shape.attach_kind>;
@@ -492,6 +501,9 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         for (int i = 0; i \< 4; ++i) shape_spec.rgba[i] = shape_rgba[i];
 <endif>        shape_spec.fixed = true;
         shape_spec.mass = 0.0;
+        shape_spec.contype = <shape.contype>;
+        shape_spec.conaffinity = <shape.conaffinity>;
+        shape_spec.group = <shape.group>;
         mj_scene.objects.push_back(shape_spec);
     \}
 }; separator="\n">
@@ -558,9 +570,9 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
 <robot-assign(solver)>
 <mj-sensor-io-assign(solver)>}; separator="\n">
 
-    if (_headless_rtf > 0.0) mj_env.viewer.realtime_factor = _headless_rtf;
+    if (_headless_rtf > 0.0) mj_viewer.realtime_factor = _headless_rtf;
     if (!headless) {
-        if (const auto _s = mj_kdl::open_viewer(&mj_env); !_s) {
+        if (const auto _s = mj_kdl::open_viewer(&mj_viewer, &mj_env); !_s) {
             std::cerr \<\< "mj_kdl::open_viewer() failed: " \<\< _s.error \<\< "\\n";
             mj_kdl::cleanup(&mj_env);
             return 1;
@@ -772,7 +784,7 @@ app-chain-control-apply(serial_chain_solvers) ::= <<
         if (_ctrl.speed != _ctrl_speed_applied) {
             // Only on change, so the viewer's own ,/. speed keys keep working in between.
             _ctrl_speed_applied = _ctrl.speed;
-            if (!headless) mj_env.viewer.realtime_factor = _ctrl.speed;
+            if (!headless) mj_viewer.realtime_factor = _ctrl.speed;
         \}
 >>
 
@@ -780,7 +792,7 @@ app-chain-control-paused-step(serial_chain_solvers) ::= <<
             // step() is the sole physics driver, so not calling it is the pause; the GUI's own
             // render thread keeps the window drawing and responding. Only the window-close
             // request still has to end the run, and that is readable without stepping.
-            if (!headless && !mj_kdl::is_running(&mj_env.viewer)) break;
+            if (!headless && !mj_kdl::is_running(&mj_viewer)) break;
 >>
 
 // Default-on presentation of state the model already carries: nothing is authored to get this,
@@ -795,7 +807,7 @@ perturbation-arrows(perturbations, trace) ::= <<
             static constexpr float  kPerturbGuideRGBA[4]  = {0.95f, 0.45f, 0.45f, 0.35f};
             static constexpr double kPerturbGuideDash     = 0.05; // m drawn, then as much skipped
 <if(!trace.enabled)>            // Nothing else draws an overlay in this model, so the per-frame clear belongs here.
-            mj_kdl::clear_trace(&mj_env.viewer);
+            mj_kdl::clear_trace(&mj_env);
 <endif><perturbations:{p |            if (data.<p.active_id>) {
                 const mjModel *_pmodel<i0> = robot.<p.robot_id>.robot->model;
                 const mjData  *_pdata<i0>  = robot.<p.robot_id>.robot->data;
@@ -811,14 +823,14 @@ perturbation-arrows(perturbations, trace) ::= <<
                     if (_pfdir<i0>.Normalize() > 1e-9) {
                         const double _pflen<i0> =
                             std::min(_pw<i0>.force.Norm() * kPerturbArrowScale, kPerturbArrowMax);
-                        mj_kdl::add_overlay_arrow(&mj_env.viewer, _pat<i0> - _pfdir<i0> * _pflen<i0>,
+                        mj_kdl::add_overlay_arrow(&mj_env, _pat<i0> - _pfdir<i0> * _pflen<i0>,
                             _pfdir<i0>, _pflen<i0>, kPerturbForceRGBA);
                     \}
                     KDL::Vector _ptdir<i0> = _pw<i0>.torque;
                     if (_ptdir<i0>.Normalize() > 1e-9) {
                         const double _ptlen<i0> =
                             std::min(_pw<i0>.torque.Norm() * kPerturbArrowScale, kPerturbArrowMax);
-                        mj_kdl::add_overlay_arrow(&mj_env.viewer, _pat<i0> - _ptdir<i0> * _ptlen<i0>,
+                        mj_kdl::add_overlay_arrow(&mj_env, _pat<i0> - _ptdir<i0> * _ptlen<i0>,
                             _ptdir<i0>, _ptlen<i0>, kPerturbTorqueRGBA);
                     \}<if(p.target_pose_id)>
                     // The direction is normalized from this pose, so the pose still says how far
@@ -830,7 +842,7 @@ perturbation-arrows(perturbations, trace) ::= <<
                         const KDL::Vector _pstep<i0> = _pray<i0> / _praylen<i0>;
                         for (double _pd<i0> = 0.0; _pd<i0> \< _praylen<i0>;
                              _pd<i0> += 2.0 * kPerturbGuideDash) {
-                            mj_kdl::add_trace_segment(&mj_env.viewer,
+                            mj_kdl::add_trace_segment(&mj_env,
                                 _pat<i0> + _pstep<i0> * _pd<i0>,
                                 _pat<i0> + _pstep<i0> * std::min(_pd<i0> + kPerturbGuideDash, _praylen<i0>),
                                 kPerturbGuideRGBA);
@@ -848,16 +860,16 @@ app-chain-trace-update(serial_chain_solvers, trace) ::= <<
             // Live EE trajectory trace: one bounded polyline per referenced link,
             // each link's world frame read straight from MuJoCo. Length and colour
             // come from the ENVIRONMENT TRACE block in the .robmot model.
-            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (open_viewer)
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by Env::overlay_max_geoms
             static constexpr float kTraceRGBA[4] = {
                 <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
-            mj_kdl::clear_trace(&mj_env.viewer);
+            mj_kdl::clear_trace(&mj_env);
 <trace.targets:{target |            static std::deque\<KDL::Vector> _trace<i0>;
             KDL::Frame _f<i0>;
             if (mj_kdl::get_site_frame(&mj_env, "<target.link>", &_f<i0>) || mj_kdl::get_body_frame(&mj_env, "<target.link>", &_f<i0>)) _trace<i0>.push_back(_f<i0>.p);
             if (_trace<i0>.size() > kTraceMax) _trace<i0>.pop_front();
             for (size_t _i = 1; _i \< _trace<i0>.size(); ++_i)
-                mj_kdl::add_trace_segment(&mj_env.viewer, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
+                mj_kdl::add_trace_segment(&mj_env, _trace<i0>[_i - 1], _trace<i0>[_i], kTraceRGBA);
 }>        }
 <else>
         if (!headless) {
@@ -867,7 +879,7 @@ app-chain-trace-update(serial_chain_solvers, trace) ::= <<
             // base body pose (cached once; base is fixed). Length and colour come
             // from the ENVIRONMENT TRACE block in the .robmot model.
             static std::deque\<KDL::Vector> _trace;
-            static constexpr size_t kTraceMax = <trace.length>; // bounded by user_scn maxgeom (open_viewer)
+            static constexpr size_t kTraceMax = <trace.length>; // bounded by Env::overlay_max_geoms
             static constexpr float kTraceRGBA[4] = {
                 <trace.color_r>f, <trace.color_g>f, <trace.color_b>f, <trace.color_a>f};
             static bool _trace_base_ok = false;
@@ -878,9 +890,9 @@ app-chain-trace-update(serial_chain_solvers, trace) ::= <<
             }
             _trace.push_back(_trace_world_T_base * data.pose_ee_base.p);
             if (_trace.size() > kTraceMax) _trace.pop_front();
-            mj_kdl::clear_trace(&mj_env.viewer);
+            mj_kdl::clear_trace(&mj_env);
             for (size_t _i = 1; _i \< _trace.size(); ++_i) {
-                mj_kdl::add_trace_segment(&mj_env.viewer, _trace[_i - 1], _trace[_i], kTraceRGBA);
+                mj_kdl::add_trace_segment(&mj_env, _trace[_i - 1], _trace[_i], kTraceRGBA);
             }
         }
 <endif>
@@ -996,5 +1008,5 @@ mj_env.data->time
 // twice. Headless has no viewer, so the dashboard speed scales the requested rate directly, and
 // an uncapped run stays uncapped whatever the speed says.
 loop-rtf-source() ::= <<
-(headless ? _headless_rtf * _ctrl_speed_applied : mj_env.viewer.realtime_factor)
+(headless ? _headless_rtf * _ctrl_speed_applied : mj_viewer.realtime_factor)
 >>

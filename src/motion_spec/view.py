@@ -125,8 +125,8 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
     """The scene as a wrapper SceneSpec, with every authored asset path resolved."""
     spec = mjk.SceneSpec()
     spec.timestep = scene.timestep_s
-    spec.add_skybox = True
-    spec.add_floor = True
+    # The bundled stage: floor, sky and lights.
+    spec.use_stage = True
 
     robots = []
     for robot in scene.robots:
@@ -205,8 +205,9 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
 def add_shapes(spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: Path) -> None:
     """Add each scene-authored shape as one fixed SceneObject, as backend/mj_kdl/robot.stg does.
 
-    Shapes collide but add no mass: the body's inertia already states it. A shape the scene
-    gives no colour keeps MuJoCo's default.
+    Shapes add no mass: the body's inertia already states it. Its role sets whether a shape
+    collides and in which group it is drawn. A shape the scene gives no colour keeps MuJoCo's
+    default.
     """
     objects = []
     for shape in read_shapes(model, scene):
@@ -223,6 +224,9 @@ def add_shapes(spec: mjk.SceneSpec, model: Model, scene: MjcfSceneSpec, start: P
             obj.rgba = shape.rgba
         obj.fixed = True
         obj.mass = 0.0
+        obj.contype = shape.contype
+        obj.conaffinity = shape.conaffinity
+        obj.group = shape.group
         objects.append(obj)
     spec.objects = [*spec.objects, *objects]
 
@@ -252,16 +256,18 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     spec = build_spec(scene, scenex_path)
     add_shapes(spec, model, scene, scenex_path)
     env = mjk.Env.build(spec)
+    viewer = mjk.Viewer()
     try:
         _robots = apply_home_poses(env, poses)
         describe(spec, env)
         if headless:
             return
-        env.open_viewer(scenex_path.name)
+        viewer.open(env, scenex_path.name)
         while True:
             env.update()
             if not env.step():
                 break
-            env.pace()  # step() never sleeps; an unpaced loop starves the render thread
+            viewer.pace()  # step() never sleeps; an unpaced loop starves the render thread
     finally:
+        viewer.close()
         env.close()

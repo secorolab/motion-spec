@@ -162,7 +162,7 @@ class MjcfSceneShape:
     """One scene-authored shape, built as a fixed, massless mj_kdl SceneObject.
 
     It is welded to its mapped scene object's body, or to the world for a shape on a static
-    body no object maps.
+    body no object maps. Its role in the scene sets its contact bitmasks and geom group.
     """
 
     name: str
@@ -175,6 +175,10 @@ class MjcfSceneShape:
     quat: list[float]
     # SceneObject::size: half extents, radii or a mesh's scale, padded to three.
     size: list[float]
+    # SceneObject::contype, conaffinity and group, from the shape's role.
+    contype: int
+    conaffinity: int
+    group: int
     # None leaves MuJoCo's default colour: the scene stated none.
     rgba: list[float] | None = None
     # MESH only: the STL file. None, not "", on every other shape: a template's `<if()>` holds

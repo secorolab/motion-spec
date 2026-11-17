@@ -21,11 +21,22 @@ from rdf_utils.models.vocab import (
 from rdflib.namespace import RDF
 from scene_dsl.classes.ktree import PrimitiveShapeType
 from scene_dsl.rdf_parser.kinematics import RigidBodyModel, body_of_frame
-from scene_dsl.rdf_parser.shapes import ShapeModel
+from scene_dsl.rdf_parser.shapes import ShapeModel, ShapeRole
 
 from motion_spec.classes.scene import MjcfSceneShape, MjcfSceneSpec
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import local_name
+
+# A role's MuJoCo contype, conaffinity and geom group, as the bundled gen3 and 2f85 assets split
+# their geoms: one only drawn touches nothing, and one only touched sits in group 3, which the
+# viewer and recorder do not draw by default.
+_ROLE_GEOM = {
+    frozenset({ShapeRole.VISUAL}): (0, 0, 2),
+    frozenset({ShapeRole.COLLISION}): (1, 1, 3),
+    frozenset({ShapeRole.VISUAL, ShapeRole.COLLISION}): (1, 1, 0),
+    # A shape that states no role is drawn and touched, as every shape was before roles.
+    frozenset(): (1, 1, 0),
+}
 
 
 def _stl_path(shape: ShapeModel) -> str:
@@ -106,12 +117,16 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
         name = local_name(shape.id)
         if counts[name] > 1:
             name = f"{local_name(body)}_{name}"
+        contype, conaffinity, group = _ROLE_GEOM[shape.roles]
         common = {
             "name": name,
             "attach_kind": attach_kind,
             "attach_name": attach_name,
             "pos": pos,
             "quat": quat,
+            "contype": contype,
+            "conaffinity": conaffinity,
+            "group": group,
             # MuJoCo takes RGBA, so the colour is converted here. None leaves MuJoCo's default:
             # the scene stated no colour.
             "rgba": None if shape.color is None else list(shape.color.rgba),

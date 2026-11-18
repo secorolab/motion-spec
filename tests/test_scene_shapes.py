@@ -3,7 +3,8 @@
 
 Read from a copy of the `scene_shapes` fixture, which draws an STL marker on the static world
 body and an ellipsoid, a cylinder and a cube on a free body resting on the table: the marker
-only drawn, the ellipsoid only touched, the cube both, and the cylinder with no role.
+only drawn, the ellipsoid only touched, the cube both, and the cylinder with no role, which
+makes it both.
 """
 
 from __future__ import annotations
@@ -60,12 +61,14 @@ def test_each_shape_is_one_object_on_its_body_or_the_world(example: Path) -> Non
     assert marker.pos == pytest.approx([0.65, -0.4, 0.7])
     assert marker.size == pytest.approx([0.05, 0.05, 0.05])  # scale 5 in cm
     assert Path(marker.path).name == "tetra.stl"
-    # No colour stated: MuJoCo's default, not one made up here.
-    assert marker.rgba is None
+    # Drawn with no colour stated: scene-dsl's default grey.
+    assert marker.rgba == pytest.approx([0.5, 0.5, 0.5, 1.0])
     for name in (BALL, CYLINDER, CUBE):
         assert shapes[name].attach_kind == "Body"
-        assert shapes[name].rgba is not None
         assert shapes[name].path is None
+    # Only touched, so not drawn: no colour, and MuJoCo keeps its default.
+    assert shapes[BALL].rgba is None
+    assert shapes[CYLINDER].rgba is not None and shapes[CUBE].rgba is not None
     assert shapes[CYLINDER].size == pytest.approx([0.05, 0.045, 0.0])  # radius, half height
     assert {
         name: (shape.contype, shape.conaffinity, shape.group) for name, shape in shapes.items()

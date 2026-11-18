@@ -27,16 +27,11 @@ from motion_spec.classes.scene import MjcfSceneShape, MjcfSceneSpec
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import local_name
 
-# A role's MuJoCo contype, conaffinity and geom group, as the bundled gen3 and 2f85 assets split
-# their geoms: one only drawn touches nothing, and one only touched sits in group 3, which the
-# viewer and recorder do not draw by default.
-_ROLE_GEOM = {
-    frozenset({ShapeRole.VISUAL}): (0, 0, 2),
-    frozenset({ShapeRole.COLLISION}): (1, 1, 3),
-    frozenset({ShapeRole.VISUAL, ShapeRole.COLLISION}): (1, 1, 0),
-    # A shape that states no role is drawn and touched, as every shape was before roles.
-    frozenset(): (1, 1, 0),
-}
+# MuJoCo contype, conaffinity and geom group by whether a shape is (drawn, touched), as the
+# bundled gen3 and 2f85 assets split their geoms: one only drawn touches nothing, and one only
+# touched sits in group 3, which the viewer and recorder do not draw by default. scene-dsl
+# refuses a shape with no role, so one neither drawn nor touched never comes.
+_ROLE_GEOM = {(True, False): (0, 0, 2), (False, True): (1, 1, 3), (True, True): (1, 1, 0)}
 
 
 def _stl_path(shape: ShapeModel) -> str:
@@ -117,7 +112,8 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
         name = local_name(shape.id)
         if counts[name] > 1:
             name = f"{local_name(body)}_{name}"
-        contype, conaffinity, group = _ROLE_GEOM[shape.roles]
+        drawn, touched = ShapeRole.VISUAL in shape.roles, ShapeRole.COLLISION in shape.roles
+        contype, conaffinity, group = _ROLE_GEOM[drawn, touched]
         common = {
             "name": name,
             "attach_kind": attach_kind,
@@ -127,8 +123,8 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
             "contype": contype,
             "conaffinity": conaffinity,
             "group": group,
-            # MuJoCo takes RGBA, so the colour is converted here. None leaves MuJoCo's default:
-            # the scene stated no colour.
+            # MuJoCo takes RGBA, so the colour is converted here. A shape only touched has none,
+            # so it keeps MuJoCo's default; group 3 hides it unless shown.
             "rgba": None if shape.color is None else list(shape.color.rgba),
         }
         # The scene states the scale in its own length unit; MuJoCo takes metres.

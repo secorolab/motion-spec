@@ -13,10 +13,9 @@ import numpy as np
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.models.distribution import DistributionModel
+from rdf_utils.models.distribution import DistributionModel, distrib_from_sampled_quantity
 from rdf_utils.models.vocab import (
     URI_DISTRIB_PRED_COV,
-    URI_DISTRIB_PRED_FROM_DISTRIB,
     URI_DISTRIB_PRED_LOWER,
     URI_DISTRIB_PRED_MEAN,
     URI_DISTRIB_PRED_STD,
@@ -68,8 +67,8 @@ def sampled_quantities(
         )
     result = []
     for node in nodes:
-        distribution = model.graph.value(node, URI_DISTRIB_PRED_FROM_DISTRIB)
-        dist, components = _components(DistributionModel(distribution, model.graph))
+        distribution = distrib_from_sampled_quantity(node, model.graph)
+        dist, components = _components(distribution)
         unit = model.graph.value(node, QUDT_SCHEMA.unit)
         scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))
@@ -83,7 +82,7 @@ def sampled_quantities(
         if len(components) != (3 if position else 1):
             raise ConstraintViolation(
                 "sampling",
-                f"'{node}' draws {len(components)} numbers from '{distribution}', which is not "
+                f"'{node}' draws {len(components)} numbers from '{distribution.id}', which is not "
                 f"{'a position' if position else 'a scalar'}",
             )
         result.append(

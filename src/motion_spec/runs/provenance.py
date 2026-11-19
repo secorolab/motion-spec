@@ -434,26 +434,27 @@ def record_execution(
 
 
 def record_draw(bundle: Graph, agent: URIRef, quantity: str, values, drawn_at) -> None:
-    """One draw, as the coordinate this run made of the quantity the generation declared.
+    """One draw of the quantity the generation declared, recorded as rdf-utils records a sample:
+    the drawn values on the quantity, in this run's bundle, and a sampling by AGENT that
+    generated an entity specializing it.
 
-    The unit, the kind and the distribution stay on the declared quantity, which every run of
-    the generation shares; `prov:specializationOf` is how a reader gets from one to the other.
+    The run's bundle is its own sample graph, so every run of a generation keeps its own values.
+    The program drew them at run time, a position as a VectorXYZ and anything else as one number.
     """
-    from motion_spec_dsl.rdf_parser.vocab import GEOM_COORD, QUDT_SCHEMA
+    from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
     from rdf_utils.models.common import ModelBase
     from rdf_utils.models.geom_coord import set_coord_vectorxyz
     from rdf_utils.models.vocab import URI_GEOM_TYPE_VECTOR_XYZ
 
-    draw = URIRef(uuid4().urn)
-    load_sampling_prov(bundle, None, [], [draw], URIRef(quantity), agent, drawn_at, drawn_at)
+    quantity_id = URIRef(quantity)
     if len(values) == 3:
-        model = ModelBase(draw, types={URI_GEOM_TYPE_VECTOR_XYZ})
-        bundle.add((draw, RDF.type, URI_GEOM_TYPE_VECTOR_XYZ))
-        bundle.add((draw, RDF.type, URIRef(GEOM_COORD["PositionCoordinate"])))
-        set_coord_vectorxyz(model, tuple(float(value) for value in values), bundle)
+        coordinate = ModelBase(quantity_id, types={URI_GEOM_TYPE_VECTOR_XYZ})
+        set_coord_vectorxyz(coordinate, tuple(float(value) for value in values), bundle)
     else:
-        bundle.set((draw, URIRef(QUDT_SCHEMA["value"]), Literal(float(values[0]))))
-    bundle.set((draw, PROV.generatedAtTime, Literal(drawn_at)))
+        bundle.set((quantity_id, URIRef(QUDT_SCHEMA["value"]), Literal(float(values[0]))))
+    load_sampling_prov(
+        bundle, None, [], [URIRef(uuid4().urn)], quantity_id, agent, drawn_at, drawn_at
+    )
 
 
 def record_files(bundle: Graph, run: URIRef, run_dir: Path) -> None:

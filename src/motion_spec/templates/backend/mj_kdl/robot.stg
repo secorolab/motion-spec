@@ -674,7 +674,7 @@ app-chain-provider-update(serial_chain_solvers) ::= <<
 app-chain-runtime-step(serial_chain_solvers, active_motion) ::= <<
         // Closing the viewer ends the run, but it must end the same way S_DONE does. std::exit
         // skips destructors, so the frame logger's writer thread never drained and the log was
-        // left with a half-written record and no health file -- break, and let teardown run.
+        // left with a half-written record and no health record -- break, and let teardown run.
         if (!mj_kdl::step(&mj_env)) {
             break;
         }

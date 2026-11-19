@@ -238,10 +238,21 @@ message SamplingDraw {
   repeated Draw draws = 3;
 }
 
+// The writer's own account, the last record of a log it closed.
+message FrameLogHealth {
+  uint64 attempted_frames = 1;
+  uint64 accepted_frames = 2;
+  uint64 written_frames = 3;
+  uint64 write_errors = 4;
+  uint64 dropped_frames = 5;
+  bool complete = 6;
+}
+
 message FrameLogRecord {
   oneof record {
     FrameLogHeader header = 1;
     RuntimeFrame frame = 2;
     SamplingDraw sampling = 3;
+    FrameLogHealth health = 4;
   }
 }

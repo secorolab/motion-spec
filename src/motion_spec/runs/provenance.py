@@ -573,7 +573,7 @@ def record_draw(graph: Graph, run_id: str, agent: URIRef, quantity: str, values,
 
 
 # What the run produced, as opposed to what it read. Camera videos are a list.
-GENERATED_ROLES = ("frame_log", "frame_log_health", "console", "bag", "videos")
+GENERATED_ROLES = ("frame_log", "console", "bag", "videos")
 
 
 def record_files(graph: Graph, run_id: str, run_dir: Path, manifest: dict) -> None:
@@ -586,27 +586,6 @@ def record_files(graph: Graph, run_id: str, run_dir: Path, manifest: dict) -> No
             path = run_dir / rel
             if path.exists():
                 record_run_file(graph, run_id, path, role, generated=True)
-
-
-def record_frame_log_health(run, run_dir: Path, manifest: dict) -> None:
-    rel = manifest.get("files", {}).get("frame_log_health")
-    if not rel:
-        return
-    path = run_dir / rel
-    if not path.exists():
-        return
-    health = json.loads(path.read_text())
-    for name in (
-        "attempted_frames",
-        "accepted_frames",
-        "written_frames",
-        "write_errors",
-        "dropped_frames",
-    ):
-        if name in health:
-            run.log_scalar(f"frame_log_{name}", health[name], step=0)
-    if "complete" in health:
-        run.log_scalar("frame_log_complete", int(bool(health["complete"])), step=0)
 
 
 def artifact_size(path: Path) -> int:

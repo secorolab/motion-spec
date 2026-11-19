@@ -12,8 +12,8 @@ from rec import State, Verdict
 
 from motion_spec.dashboard.frames import FrameLayout
 from motion_spec.runs.provenance import rec_document, rec_run_lifecycle_from_file
-from motion_spec.runs.replay import read_health
 from motion_spec.telemetry import frame_log_pb
+from motion_spec.telemetry.frame_log_pb import read_health
 
 LAYOUT_REL = Path("generated") / "contract" / "frame_layout.json"
 LOG_REL = Path("logs") / "frame_log.pb"

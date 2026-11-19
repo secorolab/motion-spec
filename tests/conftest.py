@@ -41,20 +41,13 @@ def source_tree(tmp_path: Path) -> Path:
     (path / "controller" / "headers" / "runtime.hpp").write_text("// generated\n")
     (path / "controller" / "main.cpp").write_text("// generated\n")
     flat = {name: 0 for name in field_names_and_format(SCHEMA["pools"])[1]} | FRAME
+    # The writer closes its log with its own account of the frames it was handed.
+    health = frame_log_pb.record_class()()
+    health.health.attempted_frames = health.health.accepted_frames = 1
+    health.health.written_frames = 1
+    health.health.complete = True
     with (path / "frame_log.pb").open("wb") as log:
         frame_log_pb.write_delimited(log, build_frame_log_header_record(SCHEMA))
         frame_log_pb.write_delimited(log, frame_log_pb.frame_record(flat, SCHEMA))
-    (path / "frame_log.pb.health.json").write_text(
-        json.dumps(
-            {
-                "attempted_frames": 1,
-                "accepted_frames": 1,
-                "written_frames": 1,
-                "write_errors": 0,
-                "dropped_frames": 0,
-                "complete": True,
-            },
-            indent=4,
-        )
-    )
+        frame_log_pb.write_delimited(log, health.SerializeToString())
     return path

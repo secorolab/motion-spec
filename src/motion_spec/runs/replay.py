@@ -91,25 +91,15 @@ def verify_archive(path: Path | str) -> int:
             f"the generation's is {expected}"
         )
     frames = sum(1 for _ in frame_log_pb.frame_records(log_path, contract))
-    health = read_health(log_path)
+    health = frame_log_pb.read_health(log_path)
     if health is None:
-        raise ArchiveError(f"{log_path}: no health record beside the log")
+        raise ArchiveError(f"{log_path}: ends without the writer's health record: it never closed")
     if health["written_frames"] != frames:
         raise ArchiveError(
             f"{log_path}: the writer reported {health['written_frames']} frames, the log holds "
             f"{frames}"
         )
     return frames
-
-
-def read_health(log_path: Path | str) -> dict | None:
-    # The writer names the health file beside the log it wrote, and archiving compresses only
-    # the log -- so the health file keeps the uncompressed name whatever the log is called now.
-    name = str(log_path).removesuffix(frame_log_pb.LOG_SUFFIX)
-    health_path = Path(name + ".health.json")
-    if not health_path.exists():
-        return None
-    return json.loads(health_path.read_text())
 
 
 def decode_frames(log_path: Path | str) -> list[dict]:
@@ -148,7 +138,7 @@ def summarize(log_path: Path | str) -> str:
     ]
     if frame_log_pb.tail_is_partial(log_path):
         lines.append("log         truncated: the last record is short, the writer never closed")
-    health = read_health(log_path)
+    health = frame_log_pb.read_health(log_path)
     if health:
         lines.append(
             "log health  "

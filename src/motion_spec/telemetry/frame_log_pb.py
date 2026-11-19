@@ -68,7 +68,7 @@ POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
 TWIST_NAMES = ("lx", "ly", "lz", "ax", "ay", "az")
 WRENCH_NAMES = ("fx", "fy", "fz", "tx", "ty", "tz")
 PROTO = Path(__file__).with_name("frame_log.proto")
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 _HEADER_SLOTS = ("quantities", "poses", "twists", "wrenches", "devices")
 CONSTRAINT_KEYS = ("active", "error", "output", "satisfied", "sat_t", "measured", "setpoint")
 MONITOR_KEYS = ("active", "value", "satisfied", "sat_t")
@@ -496,6 +496,25 @@ def read_sampling(path: Path | str) -> dict | None:
         "drawn_at_ns": record.sampling.drawn_at_ns,
         "draws": {draw.quantity: list(draw.values) for draw in record.sampling.draws},
     }
+
+
+def read_health(path: Path | str) -> dict | None:
+    """The writer's account of the log at PATH -- frames attempted, accepted, written, write
+    errors, dropped, and whether all of them reached the log -- from its last record; None when
+    there is no log or the writer has not closed it."""
+    if not log_path(path).exists():
+        return None
+    contract = read_contract(path)
+    last = None
+    with open_log(path) as fh:
+        offset = 0
+        while (found := _read_delimited_at(fh, offset))[0] is not None:
+            last, offset = found
+    record = contract.record_cls.FromString(last)
+    if record.WhichOneof("record") != "health":
+        return None
+    health = record.health
+    return {field.name: getattr(health, field.name) for field in health.DESCRIPTOR.fields}
 
 
 def frame_records(path: Path | str, contract: LogContract | None = None) -> Iterator[dict]:

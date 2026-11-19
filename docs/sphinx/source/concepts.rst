@@ -52,8 +52,9 @@ instead of copying them.
      build/           reusable compiled controller
      logs/            console.log: what the DSL, stst and cmake said
      runs/<run-id>/
-       logs/          frame_log.pb (zstd-packed to frame_log.pb.zst once archived),
-                      console.log and health information
+       logs/          frame_log.pb (zstd-packed to frame_log.pb.zst once archived): its
+                      contract, the frames, and last the writer's health record;
+                      console.log
        files/         the environment file the run was given
        provenance/
          <run-id>.ld.json    REC record: lifecycle, host, metrics

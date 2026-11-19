@@ -34,7 +34,6 @@ from motion_spec.runs.provenance import (
     rec_run_lifecycle_from_file,
     record_execution,
     record_files,
-    record_frame_log_health,
     record_run_file,
     record_software,
     write_generation_graph,
@@ -143,7 +142,6 @@ def create_archive_manifest(
             os.path.relpath(log_producer_executable, run_dir) if log_producer_executable else None
         ),
         "frame_log": "logs/frame_log.pb.zst" if recorded else None,
-        "frame_log_health": "logs/frame_log.pb.health.json" if recorded else None,
         # Listed only when written: a manifest never promises a file the run dir lacks.
         "console": _existing(run_dir, "logs/console.log"),
         "environment": next(
@@ -200,7 +198,7 @@ def verify_manifest(run_dir_or_manifest: Path | str) -> dict:
             errors.append(f"files.{key}: missing")
     for key, value in files.items():
         for rel in value if isinstance(value, list) else [value]:
-            if key in {"frame_log_health", "console"} and not (run_dir / rel).exists():
+            if key == "console" and not (run_dir / rel).exists():
                 continue
             if not (run_dir / rel).exists():
                 errors.append(f"{rel}: missing")
@@ -332,7 +330,6 @@ def _write_rec_snapshot(
         )
     record_files(files, run_id, run_dir, manifest)
     write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, files)
-    record_frame_log_health(run, run_dir, manifest)
     if complete_lifecycle and not completed_time and not terminal_status:
         if run.start_time is None:
             run.start_time = datetime.now(UTC)

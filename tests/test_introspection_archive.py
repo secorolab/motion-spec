@@ -19,16 +19,12 @@ from motion_spec.runs.runner import start_rec_run
 
 @pytest.fixture
 def run_dir(tmp_path: Path, source_tree: Path) -> Path:
-    """A run catalogued the way the runner catalogues it before it launches the executable,
-    with the health report the runtime writes beside its log."""
+    """A run catalogued the way the runner catalogues it before it launches the executable."""
     run_dir = tmp_path / "run"
     (run_dir / "logs").mkdir(parents=True)
     (tmp_path / "main").write_text("binary\n")
     schema = json.loads((source_tree / "contract" / "frame_layout.json").read_text())
     start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema, [])
-    shutil.copyfile(
-        source_tree / "frame_log.pb.health.json", run_dir / "logs" / "frame_log.pb.health.json"
-    )
     return run_dir
 
 
@@ -109,7 +105,6 @@ def test_logless_manifest_says_so_and_only_then_verifies_without_a_log(
 ) -> None:
     # "recorded": false is the run stating it kept no log on purpose; a lost log still fails.
     (run_dir / "logs" / "console.log").write_text("started\n")
-    (run_dir / "logs" / "frame_log.pb.health.json").unlink()
 
     manifest = create_archive_manifest(
         run_dir,

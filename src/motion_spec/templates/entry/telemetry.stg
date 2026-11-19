@@ -294,11 +294,10 @@ public:
         const log::FrameLogRecord *sampling = nullptr,
         std::size_t ring_capacity = 8192)
         : mask_(ring_capacity - 1) {
-        // An empty path is the operator saying "no recording": no ring, no health file, no thread.
+        // An empty path is the operator saying "no recording": no ring, no log, no thread.
         if (path.empty()) return;
         if (ring_capacity == 0 || (ring_capacity & (ring_capacity - 1)) != 0) return;
         ring_.resize(ring_capacity);
-        health_path_ = path + ".health.json";
         log_ = std::fopen(path.c_str(), "wb");
         if (!log_) return;
         write_header();
@@ -316,10 +315,10 @@ public:
         \}
         if (writer_.joinable()) writer_.join();
         if (log_) {
+            write_health();
             std::fclose(log_);
             log_ = nullptr;
         \}
-        write_health();
     \}
 
     void push(const Frame &frame) {
@@ -453,34 +452,23 @@ private:
         \}
     \}
 
+    // The log's last record: once the writer thread has stopped, nothing else will be written.
     void write_health() {
-        std::FILE *health = std::fopen(health_path_.c_str(), "wb");
-        if (!health) return;
-        const std::uint64_t attempted = attempted_.load(std::memory_order_relaxed);
         const std::uint64_t accepted = accepted_.load(std::memory_order_relaxed);
         const std::uint64_t dropped = dropped_.load(std::memory_order_relaxed);
-        std::fprintf(
-            health,
-            "{\n"
-            "  \"attempted_frames\": %llu,\n"
-            "  \"accepted_frames\": %llu,\n"
-            "  \"written_frames\": %llu,\n"
-            "  \"write_errors\": %llu,\n"
-            "  \"dropped_frames\": %llu,\n"
-            "  \"complete\": %s\n"
-            "}\n",
-            static_cast\<unsigned long long\>(attempted),
-            static_cast\<unsigned long long\>(accepted),
-            static_cast\<unsigned long long\>(written_),
-            static_cast\<unsigned long long\>(write_errors_),
-            static_cast\<unsigned long long\>(dropped),
-            (dropped == 0 && accepted == written_ && write_errors_ == 0) ? "true" : "false");
-        std::fclose(health);
+        record_.Clear();
+        log::FrameLogHealth *health = record_.mutable_health();
+        health->set_attempted_frames(attempted_.load(std::memory_order_relaxed));
+        health->set_accepted_frames(accepted);
+        health->set_written_frames(written_);
+        health->set_write_errors(write_errors_);
+        health->set_dropped_frames(dropped);
+        health->set_complete(dropped == 0 && accepted == written_ && write_errors_ == 0);
+        write_record(record_);
     \}
 
     std::vector\<Frame\> ring_;
     std::uint64_t mask_ = 0;
-    std::string health_path_;
     std::FILE *log_ = nullptr;
     log::FrameLogRecord record_;
     std::string payload_;

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import errno
-import json
 import os
 import pty
 import re
@@ -44,21 +43,7 @@ LEVEL_LABELS = {
     level: paint(f"{level:<{LEVEL_WIDTH}}", colour) for level, colour in LEVEL_COLOURS.items()
 }
 
-LOG_FORMAT_VARIABLE = "MOTION_SPEC_LOG_FORMAT"
-LOG_FORMAT = f"{paint('%(asctime)s', STAMP_COLOUR)}  %(levelname)s %(message)s"
-LOG_DATEFMT_VARIABLE = "MOTION_SPEC_LOG_DATEFMT"
 LOG_DATEFMT = "%H:%M:%S"
-LOG_LEVELS_VARIABLE = "MOTION_SPEC_LOG_LEVELS"
-
-
-def tool_environment(env: dict[str, str] | None = None) -> dict[str, str]:
-    """ENV with the format and the level words motion-spec's own tools write their lines in."""
-    return {
-        **(env if env is not None else os.environ),
-        LOG_FORMAT_VARIABLE: LOG_FORMAT,
-        LOG_DATEFMT_VARIABLE: LOG_DATEFMT,
-        LOG_LEVELS_VARIABLE: json.dumps(LEVEL_LABELS),
-    }
 
 
 def command_log(root: Path, command: str) -> Path:

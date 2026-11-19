@@ -320,12 +320,6 @@ class LogContract:
             for motion in header.motions
         }
         self.quantity_ids = [entry["id"] for entry in fields["quantities"]]
-        self.iri_by_id = {
-            entry["id"]: entry["iri"]
-            for category in ("quantities", *(name for name, _ in SPATIAL_CATEGORIES))
-            for entry in fields[category]
-            if entry["iri"]
-        }
 
     def summary(self) -> dict:
         """The run facts the archive and provenance record, read off the log's own header."""

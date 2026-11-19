@@ -430,9 +430,9 @@ def _run_options(command):
 
 def _environment(
     env_script: Path | None, no_env: bool, start: Path | None = None
-) -> tuple[dict[str, str] | None, dict | None]:
-    """The environment to run under, and what a run records about where it came from."""
-    from motion_spec.setup import capture_environment, environment_provenance, find_environment
+) -> tuple[dict[str, str] | None, Path | None]:
+    """The environment to run under, and the file it was sourced from, which a run keeps."""
+    from motion_spec.setup import capture_environment, find_environment
 
     if no_env:
         return None, None
@@ -445,7 +445,7 @@ def _environment(
         raise click.ClickException(str(exc)) from exc
     # A build under a different toolchain than the terminal should not have to be deduced.
     _say("info", f"environment {script}")
-    return captured, environment_provenance(script, captured)
+    return captured, script
 
 
 @main.command()
@@ -1269,7 +1269,7 @@ def run(
     if input.suffix == ".robmot":
         try:
             generation = _new_generation(input, name)
-            env, environment_record = _environment(env_script, no_env, generation)
+            env, environment_script = _environment(env_script, no_env, generation)
             with mirrored_stderr(generation_log(generation)):
                 _say("step", "generating")
                 generate_model(input, generation, stage="code", env=env)
@@ -1290,7 +1290,7 @@ def run(
         if prefixes or jobs is not None or name:
             raise click.UsageError("generation and build options require a .robmot INPUT")
         generation = input.resolve()
-        env, environment_record = _environment(env_script, no_env, generation)
+        env, environment_script = _environment(env_script, no_env, generation)
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
     _say("step", f"running {generation.name}")
@@ -1307,7 +1307,7 @@ def run(
             record=list(record),
             record_log=not no_log,
             env=env,
-            environment_provenance=environment_record,
+            environment_script=environment_script,
         )
     except (RecordError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc

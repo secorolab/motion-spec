@@ -600,9 +600,6 @@ def agent_assemblies(model, attach_by_body) -> list:
                         frame=f"{runtime_prefix}{local_name(frame)}",
                         local_id=local_name(sensor),
                         local_frame=local_name(frame),
-                        update_rate_hz=get_update_rate(
-                            model.graph, ModelBase(node_id=sensor, graph=model.graph)
-                        ),
                         config_key=_config_key(
                             model, sensor, agent, f"{runtime_prefix}{local_name(sensor)}"
                         ),

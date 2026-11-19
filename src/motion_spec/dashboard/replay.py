@@ -17,12 +17,6 @@ from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
 
-
-def downsample(values: list[float], target: int = 1600) -> list[float]:
-    step = max(1, len(values) // target)
-    return values[::step]
-
-
 # How the dashboard labels the gain roles a controller slot carries; others keep their role name.
 GAIN_LABELS = {
     "proportional_gain": "Kp",

@@ -982,7 +982,7 @@ def quantity(model, node):
 
     if CSTR_HDL_EXT["SetpointGenerator"] in types:
         return SetpointQuantity(
-            model.id(node), kind, unit, has_view, provenance=provenance, value_kind=kind.id
+            model.id(node), kind, unit, has_view, provenance=provenance
         )
     if kind.id == "FreeVector" and GEOM_COORD["VectorXYZ"] in types:
         return FreeVector(

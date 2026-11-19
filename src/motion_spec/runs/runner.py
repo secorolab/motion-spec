@@ -69,11 +69,12 @@ def run_cataloged(
     record: list[str] | None = None,
     record_log: bool = True,
     env: dict[str, str] | None = None,
-    environment_provenance: dict | None = None,
+    environment_script: Path | None = None,
 ) -> int:
     """Run a generated executable and record it: rec's lifecycle and motion-spec's provenance.
 
-    ENV is what the executable runs under; ENVIRONMENT_PROVENANCE is what the run records of it.
+    ENV is what the executable runs under; ENVIRONMENT_SCRIPT is the file it was sourced
+    from, which the run keeps.
     """
     run_dir = Path(run_dir)
     source_dir = Path(source_dir)
@@ -98,7 +99,7 @@ def run_cataloged(
         executable,
         platform,
         config=config,
-        environment=environment_provenance,
+        environment_script=environment_script,
     )
 
     try:
@@ -192,10 +193,10 @@ def start_rec_run(
     executable: Path,
     platform: dict,
     config: Path | None = None,
-    environment: dict | None = None,
+    environment_script: Path | None = None,
 ):
     """Start the run in rec and record in motion-spec's bundle what it runs and under what:
-    the deployment CONFIG, the model's, and the ENVIRONMENT it was given.
+    the deployment CONFIG, the model's, and the ENVIRONMENT_SCRIPT it was given.
 
     Returns:
         rec's handle on the run and the identifier of motion-spec's bundle, which the run's
@@ -206,7 +207,7 @@ def start_rec_run(
     run = rec_run(run_dir, run_id)
     run.start()
     with run_bundle(run_dir, run_id) as bundle:
-        _record_execution_inputs(bundle, run.node, run_dir, config, environment)
+        _record_execution_inputs(bundle, run.node, run_dir, config, environment_script)
         record_execution(
             bundle,
             run.node,
@@ -223,13 +224,14 @@ def _record_execution_inputs(
     run: URIRef,
     run_dir: Path,
     config: Path | None,
-    environment: dict | None,
+    environment_script: Path | None,
 ) -> None:
-    """What the execution ran under: its deployment CONFIG and its environment. The executable
-    is the generation's node, which `record_execution` states the run used."""
+    """What the execution ran under: its deployment CONFIG and the ENVIRONMENT_SCRIPT it was
+    given. The executable is the generation's node, which `record_execution` states the run
+    used."""
     # A simulation's config is as much what it ran with: its [run] section sets how.
     inputs = [config] if config is not None else []
-    script = Path((environment or {}).get("script") or "")
+    script = Path(environment_script or "")
     if script.is_file():
         # Kept with the run: the workspace's file can change or go, and its path is the machine's.
         kept = run_dir / "files" / f"environment{script.suffix}"

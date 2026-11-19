@@ -225,18 +225,6 @@ def cmake_arguments(meta: Path, package: str) -> tuple[str, ...]:
 
 ENVIRONMENT_FILES = ("setup-motion-spec.bash", "setup-motion-spec.zsh")
 ENVIRONMENT_VARIABLE = "MOTION_SPEC_ENV"
-# Archived with a run. Not the whole environment: that is mostly the operator's shell.
-PROVENANCE_VARIABLES = (
-    "MOTION_SPEC_PREFIX",
-    "PATH",
-    "CMAKE_PREFIX_PATH",
-    "LD_LIBRARY_PATH",
-    "PYTHONPATH",
-    "ROS_DISTRO",
-    "AMENT_PREFIX_PATH",
-    "RMW_IMPLEMENTATION",
-    "ROS_DOMAIN_ID",
-)
 
 
 def workspace(argument: Path | None = None) -> Path:
@@ -935,17 +923,3 @@ def capture_environment(script: Path) -> dict[str, str]:
         if separator:
             environment[key] = value
     return environment
-
-
-def environment_provenance(script: Path, environment: dict[str, str]) -> dict:
-    """What a run archives about the environment it happened in.
-
-    The path alone dates badly -- the file it names can be edited or deleted -- so the
-    variables a build and a run actually depend on are recorded with it.
-    """
-    return {
-        "script": str(script),
-        "variables": {
-            name: environment[name] for name in PROVENANCE_VARIABLES if name in environment
-        },
-    }

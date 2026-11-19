@@ -76,5 +76,4 @@ class SetpointQuantity:
     unit: Unit = field(metadata=INTERNAL)
     has_view: bool = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
-    value_kind: str | None = None
     type: str = field(default="SetpointQuantity")

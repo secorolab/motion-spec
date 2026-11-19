@@ -37,13 +37,12 @@ Resolve missing ``dsl`` or ``codegen`` checks before generation. Resolve MuJoCo
 
 .. code-block:: console
 
-   $ GENERATION_DIR=$(motion-spec gen "$MODEL_PATH" -o generation/pick-place)
+   $ GENERATION_DIR=$(motion-spec gen "$MODEL_PATH" --name pick-place)
 
 ``gen`` parses the ``.robmot`` model and its scene/FSM imports, emits JSON-LD,
 lowers the RDF dataset to motion-spec IR, and generates C++ plus runtime contracts.
-It does not compile or execute the controller. ``-o`` is a base directory: the
-generation lands at ``generation/pick-place/pick_and_place/<timestamp>``, and
-``gen`` prints that path on stdout.
+It does not compile or execute the controller. The generation lands at
+``$MOTION_SPEC_GEN/pick-place/<timestamp>``, and ``gen`` prints that path on stdout.
 
 The important outputs are:
 
@@ -60,7 +59,7 @@ To stop after RDF and IR, use a different base directory:
 
 .. code-block:: console
 
-   $ motion-spec gen ir "$MODEL_PATH" -o generation/pick-place-ir
+   $ motion-spec gen ir "$MODEL_PATH" --name pick-place-ir
 
 An IR-only generation cannot be built because it has no generated controller.
 
@@ -145,7 +144,7 @@ build, run, runtime RDF recovery, and verification in one command:
 .. code-block:: console
 
    $ motion-spec run "$MODEL_PATH" \
-       -o generation/pick-place-direct \
+       --name pick-place-direct \
        --prefix /path/to/workspace/install \
        --run-id run-1 \
        --headless

@@ -57,7 +57,7 @@ def test_a_build_job_count_is_never_unlimited_and_bounded_by_memory(monkeypatch,
 
 
 def test_generations_go_where_named_and_never_into_the_working_directory(monkeypatch, tmp_path):
-    """-o wins over $MOTION_SPEC_GEN, which wins over the workspace; with none, it is refused."""
+    """Generations go under $MOTION_SPEC_GEN; without it, gen is refused."""
     monkeypatch.chdir(tmp_path)
     model = tmp_path / "demo.robmot"
     model.write_text("")
@@ -68,10 +68,8 @@ def test_generations_go_where_named_and_never_into_the_working_directory(monkeyp
         "motion_spec.generation.pipeline.generate_model",
         mock.Mock(return_value=tmp_path / "generation" / "generated"),
     )
-    explicit, configured = tmp_path / "explicit", tmp_path / "configured"
+    configured = tmp_path / "configured"
     monkeypatch.setenv(stst_setup.GENERATION_VARIABLE, str(configured))
-    assert CliRunner().invoke(main, ["gen", "ir", str(model), "-o", str(explicit)]).exit_code == 0
-    assert create_generation.call_args.args[1] == explicit
     assert CliRunner().invoke(main, ["gen", "ir", str(model)]).exit_code == 0
     assert create_generation.call_args.args[1] == configured
 

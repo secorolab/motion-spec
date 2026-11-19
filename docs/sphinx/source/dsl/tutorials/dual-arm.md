@@ -41,7 +41,7 @@ fixed-joint endpoints.
 ```bash
 motion-spec run \
   src/ms-examples/02_dual_arm_pick_and_place/dual_arm_pick_and_place.robmot \
-  -o /tmp/dual-arm-pick-and-place \
+  --name dual-arm-pick-and-place \
   --prefix /path/to/workspace/install \
   --run-id tutorial
 ```

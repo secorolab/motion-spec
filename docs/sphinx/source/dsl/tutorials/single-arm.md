@@ -224,7 +224,7 @@ From the workspace root, stop after IR when inspecting semantic lowering:
 ```bash
 motion-spec gen ir \
   src/ms-examples/01_pick_and_place/pick_and_place.robmot \
-  -o generation/pick-place-ir
+  --name pick-place-ir
 ```
 
 Open `generated/model/ir.json` under the generation `gen` printed
@@ -238,7 +238,7 @@ Generate C++ when the code-generation toolchain is available:
 ```bash
 motion-spec gen \
   src/ms-examples/01_pick_and_place/pick_and_place.robmot \
-  -o generation/pick-place-generated
+  --name pick-place-generated
 ```
 
 The authored snapshot is under `generated/source/`, RDF and IR under
@@ -249,7 +249,7 @@ The authored snapshot is under `generated/source/`, RDF and IR under
 ```bash
 motion-spec run \
   src/ms-examples/01_pick_and_place/pick_and_place.robmot \
-  -o generation/pick-place-run \
+  --name pick-place-run \
   --prefix /path/to/workspace/install \
   --run-id tutorial
 ```
@@ -277,7 +277,7 @@ generation directory:
 ```bash
 motion-spec run \
   src/ms-examples/01_pick_and_place/pick_and_place.robmot \
-  -o generation/pick-place-higher \
+  --name pick-place-higher \
   --prefix /path/to/workspace/install \
   --run-id tutorial
 ```

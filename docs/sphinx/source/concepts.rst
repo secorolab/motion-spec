@@ -29,8 +29,8 @@ Generations and runs
 A generation is immutable input plus reusable generated and compiled artifacts.
 It receives its own directory because separate generations may differ even when
 they came from the same model. A new generation goes to
-``<base>/<model stem or --name>/<timestamp>/``, where the base is ``-o`` or
-``$MOTION_SPEC_GEN``; with neither, ``gen`` and ``run`` stop. ``gen`` prints the
+``$MOTION_SPEC_GEN/<model stem or --name>/<timestamp>/``; without
+``$MOTION_SPEC_GEN``, ``gen`` and ``run`` stop. ``gen`` prints the
 generation's path on stdout, and ``$MOTION_SPEC_GEN/latest`` points at the newest.
 
 A generation may be executed many times. Each execution belongs under that
@@ -92,7 +92,7 @@ High-level commands
      - Compose a scene in MuJoCo and view it, without generating or building anything
 
 Use ``--prefix`` on ``build`` or ``run`` to add CMake package prefixes. It is
-repeatable for ``build``. ``-o``, ``--name``, ``--prefix``, and ``-j`` configure
+repeatable for ``build``. ``--name``, ``--prefix``, and ``-j`` configure
 generation and build, so they require a ``.robmot`` model; ``--headless``,
 ``--steps``, and ``--run-id`` apply to both forms, ``--steps`` requires
 ``--headless``, and both are refused for a hardware generation.

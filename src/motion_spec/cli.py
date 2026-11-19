@@ -95,14 +95,7 @@ _COMMAND_COLOUR = 180
 LATEST_LINK = "latest"
 
 
-def _generation_base(output_dir: Path | None) -> Path | None:
-    """Where a new generation goes: `-o` if given, else $MOTION_SPEC_GEN."""
-    if output_dir is not None:
-        return output_dir
-    return _generation_root()
-
-
-def _new_generation(model: Path, output_dir: Path | None, name: str | None = None) -> Path:
+def _new_generation(model: Path, name: str | None = None) -> Path:
     """Create this run's generation directory, and say where it is before anything fills it.
 
     Announced up front rather than only on success: the DSL and the compiler write pages of
@@ -112,7 +105,7 @@ def _new_generation(model: Path, output_dir: Path | None, name: str | None = Non
     """
     from motion_spec.generation.pipeline import create_generation_dir
 
-    generation = create_generation_dir(model, _generation_base(output_dir), name)
+    generation = create_generation_dir(model, _generation_root(), name)
     _say("info", f"generation {generation}")
     _point_latest(generation)
 
@@ -128,11 +121,7 @@ def _point_latest(generation: Path) -> None:
     relative, so moving the tree keeps it pointing at what it names, and it is replaced in one
     step, so a reader never finds it missing.
     """
-    try:
-        base = _generation_root()
-    except click.UsageError:
-        # An explicit -o works without a workspace; there is no default tree to link from.
-        return
+    base = _generation_root()
     link = base / LATEST_LINK
     try:
         target = os.path.relpath(generation, base)
@@ -282,7 +271,7 @@ class MotionSpecGroup(click.Group):
                         ('motion-spec build "$MOTION_SPEC_GEN/latest"',),
                     ),
                 ),
-                ("Generate only the IR", (("motion-spec gen ir model.robmot -o scratch",),)),
+                ("Generate only the IR", (("motion-spec gen ir model.robmot --name scratch",),)),
                 (
                     "Generate, build, run, and inspect",
                     (
@@ -1067,12 +1056,11 @@ def health(
 @click.argument(
     "model", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path)
 )
-@click.option("-o", "--output-dir", type=click.Path(file_okay=False, path_type=Path))
 @click.option(
     "--name",
-    help="Name the generation tree under the base directory; defaults to the model's stem.",
+    help="Name the generation tree under $MOTION_SPEC_GEN; defaults to the model's stem.",
 )
-def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, name: str | None) -> None:
+def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
 
@@ -1094,7 +1082,7 @@ def gen(stage_or_model: str, model: Path | None, output_dir: Path | None, name: 
     if model.suffix != ".robmot":
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
-        generation = _new_generation(model, output_dir, name)
+        generation = _new_generation(model, name)
         with mirrored_stderr(generation_log(generation)):
             generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
@@ -1255,13 +1243,6 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
 @main.command(context_settings={"ignore_unknown_options": True})
 @click.argument("input", type=click.Path(exists=True, path_type=Path))
 @click.option(
-    "-o",
-    "--output-dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    help="Base directory for a new generation (<model>/<timestamp> is appended). "
-    "Rejected when INPUT is an existing generation.",
-)
-@click.option(
     "--prefix",
     "prefixes",
     multiple=True,
@@ -1271,7 +1252,7 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
 @click.option("-j", "--jobs", type=click.IntRange(min=1), help="Parallel build jobs.")
 @click.option(
     "--name",
-    help="Name the generation tree under the base directory; defaults to the model's stem. "
+    help="Name the generation tree under $MOTION_SPEC_GEN; defaults to the model's stem. "
     "Requires a .robmot INPUT.",
 )
 @_run_options
@@ -1279,7 +1260,6 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
 @_environment_options
 def run(
     input: Path,
-    output_dir: Path | None,
     prefixes: tuple[Path, ...],
     jobs: int | None,
     name: str | None,
@@ -1312,7 +1292,7 @@ def run(
         raise click.UsageError("--steps requires --headless")
     if input.suffix == ".robmot":
         try:
-            generation = _new_generation(input, output_dir, name)
+            generation = _new_generation(input, name)
             env, environment_record = _environment(env_script, no_env, generation)
             with mirrored_stderr(generation_log(generation)):
                 _say("step", "generating")
@@ -1331,7 +1311,7 @@ def run(
             raise click.BadParameter(
                 "INPUT must be a .robmot model or a generation directory", param_hint="INPUT"
             )
-        if output_dir is not None or prefixes or jobs is not None or name:
+        if prefixes or jobs is not None or name:
             raise click.UsageError("generation and build options require a .robmot INPUT")
         generation = input.resolve()
         env, environment_record = _environment(env_script, no_env, generation)
@@ -1385,4 +1365,4 @@ def rerun(ctx: click.Context, generation: Path | None, **options) -> None:
     """
     generation = (generation or _latest_generation()).resolve()
     _say("info", f"generation {generation}")
-    ctx.invoke(run, input=generation, output_dir=None, prefixes=(), jobs=None, name=None, **options)
+    ctx.invoke(run, input=generation, prefixes=(), jobs=None, name=None, **options)

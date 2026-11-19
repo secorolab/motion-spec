@@ -174,7 +174,7 @@ in its header:
 
 .. code-block:: console
 
-   $ motion-spec run <model>.robmot -o <generations>
+   $ motion-spec run <model>.robmot
    $ motion-spec replay <generation>/runs/<run-id>
 
 The summary reports mean and maximum period alongside mean and maximum compute time. Compare the

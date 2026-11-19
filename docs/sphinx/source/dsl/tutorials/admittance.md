@@ -8,7 +8,7 @@ force/torque sensor.
 ```bash
 motion-spec run \
   src/ms-examples/06_arc_tracing_with_admittance/arc_tracing_with_admittance.robmot \
-  -o /tmp/admittance-arc \
+  --name admittance-arc \
   --prefix /path/to/workspace/install \
   --run-id tutorial
 ```

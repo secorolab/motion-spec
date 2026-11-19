@@ -87,7 +87,7 @@ def new_id(name: str) -> str:
 def create_generation_dir(
     model: Path, output_dir: Path | None = None, name: str | None = None
 ) -> Path:
-    """Create <base>/<name>/<timestamp> for MODEL, where base is `-o` or ./generation.
+    """Create <base>/<name>/<timestamp> for MODEL, where base is OUTPUT_DIR or ./generation.
 
     NAME defaults to the model's own stem; one model generated several ways names each tree
     for what tells them apart.
@@ -103,8 +103,8 @@ def create_generation_dir(
 def _copy_config(generation: Path) -> None:
     """Keep the settings this generation was made under; a later one may be made under others.
 
-    From the generation first: `-o` aside, it sits in the workspace whose config applied, which
-    the working directory need not be anywhere near.
+    From the generation first: it sits in the workspace whose config applied, which the working
+    directory need not be anywhere near.
     """
     from motion_spec.config import CONFIG_FILE, find_config
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import generation_cameras, is_simulated, run_ended, run_recorded
 from motion_spec.dashboard.roots import LAYOUT_REL, RUN_LOG, trace
+from motion_spec.setup import GENERATION_VARIABLE
 
 # One entry per run this dashboard started, keyed by the run directory: several runs of one
 # generation can be up at once.
@@ -403,15 +404,20 @@ def start_generate(source: Path) -> dict:
     env = f" --env {shlex.quote(ENVIRONMENT['script'])}" if ENVIRONMENT["script"] else " --no-env"
     chain = (
         "set -o pipefail; "
-        f"g=$(motion-spec gen code {shlex.quote(str(source))}"
-        f" -o {shlex.quote(str(roots.GENERATIONS))} | tail -n 1)"
+        f"g=$(motion-spec gen code {shlex.quote(str(source))} | tail -n 1)"
         f' && printf "generation: %s\\n" "$g" && exec motion-spec build{env} "$g"'
     )
     argv = ["bash", "-c", chain]
     _reap_jobs()
     with log.open("wb") as sink:
+        # The browsed root is where gen writes, and what the generation's locations are taken from.
         process = subprocess.Popen(
-            argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
+            argv,
+            cwd=roots.WORKSPACE,
+            env={**os.environ, GENERATION_VARIABLE: str(roots.GENERATIONS)},
+            stdout=sink,
+            stderr=sink,
+            start_new_session=True,
         )
     GENERATING[job] = {"process": process, "log": log, "generation": None}
     return {"job": job, **generate_status(job)}

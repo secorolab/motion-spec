@@ -87,11 +87,7 @@ class RunInfo:
 
 @dataclass
 class GenerationInfo:
-    """One generation bundle, at `<root>/<model>/<timestamp>` or under a named output dir.
-
-    `motion-spec gen -o <dir>` writes `<dir>/<model>/<timestamp>` and a `<dir>/latest` link,
-    so the folder someone named is the first segment under the root either way.
-    """
+    """One generation bundle, at `<root>/<name>/<timestamp>`; NAME is the model's stem or `--name`."""
 
     dir: Path
     root: Path | None = None

@@ -27,7 +27,7 @@ RDF and the IR, which is the boundary to inspect when the IR looks wrong:
 
 .. code-block:: console
 
-   $ motion-spec gen ir "$MODEL_PATH" -o scratch
+   $ motion-spec gen ir "$MODEL_PATH" --name scratch
 
 It writes ``generated/model/ir.json`` and nothing under ``generated/controller/``.
 Neither stage configures CMake, runs an executable, or creates a recorded run.

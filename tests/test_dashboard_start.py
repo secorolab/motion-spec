@@ -45,9 +45,7 @@ def sleeping_run(generation):
     process.kill()
 
 
-def test_hardware_never_gets_the_simulators_flags_and_unreachable_hardware_still_starts(
-    generation, monkeypatch
-):
+def test_unreachable_hardware_still_starts(generation, monkeypatch):
     """Starting is the operator's call: the devices panel probes, the run does not."""
     with socket.create_server(("127.0.0.1", 0)) as listener:
         port = listener.getsockname()[1]
@@ -57,11 +55,9 @@ def test_hardware_never_gets_the_simulators_flags_and_unreachable_hardware_still
     )
     popen = mock.Mock(return_value=subprocess.Popen([sys.executable, "-c", ""]))
     monkeypatch.setattr(jobs.subprocess, "Popen", popen)
-    answer = jobs.start_run(generation, {"headless": True})
+    answer = jobs.start_run(generation, {})
     argv = list(popen.call_args.args[0])
     assert answer["run"].endswith(argv[argv.index("--run-id") + 1])
-    assert "--headless" not in argv
-    assert "--start-paused" not in argv
 
 
 def test_the_real_robot_runs_one_thing_at_a_time(generation, sleeping_run):

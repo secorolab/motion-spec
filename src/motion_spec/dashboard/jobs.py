@@ -92,28 +92,6 @@ def _recorded(run_dir: Path | None, started: dict | None) -> bool | None:
     return recorded
 
 
-def run_arguments(options: dict, simulated: bool) -> list[str]:
-    """The run flags a browser's choices amount to. Only a simulator has a display or a pace.
-
-    A window paces itself, but a headless loop runs as fast as the machine allows, which is
-    nothing to watch live plots of: realtime asks the runtime for `--rtf 1`, which the CLI
-    forwards to the executable untouched. Fast keeps the uncapped loop.
-    """
-    argv = (
-        ["--headless"] + (["--rtf", "1"] if options.get("realtime", True) else [])
-        if simulated and options.get("headless")
-        else []
-    )
-    # Whether to record is a choice on any platform: no log means no replay and no live plots.
-    if options.get("log", True) is False:
-        argv.append("--no-log")
-    # A run started from the page arms and waits for play: the transport is right there, and a
-    # simulation that takes off on its own is already past what the operator wanted to watch.
-    if simulated:
-        argv.append("--start-paused")
-    return argv
-
-
 def start_run(generation_dir: Path, options: dict) -> dict:
     """Run a generation again, with the options `motion-spec run` takes for one.
 
@@ -122,7 +100,6 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     """
     if not (generation_dir / LAYOUT_REL).exists():
         raise ValueError("not a generation")
-    # Only a simulator has a display to drop, whatever the browser posted.
     simulated = is_simulated(generation_dir)
     # Simulations run side by side; the real robot runs one thing at a time, whichever
     # generation asks. Whether the hardware answers is not asked here: the devices panel
@@ -145,8 +122,10 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         "--run-id",
         run_id,
     ]
-    # Only what a browser can meaningfully choose; the CLI decides the rest.
-    argv += run_arguments(options, simulated)
+    # Whether to record is a choice on any platform: no log means no replay and no live plots.
+    # How a simulation runs is its robot config's [run] section, not the page's to choose.
+    if options.get("log", True) is False:
+        argv.append("--no-log")
     argv += ["--env", ENVIRONMENT["script"]] if ENVIRONMENT["script"] else ["--no-env"]
     # A simulator renders any declared camera and its standard view; a real platform records
     # the cameras that name a ROS image topic to read.

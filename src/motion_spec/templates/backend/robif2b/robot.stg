@@ -575,8 +575,7 @@ app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
 app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
     if (argc > 1) {
         std::cerr \<\< "[run] '" \<\< argv[1] \<\< "' is not an option here -- this program drives "
-                  \<\< "hardware and takes none; --headless, --steps, --rtf and --start-paused "
-                  \<\< "are simulator options\n";
+                  \<\< "hardware and takes none\n";
         return 1;
     }
     const auto robot_config = motion_spec::config::load("<config_path>");

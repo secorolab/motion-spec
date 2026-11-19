@@ -50,7 +50,6 @@ def run_cataloged(
     *,
     source_dir: Path | str,
     executable: Path | str,
-    executable_args: list[str] | None = None,
     run_id: str | None = None,
     cwd: Path | str | None = None,
     record: list[str] | None = None,
@@ -65,7 +64,6 @@ def run_cataloged(
     run_dir = Path(run_dir)
     source_dir = Path(source_dir)
     executable = Path(executable).resolve()
-    executable_args = [str(arg) for arg in (executable_args or [])]
     run_id = run_id or run_dir.name
     frame_log = run_dir / "logs" / "frame_log.pb"
     rec_path = rec_document(run_dir, run_id)
@@ -80,7 +78,6 @@ def run_cataloged(
         source_dir,
         executable,
         schema,
-        executable_args,
         cwd=Path(cwd).resolve() if cwd else None,
         environment=environment_provenance,
     )
@@ -92,7 +89,6 @@ def run_cataloged(
         ):
             returncode = _run_executable(
                 executable,
-                executable_args,
                 cwd=Path(cwd).resolve() if cwd else None,
                 frame_log=frame_log,
                 run_id=run_id,
@@ -308,7 +304,6 @@ def start_rec_run(
     source_dir: Path,
     executable: Path,
     schema: dict,
-    executable_args: list[str],
     cwd: Path | None = None,
     environment: dict | None = None,
 ) -> None:
@@ -330,7 +325,6 @@ def start_rec_run(
         source_dir / GENERATION_DOCUMENT,
         executable,
         schema.get("platform") or {},
-        executable_args,
         run.start_time,
     )
     _publish(run_dir, run_id)
@@ -354,7 +348,8 @@ def _record_execution_inputs(
     inputs = [(executable, "log_producer_executable")]
     platform = schema.get("platform") or {}
     declared = platform.get("config") or ""
-    if declared and not platform.get("simulated"):
+    # A simulation's config is as much what it ran with: its [run] section sets how.
+    if declared:
         # Resolved exactly as the executable resolves it: against the working directory it gets.
         config = Path(declared)
         if not config.is_absolute():
@@ -484,7 +479,6 @@ def _real_camera_recorders(schema: dict, record: list[str] | None, output_dir: P
 
 def _run_executable(
     executable: Path,
-    executable_args: list[str],
     *,
     cwd: Path | None,
     frame_log: Path,
@@ -513,7 +507,7 @@ def _run_executable(
     if record:
         env["MOTION_SPEC_RECORD_CAMERAS"] = ",".join(record)
         env["MOTION_SPEC_RECORD_DIR"] = str(frame_log.parent.resolve())
-    command = [str(executable), *executable_args]
+    command = [str(executable)]
     # Why a run died is otherwise only on the operator's terminal: tee it into the run dir.
     console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")
     try:

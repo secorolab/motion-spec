@@ -275,7 +275,7 @@ class MotionSpecGroup(click.Group):
                 (
                     "Generate, build, run, and inspect",
                     (
-                        ("motion-spec run model.robmot --run-id run-1 --headless",),
+                        ("motion-spec run model.robmot --run-id run-1",),
                         ('motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"',),
                     ),
                 ),
@@ -409,21 +409,6 @@ def _run_options(command):
                 type=click.Path(exists=True, file_okay=False, path_type=Path),
                 help="Working directory of the executable; scene assets resolve relative to it.",
             ),
-            click.option("--headless", is_flag=True, help="Run without a GUI."),
-            click.option(
-                "--rtf",
-                type=click.FloatRange(min=0.0),
-                help="Real-time factor: 1.0 paces the loop to wall time, 0.5 half speed, 2.0 "
-                "double. Headless runs uncapped (as fast as the machine allows) unless given; "
-                "with a GUI the viewer's live speed setting applies. Only the wall duration "
-                "changes -- the simulation clock advances one control period per tick either way.",
-            ),
-            click.option(
-                "--start-paused",
-                is_flag=True,
-                help="Arm the run paused; the loop holds on its first tick until the dashboard "
-                "resumes it.",
-            ),
             click.option(
                 "--record",
                 "record",
@@ -431,9 +416,6 @@ def _run_options(command):
                 metavar="CAMERA",
                 help="Record this camera to MP4 beside the log. Simulations render declared "
                 "cameras; real runs record their declared ROS image topics. Repeatable.",
-            ),
-            click.option(
-                "--steps", type=click.IntRange(min=1), help="Maximum headless simulation steps."
             ),
             click.option(
                 "--no-log", is_flag=True, help="Do not write the frame log; the run has no replay."
@@ -1240,7 +1222,7 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
 
 
 
-@main.command(context_settings={"ignore_unknown_options": True})
+@main.command()
 @click.argument("input", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--prefix",
@@ -1256,7 +1238,6 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
     "Requires a .robmot INPUT.",
 )
 @_run_options
-@click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @_environment_options
 def run(
     input: Path,
@@ -1265,20 +1246,15 @@ def run(
     name: str | None,
     run_id: str | None,
     cwd: Path | None,
-    headless: bool,
-    rtf: float | None,
-    start_paused: bool,
     record: tuple[str, ...],
-    steps: int | None,
     no_log: bool,
-    executable_args: tuple[str, ...],
     env_script: Path | None,
     no_env: bool,
 ) -> None:
     """Run a .robmot INPUT, generating and building it first, or an existing GENERATION.
 
-    Anything after the options that this command does not recognise is handed to the
-    executable unchanged.
+    How a simulation runs -- headless, its steps, its pace, whether it starts paused -- is the
+    [run] section of the robot config the model's deployment declares.
     """
     from rdf_utils.constraints import ConstraintViolation
 
@@ -1288,8 +1264,6 @@ def run(
         from motion_spec.runs.archive import ArchiveError
         from motion_spec.runs.runner import RunnerError, run_cataloged
 
-    if steps is not None and not headless:
-        raise click.UsageError("--steps requires --headless")
     if input.suffix == ".robmot":
         try:
             generation = _new_generation(input, name)
@@ -1319,19 +1293,11 @@ def run(
     run_dir = generation / "runs" / (run_id or new_id("run"))
     _say("step", f"running {generation.name}")
     _say("info", f"run directory {run_dir}")
-    arguments = (
-        (["--headless"] if headless else [])
-        + (["--steps", str(steps)] if steps is not None else [])
-        + (["--rtf", str(rtf)] if rtf is not None else [])
-        + (["--start-paused"] if start_paused else [])
-        + list(executable_args)
-    )
     try:
         returncode = run_cataloged(
             run_dir,
             source_dir=generation / "generated",
             executable=generation / "build" / generation.parent.name,
-            executable_args=arguments,
             run_id=run_id,
             cwd=cwd,
             record=list(record),
@@ -1349,12 +1315,11 @@ def run(
     _say("done", f"run {run_dir}")
 
 
-@main.command(context_settings={"ignore_unknown_options": True})
+@main.command()
 @click.argument(
     "generation", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
 @_run_options
-@click.argument("executable-args", nargs=-1, type=click.UNPROCESSED)
 @_environment_options
 @click.pass_context
 def rerun(ctx: click.Context, generation: Path | None, **options) -> None:

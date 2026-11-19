@@ -87,7 +87,7 @@ Point ``run`` at the generation directory:
 
 .. code-block:: console
 
-   $ motion-spec run "$GENERATION_DIR" --run-id run-1 --headless
+   $ motion-spec run "$GENERATION_DIR" --run-id run-1
 
 For an existing build:
 
@@ -146,8 +146,7 @@ build, run, runtime RDF recovery, and verification in one command:
    $ motion-spec run "$MODEL_PATH" \
        --name pick-place-direct \
        --prefix /path/to/workspace/install \
-       --run-id run-1 \
-       --headless
+       --run-id run-1
 
 Use this form for a new model generation. Pass the generation directory instead
 when running one unchanged generation repeatedly.

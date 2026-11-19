@@ -117,8 +117,8 @@ hardware alike, and the real-time factor scales its period:
    uncapped                                    (rtf == 0)
 
 The factor comes from ``mj_env.viewer.realtime_factor`` in a simulation with a window, so the
-viewer's ``,`` and ``.`` speed keys keep working mid-run; headless, it is the ``--rtf`` value
-scaled by the dashboard speed; on hardware it is the literal ``1.0``. This is a named
+viewer's ``,`` and ``.`` speed keys keep working mid-run; headless, it is ``[run] rtf`` from the
+robot config, scaled by the dashboard speed; on hardware it is the literal ``1.0``. This is a named
 backend dispatch (``loop-rtf-source``), not an inline conditional, for the same reason
 ``clock-time-source`` is.
 
@@ -126,12 +126,12 @@ The four modes
 --------------
 
 =========================  =========================================  ==========================
-invocation                 real-time factor                           measured period
+``[run]``                  real-time factor                           measured period
 =========================  =========================================  ==========================
 GUI (default)              viewer's setting, initially 1.0            1.000 ms mean
-GUI ``--rtf x``            viewer seeded to ``x``, keys still adjust  scales with ``x``
-headless (default)         **0.0 — uncapped**                         0.101 ms mean
-headless ``--rtf x``       ``x``                                      scales with ``x``
+GUI, ``rtf = x``           viewer seeded to ``x``, keys still adjust  scales with ``x``
+``headless = true``        **0.0 — uncapped**                         0.101 ms mean
+headless, ``rtf = x``      ``x``                                      scales with ``x``
 =========================  =========================================  ==========================
 
 Uncapped headless is safe because the simulation clock, not the wall clock, drives

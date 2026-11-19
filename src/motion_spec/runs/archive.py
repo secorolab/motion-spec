@@ -308,8 +308,7 @@ def _write_rec_snapshot(
         run.start_time = parse_rec_time(started_time)
     else:
         run._emit_started()
-        # Archiving without a prior catalogued run: the caller names the executable that ran,
-        # and nothing knows the command line it was given.
+        # Archiving without a prior catalogued run: the caller names the executable that ran.
         generation_document = run_dir / manifest["files"].get("provenance", GENERATION_DOCUMENT)
         record_execution(
             run_dir,
@@ -317,7 +316,6 @@ def _write_rec_snapshot(
             generation_document,
             Path(manifest["files"]["log_producer_executable"]),
             schema.get("platform") or {},
-            [],
             run.start_time,
         )
     run.log_host_info(host_info())

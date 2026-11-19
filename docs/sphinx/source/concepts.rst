@@ -58,8 +58,7 @@ instead of copying them.
        files/         the environment file the run was given
        provenance/
          <run-id>.ld.json    REC record: lifecycle, host, metrics
-         execution.ld.json   who ran it, the command line, the files it used and generated,
-                             sampling draws
+         execution.ld.json   who ran it, the files it used and generated, sampling draws
        manifest.json consumer-facing paths into the run and generation
 
 JSON-LD artifacts use the ``.ld.json`` suffix and are loaded as RDF datasets,
@@ -94,9 +93,9 @@ High-level commands
 
 Use ``--prefix`` on ``build`` or ``run`` to add CMake package prefixes. It is
 repeatable for ``build``. ``--name``, ``--prefix``, and ``-j`` configure
-generation and build, so they require a ``.robmot`` model; ``--headless``,
-``--steps``, and ``--run-id`` apply to both forms, ``--steps`` requires
-``--headless``, and both are refused for a hardware generation.
+generation and build, so they require a ``.robmot`` model; ``--run-id`` applies
+to both forms. How a simulation runs -- headless, its steps, its pace, whether it
+starts paused -- is the ``[run]`` section of the robot config its deployment declares.
 
 Low-level commands
 ==================
@@ -130,7 +129,7 @@ Runtime recording
 ``run`` creates the REC record ``provenance/<run-id>.ld.json`` before launching the executable
 and exports the frame-log path to it. The run is recorded there as a
 ``prov-ext:Execution`` with an OSLC Automation state and, once complete, a verdict;
-the agents that ran it, its command line and the files it used and generated go to
+the agents that ran it and the files it used and generated go to
 ``provenance/execution.ld.json`` on the same run node. The log starts with a header containing the schema hash;
 a model that samples follows it with the seed and every draw (``[sampling] seed`` in the robot
 config fixes the seed, otherwise the OS draws one). One protobuf frame per control tick follows. On completion, the CLI catalogs

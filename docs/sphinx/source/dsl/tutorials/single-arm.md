@@ -255,8 +255,8 @@ motion-spec run \
 ```
 
 The viewer should show this order: move above cube, lower, close, lift, move to
-the placement side, lower, open, and retreat. Use `--headless` for an unattended
-run.
+the placement side, lower, open, and retreat. Set `headless = true` under `[run]`
+in `robot.toml` for an unattended run.
 
 Inspect the record:
 

@@ -24,7 +24,7 @@ def run_dir(tmp_path: Path, source_tree: Path) -> Path:
     (run_dir / "logs").mkdir(parents=True)
     (tmp_path / "main").write_text("binary\n")
     schema = json.loads((source_tree / "contract" / "frame_layout.json").read_text())
-    start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema, [])
+    start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema)
     return run_dir
 
 

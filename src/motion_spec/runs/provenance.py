@@ -481,10 +481,9 @@ def record_execution(
     generation_document: Path,
     executable: Path,
     platform_facts: dict,
-    arguments: list[str],
     started: datetime,
 ) -> None:
-    """What rec does not record of the run: who ran it and the command line it was given.
+    """What rec does not record of the run: who ran it and what it used.
 
     Written as the run's execution document, on the same run node rec's record describes.
     The modelled robots are read from the generation document, wherever the caller keeps it.
@@ -510,7 +509,7 @@ def record_execution(
         for entity, activity in generation.subject_objects(PROV.wasGeneratedBy)
         if str(activity).endswith("/activity/build")
     ]
-    used = [record_arguments(graph, run_id, arguments), *executables]
+    used = executables
     if platform_facts.get("uri"):
         used.append(URIRef(platform_facts["uri"]))
         add_entity(graph, used[-1])
@@ -525,16 +524,6 @@ def record_execution(
     for agent in (process, *graph.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         graph.add((run, PROV.wasAssociatedWith, agent))
     write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
-
-
-def record_arguments(graph: Graph, run_id: str, arguments: list[str]) -> URIRef:
-    """The command line the run was given, as the entity the execution used."""
-    from rdflib.namespace import RDFS
-
-    entity = URIRef(run_entity_uri(run_id, "arguments"))
-    add_entity(graph, entity)
-    graph.set((entity, RDFS.label, Literal(" ".join(arguments))))
-    return entity
 
 
 def record_draw(graph: Graph, run_id: str, agent: URIRef, quantity: str, values, drawn_at) -> None:

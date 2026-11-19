@@ -271,7 +271,6 @@ robot-shutdown(solver) ::= <<
 app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
 <if(has_serial_chain)>
 #include \<algorithm\>
-#include \<cstring\>
 #include \<cstdlib\>
 #include \<deque\>
 #include \<filesystem\>
@@ -286,31 +285,25 @@ app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
 >>
 
 app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
+    if (argc > 1) {
+        std::cerr \<\< "[run] '" \<\< argv[1] \<\< "' is not an option here -- this program takes "
+                  \<\< "none; [run] in the robot config sets how it runs\n";
+        return 1;
+    }
     const auto robot_config = motion_spec::config::load("<config_path>");
-    bool headless = false;
-    bool steps_limited = false;
-    int headless_steps = 0;
+    const bool headless = robot_config["run"]["headless"].value_or(false);
+    const auto _steps = robot_config["run"]["steps"].value\<int\>();
+    const bool steps_limited = _steps.has_value();
+    int headless_steps = _steps.value_or(0);
+    if (steps_limited && !headless) {
+        std::cerr \<\< "[run] 'steps' bounds a headless run -- set 'headless = true' too\n";
+        return 1;
+    }
     // Headless runs as fast as the machine allows unless asked for a rate: the simulation clock
     // drives dt, so wall speed changes how long the run takes and nothing about what it does.
-    double _headless_rtf = 0.0;
+    const double _headless_rtf = robot_config["run"]["rtf"].value_or(0.0);
     // Arm the run paused: the loop holds on its first tick until something resumes it.
-    bool _start_paused = false;
-    for (int i = 1; i \< argc; ++i) {
-        if (std::strcmp(argv[i], "--headless") == 0) {
-            headless = true;
-        } else if (std::strcmp(argv[i], "--start-paused") == 0) {
-            _start_paused = true;
-        } else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 \< argc) {
-            headless_steps = std::atoi(argv[++i]);
-            steps_limited = true;
-        } else if (std::strcmp(argv[i], "--rtf") == 0 && i + 1 \< argc) {
-            _headless_rtf = std::atof(argv[++i]);
-        } else {
-            std::cerr \<\< "[run] '" \<\< argv[i] \<\< "' is not an option here -- this program takes "
-                      \<\< "--headless, --steps N, --rtf X and --start-paused\n";
-            return 1;
-        }
-    }
+    const bool _start_paused = robot_config["run"]["start_paused"].value_or(false);
 
     mj_kdl::Env mj_env{};
     mj_kdl::SceneSpec mj_scene{};

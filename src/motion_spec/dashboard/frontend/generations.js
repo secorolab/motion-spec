@@ -657,21 +657,10 @@ export function bindRunAgain(page, path, cameras, simulated) {
           .querySelectorAll("button")
           .forEach((other) => other.setAttribute("aria-pressed", other === option));
         saveRunOptions(path, options());
-        showSpeedChoice();
       };
     });
   });
-  // Hardware has no display to drop: the CLI rejects a headless real run.
-  const headless = bar.querySelector('.run-choice[data-option="headless"]');
-  headless.hidden = !simulated;
-  // Only a run with no window to pace it has a speed to choose; a GUI run is realtime already.
-  const speed = bar.querySelector(".run-speed");
-  function showSpeedChoice() {
-    speed.hidden =
-      !simulated || headless.querySelector('button[aria-pressed="true"]')?.dataset.value !== "true";
-  }
   const camera = mountCameraMenu(bar, cameras, simulated, () => saveRunOptions(path, options()));
-  // Every named choice, hardware included: the server drops the simulator-only ones itself.
   const options = () => ({
     ...Object.fromEntries(
       [...bar.querySelectorAll(".run-choice[data-option]")].map((choice) => [
@@ -682,7 +671,6 @@ export function bindRunAgain(page, path, cameras, simulated) {
     cameras: camera.chosen(),
   });
   restoreChoices(bar, path, camera.label);
-  showSpeedChoice();
   watchRun(page, bar, path, options);
 }
 

@@ -36,7 +36,7 @@ Create another run
 
 .. code-block:: console
 
-   $ motion-spec run "$GENERATION_DIR" --run-id run-2 --headless
+   $ motion-spec run "$GENERATION_DIR" --run-id run-2
 
 Only ``runs/run-2`` is new. Its manifest references the existing generation
 artifacts relatively; the source, model, controller, contracts, provenance, and
@@ -45,11 +45,13 @@ executable are not copied into every run.
 Bound a run
 ===========
 
-.. code-block:: console
+``[run]`` in the robot config bounds a headless simulation:
 
-   $ motion-spec run "$GENERATION_DIR" --run-id run-3 --headless --steps 20000
+.. code-block:: toml
 
-Everything after ``--`` belongs to the executable, not to the CLI.
+   [run]
+   headless = true
+   steps = 20000
 
 Each invocation creates a fresh run directory. This preserves each REC lifecycle
 and prevents accidental log replacement.

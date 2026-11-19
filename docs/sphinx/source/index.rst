@@ -33,9 +33,9 @@ generation again:
 
 .. code-block:: console
 
-   $ motion-spec run model.robmot --run-id run-1 --headless
+   $ motion-spec run model.robmot --run-id run-1
    $ motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"
-   $ motion-spec rerun --run-id run-2 --headless
+   $ motion-spec rerun --run-id run-2
 
 Run ``motion-spec --help`` or ``motion-spec COMMAND --help`` for the exact
 options supported by the installed version.

@@ -57,6 +57,17 @@ exec-context (ns=app) task-exec {
 optional path to the deployment TOML a real-world run reads addresses and poses
 from; `timestep` must be positive.
 
+A simulation reads how it runs from the `[run]` section of that file; every key is
+optional, and the run records the file it used:
+
+```toml
+[run]
+headless = true       # no viewer; default false
+steps = 20000         # stop after this many steps; needs headless
+rtf = 1.0             # real-time factor; default 0, uncapped headless
+start_paused = false  # hold on the first tick until resumed from the dashboard
+```
+
 ## Context scopes
 
 Context gives constraints typed inputs and separates observations from authored,

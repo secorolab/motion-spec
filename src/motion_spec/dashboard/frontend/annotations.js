@@ -101,10 +101,6 @@ export async function annotationEditor(path, changed = () => {}) {
     };
     box.append(button);
   }
-  if (state.restricted)
-    box.querySelectorAll("input, button").forEach((node) => {
-      node.disabled = true;
-    });
   return box;
 }
 

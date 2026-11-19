@@ -499,11 +499,6 @@ def _environment(
     type=click.Path(dir_okay=False, path_type=Path),
     help="Where --background writes output. Default: dashboard.log in the logs root.",
 )
-@click.option(
-    "--lan",
-    is_flag=True,
-    help="Reachable from the network: replay and simulated runs only, no delete or source access.",
-)
 @_environment_options
 def dashboard(
     port: int,
@@ -515,7 +510,6 @@ def dashboard(
     kill: bool,
     restart: bool,
     log_file: Path | None,
-    lan: bool,
 ) -> None:
     """Browse generations, replay runs, and query them in a browser."""
     from motion_spec.dashboard.jobs import use_environment
@@ -546,7 +540,7 @@ def dashboard(
         if script:
             use_environment(str(script))
             _say("info", f"environment {script}")
-        return serve(port, logs, sources, lan)
+        return serve(port, logs, sources)
 
     destination = (log_file or logs / "dashboard.log").expanduser()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -554,8 +548,6 @@ def dashboard(
     if sources is not None:
         argv += ["--sources", str(sources)]
     argv += ["--env", str(script)] if script else ["--no-env"]
-    if lan:
-        argv.append("--lan")
     with destination.open("ab") as sink:
         child = subprocess.Popen(argv, stdout=sink, stderr=sink, start_new_session=True)
     _say("info", f"pid {child.pid}, logging to {destination}")

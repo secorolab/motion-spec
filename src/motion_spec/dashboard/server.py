@@ -23,7 +23,6 @@ from motion_spec.dashboard.catalog import (
     drift_summary,
     generation_details,
     generation_info,
-    is_simulated,
     provenance_graph,
     read_generated,
     run_files,
@@ -93,63 +92,6 @@ from motion_spec.runs.lifecycle_events import socket_path
 from motion_spec.utils import trash
 
 LIFECYCLE = None
-
-# A network viewer may watch, replay and drive a simulation, but never delete, touch sources
-# or reach a real robot. 127.0.0.1 is unrestricted whatever this says.
-LAN_MODE = False
-
-# The reader is most often the person who started the server, reaching it by its LAN address,
-# so the refusal names the way past it.
-LAN_REFUSED = (
-    "This dashboard is shared on the network (started with --lan), and deleting, editing "
-    "sources and driving real hardware stay on the machine it runs on. "
-    "Open it at http://127.0.0.1:{port}/ there to do this."
-)
-
-
-def lan_refusal(port: int) -> str:
-    return LAN_REFUSED.format(port=port)
-
-
-LAN_GET_ALLOWED = {
-    "/api/events",
-    "/api/generations",
-    "/api/generation",
-    "/api/generation-graph",
-    "/api/generated",
-    "/api/model/lint",
-    "/api/source-drift",
-    "/api/storage",
-    "/api/runs",
-    "/api/run",
-    "/api/run/files",
-    "/api/run/verdict",
-    "/api/console",
-    "/api/notes",
-    "/api/annotations",
-    "/api/baseline",
-    "/api/queries",
-    "/api/video",
-    "/api/ros-camera",
-    "/api/replay",
-    "/api/plot",
-    "/api/roots",
-    "/api/sources",
-    "/api/source",
-    "/api/source-diff",
-    "/api/generate",
-}
-
-LAN_POST_ALLOWED = {
-    "/api/run",
-    "/api/run/stop",
-    "/api/live",
-    "/api/control",
-    "/api/notes",
-    "/api/queries",
-    "/api/sparql",
-    "/api/generate",
-}
 
 
 class LifecycleListener:
@@ -268,18 +210,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return super().do_GET()
         if not self._from_this_page():
             return self.send_json({"error": "cross-site request"}, HTTPStatus.FORBIDDEN)
-        if LAN_MODE and not self._is_local_client() and parsed.path not in LAN_GET_ALLOWED:
-            return self.send_json({"error": self._lan_refusal()}, HTTPStatus.FORBIDDEN)
         if parsed.path == "/api/events":
             return self.stream_events()
         try:
             query = parse_qs(parsed.query)
             value = query.get("path", [""])[0]
             if parsed.path == "/api/roots":
-                payload = current_roots()
-                if LAN_MODE and not self._is_local_client():
-                    payload = {**payload, "restricted": True}
-                return self.send_json(payload)
+                return self.send_json(current_roots())
             if parsed.path == "/api/annotations":
                 return self.send_json(annotations(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/baseline":
@@ -396,8 +333,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """Update dashboard roots, open a source, or delete selected runs and generations."""
         if not self._same_origin():
             return self.send_json({"error": "cross-origin request"}, HTTPStatus.FORBIDDEN)
-        if LAN_MODE and not self._is_local_client() and self.path not in LAN_POST_ALLOWED:
-            return self.send_json({"error": self._lan_refusal()}, HTTPStatus.FORBIDDEN)
         try:
             length = int(self.headers["Content-Length"])
             body = json.loads(self.rfile.read(length))
@@ -438,15 +373,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(open_terminal(body["path"]))
             if self.path == "/api/run":
                 target = relative_path(roots.GENERATIONS, body["path"])
-                remote = LAN_MODE and not self._is_local_client()
-                if remote and not is_simulated(target):
-                    raise ValueError("only simulated generations can be started from the network")
-                options = body.get("options") or {}
-                if remote:
-                    # The GUI would open on this machine's display, with nobody there to close it.
-                    options = {**options, "headless": True}
                 with LOCK:
-                    return self.send_json(start_run(target, options))
+                    return self.send_json(start_run(target, body.get("options") or {}))
             if self.path == "/api/run/stop":
                 return self.send_json(stop_run(relative_path(roots.GENERATIONS, body["path"])))
             if self.path == "/api/generate":
@@ -534,7 +462,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """Only the dashboard's own page may POST: these endpoints delete and spawn.
 
         Compared against the request's own Host, not a hardcoded loopback name, so this holds
-        whether the page was loaded from 127.0.0.1 or from this machine's LAN address.
+        whether the page was loaded from 127.0.0.1 or from localhost.
         """
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return False
@@ -542,18 +470,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if origin is None:
             return True
         return urlparse(origin).hostname == self.headers.get("Host", "").split(":")[0]
-
-    def _is_local_client(self) -> bool:
-        """Whether this request came from this machine, not the network LAN_MODE opened up.
-
-        By address, not by host: reaching this machine at its own LAN address is a network
-        request, and the browser doing it is often the one sitting in front of the server.
-        """
-        return self.client_address[0] in ("127.0.0.1", "::1")
-
-    def _lan_refusal(self) -> str:
-        """Why this was refused and where it can be done instead, at this server's own port."""
-        return lan_refusal(int(self.server.server_address[1]))
 
     @staticmethod
     def _failed(exc: Exception) -> dict:
@@ -578,22 +494,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         return site is None or site in ("same-origin", "none")
 
 
-def _lan_ip() -> str | None:
-    """This machine's LAN address, found the way you'd find your own outbound route."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("8.8.8.8", 80))  # UDP connect: routes locally, sends nothing
-            return probe.getsockname()[0]
-    except OSError:
-        return None
-
-
-def serve(
-    port: int = 8080, logs: Path | None = None, sources: Path | None = None, lan: bool = False
-) -> None:
+def serve(port: int = 8080, logs: Path | None = None, sources: Path | None = None) -> None:
     """Serve the dashboard for one pair of roots until interrupted."""
-    global LIFECYCLE, LAN_MODE
-    LAN_MODE = lan
+    global LIFECYCLE
     if logs is not None:
         roots.GENERATIONS = Path(logs).expanduser().resolve()
         roots.WORKSPACE = roots.GENERATIONS.parent
@@ -606,14 +509,7 @@ def serve(
     atexit.register(stop_jupyter)
     for name in (signal.SIGTERM, signal.SIGINT):
         signal.signal(name, lambda *_: sys.exit(0))
-    host = "0.0.0.0" if lan else "127.0.0.1"
-    server = ThreadingHTTPServer((host, port), DashboardHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
     print(f"motion-spec dashboard: http://127.0.0.1:{port}")
-    if lan:
-        lan_host = _lan_ip() or "<this machine's LAN IP>"
-        print(
-            f"  also on the network at http://{lan_host}:{port}"
-            " (replay + simulated runs only, no delete)"
-        )
     print(f"  runs from {roots.GENERATIONS}\n  sources from {roots.WORKSPACE}")
     server.serve_forever()

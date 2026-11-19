@@ -267,19 +267,13 @@ export async function openSource(source, absolute = null, push = true, line = nu
   // A generation's vendored copy is not under the sources root; show where it really is.
   $(".viewer .path").textContent = where ?? absolute ?? source;
   revealInTree(source);
-  await mountEditor($("#source-text"), source, text, state.restricted, gitHead, line);
+  await mountEditor($("#source-text"), source, text, false, gitHead, line);
   // With no commit to compare against there is no diff to show and nothing to go back to.
   const dirty = gitHead != null && gitHead !== text;
   $("#diff-source").hidden = !dirty;
   $("#diff-source").onclick = () => showGitDiff(source).catch(snackError);
-  if (state.restricted) {
-    // Opening this machine's editor or terminal is not for a LAN viewer. `.file-bar` sets its
-    // own `display: flex` above the browser's `[hidden]`, so only an inline style hides it.
-    $(".viewer .file-bar").style.display = "none";
-  } else {
-    bindCheckout(source, absolute, dirty);
-    bindEditorChoice(source, editors, terminal);
-  }
+  bindCheckout(source, absolute, dirty);
+  bindEditorChoice(source, editors, terminal);
   // Only a .robmot is a whole generation to make; the other authored files are parts of one.
   if (source.endsWith(".robmot")) {
     bindGenerate(source);

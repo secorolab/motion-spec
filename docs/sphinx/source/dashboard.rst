@@ -12,7 +12,6 @@ everything shown is read from the files the pipeline already writes.
    $ motion-spec dashboard                  # serve on :8080, browse $MOTION_SPEC_GEN
    $ motion-spec dashboard --port 8090 --logs path/to/generations
    $ motion-spec dashboard -b               # detached; -k stops it, -r restarts
-   $ motion-spec dashboard --lan            # on the network: replay and simulated runs only
 
 ``--logs`` names the generation root to browse (default ``$MOTION_SPEC_GEN``); ``--sources`` the model source root (default: the
 logs root's parent); ``--env`` the environment file health, builds and runs use (default:

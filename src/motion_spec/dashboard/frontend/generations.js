@@ -664,7 +664,6 @@ export function bindRunAgain(page, path, cameras, simulated) {
   // Hardware has no display to drop: the CLI rejects a headless real run.
   const headless = bar.querySelector('.run-choice[data-option="headless"]');
   headless.hidden = !simulated;
-  if (state.restricted) forceHeadless(headless);
   // Only a run with no window to pace it has a speed to choose; a GUI run is realtime already.
   const speed = bar.querySelector(".run-speed");
   function showSpeedChoice() {
@@ -685,16 +684,6 @@ export function bindRunAgain(page, path, cameras, simulated) {
   restoreChoices(bar, path, camera.label);
   showSpeedChoice();
   watchRun(page, bar, path, options);
-}
-
-// The server forces headless for a LAN viewer, so offering the GUI choice would lie about it.
-function forceHeadless(headless) {
-  const gui = headless.querySelector('button[data-value="false"]');
-  gui.disabled = true;
-  gui.title =
-    "GUI is disabled for network access: it would open on this machine's display, not yours";
-  gui.setAttribute("aria-pressed", "false");
-  headless.querySelector('button[data-value="true"]').setAttribute("aria-pressed", "true");
 }
 
 // A simulator renders any declared camera plus the standard view; a real platform records only
@@ -747,14 +736,12 @@ function mountCameraMenu(bar, cameras, simulated, save) {
   return { chosen, label };
 }
 
-// What was picked last time this model was run. A forced-headless viewer keeps the server's
-// choice, not a remembered one.
+// What was picked last time this model was run.
 function restoreChoices(bar, path, label) {
   const remembered = readRunOptions(path);
   bar.querySelectorAll(".run-choice[data-option]").forEach((choice) => {
     const value = remembered[choice.dataset.option];
     if (typeof value !== "boolean") return;
-    if (choice.dataset.option === "headless" && state.restricted) return;
     choice
       .querySelectorAll("button")
       .forEach((option) =>

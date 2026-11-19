@@ -6,7 +6,7 @@
 
 import { showEmpty } from "./components.js";
 import { saveInspection } from "./inspection.js";
-import { $, RESTRICTED_TABS, showError, state } from "./core.js";
+import { $, showError, state } from "./core.js";
 import { showExplore } from "./explore.js";
 import { loadGenerations, selectGeneration, showDrift, showGitDiff } from "./generations.js";
 import { loadHealth } from "./health.js";
@@ -101,7 +101,6 @@ export function sidebarLoader() {
 }
 
 export function openTab(tab) {
-  if (state.restricted && RESTRICTED_TABS.includes(tab)) return;
   setTab(tab);
   const page = PAGE_TABS[tab] ?? (tab === "logs" ? loadGenerations : loadSources);
   return page().catch(showError);
@@ -125,7 +124,7 @@ export function goHome() {
 export function loadLocation() {
   const view = hashView();
   const requested = view.get("tab") ?? "logs";
-  setTab(state.restricted && RESTRICTED_TABS.includes(requested) ? "logs" : requested, false);
+  setTab(requested, false);
   const loadSidebar = sidebarLoader();
   // Uncover the empty state even when nothing loaded, or a failed restore leaves a blank pane.
   const settle = (loading) =>

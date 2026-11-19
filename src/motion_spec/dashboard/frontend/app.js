@@ -6,7 +6,6 @@
 
 import {
   $,
-  RESTRICTED_TABS,
   api,
   askConfirm,
   formatBytes,
@@ -237,20 +236,9 @@ fitSidebar();
 
 window.onpopstate = loadLocation;
 
-// Read before the first tab renders, so a restored #tab=notebook never gets to try and fail.
 state.roots = await api("/api/roots").catch(() => ({}));
-state.restricted = Boolean(state.roots.restricted);
 $("#brand-version").textContent = state.roots.version ?? "";
-$("#browse-trash").hidden = state.restricted;
-if (state.restricted) {
-  RESTRICTED_TABS.forEach((tab) => {
-    document.querySelectorAll(`[data-tab="${tab}"]`).forEach((button) => {
-      button.style.display = "none";
-    });
-  });
-} else {
-  loadTrash().catch(() => {});
-}
+loadTrash().catch(() => {});
 
 loadLocation();
 

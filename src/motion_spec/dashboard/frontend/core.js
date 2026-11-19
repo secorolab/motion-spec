@@ -12,7 +12,6 @@ export const state = {
   roots: {},
   cache: {},
   listRequest: 0,
-  restricted: false,
   anchor: null,
   selected: new Set(),
   generationPath: null,
@@ -33,10 +32,6 @@ export const state = {
   queries: [],
   query: -1,
 };
-
-// The server answers these with 403 for a LAN viewer; hiding them here too keeps the reader
-// out of a dead end. The sources tab is reachable, and hides its write controls in sources.js.
-export const RESTRICTED_TABS = ["notebook", "health"];
 
 let plotKeys = 0;
 

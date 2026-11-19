@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
-"""The on-disk generated tree a run is catalogued and archived against."""
+"""The on-disk generated tree a run is recorded and verified against."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def source_tree(tmp_path: Path) -> Path:
     (path / "controller" / "headers" / "runtime.hpp").write_text("// generated runtime\n")
     (path / "controller" / "main.cpp").write_text("// generated main\n")
     # motion-spec's bundle: the IR derived from the DSL's document, the controller sources from
-    # the IR and the build's executable from them, which the archive and the runner read back.
+    # the IR and the build's executable from them, which the runner and the verifier read back.
     dataset = Dataset()
     bundle = dataset.graph(create_bundle(dataset, get_py_pkg_info("motion_spec").purl))
     roots = {tmp_path.resolve(): add_directory_location(bundle, tmp_path)}

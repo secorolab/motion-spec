@@ -12,7 +12,7 @@ from motion_spec.dashboard.catalog import rdf_name, run_videos
 from motion_spec.dashboard.frames import slot_signals
 from motion_spec.dashboard.sources import authored_lines
 from motion_spec.runs.provenance import run_generation
-from motion_spec.runs.replay import resolve_archive, validate_header
+from motion_spec.runs.replay import resolve_run, validate_header
 from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
@@ -247,7 +247,7 @@ def replay_data(run_dir: Path) -> dict:
     """Return replay metadata without decoding the complete frame log."""
     pending = False
     try:
-        run_dir, log, contract = resolve_archive(run_dir)
+        run_dir, log, contract = resolve_run(run_dir)
     except RecordError:
         # A run named but not yet writing. The generation's header record is the same one the
         # runtime puts at the front of the log, and is itself a zero-frame log.
@@ -516,7 +516,7 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
 def run_verdict(run_dir: Path) -> dict:
     """Per motion: whether each goal was reached and held, when each monitor fired, and how the
     motion was left. Read off the marker scan the page already paid for, never a second pass."""
-    run_dir, log, contract = resolve_archive(run_dir)
+    run_dir, log, contract = resolve_run(run_dir)
     scanned = log_events(log, contract)
     tally, exits, windows = scanned["tally"], scanned["exits"], scanned["windows"]
     # The authored motion name, the way the constraint panel spells it.
@@ -602,7 +602,7 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
     Sampling follows the window asked for, so a motion that lasted a handful of frames is
     drawn from those frames rather than missed between two samples of the whole run.
     """
-    _, log, contract = resolve_archive(run_dir)
+    _, log, contract = resolve_run(run_dir)
     value = signal_reader(contract)
     health = read_health(log) or {}
     first, last = window or (0, max(0, health.get("written_frames", 0) - 1))

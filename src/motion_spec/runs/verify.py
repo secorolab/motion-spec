@@ -47,7 +47,7 @@ class RecordError(ValueError):
 
 
 def verify_run(run_dir: Path | str) -> None:
-    """Check the archived run in RUN_DIR against its provenance, reading only.
+    """Check the recorded run in RUN_DIR against its provenance, reading only.
 
     The generation is the one the run's document names the provenance of, by its location. Its
     log protocol and provenance and the run's document must exist; every file the run's bundles

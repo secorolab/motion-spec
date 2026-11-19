@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Replay a run's frame log from its archive."""
+"""Replay a run's frame log, and check the run from its record."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def run_dir_for(log_path: Path) -> Path:
     Raises:
         RecordError: LOG_PATH, under either log name, does not exist.
     """
-    # Callers name the log the way it is written, and an archived one has since been packed;
+    # Callers name the log the way it is written, and a recorded one has since been packed;
     # resolve before asking whether it is there, or the conventional name reads as missing.
     log_path = frame_log_pb.log_path(log_path)
     if not log_path.exists():
@@ -27,7 +27,7 @@ def run_dir_for(log_path: Path) -> Path:
     return log_path.parent.parent if log_path.parent.name == "logs" else log_path.parent
 
 
-def resolve_archive(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContract]:
+def resolve_run(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContract]:
     """A run directory or frame log PATH as (run directory, frame log, the log's contract).
 
     Raises:
@@ -36,7 +36,7 @@ def resolve_archive(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContr
     """
     input_path = Path(path)
     run_dir = run_dir_for(input_path)
-    # Either name: a run still being written has the plain log, an archived one the packed.
+    # Either name: a run still being written has the plain log, a recorded one the packed.
     log_path = frame_log_pb.log_path(run_dir / FRAME_LOG if input_path.is_dir() else input_path)
     if not log_path.exists():
         outputs = run_outputs(run_dir)
@@ -61,14 +61,14 @@ def validate_header(log_path: Path | str, contract=None) -> dict:
     return {"schema_hash": header.schema_hash}
 
 
-def verify_archive(path: Path | str) -> int:
-    """Check a run's archive end to end and return how many frames its log holds.
+def verify_recording(path: Path | str) -> int:
+    """Check a recorded run end to end and return how many frames its log holds.
 
     Raises:
         RecordError: the run fails `verify_run`, the log was written against another contract
             than its generation's, or the log holds other than the frames the writer reported.
     """
-    run_dir, log_path, contract = resolve_archive(path)
+    run_dir, log_path, contract = resolve_run(path)
     validate_header(log_path, contract)
     verify_run(run_dir)
     layout_path = run_generation(run_dir) / "generated" / "contract" / "frame_layout.json"
@@ -91,13 +91,13 @@ def verify_archive(path: Path | str) -> int:
 
 
 def decode_frames(log_path: Path | str) -> list[dict]:
-    _run_dir, log_path, contract = resolve_archive(log_path)
+    _run_dir, log_path, contract = resolve_run(log_path)
     validate_header(log_path, contract)
     return list(frame_log_pb.frame_records(log_path, contract))
 
 
 def summarize(log_path: Path | str) -> str:
-    run_dir, log_path, contract = resolve_archive(log_path)
+    run_dir, log_path, contract = resolve_run(log_path)
     meta = validate_header(log_path, contract)
     count = 0
     first = last = None
@@ -119,7 +119,7 @@ def summarize(log_path: Path | str) -> str:
     final_name = states[final_state].id if 0 <= final_state < len(states) else str(final_state)
     lines = [
         f"log         {log_path}",
-        f"archive     {run_dir}",
+        f"run         {run_dir}",
         f"frames      {count}",
         f"schema      {meta.get('schema_hash', '')}",
         f"final state {final_name}",

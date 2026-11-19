@@ -217,7 +217,7 @@ class MotionSpecGroup(click.Group):
                     ("health", "Check the tools and libraries required by the selected target."),
                     ("gen", "Generate IR or C++ from a .robmot model."),
                     ("build", "Configure and compile a generation."),
-                    ("run", "Execute the controller and create a recorded run archive."),
+                    ("run", "Execute the controller and record the run."),
                     ("rerun", "Run the last generation again, without naming it."),
                     ("cancel", "Ask a run in progress to stop; rec records it canceled."),
                     ("control", "Pause, resume, step or pace a simulated run in progress."),
@@ -431,7 +431,7 @@ def _run_options(command):
 def _environment(
     env_script: Path | None, no_env: bool, start: Path | None = None
 ) -> tuple[dict[str, str] | None, dict | None]:
-    """The environment to run under, and what a run archives about where it came from."""
+    """The environment to run under, and what a run records about where it came from."""
     from motion_spec.setup import capture_environment, environment_provenance, find_environment
 
     if no_env:
@@ -1180,17 +1180,17 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
 @click.option(
     "--verify",
     is_flag=True,
-    help="Check the archive: every file its provenance records, the log against the "
+    help="Check the run: every file its provenance records, the log against the "
     "generation's contract, and every frame decoded against what the writer reported.",
 )
 def replay(log: Path, jsonl: bool, verify: bool) -> None:
     """Inspect a recorded run LOG."""
-    from motion_spec.runs.replay import decode_frames, summarize, verify_archive
+    from motion_spec.runs.replay import decode_frames, summarize, verify_recording
     from motion_spec.runs.verify import RecordError
 
     try:
         if verify:
-            _say("done", f"archive OK, {verify_archive(log)} frames")
+            _say("done", f"run OK, {verify_recording(log)} frames")
         elif jsonl:
             for record in decode_frames(log):
                 click.echo(json.dumps(record, separators=(",", ":")))
@@ -1311,7 +1311,7 @@ def run(
         )
     except (RecordError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
-    # Said before the exit: an interrupt leaves a complete archive, and that is when the
+    # Said before the exit: an interrupt leaves a complete record, and that is when the
     # caller most needs the path.
     if returncode:
         _say("error", f"run failed ({returncode}) {run_dir}")

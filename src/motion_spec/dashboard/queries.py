@@ -18,7 +18,7 @@ from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.runs.provenance import run_generation
-from motion_spec.runs.replay import resolve_archive
+from motion_spec.runs.replay import resolve_run
 from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 
@@ -36,7 +36,7 @@ def generation_graph(generation_dir: Path) -> GraphService:
 
 def run_graph(run_dir: Path) -> GraphService:
     """One run's queryable model graph. Kept per log revision, as the run list is."""
-    _, log, _contract = resolve_archive(run_dir)
+    _, log, _contract = resolve_run(run_dir)
     key = (str(log), log.stat().st_size, True)
     if key not in _GRAPHS:
         generation = run_generation(run_dir)

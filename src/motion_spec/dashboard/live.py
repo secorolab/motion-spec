@@ -18,7 +18,7 @@ from motion_spec.dashboard.roots import trace
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.runs.control import SPEED_MAX, SPEED_MIN, acknowledged, control_run, run_channel
 from motion_spec.runs.provenance import rec_run, run_generation
-from motion_spec.runs.replay import resolve_archive
+from motion_spec.runs.replay import resolve_run
 from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import shm_name_for, shm_path
@@ -237,7 +237,7 @@ def live_state(run_dir: Path, signals=()) -> dict:
         log_less = False
         # Resolving parses the full header contract -- once per session, never per poll.
         try:
-            _, log, contract = resolve_archive(run_dir)
+            _, log, contract = resolve_run(run_dir)
         except RecordError:
             # No frame log yet: named but not writing. A run started with logs off never has
             # one, so its control block is reached through the generation's own contract

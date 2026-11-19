@@ -26,7 +26,7 @@ from motion_spec.dashboard.sources import aligned_rows, authored_lines
 from motion_spec.rdf_parser.agents import agent_cameras
 from motion_spec.rdf_parser.deployment import platform_facts
 from motion_spec.runs.provenance import FRAME_LOG_PACKED, generation_model, run_outputs
-from motion_spec.runs.replay import resolve_archive
+from motion_spec.runs.replay import resolve_run
 from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
@@ -426,7 +426,7 @@ def run_info(path: Path) -> dict:
     run_id = RunInfo(path).run_id
     # A run that has only just started has no readable log yet; it still belongs in the list.
     try:
-        period_ns = resolve_archive(path)[2].header.nominal_period_ns
+        period_ns = resolve_run(path)[2].header.nominal_period_ns
     except (RecordError, DecodeError, OSError):
         period_ns = 0
     match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)

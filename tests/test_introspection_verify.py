@@ -86,8 +86,8 @@ def test_replay_works_on_a_run_killed_before_its_outputs_were_recorded(
 
     assert decode_frames(frame_log)[0]["step"] == 7
     assert decode_frames(run_dir)[0]["step"] == 7
-    assert f"archive     {run_dir}" in summarize(frame_log)
-    _, log_path, schema = replay.resolve_archive(frame_log)
+    assert f"run         {run_dir}" in summarize(frame_log)
+    _, log_path, schema = replay.resolve_run(frame_log)
     validate_header(log_path, schema)
 
 
@@ -104,7 +104,7 @@ def test_a_logless_run_verifies_and_its_provenance_says_it_kept_no_log(
 
     verify_run(run_dir)
     with pytest.raises(RecordError, match="recorded no frame log"):
-        replay.resolve_archive(run_dir)
+        replay.resolve_run(run_dir)
 
 
 def test_a_recorded_log_that_is_lost_fails_verification(run_dir: Path) -> None:

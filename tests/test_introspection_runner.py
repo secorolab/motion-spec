@@ -116,7 +116,7 @@ def test_a_run_cancelled_in_progress_stops_and_ends_canceled(
 
 
 def test_crashed_run_leaves_its_error_output(tmp_path: Path, source_tree: Path) -> None:
-    # No frame log, no archive -- console.log is the only evidence of why the run died.
+    # No frame log, no recorded outputs -- console.log is the only evidence of why the run died.
     executable = tmp_path / "noisy-fail"
     executable.write_text(NOISY_EXECUTABLE.format(exit_code=3, source_log=""))
     executable.chmod(0o755)

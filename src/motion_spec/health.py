@@ -22,8 +22,7 @@ from pathlib import Path
 from motion_spec.setup import BUILD_TYPE
 
 PROFILE_IMPORTS = {
-    # motion_spec_dsl and scene_dsl are imported at module scope by the generation pipeline:
-    # hard dependencies in pyproject, not a profile someone opts into.
+    # motion_spec_dsl and scene_dsl: hard dependencies of the generation pipeline
     "base": (
         "click",
         "rdflib",
@@ -34,39 +33,24 @@ PROFILE_IMPORTS = {
         "rec",
         "google.protobuf",
     ),
-    # Everything Python it needed is required now; what is left is the C++ library below.
     "telemetry": (),
     "dsl": ("textx", "coord_dsl"),
 }
 PROFILES = (*PROFILE_IMPORTS, "codegen", "ros", "build", "runtime")
-# Every generated CMakeLists asks for these, whichever backend it targets: the kinematics and
-# the frame types are the same on a simulator and on a real arm.
 GENERAL_BUILD_PACKAGES = ("coord2b", "Eigen3", "orocos_kdl", "tomlplusplus")
-# Only a model that publishes, sends a goal or answers one links these; an installation without
-# ROS reports them absent rather than missing, and generates, builds and runs regardless.
 ROS_BUILD_PACKAGES = ("rclcpp", "realtime_tools", "action_msgs", "rclcpp_action")
 
 
-# Reading a ROS message's shape is what turns a declared type into fields, headers and packages.
-# rosidl spells its case-conversion helper differently across distros; either will do.
-# ament_index_python resolves a scene asset that names a package rather than a path, so a
-# generation reaches for it long before anything ROS-shaped appears in the model.
-# ament_package: ament's cmake scripts import it, so find_package(rclcpp) needs it too.
-# yaml: rosidl_runtime_py imports it, and apt supplies it, not /opt/ros -- so it is the one
-# ROS dependency a venv can miss while every module above resolves.
+# yaml comes from apt, not /opt/ros: a venv can miss it
 ROS_IMPORTS = ("rosidl_runtime_py", "ament_index_python", "ament_package", "yaml")
 ROS_ALTERNATIVES = (("rosidl_pycommon", "rosidl_cmake"),)
-# `stst` is a Java program built by ant, and `protoc` compiles the frame-log schema every
-# generation carries: the generator shells out to all three.
 CODEGEN_EXECUTABLES = ("java", "ant", "protoc")
 ROBIF2B_BUILD_PACKAGES = ("robif2b", "urdfdom_headers", "urdfdom", "serial", "robotiq_driver_noros")
-# Present only when the workspace was built with that device wrapper enabled. A model that
-# binds none of them builds and runs regardless, so a miss here is a note, not a failure.
+# built only with that device wrapper enabled
 OPTIONAL_BUILD_PACKAGES = {"serial", "robotiq_driver_noros"}
 # TODO: Check hddc2b only when the generated model selects an HDDC2B base solver.
 
 ROS_ROOT = Path("/opt/ros")
-# What motion-spec reads, in the order a reader cares about it.
 ENVIRONMENT_VARIABLES = (
     "MOTION_SPEC_WS",
     "MOTION_SPEC_GEN",
@@ -78,47 +62,38 @@ ENVIRONMENT_VARIABLES = (
     "CMAKE_PREFIX_PATH",
     "LD_LIBRARY_PATH",
 )
-# Unset is no warning where motion-spec falls back to a value of its own.
 ENVIRONMENT_DEFAULTS = {"MOTION_SPEC_BUILD_TYPE": BUILD_TYPE}
-# The remedies apt answers, which the report gathers into one install line.
-APT_REMEDY = "apt install "
-# What to do about a missing dependency: the one command that gets it. "Install it" is not an
-# instruction, so every dependency this checks names its own source -- an apt package, a
-# workspace package, or the flag whose absence left it unbuilt.
+APT_PACKAGES = {
+    "cmake": ("cmake",),
+    "c++": ("build-essential",),
+    "Eigen3": ("libeigen3-dev",),
+    "java": ("default-jdk",),
+    "ant": ("ant",),
+    "protoc": ("protobuf-compiler",),
+    "urdfdom": ("liburdfdom-dev",),
+    "urdfdom_headers": ("liburdfdom-headers-dev",),
+    "tomlplusplus": ("libtomlplusplus-dev",),
+    "Protobuf": ("libprotobuf-dev", "protobuf-compiler"),
+    "glfw3": ("libglfw3-dev",),
+    "OpenGL": ("libgl-dev",),
+    "EGL": ("libegl-dev",),
+    "ffmpeg": ("ffmpeg",),
+    "rclcpp": ("ros-$ROS_DISTRO-rclcpp",),
+    "realtime_tools": ("ros-$ROS_DISTRO-realtime-tools",),
+    "action_msgs": ("ros-$ROS_DISTRO-action-msgs",),
+    "rclcpp_action": ("ros-$ROS_DISTRO-rclcpp-action",),
+}
 _REMEDIES = {
-    "cmake": "apt install cmake",
-    "c++": "apt install build-essential",
-    "Eigen3": "apt install libeigen3-dev",
-    "java": "apt install default-jdk",
-    "ant": "apt install ant",
-    "protoc": "apt install protobuf-compiler",
-    "urdfdom": "apt install liburdfdom-dev",
-    "urdfdom_headers": "apt install liburdfdom-headers-dev",
-    "tomlplusplus": "apt install libtomlplusplus-dev",
-    "Protobuf": "apt install libprotobuf-dev protobuf-compiler",
-    "glfw3": "apt install libglfw3-dev",
-    "OpenGL": "apt install libgl-dev",
-    "EGL": "apt install libegl-dev",
-    "ffmpeg": "apt install ffmpeg",
-    "rclcpp": "apt install ros-$ROS_DISTRO-rclcpp",
-    "realtime_tools": "apt install ros-$ROS_DISTRO-realtime-tools",
-    "action_msgs": "apt install ros-$ROS_DISTRO-action-msgs",
-    "rclcpp_action": "apt install ros-$ROS_DISTRO-rclcpp-action",
     "rosidl_runtime_py": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "rosidl_pycommon": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_index_python": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_package": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "yaml": "uv venv --python /usr/bin/python3 --system-site-packages <venv>",
 }
-# Manifest entries whose dependency name is neither the entry's name nor its import name.
 _PROVIDED_AS = {"STSTv4": "stst", "orocos_kinematics_dynamics": "orocos_kdl"}
-# A dependency this checks, and the manifest entry `motion-spec setup` provides it from; filled
-# in from the manifests.
 SETUP_PROVIDES: dict[str, str] = {}
-# In motion_spec.real.repos, filled in from it: only a model that binds them needs them.
 _DEVICE_PACKAGES: set[str] = set()
-# robif2b builds a device wrapper only when told to. Missing here means the flag was off, not
-# that the package is absent, so the fix is a rebuild rather than a checkout.
+# missing means the flag was off: rebuild, not checkout
 _ROBIF2B_DEVICE_FLAGS = {
     "robif2b::robotiq_gripper": "ENABLE_ROBOTIQ_GRIPPER",
     "robif2b::robotiq_ft_sensor": "ENABLE_ROBOTIQ_FT",
@@ -187,8 +162,10 @@ def ros_summary(env: dict[str, str] | None = None) -> str:
 
 def remedy(dependency: str, env: dict[str, str] | None = None) -> str:
     """The command that gets `dependency`, for a report a reader can act on."""
+    if dependency in APT_PACKAGES:
+        packages = " ".join(APT_PACKAGES[dependency])
+        return f"apt install {packages}".replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
     if dependency in _REMEDIES:
-        # `$ROS_DISTRO` is only an instruction when a shell already set it.
         return _REMEDIES[dependency].replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
     if dependency in SETUP_PROVIDES:
         real = "--real " if dependency in _DEVICE_PACKAGES else ""
@@ -230,18 +207,15 @@ class HealthCheck:
     path: str | None
     ok: bool
     detail: str
-    # A failure a reader can act on says all three: the job the dependency does, where it
-    # lives, and how it arrives. Filled from DETAILS for every dependency it names.
     why: str = ""
     source: str = ""
-    # The same install without motion-spec, for a reader who would rather do it themselves.
     alternative: str = ""
-    # Absent by choice rather than by mistake: reported, but not counted against the install.
+    # absent by choice: not counted against the install
     optional: bool = False
+    name: str = ""
+    apt: tuple[str, ...] = ()
 
 
-# What each dependency is for and where it comes from -- the words every "not found" carries,
-# here once, read by the CLI's boxes and the dashboard's health page alike.
 DETAILS: dict[str, dict[str, str]] = {
     "click": {"why": "the CLI itself runs on it", "source": "https://github.com/pallets/click"},
     "rdflib": {
@@ -404,9 +378,7 @@ print(json.dumps(found))
 
 def module_path(name: str, env: dict[str, str] | None = None) -> str | None:
     if env is not None:
-        # Asked of an interpreter started in ENV: a sourced ROS distribution puts its Python
-        # packages on the path through the environment, so importing here would answer for
-        # this process instead of for the one the build and the run will use.
+        # a sourced ROS puts its packages on the path only through ENV
         done = subprocess.run(
             [sys.executable, "-c", _PROBE, name],
             env=env,
@@ -458,7 +430,7 @@ def stst_jar(launcher: str) -> bool:
         None,
     )
     if home is None:
-        return True  # not a launcher this tool wrote, so not its place to judge
+        return True  # not a launcher this tool wrote
     return (Path(shlex.split(home)[0]) / "build" / "jar" / "stst.jar").is_file()
 
 
@@ -518,7 +490,7 @@ def cmake_package_path(
         except (OSError, FileNotFoundError):
             return None
         if env is not None:
-            # ENV's LD_LIBRARY_PATH decides this, not ours.
+            # ENV's LD_LIBRARY_PATH decides, not ours
             loaded = subprocess.run(
                 [sys.executable, "-c", "import ctypes, sys; ctypes.CDLL(sys.argv[1])", target],
                 env=env,
@@ -534,8 +506,6 @@ def cmake_package_path(
         return target
 
 
-# What a target needs before it can be generated, built and run. ROS and telemetry are
-# left out: whether a model needs them is a property of the model, not of the target.
 VERDICT_PROFILES = ("base", "dsl", "codegen", "build", "runtime")
 VERDICTS = {"mujoco": "sim", "robif2b": "real"}
 
@@ -553,7 +523,7 @@ def verdicts(checks: list[HealthCheck]) -> dict[str, list[str]]:
         if wanted - profiles:
             continue
         answer[name] = [
-            check.dependency
+            check.name or check.dependency
             for check in checks
             if check.profile in wanted and not check.ok and not check.optional
         ]
@@ -596,14 +566,14 @@ def apt_packages(checks: list[HealthCheck]) -> list[str]:
     to assemble by hand. The ones apt provides are the same command, so they are collected
     into one, and each stays named where it was reported.
     """
-    packages: list[str] = []
-    for check in checks:
-        if check.ok or check.optional or not check.detail.startswith(APT_REMEDY):
-            continue
-        for package in check.detail[len(APT_REMEDY) :].split():
-            if package not in packages:
-                packages.append(package)
-    return packages
+    return list(
+        dict.fromkeys(
+            package
+            for check in checks
+            if not check.ok and not check.optional
+            for package in check.apt
+        )
+    )
 
 
 def check_health(
@@ -642,8 +612,6 @@ def check_health(
                 )
             )
         if profile == "telemetry":
-            # The Python module reads a recorded run; the generated C++ writes one, and links
-            # the C++ library to do it.
             on_progress(len(checks), "Protobuf")
             path = cmake_package_path("Protobuf", env=env)
             checks.append(
@@ -680,7 +648,6 @@ def check_health(
                 )
             )
     if "ros" in selected:
-        # First: every ROS row below is a consequence of it.
         distro = active_ros_distro(env)
         installed = installed_ros_distros()
         checks.append(
@@ -724,6 +691,7 @@ def check_health(
                     path is not None,
                     remedy(alternatives[0], env),
                     optional=True,
+                    name=alternatives[0],
                 )
             )
         for name in ROS_BUILD_PACKAGES:
@@ -756,7 +724,7 @@ def check_health(
                 HealthCheck("build", name, "CMake package", path, path is not None, remedy(name))
             )
         if "mujoco" in targets:
-            # mj_kdl_wrapper's own CMake asks the system for these; a miss fails its configure.
+            # mj_kdl_wrapper's configure needs these
             on_progress(len(checks), "glfw3")
             path = cmake_package_path("glfw3", env=env)
             checks.append(
@@ -796,8 +764,7 @@ def check_health(
             )
         from motion_spec.setup import shipped_pin
 
-        # The generated CMakeLists asks for the version motion_spec.repos pins, so a check
-        # ignoring it passes on an install the build rejects.
+        # the generated CMakeLists requires the pinned version
         for target, packages in (
             ("mujoco", (("mj_kdl_wrapper", shipped_pin("mj_kdl_wrapper").version.lstrip("v")),)),
             ("robif2b", ROBIF2B_BUILD_PACKAGES),
@@ -817,6 +784,7 @@ def check_health(
                         path is not None,
                         remedy(name),
                         optional=name in OPTIONAL_BUILD_PACKAGES,
+                        name=name,
                     )
                 )
     if "runtime" in selected:
@@ -829,9 +797,6 @@ def check_health(
         )
         runtime_targets = {
             "mujoco": (("mj_kdl_wrapper", "mj_kdl_wrapper::mj_kdl_wrapper"),),
-            # One per device the robif2b backend drives: the arm, the gripper, and the
-            # force-torque sensor are separate libraries, and a model binding any of them
-            # links that one.
             "robif2b": (
                 ("robif2b", "robif2b::kinova_gen3"),
                 ("robif2b", "robif2b::robotiq_gripper"),
@@ -858,10 +823,7 @@ def check_health(
                 )
     enriched = []
     for check in checks:
-        # A dependency may be named with a version ("mj_kdl_wrapper 0.3.11"), as a cmake target
-        # ("robif2b::kinova_gen3") or as alternatives ("rosidl_pycommon or rosidl_cmake"); the
-        # details belong to the bare name either way.
-        bare = check.dependency.partition(" or ")[0].split()[0]
+        bare = check.name or check.dependency
         name = bare.partition("::")[0]
         spec = DETAILS.get(check.dependency) or DETAILS.get(name) or {}
         alternative = check.alternative
@@ -877,6 +839,10 @@ def check_health(
                 why=spec.get("why", check.why),
                 source=spec.get("source", check.source),
                 alternative=alternative,
+                apt=tuple(
+                    package.replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
+                    for package in APT_PACKAGES.get(name, ())
+                ),
             )
         )
     return enriched

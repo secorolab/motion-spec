@@ -7,7 +7,6 @@ motion runs in, the events snapshots and re-tares wait on, and the holds a gated
 from __future__ import annotations
 
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.uri import iri_is_descendant
 
 from motion_spec.classes.geometry import Wrench
 from motion_spec.classes.solvers import SolverWithInputAndOutput
@@ -24,8 +23,6 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
     namespace = fsm["name"].lower() if fsm else None
     events = fsm["event_uris"] if fsm else {}
     step_event = "E_STEP" if "E_STEP" in events else None
-    # The heartbeat is the clock and is not logged every tick, but where a transition's guard is
-    # the clock, that occurrence caused the state change -- so name those transitions.
     transitions = {row["id"]: row for row in (fsm.get("transitions_table", []) if fsm else [])}
     meta = {
         "cpp_namespace": namespace,
@@ -41,8 +38,7 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
         ],
     }
     if namespace is None:
-        # Without an FSM the sequencer advances on a motion's own `until`, so one declaring none
-        # can never be left and every motion after it is unreachable.
+        # without an FSM, a motion with no until is never left
         stuck = [motion.id for motion in motions if not motion.has_until_condition]
         if stuck:
             raise ConstraintViolation(
@@ -55,15 +51,12 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
 
         return meta
 
-    namespace_uri = fsm.get("namespace_uri")
-    # coord-dsl's own token per event IRI: the name its enum gives the event.
     event_by_uri = {uri: token for token, uri in events.items()}
     state_by_event = {
         reaction["when_event"]: transitions[reaction["do_transition"]]["from_state"]
         for reaction in fsm["reactions_table"]
         if reaction["do_transition"] in transitions
     }
-    # A fallback names the motion specification, which several handlers may realize.
     units_by_motion: dict[str, list] = {}
     for motion in motions:
         units_by_motion.setdefault(motion.motion_id, []).append(motion)
@@ -89,7 +82,6 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
             motion.runs_in_end_state = True
             meta["end_motion"] = motion.id
 
-    # A sensor re-tares on occurrences the same way a snapshot re-samples on them.
     for solver in solvers:
         if not isinstance(solver, SolverWithInputAndOutput):
             continue
@@ -109,7 +101,6 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
             out.retare_events = tuple(names)
 
     for motion in motions:
-        # An event-triggered snapshot only compiles when the FSM declares the event it waits on.
         for snapshot in motion.snapshots:
             if not snapshot.trigger_event:
                 continue
@@ -125,19 +116,10 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
         gated = [(monitor, False) for monitor in [*motion.until_monitors, *motion.while_monitors]]
         gated += [(monitor, True) for monitor in motion.when_monitors]
         for monitor, when_gate in gated:
-            # A monitor fires the FSM only when its event lives in the FSM's namespace; a
-            # standalone, monitor-owned event keeps its own stub.
-            if not monitor.is_edge_triggered or not iri_is_descendant(
-                namespace_uri or "", monitor.event_uri or ""
-            ):
-                continue
+            # a monitor-owned event keeps its own stub
             event_name = event_by_uri.get(monitor.event_uri)
-            if event_name is None:
-                raise ConstraintViolation(
-                    "coordination",
-                    f"monitor '{monitor.id}' fires '{monitor.event_uri}', which the FSM "
-                    f"'{namespace}' does not declare.",
-                )
+            if not monitor.is_edge_triggered or event_name is None:
+                continue
             monitor.fsm_namespace = namespace
             monitor.event_name = event_name
             state = state_by_event.get(event_name)
@@ -145,7 +127,6 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 if state and not motion.fsm_state:
                     motion.fsm_state = state
                 continue
-            # The hold motion that runs while the WHEN-gated motion waits for its event.
             if not monitor.fallback_motion:
                 raise ConstraintViolation(
                     "coordination",
@@ -172,7 +153,6 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 )
             fallback = candidates[0]
             if state is None:
-                # An event that drives no transition gates the motion inside its own state.
                 if not motion.fsm_state:
                     raise ConstraintViolation(
                         "coordination",
@@ -197,9 +177,6 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
             if motion.id not in fallback.fsm_when_gate_motions:
                 fallback.fsm_when_gate_motions.append(motion.id)
 
-    # A self-transition's fired events re-enter the state's motion: the model opts in by
-    # authoring `fires` on the retry reaction, and the loop consumes the fired event and
-    # deactivates the motion, so entry runs again (snapshots re-capture, goals re-send).
     self_state = {
         row["id"]: row["from_state"]
         for row in fsm.get("transitions_table", [])
@@ -215,12 +192,7 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
 
     resolve_occurrence_events(motions, fsm, namespace)
 
-    # Motions and the states that run them have to cover each other. A motion that fires no FSM
-    # event is bound to no state, so it never steps and the drivers run on whatever they start
-    # at -- zero torque on a torque-controlled arm, which is an arm that falls. A reachable state
-    # with no motion bound renders no `case`, so the arm is uncommanded while the FSM sits there.
-    # Only the end state (the loop breaks on it unless a motion is bound there) and a state the
-    # heartbeat leaves (the FSM does not dwell in it) may run nothing.
+    # an unbound motion never steps: a torque-controlled arm at zero torque falls
     orphaned = [
         motion.id
         for motion in motions
@@ -236,8 +208,7 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
 
     passed_through = {transition["from"] for transition in meta["step_transitions"]}
     bound = {motion.fsm_state for motion in motions} | passed_through | {fsm["end_state"]}
-    # A transition fires only when a reaction names it, so one no reaction refers to is not an
-    # edge: following it would call a state reachable that the generated FSM can never enter.
+    # a transition no reaction names is not an edge
     outgoing: dict = {}
     for reaction in fsm["reactions_table"]:
         transition = transitions.get(reaction["do_transition"])

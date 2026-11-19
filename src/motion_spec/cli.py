@@ -64,8 +64,6 @@ def internal_failure(what: str, exc: Exception) -> click.ClickException:
     return click.ClickException(f"{what}: {exc}")
 
 
-# Every line the CLI says about its own progress, so one command reads like the next. Results
-# -- a generation path, an executable, a launcher -- stay bare on stdout for a caller to read.
 def stamp(level: str, err: bool = True) -> None:
     """The prefix every line carries, for one assembled in pieces."""
     click.echo(
@@ -83,9 +81,9 @@ def say(level: str, message: str = "", err: bool = True) -> None:
     click.echo(message, err=err)
 
 
-# `  STATUS   ` — what a health row's detail lines indent by, to sit under the dependency.
+# width of `  STATUS   `, the indent of a health row's detail lines
 _STATUS_WIDTH = 11
-# A command to run, in a hue no name, source or status uses.
+# a hue no name, source or status uses
 _COMMAND_COLOUR = 180
 LATEST_LINK = "latest"
 
@@ -102,8 +100,7 @@ def new_generation(model: Path, name: str | None = None) -> Path:
 
     generation = create_generation_dir(model, generation_root(), name)
     say("info", f"generation {generation}")
-    # One `latest`, under the root `rerun` reads, like colcon's `log/latest`. Relative, so moving
-    # the tree keeps it pointing at what it names; replaced in one step, so it is never missing.
+    # relative, and replaced atomically so it is never missing
     base = generation_root()
     link = base / LATEST_LINK
     try:
@@ -113,9 +110,7 @@ def new_generation(model: Path, name: str | None = None) -> Path:
         pending.symlink_to(target, target_is_directory=True)
         os.replace(pending, link)
     except OSError:
-        # A convenience, not the generation: a filesystem without symlinks, or a tree only
-        # readable, must not fail a generation that otherwise worked. `rerun` says what to
-        # do when it finds no link.
+        # a convenience: never fails the generation
         link.with_name(f".{LATEST_LINK}.new").unlink(missing_ok=True)
 
     return generation
@@ -257,7 +252,6 @@ class MotionSpecGroup(click.Group):
             formatter.write_text("motion-spec COMMAND --help")
 
 
-# What arrives some other way than as a manifest entry of its own.
 _INSTALLS = {"textx": "motion-spec setup motion-spec-dsl", "pyshacl": "pip install motion_spec"}
 
 
@@ -286,7 +280,7 @@ def requirements_reported():
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """The motion-spec toolchain."""
-    # setup is what installs motion-spec-dsl, so it has to run before there is one.
+    # setup installs motion-spec-dsl, so runs without it
     if ctx.invoked_subcommand != "setup":
         from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
 
@@ -302,7 +296,7 @@ def main(ctx: click.Context) -> None:
     warnings.showwarning = show_warning
 
 
-# The toolchain's own libraries, named so a third-party logger cannot make the CLI chatty.
+# only these, so third-party loggers stay quiet
 _TOOL_LOGGERS = ("motion_spec", "motion_spec_dsl", "scene_dsl", "coord_dsl", "textx")
 
 
@@ -375,7 +369,6 @@ def environment(
         captured = capture_environment(script)
     except (OSError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
-    # A build under a different toolchain than the terminal should not have to be deduced.
     say("info", f"environment {script}")
     return captured, script
 
@@ -428,8 +421,7 @@ def dashboard(
     if kill:
         return stop_dashboards(port if named_port else None)
     if restart:
-        # Stopping frees the port asynchronously; serving before it does would only report the
-        # port as taken, so wait for the socket to actually let go.
+        # the port frees asynchronously
         stop_dashboards(port if named_port else None)
         for _ in range(50):
             if not port_taken(port):
@@ -611,7 +603,7 @@ def setup(
         write_environment,
     )
 
-    # A mistake in the command, not a failure inside it: no stack.
+    # a usage error: no stack
     try:
         root = workspace(workspace_argument)
         ros = bool(setting("ros.workspace", ros_flag, root).value)
@@ -640,7 +632,7 @@ def setup(
     jobs = build_jobs(jobs)
     prefix = root / INSTALL_DIRECTORY
     log = command_log(root, "setup")
-    # Held to the end of the command, so the failure that ends it is in the log too.
+    # held to the end, so the final failure is logged too
     click.get_current_context().with_resource(mirrored_stderr(log))
     log_header(
         log,
@@ -663,7 +655,7 @@ def setup(
     say("info", f"building with {jobs} job{'s' if jobs != 1 else ''}")
     import motion_spec
 
-    # setup cannot check itself out: it is the code running. So it says so instead.
+    # setup cannot check out the code running it
     sources = root / SOURCE_DIRECTORY
     if dev and sources.resolve() not in Path(motion_spec.__file__).resolve().parents:
         say(
@@ -672,8 +664,7 @@ def setup(
             f"clone it under {sources} and reinstall it with `pip install -e` "
             "to edit it too",
         )
-    # Before the first build: a prerequisite setup cannot install itself is a failure the
-    # operator has to act on, and finding it after a build helps nobody.
+    # before any build: setup cannot install these itself
     say("info", "checking prerequisites")
     packages, others = missing_prerequisites(selected, ros)
     if packages or others:
@@ -720,7 +711,6 @@ def setup(
                 if not force and package_installed(package.name, prefix, state.path):
                     say("info", f"{package.name} already installed, source {state.path}")
                     continue
-                # Announced before the build, so its console output has a heading.
                 say("step", package.name)
                 install_package(
                     package,
@@ -748,7 +738,6 @@ def setup(
         raise click.UsageError(str(exc)) from exc
     say("done", f"source {written} before generating, building or running")
     if skipped:
-        # Each said why above; a caller that asked for them did not get them.
         say("error", f"not built: {', '.join(skipped)}")
         raise click.exceptions.Exit(1)
 
@@ -774,8 +763,6 @@ def install(features: tuple[str, ...]) -> None:
         raise click.ClickException("installation failed")
 
 
-# Where `examples` puts them, under the developer's tree: they are yours to edit from the
-# moment they land, which is the whole reason they are copied out of the package.
 EXAMPLES_DIRECTORY = "ms-examples"
 
 
@@ -850,7 +837,6 @@ def health(
 ) -> None:
     """Report health of selected installation profiles."""
     from motion_spec.health import (
-        APT_REMEDY,
         ENVIRONMENT_DEFAULTS,
         apt_packages,
         check_health,
@@ -859,13 +845,12 @@ def health(
         verdicts,
     )
 
-    # The environment a build and a run would be given, not this shell's.
+    # the environment a build and run get, not this shell's
     env, _ = environment(env_script, no_env)
 
     interactive = sys.stderr.isatty()
 
     def progress(done: int, dependency: str) -> None:
-        # Overwritten in place on stderr, so the report itself stays clean on stdout.
         if interactive:
             click.echo(f"\r\033[2K  checking {dependency} ({done} done)", err=True, nl=False)
 
@@ -908,7 +893,6 @@ def health(
             click.echo()
             heading = f"{current_profile.upper()} — {requirements[current_profile]}"
             say("info", click.style(heading, bold=True, fg="blue"), err=False)
-            # ABSENT means one thing with no distribution installed, another with two unsourced.
             if current_profile == "ros":
                 say("warn", ros_summary(env), err=False)
         status = "OK" if check.ok else "ABSENT" if check.optional else "MISSING"
@@ -918,9 +902,8 @@ def health(
         click.secho(f"{check.dependency:<{dependency_width}}", fg="cyan", nl=False)
         click.echo(f"  {check.what:<{what_width}}  {check.path or '—'}")
         if not check.ok and not check.optional:
-            # What apt provides is gathered into the one install line below instead.
-            fix = "" if check.detail.startswith(APT_REMEDY) else check.detail
-            # Magenta is a command to run; cyan is a name, and the two sat side by side.
+            # apt packages go into the one install line below
+            fix = "" if check.apt else check.detail
             for label, value, colour in (
                 ("why", check.why, "white"),
                 ("source", check.source, "blue"),
@@ -939,12 +922,10 @@ def health(
     stamp("error" if missing else "done", err=False)
     click.secho(f"{sum(check.ok for check in checks)} good", fg="green", nl=False)
     click.secho(f", {missing} missing", fg="red" if missing else None, nl=False)
-    # An absent optional is a fact about this workspace, not a fault: say it, do not fail on it.
     click.echo(f", {absent} absent by build option" if absent else "")
-    # A line each: one target being short of a driver says nothing about the other.
     for target, blocking in verdicts(checks).items():
-        # By package: three missing robif2b targets are one thing to install, not three.
-        owners = list({dependency.split("::")[0].split()[0] for dependency in blocking})
+        # by package: one install, not one per CMake target
+        owners = list(dict.fromkeys(dependency.partition("::")[0] for dependency in blocking))
         named = ", ".join(owners[:3]) + (f" +{len(owners) - 3}" if len(owners) > 3 else "")
         stamp("error" if blocking else "done", err=False)
         click.secho(
@@ -1081,7 +1062,6 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
 
     path = find_config()
     click.secho(f"file: {path or f'none found ({CONFIG_FILE})'}", fg="blue")
-    # What each key falls back to when nothing sets it, as the commands that read it decide.
     defaults = {
         "workspace.root": path.parent if path else None,
         "workspace.generations": "<workspace>/generations",
@@ -1227,7 +1207,7 @@ def run(
     run_dir = generation / "runs" / (run_id or new_id("run"))
     say("step", f"running {generation.name}")
     say("info", f"run directory {run_dir}")
-    # The dashboard stops a run with SIGTERM: end it as Ctrl-C does, so rec records the end.
+    # end a SIGTERM like Ctrl-C, so rec records the end
     signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         returncode = run_cataloged(
@@ -1243,8 +1223,6 @@ def run(
         )
     except (RecordError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
-    # Said before the exit: an interrupt leaves a complete record, and that is when the
-    # caller most needs the path.
     if returncode:
         say("error", f"run failed ({returncode}) {run_dir}")
         raise click.exceptions.Exit(returncode)
@@ -1363,7 +1341,7 @@ def compare(generation_a: Path, generation_b: Path) -> None:
             model_dataset = generation_model(generation / "generated").graph
         except ValueError as exc:
             raise click.ClickException(str(exc)) from exc
-        # Bundles carry the times and ids of one generation; the model is everything else.
+        # bundles hold one generation's times and ids
         model, provenance = Graph(), Graph()
         document = read_generation_dataset(generation / "generated" / GENERATION_DOCUMENT)
         for dataset in (model_dataset, document):
@@ -1379,8 +1357,7 @@ def compare(generation_a: Path, generation_b: Path) -> None:
             )
             for package, version in provenance.subject_objects(SDO.softwareVersion)
         }
-        # What a generation read rather than wrote: every hashed file no activity generated and
-        # no tool wrote -- the model documents a tool wrote are compared as the model graph.
+        # inputs: hashed files no activity generated and no tool wrote
         inputs = {}
         for entity, digest in provenance.subject_objects(DCTERMS.identifier):
             if (entity, PROV.wasGeneratedBy, None) not in provenance and (

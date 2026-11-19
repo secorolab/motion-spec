@@ -190,56 +190,19 @@ def load_ir(input_path: Path):
 
 
 class MissingAssets(RuntimeError):
-    """The MJCF files a model names that nothing here supplies, and where they were looked for.
+    """The MJCF files a model names that are not on this machine.
 
-    Carries the three, so a caller can report them its own way; the message is what the CLI
-    prints, and needs no stack beside it.
+    Carries both, so a caller can report them its own way; the message is what the CLI prints,
+    and needs no stack beside it.
     """
 
-    def __init__(self, ir_path: Path, paths: list[str], roots: list[Path]) -> None:
+    def __init__(self, ir_path: Path, paths: list[str]) -> None:
         self.ir_path = ir_path
         self.paths = paths
-        self.roots = roots
         super().__init__(
-            f"{ir_path}: the scene names MJCF assets nothing here supplies:\n"
+            f"{ir_path}: the scene names MJCF assets that are not there:\n"
             + "\n".join(f"  {path}" for path in paths)
-            + "\nlooked in "
-            + ", ".join(str(root) for root in roots)
         )
-
-
-# The same prefixes the generated find_asset_path maps into the wrapper's cache.
-_VENDOR_MARKERS = (
-    ("src/mj_kdl_wrapper/assets/", "assets"),
-    ("src/examples/assets/", "assets"),
-)
-
-
-def _cache_root() -> Path | None:
-    if xdg := os.environ.get("XDG_CACHE_HOME"):
-        return Path(xdg) / "mj_kdl_wrapper"
-    if home := os.environ.get("HOME"):
-        return Path(home) / ".cache" / "mj_kdl_wrapper"
-    return None
-
-
-def asset_roots() -> list[Path]:
-    """The directories an unqualified asset path is looked up under."""
-    cache = _cache_root()
-    return [Path.cwd(), *([cache] if cache else [])]
-
-
-def asset_candidates(path: str) -> list[Path]:
-    """Every place the generated program will look for PATH, in its order."""
-    declared = Path(path).expanduser()
-    if declared.is_absolute():
-        return [declared]
-    candidates = [Path.cwd() / declared]
-    cache = _cache_root()
-    for marker, subdirectory in _VENDOR_MARKERS:
-        if cache and declared.is_relative_to(marker):
-            candidates.append(cache / subdirectory / declared.relative_to(marker))
-    return candidates
 
 
 def _asset_nodes(node) -> Iterator[dict]:
@@ -252,31 +215,9 @@ def _asset_nodes(node) -> Iterator[dict]:
         yield from chain.from_iterable(_asset_nodes(value) for value in node)
 
 
-def resolve_model_assets(ir, model_dir: Path) -> list[str]:
-    """Rewrite the assets a model keeps beside itself to absolute paths, in place.
-
-    The generated program looks a relative path up from its working directory, so a scene that
-    names its own files stays runnable from one place only. Only paths MODEL_DIR supplies are
-    touched: a vendored one stays as written, for the cache to answer.
-    """
-    rewritten = []
-    for node in _asset_nodes(ir):
-        declared = Path(node["path"]).expanduser()
-        beside = (model_dir / declared).resolve()
-        if not declared.is_absolute() and beside.is_file():
-            rewritten.append(node["path"])
-            node["path"] = str(beside)
-    return rewritten
-
-
 def unresolved_assets(ir) -> list[str]:
-    """The MJCF assets the IR names that nothing on this machine can supply."""
-    declared = {node["path"] for node in _asset_nodes(ir)}
-    return [
-        path
-        for path in declared
-        if not any(candidate.exists() for candidate in asset_candidates(path))
-    ]
+    """The MJCF assets the IR names that are not on this machine."""
+    return sorted({node["path"] for node in _asset_nodes(ir) if not Path(node["path"]).is_file()})
 
 
 def generate_code(
@@ -307,7 +248,7 @@ def generate_code(
     # Here, not at run time: a controller that cannot load its scene must not build at all.
     missing = unresolved_assets(ir)
     if missing:
-        raise MissingAssets(Path(ir_path), missing, asset_roots())
+        raise MissingAssets(Path(ir_path), missing)
 
     ir["communication"]["telemetry_artifacts"] = write_telemetry_artifacts(
         ir, ir_path=ir_path, output_dir=contract_dir, fsm_ir=fsm

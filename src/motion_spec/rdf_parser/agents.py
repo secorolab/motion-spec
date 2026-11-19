@@ -40,7 +40,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import ModelBase, get_node_types
-from rdf_utils.models.execution import URI_EXEC_PRED_PATH
+from rdf_utils.models.prov import get_file_path
 from rdf_utils.models.vocab import (
     URI_GEOM_PRED_OF_POSE,
     URI_GEOM_PRED_WRT,
@@ -52,7 +52,7 @@ from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.naming import get_valid_var_name
 from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib import Graph, Literal, URIRef
-from rdflib.namespace import RDF, SDO
+from rdflib.namespace import DCTERMS, RDF, SDO
 from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.rdf.sensors import (
     CAMERA_TYPES,
@@ -417,10 +417,11 @@ def _agent_bindings(model):
     for modelled in graph.subjects(RDF.type, AGN.ModelledAgent):
         rows = []
         for asset in graph.objects(modelled, AGN["has-agent-model"]):
-            # Not `get_path_of_node`, which raises: a pathless agent model is metadata rather
-            # than a runtime asset, and the assembly around it still reads.
-            path = graph.value(asset, URI_EXEC_PRED_PATH)
-            if not path:
+            # A model with no location is metadata rather than a runtime asset, and the
+            # assembly around it still reads.
+            source = graph.value(asset, DCTERMS.source)
+            path = get_file_path(graph, source) if source is not None else None
+            if path is None:
                 continue
             path = str(path)
             for tree, entity in model_mappings(model, asset, GEOM_ENT.KinematicTree):

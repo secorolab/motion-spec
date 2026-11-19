@@ -16,16 +16,15 @@ from xml.etree import ElementTree
 from motion_spec_dsl.rdf_parser.vocab import AGN, ENV, EXEC, GEOM_ENT, QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.models.execution import get_path_of_node
+from rdf_utils.models.prov import get_file_path
 from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_KGRAPH,
     URI_KC_PRED_BETWEEN_ATTACHMENTS,
     URI_KC_TYPE_JOINT,
 )
 from rdflib import URIRef
-from rdflib.namespace import RDF
+from rdflib.namespace import DCTERMS, RDF
 from scene_dsl.rdf_parser.kinematics import body_of_frame, root_bodies
-from scene_dsl.rdf_parser.vocab import URI_ROS_PRED_PACKAGE_NAME
 
 from motion_spec.classes.scene import (
     MjcfSceneCamera,
@@ -291,29 +290,24 @@ def name_object_attachments(model, attach_by_body) -> None:
 
 
 def _asset_path(graph, asset) -> str:
-    """Where an asset file is, from how the model says to find it.
+    """Where an asset's file, its `dcterms:source`, is, from the location the scene states for it.
 
-    A path in a ROS package is only meaningful against that package's share directory, so it is
-    resolved here; the runtime is handed a path it can open without knowing about ROS. Anything
-    else keeps the path the model authored.
+    A file in a ROS package resolves against the package's share directory here, so the runtime
+    is handed a path it can open without knowing about ROS.
     """
-    path = get_path_of_node(graph, asset)
-    package = graph.value(asset, URI_ROS_PRED_PACKAGE_NAME)
-    if package is None:
-        return path
-    # Imported here: a model with no ROS asset still generates without ROS on the path.
+    source = graph.value(asset, DCTERMS.source)
     try:
-        from ament_index_python.packages import get_package_share_directory
+        path = get_file_path(graph, source) if source is not None else None
     except ImportError as missing:
-        # This is the one thing that made the asset need ROS at all, so it is the only place
-        # that can say which asset, and what to do about it, instead of a bare import error.
+        # The one place that can say which asset needed ROS, instead of a bare import error.
         raise RuntimeError(
-            f"asset '{path}' is in ROS package '{package}', which cannot be located without "
-            f"ROS on the path: source /opt/ros/$ROS_DISTRO/setup.bash (and the workspace's "
-            f"own setup) in the shell this is running from, then try again"
+            f"asset '{asset}' is in a ROS package, which cannot be located without ROS on the "
+            f"path: source /opt/ros/$ROS_DISTRO/setup.bash (and the workspace's own setup) in "
+            f"the shell this is running from, then try again"
         ) from missing
-
-    return str(Path(get_package_share_directory(str(package))) / path)
+    if path is None:
+        raise ConstraintViolation("scene", f"asset '{asset}' states no file")
+    return str(path)
 
 
 def _static_body_uris(model) -> set[str]:
@@ -379,27 +373,6 @@ def _expand_scene_geometry(scene: MjcfSceneSpec) -> None:
                 _expand_vector(obj, name, components, default)
 
 
-def _asset_file(path: str, app_path: Path) -> Path | None:
-    """The file the runtime would open for an asset, or None when the search comes up empty.
-
-    Mirrors the generated controller's search so a check here reads the same file the run does:
-    the path as given, or one below a directory the working directory or the generation sits in.
-    """
-    candidate = Path(path)
-    if candidate.is_absolute():
-        return candidate if candidate.is_file() else None
-    starts = (Path.cwd(), app_path.parent)
-    return next(
-        (
-            root / candidate
-            for start in starts
-            for root in (start, *start.parents)
-            if (root / candidate).is_file()
-        ),
-        None,
-    )
-
-
 def _validate_object_attachments(scene: MjcfSceneSpec, app_path: Path) -> None:
     """Reject an attachment onto a scene object whose asset states no site to hold it.
 
@@ -412,7 +385,7 @@ def _validate_object_attachments(scene: MjcfSceneSpec, app_path: Path) -> None:
         obj = next(
             (item for item in scene.objects if robot.attach_name.startswith(f"{item.body}_")), None
         )
-        if obj is None or not obj.path or (asset := _asset_file(obj.path, app_path)) is None:
+        if obj is None or not obj.path or not (asset := Path(obj.path)).is_file():
             continue
         site = robot.attach_name[len(obj.body) + 1 :]
         declared = [

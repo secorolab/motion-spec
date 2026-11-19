@@ -312,79 +312,6 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         }
     }
 
-    const auto cache_root = []() -> std::filesystem::path {
-        if (const char *xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-            return std::filesystem::path(xdg) / "mj_kdl_wrapper";
-        }
-        if (const char *home = std::getenv("HOME"); home && *home) {
-            return std::filesystem::path(home) / ".cache" / "mj_kdl_wrapper";
-        }
-        return {};
-    };
-
-    // A scene may name the cache outright. Nothing in std::filesystem expands a leading ~.
-    const auto expand_user = [](const std::filesystem::path &path) -> std::filesystem::path {
-        const auto text = path.generic_string();
-        if (text.rfind("~/", 0) != 0) {
-            return path;
-        }
-        const char *home = std::getenv("HOME");
-        return home && *home ? std::filesystem::path(home) / text.substr(2) : path;
-    };
-
-    const auto find_asset_path = [&cache_root, &expand_user](const std::vector\<std::filesystem::path\> &declared_paths) -> std::filesystem::path {
-        std::vector\<std::filesystem::path\> relative_paths;
-        for (const auto &declared : declared_paths) {
-            relative_paths.push_back(expand_user(declared));
-        }
-        std::vector\<std::filesystem::path\> roots = {std::filesystem::current_path()};
-        roots.push_back(std::filesystem::path(__FILE__).parent_path());
-        const auto cache = cache_root();
-        const auto append_cache_candidate = [&cache](std::vector\<std::filesystem::path\> &candidates,
-                                                     const std::filesystem::path &relative) {
-            if (cache.empty()) {
-                return;
-            }
-            // Whole components, from the start: `src/mj_kdl_wrapper/assets` must not match
-            // inside `mysrc/mj_kdl_wrapper/assets`. A tail opening with `..` is not below it.
-            const auto append_suffix = [&](const std::filesystem::path &marker, const std::filesystem::path &cache_subdir) {
-                const auto tail = relative.lexically_relative(marker);
-                if (!tail.empty() && *tail.begin() != "..") {
-                    candidates.push_back(cache / cache_subdir / tail);
-                }
-            };
-            append_suffix("src/mj_kdl_wrapper/assets", "assets");
-            append_suffix("src/examples/assets", "assets");
-        };
-
-        for (const auto &start : roots) {
-            for (auto root = start; !root.empty(); root = root.parent_path()) {
-                for (const auto &relative : relative_paths) {
-                    if (relative.is_absolute() && std::filesystem::exists(relative)) {
-                        return relative;
-                    }
-                    const auto candidate = root / relative;
-                    if (std::filesystem::exists(candidate)) {
-                        return candidate;
-                    }
-                }
-                if (root == root.root_path()) {
-                    break;
-                }
-            }
-        }
-        for (const auto &relative : relative_paths) {
-            std::vector\<std::filesystem::path\> cache_candidates;
-            append_cache_candidate(cache_candidates, relative);
-            for (const auto &candidate : cache_candidates) {
-                if (std::filesystem::exists(candidate)) {
-                    return candidate;
-                }
-            }
-        }
-        return {};
-    };
-
     mj_kdl::Env mj_env{};
     mj_kdl::SceneSpec mj_scene{};
     mj_scene.timestep = <scene.timestep_s>;
@@ -392,8 +319,8 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
     mj_scene.add_skybox = true;
 <scene.robots:{robot |
     {
-        const std::filesystem::path robot_mjcf_path = find_asset_path({"<robot.path>"\});
-        if (robot_mjcf_path.empty()) {
+        const std::filesystem::path robot_mjcf_path = "<robot.path>";
+        if (!std::filesystem::is_regular_file(robot_mjcf_path)) {
             std::cerr \<\< "MJCF model not found: <robot.path>\\n";
             return 1;
         \}
@@ -411,8 +338,8 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         mj_robot_spec.quat[3] = <robot.quat_w>;
 <robot.attachments:{attachment |
         {
-            const std::filesystem::path attachment_path = find_asset_path({"<attachment.path>"\});
-            if (attachment_path.empty()) {
+            const std::filesystem::path attachment_path = "<attachment.path>";
+            if (!std::filesystem::is_regular_file(attachment_path)) {
                 std::cerr \<\< "MJCF attachment not found: <attachment.path>\\n";
                 return 1;
             \}
@@ -442,8 +369,8 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         object_spec.prefix = "<object.body>_";
         object_spec.attach_to.kind = mj_kdl::AttachKind::<object.attach_kind>;
         object_spec.attach_to.name = "<object.attach_name>";
-<if(object.has_path)>        const std::filesystem::path object_path = find_asset_path({"<object.path>"\});
-        if (object_path.empty()) {
+<if(object.has_path)>        const std::filesystem::path object_path = "<object.path>";
+        if (!std::filesystem::is_regular_file(object_path)) {
             std::cerr \<\< "MJCF object not found: <object.path>\\n";
             return 1;
         \}

@@ -245,12 +245,9 @@ def generate_model(
     conforms, report = validate_dataset(dataset)
     if not conforms:
         raise RuntimeError(f"generated RDF failed SHACL validation:\n{report}")
-    from motion_spec.generation.codegen import resolve_model_assets
-
     ir_path = model_dir / "ir.json"
     started = datetime.now(UTC)
     ir = json.loads(json.dumps(generate_ir(loaded.model, fsm), cls=DataclassJSONEncoder))
-    resolve_model_assets(ir, model.resolve().parent)
     ir_path.write_text(json.dumps(ir, indent=4))
     derived_path = generated / DERIVED_DOCUMENT
     derived_path.parent.mkdir(parents=True, exist_ok=True)

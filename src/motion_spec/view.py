@@ -19,7 +19,6 @@ from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
 
 from motion_spec.classes.scene import MjcfSceneSpec
-from motion_spec.generation.codegen import asset_candidates
 from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
@@ -84,44 +83,23 @@ def apply_home_poses(env: mjk.Env, poses) -> list:
     return robots
 
 
-def find_asset(relative: str, start: Path) -> str:
-    """An authored asset path as a file on this machine.
-
-    Searched from the working directory and from the .scenex upwards -- the paths are
-    workspace-relative -- then in the mj_kdl_wrapper caches the assets are fetched into.
+def find_asset(path: str) -> str:
+    """An asset file the scene states, checked to be on this machine.
 
     Raises:
-        FileNotFoundError: no candidate exists, so the scene cannot be composed.
+        FileNotFoundError: it is not there, so the scene cannot be composed.
     """
-    path = Path(relative)
-    if path.is_absolute():
-        if path.exists():
-            return str(path)
-        raise FileNotFoundError(relative)
-
-    for root in (Path.cwd(), start.resolve().parent):
-        for base in (root, *root.parents):
-            if (base / path).exists():
-                return str(base / path)
-
-    cached = asset_candidates(relative)[1:]
-    for candidate in cached:
-        if candidate.exists():
-            return str(candidate)
-
-    raise FileNotFoundError(
-        f"asset '{relative}' was not found from {Path.cwd()}, from {start.resolve().parent} "
-        f"or in the mj_kdl_wrapper cache ({', '.join(map(str, cached)) or 'no HOME'}); "
-        "install mj_kdl_wrapper"
-    )
+    if not Path(path).is_file():
+        raise FileNotFoundError(f"asset '{path}' the scene names is not there")
+    return path
 
 
 def _target(kind: str, name: str) -> mjk.AttachTarget:
     return mjk.AttachTarget(getattr(mjk.AttachKind, kind), name)
 
 
-def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
-    """The scene as a wrapper SceneSpec, with every authored asset path resolved."""
+def build_spec(scene: MjcfSceneSpec) -> mjk.SceneSpec:
+    """The scene as a wrapper SceneSpec, with every asset file checked to be there."""
     spec = mjk.SceneSpec()
     spec.timestep = scene.timestep_s
     spec.add_skybox = True
@@ -130,7 +108,7 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
     robots = []
     for robot in scene.robots:
         robot_spec = mjk.RobotSpec()
-        robot_spec.path = find_asset(robot.path, start)
+        robot_spec.path = find_asset(robot.path)
         robot_spec.prefix = robot.prefix
         robot_spec.attach_to = _target(robot.attach_kind, robot.attach_name)
         robot_spec.pos = [robot.pos_x, robot.pos_y, robot.pos_z]
@@ -138,7 +116,7 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
         attachments = []
         for attachment in robot.attachments:
             attachment_spec = mjk.AttachmentSpec()
-            attachment_spec.mjcf_path = find_asset(attachment.path, start)
+            attachment_spec.mjcf_path = find_asset(attachment.path)
             attachment_spec.attach_to = _target(attachment.attach_kind, attachment.attach_to)
             attachment_spec.prefix = attachment.prefix
             attachment_spec.pos = [attachment.pos_x, attachment.pos_y, attachment.pos_z]
@@ -164,7 +142,7 @@ def build_spec(scene: MjcfSceneSpec, start: Path) -> mjk.SceneSpec:
         object_spec.quat = [obj.quat_x, obj.quat_y, obj.quat_z, obj.quat_w]
         object_spec.fixed = obj.fixed
         if obj.has_path:
-            object_spec.mjcf_path = find_asset(obj.path, start)
+            object_spec.mjcf_path = find_asset(obj.path)
             if obj.color is not None:
                 object_spec.rgba = obj.color
         else:
@@ -222,7 +200,7 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     model = scenex_model(scenex_path)
     poses = home_poses(model, config) if config else []
     _setups, _ordered, trees = agents.robot_setups(model)
-    spec = build_spec(read_scene(model, trees), scenex_path)
+    spec = build_spec(read_scene(model, trees))
     env = mjk.Env.build(spec)
     try:
         _robots = apply_home_poses(env, poses)

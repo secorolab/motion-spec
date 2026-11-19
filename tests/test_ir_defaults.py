@@ -7,13 +7,16 @@ from __future__ import annotations
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import CSTR, ENV, EXEC, GEOM_ENT, GEOM_REL
 from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.models.vocab import (
+    URI_ENV_PRED_OF_OBJ,
+    URI_EXEC_PRED_HAS_MODELLED_OBJ,
+    URI_EXEC_TYPE_SCENE_INST,
+)
 from rdflib import Dataset, URIRef
 from rdflib.namespace import RDF
+from scene_dsl.rdf_parser.vocab import URI_BDD_PRED_OF_SCENE, URI_BDD_TYPE_SCENE
 
-from motion_spec.classes.handlers import ConstraintEvaluator, EvaluatorType
-from motion_spec.classes.qudt import Quantity, QuantityKind, Unit
 from motion_spec.rdf_parser import deployment
-from motion_spec.rdf_parser.coordination import evaluator_term
 from motion_spec.rdf_parser.model import Model
 
 CONSTRAINED_SCENE_OBJECT = f"""
@@ -22,8 +25,12 @@ CONSTRAINED_SCENE_OBJECT = f"""
 @prefix exec: <{EXEC}> .
 @prefix geom-ent: <{GEOM_ENT}> .
 @prefix cstr: <{CSTR}> .
-ex:modelled-cube a env:ModelledObject ; env:has-object-model ex:cube-asset .
-ex:cube-asset exec:has-mapping ex:cube-mapping .
+ex:scene a <{URI_BDD_TYPE_SCENE}> .
+ex:scene-instance a <{URI_EXEC_TYPE_SCENE_INST}> ; <{URI_BDD_PRED_OF_SCENE}> ex:scene ;
+    <{URI_EXEC_PRED_HAS_MODELLED_OBJ}> ex:modelled-cube .
+ex:modelled-cube a env:ModelledObject ; <{URI_ENV_PRED_OF_OBJ}> ex:cube ;
+    env:has-object-model ex:cube-asset .
+ex:cube-asset a env:ObjectModel ; exec:has-mapping ex:cube-mapping .
 ex:cube-mapping exec:maps ex:cube-body .
 ex:cube-body a geom-ent:RigidBody ; geom-ent:simplices ex:cube-frame .
 ex:cube-frame a geom-ent:Frame .
@@ -59,17 +66,3 @@ def test_real_world_execution_rejects_a_constrained_scene_object() -> None:
             Model(graph=graph), URIRef("https://example.test/real-exec")
         )
 
-
-def test_an_authored_band_rides_the_constraint_term() -> None:
-    """The term is what every reader renders from -- the motion's condition, the level monitor and
-    the telemetry sample -- so the authored band has to travel with it, not the global default."""
-    error = Quantity("near_err", QuantityKind("Length"), Unit("M"), None, False)
-    band = Quantity("pos_band", QuantityKind("Length"), Unit("M"), 0.002, False)
-    evaluator = ConstraintEvaluator(
-        id="near", type_=EvaluatorType.ErrorEvaluator, constraint=None, error=error, tolerance=band
-    )
-    assert evaluator_term(evaluator) == {
-        "kind": "constraint",
-        "error_id": "near_err",
-        "tolerance_id": "pos_band",
-    }

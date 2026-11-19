@@ -20,7 +20,6 @@ from motion_spec_dsl.rdf_parser.vocab import (
     CSTR_HDL_EXT,
     ENV,
     EST,
-    EXEC,
     GEOM_COORD,
     GEOM_ENT,
     GEOM_OP,
@@ -45,15 +44,17 @@ from rdf_utils.models.geom_coord import (
     PositionCoordModel,
     find_pose_path,
     get_coord_vectorxyz,
+    get_euler_angles_params,
     get_orientation_coord_vals,
     get_pose_coords,
     get_rotation_between_frames,
-    get_transform_between_frames,
     to_metres,
 )
 from rdf_utils.models.geom_rel import OrientationModel, PositionModel
 from rdf_utils.models.vocab import (
     URI_DISTRIB_TYPE_SAMPLED_QUANTITY,
+    URI_ENV_TYPE_OBJ_MODEL,
+    URI_EXEC_TYPE_SCENE_INST,
     URI_GEOM_PRED_ALPHA,
     URI_GEOM_PRED_AXES_SEQ,
     URI_GEOM_PRED_BETA,
@@ -69,7 +70,6 @@ from rdf_utils.models.vocab import (
     URI_GEOM_TYPE_ANGLES_ABG,
     URI_GEOM_TYPE_DIRECTION_COSINE_XYZ,
     URI_GEOM_TYPE_EULER_ANGLES,
-    URI_GEOM_TYPE_INTRINSIC,
     URI_GEOM_TYPE_KGRAPH,
     URI_GEOM_TYPE_ORIENT,
     URI_GEOM_TYPE_ORIENT_COORD,
@@ -88,7 +88,8 @@ from rdflib import Graph, URIRef
 from rdflib.namespace import PROV, RDF
 from scene_dsl.rdf.sensors import URI_SENS_TYPE_CAMERA
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri, ensure_one_typed_subject_uri
-from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mapping, pose_between
+from scene_dsl.rdf_parser.kinematics import body_of_frame, pose_between, root_frame_of
+from scene_dsl.rdf_parser.scenex import SceneInstanceModel
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS
 
 from motion_spec.classes.constraints import (
@@ -613,9 +614,9 @@ def pose(model, node) -> Pose:
     euler_axes_sequence = None
     euler_intrinsic = False
     if representation == "euler" and (node, PROV.wasDerivedFrom, None) not in graph:
-        axes = graph.value(orientation_node, URI_GEOM_PRED_AXES_SEQ)
-        euler_axes_sequence = str(axes) if axes is not None else None
-        euler_intrinsic = URI_GEOM_TYPE_INTRINSIC in coordinate.orientation_coord.types
+        euler_axes_sequence, euler_intrinsic = get_euler_angles_params(
+            coordinate.orientation_coord, graph
+        )
 
     units = list(
         {
@@ -647,7 +648,10 @@ def pose(model, node) -> Pose:
         model.id(node),
         pose_endpoint(model, relation.of_id),
         pose_endpoint(model, relation.wrt_id),
-        [model.id(kind) for kind in graph[relation.id : QUDT_SCHEMA["hasQuantityKind"]]],
+        [
+            QuantityKind(model.id(kind), str(kind))
+            for kind in graph[relation.id : QUDT_SCHEMA["hasQuantityKind"]]
+        ],
         frame(model, coordinate.as_seen_by.id),
         units,
         position_values(model, coordinate.position_coord),
@@ -668,7 +672,10 @@ def direction(model, node) -> Direction:
 
     return Direction(
         model.id(node),
-        [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
+        [
+            QuantityKind(model.id(kind), str(kind))
+            for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]
+        ],
         frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
         [Unit(model.id(graph.value(node, QUDT_SCHEMA["unit"])))],
         parse_xyz(model, node),
@@ -682,7 +689,10 @@ def spatial_fields(model, node) -> dict:
     graph = model.graph
     return {
         "id": model.id(node),
-        "quantity_kind": [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
+        "quantity_kind": [
+            QuantityKind(model.id(kind), str(kind))
+            for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]
+        ],
         "reference_point": point(model, graph.value(node, GEOM_REL["reference-point"])),
         "as_seen_by": frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
         "unit": [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
@@ -756,7 +766,10 @@ def wrench(model, node) -> Wrench:
 
     return Wrench(
         id=model.id(node),
-        quantity_kind=[model.id(kind) for kind in graph[relation : QUDT_SCHEMA["hasQuantityKind"]]],
+        quantity_kind=[
+            QuantityKind(model.id(kind), str(kind))
+            for kind in graph[relation : QUDT_SCHEMA["hasQuantityKind"]]
+        ],
         reference_point=point(model, reference),
         as_seen_by=frame(model, seen_by),
         unit=[model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
@@ -947,7 +960,10 @@ def quantity(model, node):
             model.id(node),
             pose_endpoint(model, of_node),
             pose_endpoint(model, wrt_node),
-            [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
+            [
+                QuantityKind(model.id(kind), str(kind))
+                for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]
+            ],
             frame(model, seen_node) if seen_node is not None else None,
             [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
             None,
@@ -1134,7 +1150,7 @@ def placement_frame(model, node):
     """The frame a body is at, or the node itself when it already is one."""
     if GEOM_ENT.Frame in get_node_types(model.graph, node):
         return node
-    return model.graph.value(node, NS_MM_KC_EXT["root"])
+    return root_frame_of(node, model.graph).id
 
 
 def body_or_self(model, node) -> str:
@@ -1161,24 +1177,39 @@ def point(model, node) -> Point:
 def object_root_frame(model, node):
     """The frame the root body of a modelled scene object stands at.
 
-    An object is placed in the scene through the asset that models it, and the first body that
-    asset maps is the one it is spawned as -- so that body's own frame is where the object is.
+    An object is placed in the scene through the asset that models it, so the root frame of
+    what that asset maps is where the object is.
 
     Raises:
         ConstraintViolation: no asset maps the object onto a scene body.
+        ValueError: the object has several assets, or its asset several mappings.
     """
-    graph = model.graph
-    for modelled in graph.subjects(ENV["of-object"], node):
-        for asset in graph.objects(modelled, ENV["has-object-model"]):
-            for mapping in graph.objects(asset, EXEC["has-mapping"]):
-                mapped = get_kinematic_mapping(mapping, graph)
-                if mapped.target_type == GEOM_ENT.RigidBody:
-                    return placement_frame(model, mapped.target_id)
-    raise ConstraintViolation(
-        "geometry",
-        f"'{model.id(node)}' is referenced as a spatial endpoint, but no asset maps it onto a "
-        "body of the scene, so nothing says where it is.",
+    resolved = scene_instance(model).resolve_element_root_frame(
+        node, {URI_ENV_TYPE_OBJ_MODEL}, model.graph
     )
+    if resolved is None:
+        raise ConstraintViolation(
+            "geometry",
+            f"'{model.id(node)}' is referenced as a spatial endpoint, but no asset maps it onto a "
+            "body of the scene, so nothing says where it is.",
+        )
+    _resource, _mapping, root_frame = resolved
+    return root_frame.id
+
+
+@reader
+def scene_instance(model) -> SceneInstanceModel:
+    """The scene instance the model runs in, with the models of its objects and agents.
+
+    Raises:
+        ConstraintViolation: the graph states no scene instance, or several.
+    """
+    instances = set(model.graph.subjects(RDF.type, URI_EXEC_TYPE_SCENE_INST))
+    if len(instances) != 1:
+        raise ConstraintViolation(
+            "scene", f"the model needs exactly one scene instance, found {len(instances)}"
+        )
+    return SceneInstanceModel(instances.pop(), model.graph)
 
 
 def anchor_frame(model):
@@ -1288,8 +1319,6 @@ def frame_placement(model, node, wrt):
     leads to is placed by the joint that holds it, and comes back coincident.
     """
     frame = placement_frame(model, node)
-    if frame is None:
-        return None, None
     # A placement is built into the world before the run draws anything.
     graph = placement_graph(model)
     for pose, coords in get_pose_coords(graph=graph, poses=find_pose_path(frame, wrt, graph) or []):
@@ -1302,14 +1331,7 @@ def frame_placement(model, node, wrt):
                         f"placement read as numbers cannot be drawn; only a free scene object's "
                         f"position can, or a frame on the body",
                     )
-    transform = get_transform_between_frames(frame, wrt, graph)
-    if transform is None:
-        # A pose reads one way, but it relates both frames: a scene that places a body's root
-        # against one of its own frames still says where that frame is on the body.
-        reverse = get_transform_between_frames(wrt, frame, graph)
-        transform = reverse.inv() if reverse is not None else None
-    if transform is None:
-        transform = pose_between(frame, wrt, graph)
+    transform = pose_between(frame, wrt, graph)
     if transform is None:
         return None, None
     return list(transform.translation), list(transform.rotation.as_quat())

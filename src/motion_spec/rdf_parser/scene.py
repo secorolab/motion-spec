@@ -13,18 +13,14 @@ from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree
 
-from motion_spec_dsl.rdf_parser.vocab import AGN, ENV, EXEC, GEOM_ENT, QUDT_SCHEMA
+from motion_spec_dsl.rdf_parser.vocab import EXEC, GEOM_ENT, QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.models.prov import get_file_path
-from rdf_utils.models.vocab import (
-    URI_GEOM_TYPE_KGRAPH,
-    URI_KC_PRED_BETWEEN_ATTACHMENTS,
-    URI_KC_TYPE_JOINT,
-)
+from rdf_utils.models.prov import get_linked_file_path
+from rdf_utils.models.vocab import URI_GEOM_TYPE_RIGID_BODY
 from rdflib import URIRef
 from rdflib.namespace import DCTERMS, RDF
-from scene_dsl.rdf_parser.kinematics import body_of_frame, root_bodies
+from scene_dsl.rdf_parser.kinematics import body_of_frame, get_kinematic_mappings, kinematic_graphs
 
 from motion_spec.classes.scene import (
     MjcfSceneCamera,
@@ -34,12 +30,7 @@ from motion_spec.classes.scene import (
     MjcfSceneSpec,
 )
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.agents import (
-    agent_assemblies,
-    fixed_attachments,
-    mapped_targets,
-    model_mappings,
-)
+from motion_spec.rdf_parser.agents import agent_assemblies, fixed_attachments, scene_graph
 from motion_spec.rdf_parser.model import local_name, seconds
 from motion_spec.rdf_parser.sampling import unplaced_frames
 
@@ -61,20 +52,18 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
     if value is not None:
         scene.timestep_s = seconds(float(value.toPython()), graph.value(timestep, QUDT_SCHEMA.unit))
 
-    bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-    attach_by_body, _root = fixed_attachments(model, bound_trees)
+    attach_by_body, _root = fixed_attachments(model)
     name_object_attachments(model, attach_by_body)
     anchor = quantities.anchor_frame(model)
 
     parent_of = {}
-    for modelled in graph.subjects(RDF.type, ENV["ModelledObject"]):
-        obj = graph.value(modelled, ENV["of-object"])
+    for obj, models in quantities.scene_instance(model).object_models.items():
         mapped = [
-            (asset, body, entity)
-            for asset in graph.objects(modelled, ENV["has-object-model"])
-            for body, entity in model_mappings(model, asset, GEOM_ENT.RigidBody)
+            (asset_id, mapping.target_id, mapping.entity or "")
+            for asset_id, asset in models.items()
+            for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_RIGID_BODY)
         ]
-        if obj is None or not mapped:
+        if not mapped:
             continue
         # The first mapping is the one the object is spawned as; the rest are further bodies of
         # the same asset, which the scene already carries -- they are named, not spawned again.
@@ -89,9 +78,8 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         parent_of[local_name(body)] = local_name(parent) if parent is not None else None
         # A file in a ROS package resolves against the package's share directory here, so the
         # runtime is handed a path it can open without knowing about ROS.
-        source = graph.value(asset, DCTERMS.source)
         try:
-            asset_path = get_file_path(graph, source) if source is not None else None
+            asset_path = get_linked_file_path(graph, asset, DCTERMS.source)
         except ImportError as missing:
             # The one place that can say which asset needed ROS, instead of a bare import error.
             raise RuntimeError(
@@ -149,13 +137,20 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
     body_names = {uri: name for obj in scene.objects for uri, name in obj.secondary_bodies.items()}
     # A body's own root frame is where the body is, so it needs no marker of its own; the rest are
     # posed against it, which is the frame the runtime builds each body on.
+    # Every body the scene graph itself holds, as opposed to one a robot asset brings in.
+    static_bodies = {
+        body.id: body
+        for kgraph in kinematic_graphs(scene_graph(model))
+        for body in (
+            *kgraph.free_bodies.values(),
+            *(body for tree in kgraph.trees for body in tree.bodies.values()),
+        )
+    }
     marked = [
-        (body, frame)
-        for kgraph in graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH)
-        for body in kgraph_bodies(model, kgraph)
-        for frame in graph.objects(body, GEOM_ENT.simplices)
-        if frame != quantities.placement_frame(model, body)
-        and GEOM_ENT.Frame in get_node_types(graph, frame)
+        (body.id, frame)
+        for body in static_bodies.values()
+        for frame in body.frames
+        if frame != body.root_frame.id and GEOM_ENT.Frame in get_node_types(graph, frame)
     ]
     # A site is named after its frame, and carries its body only when another body has a frame
     # of the same name -- the name has to be unique, and it has to stay readable in a viewer.
@@ -202,12 +197,6 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
     # A camera on a static scene frame is built into the composed scene at that frame's site
     # pose; a camera on a robot-asset frame rides the asset's own MJCF instead.
     frames_by_uri = {frame.uri: frame for frame in scene.frames}
-    # Every body the scene graph itself holds, as opposed to one a robot asset brings in.
-    static_bodies = {
-        body
-        for kgraph in graph.subjects(RDF.type, URI_GEOM_TYPE_KGRAPH)
-        for body in kgraph_bodies(model, kgraph)
-    }
     for camera in scene.cameras:
         frame = frames_by_uri.get(camera.frame_uri)
         if frame is not None:
@@ -312,25 +301,13 @@ def hosts_first(objects: list, parent_of: dict) -> list:
     return sorted(objects, key=lambda obj: hosts(obj.body))
 
 
-def kgraph_bodies(model, kgraph) -> set:
-    """Every body the graph holds: the ones it roots, and everything a joint reaches."""
-    graph = model.graph
-    bodies = set(root_bodies(kgraph, graph))
-    for joint in graph.subjects(RDF.type, URI_KC_TYPE_JOINT):
-        for frame in graph.objects(joint, URI_KC_PRED_BETWEEN_ATTACHMENTS):
-            bodies.add(body_of_frame(frame, graph))
-    return {body for body in bodies if body is not None}
-
-
 def name_object_attachments(model, attach_by_body) -> None:
     """Rename an attachment onto a scene object after the object, as the runtime addresses it."""
-    graph = model.graph
     object_ids_by_body = {
-        body: local_name(obj)
-        for modelled in graph.subjects(RDF.type, ENV["ModelledObject"])
-        if (obj := graph.value(modelled, ENV["of-object"])) is not None
-        for asset in graph.objects(modelled, ENV["has-object-model"])
-        for body, _entity in model_mappings(model, asset, GEOM_ENT.RigidBody)
+        mapping.target_id: local_name(obj)
+        for obj, models in quantities.scene_instance(model).object_models.items()
+        for asset in models.values()
+        for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_RIGID_BODY)
     }
     for body, (kind, _name, _frame, parent_body, host_frame) in list(attach_by_body.items()):
         if kind != "Site" or parent_body not in object_ids_by_body:

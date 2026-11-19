@@ -31,7 +31,6 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.uri import iri_is_descendant
 from rdflib import Literal
 from rdflib.namespace import RDF, SDO
 from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
@@ -47,6 +46,7 @@ from motion_spec.classes.handlers import (
 )
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
 from motion_spec.rdf_parser import perturbations, quantities
+from motion_spec.rdf_parser.agents import scene_kinematics
 from motion_spec.rdf_parser.constraint_handler import (
     SolverIdFactory,
     alignment_chain_ops,
@@ -456,6 +456,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
     solvers_by_id = robots.by_id
     owner = computation.indexes.function_owner
     function_input = computation.indexes.function_input
+    _trees, holders = scene_kinematics(model)
     for handler in handlers:
         handler_node = model.node_by_id[handler.id]
         motion_node = graph.value(handler_node, CSTR_HDL["motion"])
@@ -711,9 +712,8 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                 (
                     solvers_by_id[slice_.solver_id]
                     for slice_ in chain_solvers
-                    if target is not None
-                    and any(
-                        iri_is_descendant(tree, target)
+                    if any(
+                        tree in holders.get(target, ())
                         for tree in solvers_by_id[slice_.solver_id].runtime.owned_trees or ()
                     )
                 ),

@@ -9,19 +9,22 @@ from __future__ import annotations
 
 import collections
 
-from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT, KC_OP
+from motion_spec_dsl.rdf_parser.vocab import KC_OP
 from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.models.vocab import URI_GEOM_TYPE_KTREE
 from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.naming import get_valid_var_name
-from rdf_utils.uri import iri_is_descendant
-from rdflib.namespace import PROV, RDF
+from rdflib import URIRef
+from rdflib.namespace import PROV
+from scene_dsl.rdf_parser.kinematics import get_kinematic_mappings
 
 from motion_spec.classes.bindings import JointSpaceChannel, WorldPort
 from motion_spec.classes.dynamics import JointQuantity
 from motion_spec.classes.geometry import VelocityTwist, Wrench
 from motion_spec.classes.motion import DataValue
 from motion_spec.classes.qudt import QuantityKind, Unit
-from motion_spec.rdf_parser.agents import GRIPPER_DEVICES, model_mappings, place_solver_on_chain
+from motion_spec.rdf_parser import quantities
+from motion_spec.rdf_parser.agents import GRIPPER_DEVICES, place_solver_on_chain, scene_kinematics
 from motion_spec.rdf_parser.constraint_handler import SOLVER_FAMILIES
 from motion_spec.rdf_parser.model import identifier, local_name
 
@@ -169,18 +172,22 @@ def world_ports(
     # Which MJCF body a free-floating agent tree is spawned as, so a platform that articulates
     # can still be placed. Keyed by the ktree the agent's model maps.
     body_by_tree = {
-        str(target): entity
-        for agent_model in model.graph.subjects(RDF.type, AGN["AgentModel"])
-        for target, entity in model_mappings(model, agent_model, GEOM_ENT.KinematicTree)
-        if entity
+        mapping.target_id: mapping.entity
+        for models in quantities.scene_instance(model).agent_models.values()
+        for asset in models.values()
+        for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_KTREE)
+        if mapping.entity
     }
+    _scene_trees, holders = scene_kinematics(model)
     anchored_root = next(
         (
             tree["root"]
             for tree in world_trees
             if any(segment["joint"] for segment in tree["segments"])
             and object_by_body.get(tree["root_iri"]) is None
-            and not any(iri_is_descendant(target, tree["root_iri"]) for target in body_by_tree)
+            and not any(
+                target in holders.get(URIRef(tree["root_iri"]), ()) for target in body_by_tree
+            )
         ),
         None,
     )
@@ -196,7 +203,7 @@ def world_ports(
             (
                 entity
                 for target, entity in body_by_tree.items()
-                if iri_is_descendant(target, tree["root_iri"])
+                if target in holders.get(URIRef(tree["root_iri"]), ())
             ),
             None,
         )

@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.models.vocab import URI_QUDT_UNIT_CM, URI_QUDT_UNIT_M, URI_QUDT_UNIT_MM
+from rdf_utils.models.geom_coord import LENGTH_UNITS
 from rdf_utils.namespace import NS_MM_QUDT_UNIT
 from rdflib import URIRef
 from rdflib.namespace import split_uri
@@ -48,7 +48,6 @@ def local_name(node) -> str | None:
     return None if node is None else split_uri(str(node))[1]
 
 
-_LENGTH_UNITS = {URI_QUDT_UNIT_M, URI_QUDT_UNIT_CM, URI_QUDT_UNIT_MM}
 _TEMPORAL_UNITS = {NS_MM_QUDT_UNIT["SEC"], NS_MM_QUDT_UNIT["MilliSEC"]}
 # The DSL records the unit a model was written in and never rescales a value, so putting one on SI
 # is the reader's job -- codegen emits metres, radians and seconds. A unit absent here is already
@@ -81,7 +80,7 @@ def length_unit(coordinate):
     Raises:
         ConstraintViolation: the coordinate's unit is not a length.
     """
-    if coordinate.unit not in _LENGTH_UNITS:
+    if coordinate.unit not in LENGTH_UNITS:
         raise ConstraintViolation(
             "geometry",
             f"Position coordinate '{coordinate.id}' has an unrecognized length "

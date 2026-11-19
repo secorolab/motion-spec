@@ -14,7 +14,6 @@ from pathlib import Path
 
 import mj_kdl_wrapper as mjk
 import rdflib
-from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT
 from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
 
@@ -45,8 +44,7 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     poses = []
     if config:
         robot_config = tomllib.loads(config.read_text())
-        bound_trees = agents.mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-        attach_by_body, _root = agents.fixed_attachments(model, bound_trees)
+        attach_by_body, _root = agents.fixed_attachments(model)
         name_object_attachments(model, attach_by_body)
         for assembly in agents.agent_assemblies(model, attach_by_body):
             section = robot_config

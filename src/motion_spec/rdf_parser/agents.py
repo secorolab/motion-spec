@@ -9,7 +9,6 @@ camera with two providers, a solver no handler runs, a robot model the backend c
 
 from __future__ import annotations
 
-import collections
 import math
 import sys
 from dataclasses import dataclass, replace
@@ -21,7 +20,6 @@ from motion_spec_dsl.rdf_parser.vocab import (
     APP,
     CSTR_HDL,
     CSTR_HDL_EXT,
-    ENV,
     EST,
     EXEC,
     GEOM_COORD,
@@ -38,17 +36,16 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import ModelBase, get_node_types
-from rdf_utils.models.prov import get_file_path
+from rdf_utils.models.geom_coord import PoseCoordModel
+from rdf_utils.models.prov import get_linked_file_path
 from rdf_utils.models.vocab import (
-    URI_GEOM_PRED_OF_POSE,
-    URI_GEOM_PRED_WRT,
-    URI_KC_TYPE_SERIAL,
+    URI_GEOM_TYPE_KTREE,
+    URI_GEOM_TYPE_RIGID_BODY,
     URI_QUDT_PRED_UNIT,
     URI_QUDT_PRED_VALUE,
     URI_QUDT_UNIT_RAD,
 )
-from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
-from rdf_utils.uri import iri_is_descendant, iri_parent
+from rdf_utils.namespace import NS_MM_QUDT_QTY
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import DCTERMS, RDF, SDO
 from scene_dsl.kdl_tree import build_kdl_trees
@@ -64,9 +61,10 @@ from scene_dsl.rdf.sensors import (
 from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
 from scene_dsl.rdf_parser.kinematics import (
     body_of_frame,
-    get_kinematic_mapping,
+    get_kinematic_mappings,
     kinematic_trees,
     root_frame_of,
+    typed,
 )
 from scene_dsl.rdf_parser.sensors import get_update_rate
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS, URI_BDD_PRED_ELEMS
@@ -101,7 +99,7 @@ from motion_spec.classes.solvers import (
 )
 from motion_spec.rdf_parser import constraint_handler, quantities
 from motion_spec.rdf_parser.model import local_name, reader
-from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER
+from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER, recorded_coord_policy
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
 # Devices with driver templates. A name the grammar accepts but that is missing here is rejected.
@@ -109,31 +107,6 @@ DRIVEN_DEVICES = {"KinovaGen3", "KinovaGen3-2F85", "Robotiq2F85", "RobotiqFT300s
 GRIPPER_DEVICES = {"KinovaGen3-2F85", "Robotiq2F85"}
 # The sensor kinds the IR models, as the graph types them and as the templates dispatch on them.
 SENSOR_KINDS = {SENSORS.ForceTorqueSensor: "ForceTorque"}
-
-
-def model_mappings(model, asset, target_type) -> list:
-    """The `(scene target, model entity)` mappings of one asset, of the requested RDF type.
-
-    What a mapping means is its metamodel's to say, not ours.
-    """
-    mappings = (
-        get_kinematic_mapping(mapping, model.graph)
-        for mapping in model.graph.objects(asset, EXEC["has-mapping"])
-    )
-    return [
-        (mapping.target_id, mapping.entity or "")
-        for mapping in mappings
-        if mapping.target_type == target_type
-    ]
-
-
-def mapped_targets(model, model_type, target_type) -> set:
-    """Every scene target of one type that models of `model_type` map onto."""
-    return {
-        target
-        for asset in model.graph.subjects(RDF.type, model_type)
-        for target, _entity in model_mappings(model, asset, target_type)
-    }
 
 
 def config_key(model, element, agent, drives: str) -> str:
@@ -185,7 +158,7 @@ class AgentAssembly:
     attachments: list
 
 
-def fixed_attachments(model, bound_trees):
+def fixed_attachments(model):
     """Where the scene bolts one model to another, oriented as scene-dsl's tree walk directs it.
 
     Returns:
@@ -193,10 +166,16 @@ def fixed_attachments(model, bound_trees):
         frame)` the scene mounts it by, and the body the world is rooted at
     """
     graph = model.graph
-    # (parent frame, child frame) per joint with no motion of its own.
+    trees, holders = scene_kinematics(model)
+    # (parent body, child body, parent frame, child frame) per joint with no motion of its own.
     fixed = [
-        (tree.joints[joint].frame_on(tree.parent[child]), tree.joints[joint].frame_on(child))
-        for tree in kinematic_trees(scene_graph(model))
+        (
+            tree.parent[child],
+            child,
+            tree.joints[joint].frame_on(tree.parent[child]),
+            tree.joints[joint].frame_on(child),
+        )
+        for tree in trees
         for child, joint in tree.parent_joint.items()
         if get_node_types(graph, joint) == {KC.Joint}
     ]
@@ -204,27 +183,29 @@ def fixed_attachments(model, bound_trees):
         return {}, None
     root = body_of_frame(quantities.anchor_frame(model), graph)
 
-    modelled_bodies = mapped_targets(model, ENV["ObjectModel"], GEOM_ENT.RigidBody)
+    instance = quantities.scene_instance(model)
+    modelled_bodies = {
+        mapping.target_id
+        for models in instance.object_models.values()
+        for asset in models.values()
+        for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_RIGID_BODY)
+    }
+    bound_trees = {
+        mapping.target_id
+        for models in instance.agent_models.values()
+        for asset in models.values()
+        for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_KTREE)
+    }
     # Who holds whom, over the fixed joints alone, so a body can be followed up towards the root.
-    held_by = {}
-    for parent_frame, child_frame in fixed:
-        held_by[body_of_frame(child_frame, graph)] = (
-            body_of_frame(parent_frame, graph),
-            parent_frame,
-        )
-    # The innermost bound tree owning a body: the longest IRI it descends from.
+    held_by = {child: (parent, parent_frame) for parent, child, parent_frame, _frame in fixed}
+    # The innermost bound tree holding a body.
     owner = {
-        body: max(
-            (tree for tree in bound_trees if iri_is_descendant(tree, body)),
-            key=lambda tree: len(str(tree)),
-            default=None,
-        )
+        body: next((tree for tree in holders[body] if tree in bound_trees), None)
         for body in {*held_by, *(parent for parent, _frame in held_by.values())}
     }
 
     attachments = {}
-    for parent_frame, child_frame in fixed:
-        parent_body, child_body = (body_of_frame(f, graph) for f in (parent_frame, child_frame))
+    for parent_body, child_body, parent_frame, child_frame in fixed:
         # A body no asset backs carries no site to bolt to, so follow what holds it until one
         # does. A wrapper's massless bracket is such a body: the arm hanging off it still belongs
         # on the tower, and stopping at the bracket would bolt the arm to the world instead --
@@ -315,69 +296,64 @@ def cameras(model, hosted, runtime_prefix) -> list:
 
 def agent_assemblies(model, attach_by_body) -> list:
     graph = model.graph
-    adjacency = collections.defaultdict(list)
-    for joint in graph.subjects(RDF.type, KC.Joint):
-        frames = list(graph.objects(joint, KC["between-attachments"]))
-        if len(frames) != 2:
-            continue
-        body_a, body_b = (body_of_frame(frame, graph) for frame in frames)
-        if body_a == body_b:
-            continue
-        adjacency[body_a].append((body_b, frames[0], frames[1], joint))
-        adjacency[body_b].append((body_a, frames[1], frames[0], joint))
-    bound_model_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
+    trees, holders = scene_kinematics(model)
+    instance = quantities.scene_instance(model)
+    bound_model_trees = {
+        mapping.target_id
+        for models in instance.agent_models.values()
+        for asset in models.values()
+        for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_KTREE)
+    }
     body_names_by_tree = {
         tree: {
             local_name(body)
-            for body in graph.subjects(RDF.type, GEOM_ENT.RigidBody)
-            if iri_is_descendant(tree, body)
+            for scene_tree in trees
+            for body in scene_tree.bodies
+            if tree in holders[body]
         }
         for tree in bound_model_trees
     }
-    serials = [
-        (tree, graph.value(tree, NS_MM_KC_EXT["root"]), graph.value(tree, NS_MM_KC_EXT["tip"]))
-        for tree in graph.subjects(RDF.type, URI_KC_TYPE_SERIAL)
-    ]
-    bindings_by_modelled = {}
-    for modelled in graph.subjects(RDF.type, AGN.ModelledAgent):
+    bindings_by_agent = {}
+    for agent, models in instance.agent_models.items():
         rows = []
-        for asset in graph.objects(modelled, AGN["has-agent-model"]):
+        for asset_id, asset in models.items():
             # A model with no location is metadata rather than a runtime asset, and the
             # assembly around it still reads.
-            source = graph.value(asset, DCTERMS.source)
-            asset_path = get_file_path(graph, source) if source is not None else None
+            asset_path = get_linked_file_path(graph, asset_id, DCTERMS.source)
             if asset_path is None:
                 continue
-            asset_path = str(asset_path)
-            for tree, entity in model_mappings(model, asset, GEOM_ENT.KinematicTree):
-                rows.append({"model": asset, "tree": tree, "path": asset_path, "entity": entity})
-        bindings_by_modelled[modelled] = rows
+            for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_KTREE):
+                rows.append(
+                    {
+                        "tree": mapping.target_id,
+                        "path": str(asset_path),
+                        "entity": mapping.entity or "",
+                    }
+                )
+        bindings_by_agent[agent] = rows
     agent_by_tree = {
-        row["tree"]: graph.value(modelled, AGN["of-agent"])
-        for modelled, rows in bindings_by_modelled.items()
-        for row in rows
+        row["tree"]: agent for agent, rows in bindings_by_agent.items() for row in rows
     }
-    bindings = [row for rows in bindings_by_modelled.values() for row in rows]
+    bindings = [row for rows in bindings_by_agent.values() for row in rows]
 
     result = []
     chainless = []
-    for modelled in graph.subjects(RDF.type, AGN.ModelledAgent):
-        agent = graph.value(modelled, AGN["of-agent"])
-        own = bindings_by_modelled[modelled]
-        if agent is None or not own:
+    for agent, own in bindings_by_agent.items():
+        if not own:
             continue
+        hosted = [
+            sensor
+            for modelled in typed(graph.subjects(AGN["of-agent"], agent), AGN.ModelledAgent, graph)
+            for sensor in graph.objects(modelled, SOSA.hosts)
+        ]
 
         # A chain may span several agents; the agent owning its root drives it.
         serial = next(
             (
-                (tree, root, tip)
-                for tree, root, tip in serials
-                if root is not None
-                and tip is not None
-                and any(
-                    binding["tree"] == tree or iri_is_descendant(binding["tree"], root)
-                    for binding in own
-                )
+                (scene_tree, chain)
+                for scene_tree in trees
+                for chain in scene_tree.chains
+                if any(binding["tree"] in holders[chain.root_body] for binding in own)
             ),
             None,
         )
@@ -387,16 +363,13 @@ def agent_assemblies(model, attach_by_body) -> list:
             # declare. The scene must still spawn and place the asset, which is all a chainless
             # assembly carries -- `robot_setups` skips it for want of a chain.
             root_binding = own[0]
-            root_frame = graph.value(root_binding["tree"], NS_MM_KC_EXT["root"])
-            if root_frame is None:
-                continue
+            root_frame = root_frame_of(root_binding["tree"], graph).id
             root_body = body_of_frame(root_frame, graph)
             attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
             attach_kind, attach_name, _frame, _parent, _host_frame = attachment
             position, orientation = quantities.placement_of(
                 model, attachment, quantities.anchor_frame(model)
             )
-            hosted = list(graph.objects(modelled, SOSA.hosts))
             chainless.append(len(result))
             result.append(
                 AgentAssembly(
@@ -423,55 +396,43 @@ def agent_assemblies(model, attach_by_body) -> list:
                 )
             )
             continue
-        serial_tree, root_frame, tip_frame = serial
+        scene_tree, chain = serial
         root_binding = next(
-            (binding for binding in own if iri_is_descendant(binding["tree"], root_frame)), None
-        ) or next(binding for binding in own if binding["tree"] == serial_tree)
+            binding for binding in own if binding["tree"] in holders[chain.root_body]
+        )
         tip_binding = next(
-            (binding for binding in bindings if iri_is_descendant(binding["tree"], tip_frame)),
+            (binding for binding in bindings if binding["tree"] in holders[chain.tip_body]),
             root_binding,
         )
-        root_body, tip_body = (body_of_frame(f, graph) for f in (root_frame, tip_frame))
+        root_frame, tip_frame = chain.root_frame, chain.tip_frame
+        root_body, tip_body = chain.root_body, chain.tip_body
         duplicate_root = (
             sum(local_name(root_body) in names for names in body_names_by_tree.values()) > 1
         )
         runtime_prefix = f"{local_name(root_binding['tree'])}_" if duplicate_root else ""
-        parents = {root_body: None}
-        queue = collections.deque([root_body])
-        while queue and tip_body not in parents:
-            node = queue.popleft()
-            for neighbor, frame, neighbor_frame, joint in adjacency[node]:
-                if neighbor not in parents:
-                    parents[neighbor] = (node, frame, neighbor_frame, joint)
-                    queue.append(neighbor)
+        child_by_joint = {joint: body for body, joint in scene_tree.parent_joint.items()}
         path = []
-        if tip_body in parents:
-            node = tip_body
-            while parents[node] is not None:
-                parent, parent_frame, child_frame, joint = parents[node]
-                path.append((parent, node, parent_frame, child_frame, joint))
-                node = parent
-            path.reverse()
+        for joint in scene_tree.path(chain):
+            child = child_by_joint[joint]
+            parent = scene_tree.parent[child]
+            frames = (scene_tree.joints[joint].frame_on(body) for body in (parent, child))
+            path.append((parent, child, *frames, joint))
         # Scoped to this chain's path: two arms must not claim each other's models.
         chain_bodies = [root_body, tip_body, *(body for edge in path for body in edge[:2])]
         chain_bindings = [
             binding
             for binding in bindings
-            if any(iri_is_descendant(binding["tree"], body) for body in chain_bodies)
+            if any(binding["tree"] in holders[body] for body in chain_bodies)
         ]
         # Where this agent's own asset ends along the chain, which may be short of the chain's tip.
-        if root_binding["tree"] == serial_tree:
-            chain_tip_body = tip_body
-        else:
-            chain_tip_body = root_body
-            for parent_body, child_body, *_ in path:
-                if iri_is_descendant(root_binding["tree"], child_body):
-                    chain_tip_body = child_body
-                elif iri_is_descendant(root_binding["tree"], parent_body):
-                    chain_tip_body = parent_body
-                    break
+        chain_tip_body = root_body
+        for parent_body, child_body, *_ in path:
+            if root_binding["tree"] in holders[child_body]:
+                chain_tip_body = child_body
+            elif root_binding["tree"] in holders[parent_body]:
+                chain_tip_body = parent_body
+                break
 
-        hosted = list(graph.objects(modelled, SOSA.hosts))
         attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
         attach_kind, attach_name, _frame, _parent, _host_frame = attachment
         position, orientation = quantities.placement_of(
@@ -511,8 +472,8 @@ def agent_assemblies(model, attach_by_body) -> list:
                 (
                     (index, edge)
                     for index, edge in enumerate(path)
-                    if iri_is_descendant(binding["tree"], edge[1])
-                    and not iri_is_descendant(binding["tree"], edge[0])
+                    if binding["tree"] in holders[edge[1]]
+                    and binding["tree"] not in holders[edge[0]]
                 ),
                 None,
             )
@@ -564,7 +525,7 @@ def agent_assemblies(model, attach_by_body) -> list:
                 urdf=root_binding["path"],
                 prefix=runtime_prefix,
                 owned_trees=[binding["tree"] for binding in chain_bindings],
-                serial_chain=serial_tree,
+                serial_chain=chain.id,
                 root_body=root_body,
                 chain_root=f"{runtime_prefix}{local_name(root_body)}",
                 tip=f"{runtime_prefix}{local_name(chain_tip_body)}",
@@ -611,7 +572,7 @@ def agent_assemblies(model, attach_by_body) -> list:
                 for other in kept
                 if other is not assembly
                 and parent is not None
-                and any(iri_is_descendant(tree, parent) for tree in other.owned_trees)
+                and any(tree in holders[parent] for tree in other.owned_trees)
             ),
             None,
         )
@@ -665,11 +626,38 @@ def scene_graph(model):
     return graph
 
 
+@reader
+def scene_kinematics(model):
+    """The scene's trees as scene-dsl reads them, and the trees holding each of their bodies,
+    joints and chains, innermost first.
+
+    A tree holds what it defines or declares and what the trees it composes hold, as the trees'
+    own nesting states it -- not as their IRIs happen to nest.
+
+    Returns:
+        `(trees, holders)`: the scene-dsl trees, and per element the trees holding it
+    """
+    trees = kinematic_trees(scene_graph(model))
+    holders = {}
+    for tree in trees:
+        holder_of = {
+            inner: outer for outer, inners in tree.nested_trees.items() for inner in inners
+        }
+        for element, innermost in (
+            *tree.defining_tree_by_body.items(),
+            *tree.declaring_tree.items(),
+        ):
+            held_by = [innermost]
+            while held_by[-1] in holder_of:
+                held_by.append(holder_of[held_by[-1]])
+            holders[element] = held_by
+    return trees, holders
+
+
 def agent_cameras(model) -> list:
     """Every camera the model's agents carry, as the runtime renders them: the scene's cameras
     the IR states, for a reader that chooses what to record before a run."""
-    bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-    attach_by_body, _root = fixed_attachments(model, bound_trees)
+    attach_by_body, _root = fixed_attachments(model)
     return [
         camera
         for assembly in agent_assemblies(model, attach_by_body)
@@ -698,8 +686,7 @@ def robot_setups(model):
         trees.extend(
             {**tree, "namespace": namespace, "header": header} for tree in build_kdl_trees(document)
         )
-    bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-    attach_by_body, _root = fixed_attachments(model, bound_trees)
+    attach_by_body, _root = fixed_attachments(model)
 
     setups_by_node, ordered = {}, []
     for assembly in agent_assemblies(model, attach_by_body):
@@ -946,8 +933,11 @@ def place_solver_on_chain(solver, world_index: dict, root_by_segment: dict) -> l
 def runtime_frame(model, frame_node, runtime_prefix, owned_trees):
     """A scene frame as the runtime names it, prefixed when this solver owns the tree it is in."""
     frame = quantities.frame(model, frame_node)
-    tree = iri_parent(body_of_frame(frame_node, model.graph))
-    return replace(frame, id=f"{runtime_prefix}{frame.id}" if tree in owned_trees else frame.id)
+    _trees, holders = scene_kinematics(model)
+    owned = any(
+        tree in owned_trees for tree in holders.get(body_of_frame(frame_node, model.graph), ())
+    )
+    return replace(frame, id=f"{runtime_prefix}{frame.id}" if owned else frame.id)
 
 
 # The coordinates a solver may output or observe, and the reader each is read with.
@@ -962,9 +952,10 @@ _WORLD_OUTPUTS = (
 def observes_in_frame(model, node, type_, chain, runtime_prefix, owned_trees, agent=None):
     """Whether an observation is stated in this solver's reference frame, and in which frame node."""
     graph = model.graph
+    _trees, holders = scene_kinematics(model)
     if type_ in quantities.JOINT_QUANTITY_TYPES:
         joint = graph.value(node, KC_STAT["of-joint"])
-        owned = joint is not None and any(iri_is_descendant(t, joint) for t in owned_trees)
+        owned = any(tree in owned_trees for tree in holders.get(joint, ()))
 
         return owned, None
 
@@ -987,13 +978,13 @@ def observes_in_frame(model, node, type_, chain, runtime_prefix, owned_trees, ag
         sensor = graph.value(observation, SOSA.madeBySensor) if observation is not None else None
         sensor_frame = graph.value(sensor, SENSORS.frame) if sensor is not None else None
         owned = sensor_frame is not None and any(
-            iri_is_descendant(tree, sensor_frame) for tree in owned_trees
+            tree in owned_trees for tree in holders.get(body_of_frame(sensor_frame, graph), ())
         )
 
         return owned, frame_node
     if frame_node is not None:
         frame_body = body_of_frame(frame_node, graph)
-        on_this_chain = iri_parent(frame_body) in owned_trees
+        on_this_chain = any(tree in owned_trees for tree in holders.get(frame_body, ()))
         runtime_frame = local_name(frame_body)
         if on_this_chain:
             runtime_frame = f"{runtime_prefix}{local_name(frame_body)}"
@@ -1034,14 +1025,9 @@ def runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
         if seen_by.id == setup.chain.root:
             # Measured from a frame that moves, but stated in the chain root's axes: the
             # orientation is the subject's own and the translation is the gap between the two.
-            pose_relation = model.graph.value(node, URI_GEOM_PRED_OF_POSE)
-            wrt_node = (
-                None
-                if pose_relation is None
-                else model.graph.value(pose_relation, URI_GEOM_PRED_WRT)
-            )
-            if wrt_node is None:
-                return output
+            wrt_node = PoseCoordModel(
+                node, model.graph, coord_policy=recorded_coord_policy
+            ).relation.wrt_id
             wrt = runtime_frame(model, wrt_node, setup.runtime.prefix, setup.runtime.owned_trees)
             if wrt.id == setup.chain.root:
                 return output

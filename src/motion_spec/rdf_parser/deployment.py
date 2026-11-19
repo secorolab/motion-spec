@@ -16,13 +16,14 @@ from motion_spec_dsl.rdf_parser.vocab import CSTR, ENV, EXEC, GEOM_ENT, MAP, SOS
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.geom_rel import relation_neighbors
-from rdf_utils.models.prov import get_file_path
-from rdf_utils.models.vocab import URI_GEOM_TYPE_POSE
+from rdf_utils.models.prov import get_linked_file_path
+from rdf_utils.models.vocab import URI_GEOM_TYPE_POSE, URI_GEOM_TYPE_RIGID_BODY
 from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, SDO, SSN
+from scene_dsl.rdf_parser.kinematics import get_kinematic_mappings
 
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.agents import DRIVEN_DEVICES, model_mappings
+from motion_spec.rdf_parser.agents import DRIVEN_DEVICES
 from motion_spec.rdf_parser.model import local_name
 
 # What a quantity is ultimately stated on, and where a walk from a constraint stops.
@@ -62,8 +63,9 @@ def platform_facts(graph) -> dict:
     """
     simulation = next(graph.subjects(RDF.type, EXEC.Simulation), None)
     context = simulation or next(graph.subjects(RDF.type, EXEC.RealWorld), None)
-    config = graph.value(context, PROV.wasDerivedFrom) if context is not None else None
-    path = get_file_path(graph, config) if config is not None else None
+    path = (
+        get_linked_file_path(graph, context, PROV.wasDerivedFrom) if context is not None else None
+    )
     name = (
         str(graph.value(graph.value(simulation, SSN.deployedOnPlatform), SDO.name) or "")
         if simulation is not None
@@ -148,19 +150,19 @@ def reject_scene_objects_on_hardware(model, context) -> None:
     # quantity, so the observation is walked down to entities the same way constraints are.
     observed = entities_from(graph, set(graph.objects(None, SOSA.hasFeatureOfInterest)))
     objects = []
-    for modelled in graph.subjects(RDF.type, ENV.ModelledObject):
+    for obj, models in quantities.scene_instance(model).object_models.items():
         bodies = [
-            body
-            for asset in graph.objects(modelled, ENV["has-object-model"])
-            for body, _entity in model_mappings(model, asset, GEOM_ENT.RigidBody)
+            mapping.target_id
+            for asset in models.values()
+            for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_RIGID_BODY)
         ]
         entities = {
-            graph.value(modelled, ENV["of-object"]),
+            obj,
             *bodies,
             *(frame for body in bodies for frame in graph.objects(body, GEOM_ENT.simplices)),
         }
         if entities & constrained and not entities & observed:
-            objects.append(local_name(modelled))
+            objects.append(local_name(obj))
     if objects:
         raise ConstraintViolation(
             "platform",

@@ -1269,7 +1269,10 @@ def augment_data(model, context, data: list, views: dict) -> None:
             target = graph.value(plan.view, MAP.superobject)
             difference = PoseDifference(
                 id=ids.pose_difference(),
-                quantity_kind=["Angle", "Length"],
+                quantity_kind=[
+                    QuantityKind("Angle", str(NS_MM_QUDT_QTY.Angle)),
+                    QuantityKind("Length", str(NS_MM_QUDT_QTY.Length)),
+                ],
                 reference_point=Point(f"point_{ids.pose_difference()}_origin"),
                 as_seen_by=quantities.frame(model, graph.value(target, GEOM_COORD["as-seen-by"])),
                 unit=["M", "RAD"],

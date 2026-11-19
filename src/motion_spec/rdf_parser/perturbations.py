@@ -12,7 +12,6 @@ from __future__ import annotations
 from motion_spec_dsl.rdf_parser.vocab import (
     CSTR_EXT,
     CSTR_HDL,
-    GEOM_ENT,
     GEOM_OP,
     RBDYN_COORD,
     RBDYN_OP,
@@ -23,7 +22,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdflib.namespace import PROV, RDF
-from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
+from scene_dsl.rdf_parser.kinematics import body_of_frame
 
 from motion_spec.classes.handlers import Perturbation
 from motion_spec.rdf_parser.model import local_name
@@ -134,7 +133,7 @@ def read(model, node, chains) -> Perturbation:
         raise ConstraintViolation(
             "perturbation", f"perturbation wrench '{model.id(wrench)}' states no frame"
         )
-    frame_body = ensure_one_typed_subject_uri(graph, frame, GEOM_ENT.simplices, GEOM_ENT.RigidBody)
+    frame_body = body_of_frame(frame, graph)
     for slice_id, solver in chains:
         if solver.chain.root == f"{solver.runtime.prefix}{local_name(frame_body)}":
             robot_id = slice_id

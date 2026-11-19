@@ -71,7 +71,7 @@ def run_cataloged(
     env: dict[str, str] | None = None,
     environment_provenance: dict | None = None,
 ) -> int:
-    """Run a generated executable with REC lifecycle and archive provenance.
+    """Run a generated executable and record it: rec's lifecycle and motion-spec's provenance.
 
     ENV is what the executable runs under; ENVIRONMENT_PROVENANCE is what the run records of it.
     """
@@ -409,7 +409,7 @@ def _run_executable(
                 process.kill()
     except KeyboardInterrupt:
         # Ctrl-C, or the CLI's SIGTERM handler, is the operator asking the run to stop: a cancel.
-        # The run is archived and ended as any cancelled run is, so rec records it canceled.
+        # The run is recorded and ended as any cancelled run is, so rec records it canceled.
         if run.lifecycle()[0] is State.IN_PROGRESS:
             run.cancel()
         process.terminate()
@@ -490,8 +490,8 @@ def _record_sampling(run_dir: Path, run_id: str, bundle_id: URIRef, sampling: di
     """Each drawn value, recorded in motion-spec's bundle of the run."""
     drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
     with run_bundle(run_dir, run_id, bundle_id) as bundle:
-        # The process the run started draws the values; it is the agent acting for the runtime.
-        process = next(bundle.subjects(PROV.actedOnBehalfOf), None)
+        # The process the run started draws the values: the one agent that acted for another.
+        process = next(bundle.subjects(PROV.qualifiedDelegation), None)
         for quantity, values in sampling["draws"].items():
             record_draw(bundle, process, quantity, values, drawn_at)
 

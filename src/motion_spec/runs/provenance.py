@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # SPDX-FileContributor: Vamsi Kalagaturu <vamsikalagaturu@gmail.com>
-"""Provenance for generated artifacts, archives and recorded executions."""
+"""Provenance for generated artifacts and recorded executions."""
 
 from __future__ import annotations
 
@@ -433,10 +433,13 @@ def record_execution(
     The run, on the node rec's record describes, is an execution by motion-spec that used
     the executable the generation's build generated -- which has its
     provenance in GENERATION_DOCUMENT -- and the platform IRI PLATFORM_FACTS names. It is
-    associated with the process EXECUTABLE ran as, which acted for the runtime (mj_kdl_wrapper
-    in simulation, else the named backend), and with every robot GENERATION_DOCUMENT models.
+    associated with the process EXECUTABLE ran as and with every robot GENERATION_DOCUMENT
+    models. The process acted, in this run, on behalf of motion-spec, which launched it, and of
+    the runtime it drove (mj_kdl_wrapper in simulation, else the named backend): a qualified
+    `prov:Delegation` each, as the generation's tools acted for motion-spec in the generation.
     """
     generation = read_generation_dataset(generation_document)
+    motion_spec = add_package(bundle, "motion_spec")
     # A simulated run steps the wrapper's physics; a real one runs on the platform it names.
     if platform_facts.get("simulated"):
         runtime = add_package(bundle, "mj_kdl_wrapper")
@@ -445,7 +448,14 @@ def record_execution(
         runtime = URIRef(PackageURL(type="generic", name=backend).to_string())
         load_pkg_prov(bundle, PackageInfo(name=backend, purl=runtime))
     process = URIRef(uuid4().urn)
-    add_agent(bundle, process, (PROV.SoftwareAgent,), executable.name, acted_on_behalf_of=runtime)
+    add_agent(bundle, process, (PROV.SoftwareAgent,), executable.name)
+    for responsible in (motion_spec, runtime):
+        # Not blank: rdflib's JSON-LD compaction drops a blank node behind an `@id` term.
+        delegation = URIRef(uuid4().urn)
+        bundle.add((process, PROV.qualifiedDelegation, delegation))
+        bundle.add((delegation, RDF.type, PROV.Delegation))
+        bundle.add((delegation, PROV.agent, responsible))
+        bundle.add((delegation, PROV.hadActivity, run))
     for agent in set(generation.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         add_agent(bundle, agent, (URI_AGN_TYPE_MOD_AGN,), str(generation.value(agent, SDO.name)))
     # The executable is the node the generation's build generated, found by where it is.
@@ -469,11 +479,7 @@ def record_execution(
     for entity in used:
         bundle.add((run, PROV.used, entity))
     # motion-spec ran it; the process carried it out, driving the robots the scene models.
-    for agent in (
-        add_package(bundle, "motion_spec"),
-        process,
-        *bundle.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN),
-    ):
+    for agent in (motion_spec, process, *bundle.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         bundle.add((run, PROV.wasAssociatedWith, agent))
 
 
@@ -504,7 +510,7 @@ def record_draw(bundle: Graph, agent: URIRef, quantity: str, values, drawn_at) -
 def record_files(bundle: Graph, run: URIRef, run_dir: Path) -> None:
     """Add to BUNDLE, as entities RUN generated, each output found in RUN_DIR: the console log,
     camera videos, and every file of the ROS bag once rosbag2 closed it. The packed frame log is
-    the archive's, recorded where it packs.
+    the runner's, recorded where it packs it.
     """
     logs = run_dir / "logs"
     generated = [logs / "console.log", *sorted(logs.glob("*.mp4"))]
@@ -523,7 +529,7 @@ def execution_node(graph: Graph) -> URIRef | None:
 
 def run_outputs(run_dir: Path) -> list[Path]:
     """The local paths of the files the run's document in RUN_DIR records the run as having
-    generated, or derived from one, like the packed frame log; empty before the run is archived
+    generated, or derived from one, like the packed frame log; empty before its outputs are recorded
     or when the document does not exist."""
     graph = read_generation_dataset(rec_document(run_dir))
     run = execution_node(graph)

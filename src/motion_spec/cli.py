@@ -183,6 +183,7 @@ class MotionSpecGroup(click.Group):
                     ("cancel", "Ask a run in progress to stop; rec records it canceled."),
                     ("control", "Pause, resume, step or pace a simulated run in progress."),
                     ("replay", "Verify, summarize, or recover data from a recorded run."),
+                    ("compare", "Whether two generations had the same model, inputs and tools."),
                     ("view", "Compose a .scenex in MuJoCo and view it."),
                 ]
             )
@@ -1328,3 +1329,88 @@ def control(run_dir: Path, action: str, value: float | None) -> None:
         f"{run_dir.name}: {'paused' if status['paused'] else 'running'} at {status['speed']:g}x"
         + ("" if status["alive"] else ", and the loop did not acknowledge"),
     )
+
+
+@main.command()
+@click.argument(
+    "generation_a", metavar="GEN_A", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+@click.argument(
+    "generation_b", metavar="GEN_B", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+def compare(generation_a: Path, generation_b: Path) -> None:
+    """Whether GEN_A and GEN_B were generated from the same input by the same tools.
+
+    The same input is an isomorphic model graph and the same recorded input files, by hash; the
+    same tools are the same recorded package versions and revisions. Then the IR and the code
+    are the same up to order. Exits 1 on any difference. The ROS interface definitions a model
+    reads at generation are not recorded, so they are not compared.
+    """
+    from rdf_utils.models.prov import get_file_path
+    from rdflib import Graph
+    from rdflib.compare import graph_diff, to_isomorphic
+    from rdflib.namespace import DCTERMS, PROV, RDF, SDO
+
+    from motion_spec.runs.provenance import (
+        GENERATION_DOCUMENT,
+        generation_model,
+        read_generation_dataset,
+    )
+
+    recorded = []
+    for generation in (generation_a, generation_b):
+        try:
+            model_dataset = generation_model(generation / "generated").graph
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        # Bundles carry the times and ids of one generation; the model is everything else.
+        model, provenance = Graph(), Graph()
+        document = read_generation_dataset(generation / "generated" / GENERATION_DOCUMENT)
+        for dataset in (model_dataset, document):
+            for graph in dataset.graphs():
+                if (graph.identifier, RDF.type, PROV.Bundle) in graph:
+                    provenance += graph
+                elif dataset is model_dataset:
+                    model += graph
+        packages = {
+            str(provenance.value(package, SDO.name)): (
+                str(version),
+                str(provenance.value(package, SDO.identifier)),
+            )
+            for package, version in provenance.subject_objects(SDO.softwareVersion)
+        }
+        # What a generation read rather than wrote: every hashed file no activity generated and
+        # no tool wrote -- the model documents a tool wrote are compared as the model graph.
+        inputs = {}
+        for entity, digest in provenance.subject_objects(DCTERMS.identifier):
+            if (entity, PROV.wasGeneratedBy, None) not in provenance and (
+                entity,
+                PROV.wasAttributedTo,
+                None,
+            ) not in provenance:
+                try:
+                    inputs[str(digest)] = get_file_path(provenance, entity) or entity
+                except ValueError:
+                    inputs[str(digest)] = entity
+        recorded.append((to_isomorphic(model), packages, inputs))
+
+    (model_a, packages_a, inputs_a), (model_b, packages_b, inputs_b) = recorded
+    differences = []
+    if model_a != model_b:
+        _, only_a, only_b = graph_diff(model_a, model_b)
+        differences.append(
+            f"model graphs differ: {len(only_a)} triples only in GEN_A, {len(only_b)} only in GEN_B"
+        )
+    differences += [
+        f"{name}: {packages_a.get(name)} in GEN_A, {packages_b.get(name)} in GEN_B"
+        for name in packages_a.keys() | packages_b.keys()
+        if packages_a.get(name) != packages_b.get(name)
+    ]
+    differences += [f"input only in GEN_A: {inputs_a[key]}" for key in inputs_a.keys() - inputs_b]
+    differences += [f"input only in GEN_B: {inputs_b[key]}" for key in inputs_b.keys() - inputs_a]
+    if not differences:
+        say("done", "same model, inputs and tools: the IR and code are the same up to order")
+        return
+    for difference in differences:
+        say("warn", difference)
+    raise SystemExit(1)

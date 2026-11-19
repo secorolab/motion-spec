@@ -13,9 +13,7 @@ import collections
 import math
 import sys
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import unquote, urlsplit
 
 from motion_spec_dsl.rdf_parser.vocab import (
     AGN,
@@ -49,7 +47,6 @@ from rdf_utils.models.vocab import (
     URI_QUDT_PRED_VALUE,
 )
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
-from rdf_utils.naming import get_valid_var_name
 from rdf_utils.uri import iri_is_descendant, iri_parent
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import DCTERMS, RDF, SDO
@@ -755,13 +752,9 @@ def robot_setups(model):
     for document in model.graph.graphs():
         if (None, RDF["type"], GEOM_ENT.KinematicTree) not in document:
             continue
-        # scene-dsl names a scene's KDL header, and its namespace, after the scene's file.
-        stem = Path(unquote(urlsplit(str(document.identifier)).path)).stem
-        namespace = get_valid_var_name(stem)
-        namespace = f"scene_{namespace}" if namespace[0].isdigit() else namespace
+        header, namespace = model.scene_headers.get(document.identifier, (None, None))
         trees.extend(
-            {**tree, "namespace": namespace, "header": f"{stem}.kdl.hpp"}
-            for tree in build_kdl_trees(document)
+            {**tree, "namespace": namespace, "header": header} for tree in build_kdl_trees(document)
         )
     bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     attach_by_body, _root = fixed_attachments(model, bound_trees)

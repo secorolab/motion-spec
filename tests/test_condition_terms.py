@@ -5,8 +5,6 @@ what the model asked for: a monitor that can never fire. It may not reach the ge
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
 from rdf_utils.constraints import ConstraintViolation
@@ -93,6 +91,6 @@ def test_an_elapsed_equality_reads_its_tolerance_in_seconds() -> None:
     graph.add((evaluator, CSTR_HDL.constraint, constraint))
     graph.add((evaluator, CSTR_HDL.error, durations["elapsed"]))
 
-    ev = constraint_evaluator(Model(graph=graph, app_path=Path("model-app.ld.json")), evaluator)
+    ev = constraint_evaluator(Model(graph=graph), evaluator)
 
     assert (ev.elapsed_op, ev.elapsed_threshold_s, ev.elapsed_tolerance_s) == ("==", 5.0, 0.01)

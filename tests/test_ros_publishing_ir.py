@@ -8,7 +8,6 @@ so the cases need no interface package of their own.
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -69,7 +68,7 @@ def test_a_monitor_rate_becomes_the_cycles_between_messages(rate, divider):
         + (RATE.format(subject="mon-x", rate=rate) if rate is not None else ""),
         format="turtle",
     )
-    ros = ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)["ros"]
+    ros = ros_publication(Model(graph=graph), MONITOR)["ros"]
     motion = SimpleNamespace(
         when_monitors=[],
         while_monitors=[
@@ -96,7 +95,7 @@ ex:mon-x.f1 ros:field-path "status" ; rdf:value "STATUS_ABORTED" .
 """,
         format="turtle",
     )
-    ros = ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)["ros"]
+    ros = ros_publication(Model(graph=graph), MONITOR)["ros"]
     assert ros.cpp_type == "action_msgs::msg::GoalStatus"
     assert ros.include == "action_msgs/msg/goal_status.hpp"
     assert ros.on_satisfied == [
@@ -127,12 +126,7 @@ ex:wrist-ft.e0 rdf:value ex:ext-force .
         id="ext_force", quantity_kind=[], reference_point=Point("tcp"), as_seen_by=seen_by, unit=[]
     )
     # 1 kHz control loop, so 100 Hz is every tenth cycle.
-    (publish,) = ros_standing(
-        Model(graph=graph, app_path=Path("model-app.ld.json")),
-        [wrench],
-        1_000_000,
-        {seen_by.uri: seen_by.id},
-    )
+    (publish,) = ros_standing(Model(graph=graph), [wrench], 1_000_000, {seen_by.uri: seen_by.id})
     assert publish["divider"] == 10
     (entry,) = publish["entries"]
     assert (entry["value_id"], entry["value_type"]) == ("ext_force", "Wrench")
@@ -158,11 +152,8 @@ ex:wrist-ft.e1 rdf:value ex:pose-table ; sosa:hasFeatureOfInterest <https://exam
     )
     camera = Frame("camera_optical", uri=f"{NS}frames/camera_optical")
     (publish,) = ros_standing(
-        Model(graph=graph, app_path=Path("model-app.ld.json")),
-        [
-            Pose(name, None, None, [], camera, [], None)
-            for name in ("pose_drawer", "pose_table")
-        ],
+        Model(graph=graph),
+        [Pose(name, None, None, [], camera, [], None) for name in ("pose_drawer", "pose_table")],
         1_000_000,
         {camera.uri: camera.id},
     )
@@ -202,7 +193,7 @@ ex:wrist-ft.e0 rdf:value ex:pose-ee .
         None,
     )
     (publish,) = ros_standing(
-        Model(graph=graph, app_path=Path("model-app.ld.json")),
+        Model(graph=graph),
         [record],
         1_000_000,
         {
@@ -273,8 +264,6 @@ ex:mon-x.answer.f0 ros:field-path "position" ; rdf:value "0.5" .
 """,
         format="turtle",
     )
-    lowered = ros_publication(Model(graph=graph, app_path=Path("model-app.ld.json")), MONITOR)[
-        "answer"
-    ]
+    lowered = ros_publication(Model(graph=graph), MONITOR)["answer"]
     assert (lowered.satisfied, lowered.method) == (satisfied, method)
     assert lowered.fields == [{"path": "position", "cpp_value": "0.5"}]

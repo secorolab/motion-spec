@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,11 +50,6 @@ class RunInfo:
     @property
     def log_path(self) -> Path:
         return frame_log_pb.log_path(self.dir / LOG_REL)
-
-    @property
-    def manifest(self) -> dict | None:
-        path = self.dir / "manifest.json"
-        return json.loads(path.read_text()) if path.exists() else None
 
     @property
     def state(self) -> State | None:

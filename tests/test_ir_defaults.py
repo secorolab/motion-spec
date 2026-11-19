@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import CSTR, ENV, EXEC, GEOM_ENT, GEOM_REL
 from rdf_utils.constraints import ConstraintViolation
@@ -44,11 +42,7 @@ def test_shared_or_nested_names_get_distinct_ids_and_a_fold_onto_one_id_is_rejec
     ]
     for node in nodes:
         graph.add((node, RDF.type, RDF.Property))
-    model = Model(
-        graph=graph,
-        app_path=Path("/tmp/app.json"),
-        namespaces=("https://example.test/", "https://example.test/motion/"),
-    )
+    model = Model(graph=graph, namespaces=("https://example.test/", "https://example.test/motion/"))
 
     assert len({model.id(node) for node in nodes}) == len(nodes)
     model.id(URIRef("https://example.test/hold-position"))
@@ -62,8 +56,7 @@ def test_real_world_execution_rejects_a_constrained_scene_object() -> None:
     graph.default_graph.parse(data=CONSTRAINED_SCENE_OBJECT, format="turtle")
     with pytest.raises(ConstraintViolation, match="constrains scene object"):
         deployment.reject_scene_objects_on_hardware(
-            Model(graph=graph, app_path=Path("/tmp/app.json")),
-            URIRef("https://example.test/real-exec"),
+            Model(graph=graph), URIRef("https://example.test/real-exec")
         )
 
 

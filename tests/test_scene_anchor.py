@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
@@ -26,4 +24,4 @@ def test_a_graph_declaring_two_anchors_is_an_error() -> None:
     for anchor in ("ground", "table_top"):
         graph.add((NS["kgraph"], NS_MM_KC_EXT["anchor"], NS[anchor]))
     with pytest.raises(ConstraintViolation, match="exactly one anchor"):
-        anchor_frame(Model(graph=graph, app_path=Path(".")))
+        anchor_frame(Model(graph=graph))

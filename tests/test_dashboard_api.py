@@ -11,12 +11,12 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 import pytest
-from rec import State, Verdict, jsonld
+from rec import Verdict
 from support import DASHBOARD_SCHEMA
 
 from motion_spec.dashboard import roots, server
 from motion_spec.generation.artifacts import build_frame_layout
-from motion_spec.runs.provenance import rec_document
+from motion_spec.runs.provenance import rec_run
 
 RUN = "demo/20260821T000000Z/runs/run-1"
 
@@ -30,12 +30,9 @@ def host(tmp_path, monkeypatch):
     layout.write_text(json.dumps(build_frame_layout(DASHBOARD_SCHEMA)))
     run = generation / "runs" / "run-1"
     (run / "logs").mkdir(parents=True)
-    (run / "manifest.json").write_text(json.dumps({"run_id": "run-1", "files": {}}))
-    doc = jsonld.document(
-        "https://example.test/run/r1", {"state": State.COMPLETE, "verdict": Verdict.PASSED}
-    )
-    rec_document(run).parent.mkdir()
-    rec_document(run).write_text(json.dumps(doc))
+    recorded = rec_run(run)
+    recorded.start()
+    recorded.end(Verdict.PASSED)
     monkeypatch.setattr(roots, "GENERATIONS", tmp_path)
     monkeypatch.setattr(roots, "WORKSPACE", tmp_path)
     monkeypatch.setattr(server, "LIFECYCLE", None)

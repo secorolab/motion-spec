@@ -16,25 +16,23 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from rdflib import Graph, URIRef
+from rdflib import URIRef
+from rdflib.namespace import PROV
 from rec import State, Verdict
 
-from motion_spec.runs.archive import create_archive_manifest, verify_manifest
+from motion_spec.runs.archive import archive_run, verify_run
 from motion_spec.runs.lifecycle_events import publish_lifecycle
 from motion_spec.runs.provenance import (
     EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
-    GRAPH_EXECUTION,
-    PROCESS,
-    PROVENANCE_DIR,
-    RUN_IRI_BASE,
-    parse_rec_time,
+    motion_spec_bundle,
+    read_generation_dataset,
     rec_document,
+    rec_run,
     rec_run_lifecycle_from_file,
     record_draw,
     record_execution,
     record_run_file,
-    record_software,
     write_generation_graph,
 )
 from motion_spec.runs.ros_video import RosImageRecorder, real_camera_recordings
@@ -103,26 +101,23 @@ def run_cataloged(
         raise
     sampling = read_sampling(frame_log) if record_log and frame_log.exists() else None
     if sampling:
-        _record_sampling(rec_path, run_id, sampling)
-    if rec_run_lifecycle_from_file(rec_path)["verdict"] is not Verdict.ERROR:
-        # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
-        # dying from: the run stopped early but its artifacts are complete, so it is not a
-        # failure. Reached when the signal went to the child alone and never raised here.
-        if returncode == 130:
-            _finish_rec_run(rec_path, run_id, Verdict.ERROR)
-        elif returncode != 0:
-            _finish_rec_run(rec_path, run_id, Verdict.FAILED)
+        _record_sampling(rec_path, sampling)
+    # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
+    # dying from: the run stopped early but its artifacts are complete, so it is not a
+    # failure. Reached when the signal went to the child alone and never raised here.
+    verdict = {0: Verdict.PASSED, 130: Verdict.ERROR}.get(returncode, Verdict.FAILED)
 
-    # A run that died before its first frame has nothing to catalogue. The rec run is already
-    # FAILED, and what the caller needs to see is the executable's own error -- not a missing
-    # frame log raised from the manifest on top of it.
+    # A run that died before its first frame has nothing to catalogue: what the caller needs to
+    # see is the executable's own error -- not a missing frame log raised on top of it.
     # A log-less run has no such signal -- catalogue it anyway, or an interrupted --no-log run
     # would leave nothing saying it ran.
     if returncode != 0 and record_log and not frame_log.exists():
+        _finish_rec_run(rec_path, run_id, verdict)
         return returncode
 
+    # rec's end is the archive's mark: ended once the run is archived, and checked.
     try:
-        create_archive_manifest(
+        archive_run(
             run_dir,
             source_dir=source_dir,
             run_id=run_id,
@@ -132,13 +127,11 @@ def run_cataloged(
             recorded=record_log,
         )
         if returncode == 0:
-            _finish_rec_run(rec_path, run_id, Verdict.PASSED)
-            # A recording nobody checked is not worth the disk it sits on.
-            verify_manifest(run_dir)
+            verify_run(run_dir)
     except Exception:
-        if returncode == 0:
-            _finish_rec_run(rec_path, run_id, Verdict.FAILED)
+        _finish_rec_run(rec_path, run_id, Verdict.FAILED if returncode == 0 else verdict)
         raise
+    _finish_rec_run(rec_path, run_id, verdict)
     return returncode
 
 
@@ -307,45 +300,31 @@ def start_rec_run(
     cwd: Path | None = None,
     environment: dict | None = None,
 ) -> None:
-    from rec.run import Run, host_info
-
     # One run, one node: rec describes the same IRI the generation provenance describes, so
-    # the documents union instead of standing side by side.
-    run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
-    run._emit_started()
-    # The environment a build and a run depend on: the host alone names no toolchain or prefix.
-    run.log_host_info({**host_info(), **({"environment": environment} if environment else {})})
-    record_software(run, run_dir)
-    _record_execution_inputs(run_id, run_dir, executable, schema, cwd, environment)
-    run.observers[0].close()
-    # rec has already stamped the start; a second `now()` would date the same run twice.
+    # the documents union instead of standing side by side. rec records the host it starts on.
+    run = rec_run(run_dir, run_id)
+    run.start()
+    _record_execution_inputs(run.node, run_dir, schema, cwd, environment)
     record_execution(
         run_dir,
-        run_id,
+        run.node,
         source_dir / GENERATION_DOCUMENT,
         executable,
         schema.get("platform") or {},
-        run.start_time,
     )
     _publish(run_dir, run_id)
 
 
-def _rec_observer(run_dir: Path):
-    from rec.observers.file_observer import FileObserver
-
-    return FileObserver(run_dir / PROVENANCE_DIR, base=RUN_IRI_BASE)
-
-
 def _record_execution_inputs(
-    run_id: str,
+    run: URIRef,
     run_dir: Path,
-    executable: Path,
     schema: dict,
     cwd: Path | None,
     environment: dict | None,
 ) -> None:
-    """What the execution ran and under what: the executable, its deployment, its environment."""
-    inputs = [(executable, "log_producer_executable")]
+    """What the execution ran under: its deployment and its environment. The executable is the
+    generation's node, which `record_execution` states the run used."""
+    inputs = []
     platform = schema.get("platform") or {}
     declared = platform.get("config") or ""
     # A simulation's config is as much what it ran with: its [run] section sets how.
@@ -354,19 +333,19 @@ def _record_execution_inputs(
         config = Path(declared)
         if not config.is_absolute():
             config = (cwd or Path.cwd()) / declared
-        inputs.append((config, "deployment_config"))
+        inputs.append(config)
     script = Path((environment or {}).get("script") or "")
     if script.is_file():
         # Kept with the run: the workspace's file can change or go, and its path is the machine's.
         kept = run_dir / "files" / f"environment{script.suffix}"
         kept.parent.mkdir(exist_ok=True)
         shutil.copy2(script, kept)
-        inputs.append((kept, "environment"))
-    graph = Graph()
-    for path, role in inputs:
+        inputs.append(kept)
+    bundle = motion_spec_bundle(run_dir / EXECUTION_DOCUMENT)
+    for path in inputs:
         if path.exists():
-            record_run_file(graph, run_id, path, role, generated=False)
-    write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
+            record_run_file(bundle, run, run_dir.parents[1], path, generated=False)
+    write_generation_graph(run_dir / EXECUTION_DOCUMENT, bundle)
 
 
 def _rosbag_settings(source_dir: Path) -> tuple[list[str], bool]:
@@ -527,8 +506,21 @@ def _run_executable(
         raise RunnerError(f"{executable}: failed to launch: {exc}") from exc
     pump = threading.Thread(target=_tee, args=(process.stdout, console), daemon=True)
     pump.start()
+    canceled_at = None
     try:
-        return process.wait()
+        while True:
+            try:
+                return process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            # Any holder of the run's id may cancel it through rec; the program leaves its loop
+            # on SIGTERM, and one that does not within 5 s is killed.
+            if canceled_at is None:
+                if rec_run_lifecycle_from_file(rec_path)["state"] == State.CANCELING:
+                    process.terminate()
+                    canceled_at = time.monotonic()
+            elif time.monotonic() - canceled_at > 5:
+                process.kill()
     except KeyboardInterrupt:
         process.terminate()
         try:
@@ -558,53 +550,29 @@ def _tee(stream, sink) -> None:
 
 
 def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
-    """Complete the run with VERDICT: passed, or error for a run stopped early, else failed."""
-    from rec.run import Run
+    """End the run with VERDICT: passed, or error for a run stopped early, else failed.
 
+    A run that has already ended keeps its first end: rec refuses to end a run twice.
+    """
     run_dir = rec_path.parent.parent
-    lifecycle = rec_run_lifecycle_from_file(rec_path)
-    if (
-        lifecycle["state"] is State.COMPLETE
-        and lifecycle["verdict"] is verdict
-        and (verdict is not Verdict.PASSED or lifecycle["completed_time"])
-    ):
+    run = rec_run(run_dir, run_id)
+    if run.lifecycle()[0] not in (State.IN_PROGRESS, State.CANCELING):
         return
-    run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
-    run.start_time = (
-        parse_rec_time(lifecycle["started_time"])
-        if lifecycle["started_time"]
-        else datetime.now(UTC)
-    )
-    if verdict is Verdict.PASSED:
-        run._emit_completed()
-    elif verdict is Verdict.ERROR:
-        run._emit_interrupted()
-    else:
-        run._emit_failed()
-    run.observers[0].close()
+    run.end(verdict)
     _publish(run_dir, run_id)
 
 
-def _record_sampling(rec_path: Path, run_id: str, sampling: dict) -> None:
-    """The seed as a metric of the run, and each drawn value as an entity the run generated."""
-    from rec.run import Run
-
+def _record_sampling(rec_path: Path, sampling: dict) -> None:
+    """Each drawn value as an entity the run generated."""
     run_dir = rec_path.parent.parent
-    run = Run(observers=[_rec_observer(run_dir)], run_id=run_id)
-    run.log_scalar("sampling/seed", sampling["seed"])
-    run.observers[0].close()
     drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
-    graph = Graph()
+    document = run_dir / EXECUTION_DOCUMENT
+    # The process the run started draws the values; it is the agent acting for the runtime.
+    process = next(read_generation_dataset(document).subjects(PROV.actedOnBehalfOf), None)
+    bundle = motion_spec_bundle(document)
     for quantity, values in sampling["draws"].items():
-        record_draw(
-            graph,
-            run_id,
-            URIRef(PROCESS.format(run_id=run_id)),
-            quantity,
-            values,
-            drawn_at,
-        )
-    write_generation_graph(run_dir / EXECUTION_DOCUMENT, GRAPH_EXECUTION, graph)
+        record_draw(bundle, process, quantity, values, drawn_at)
+    write_generation_graph(document, bundle)
 
 
 def _publish(run_dir: Path, run_id: str) -> None:

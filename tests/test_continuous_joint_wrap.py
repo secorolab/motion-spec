@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
-from pathlib import Path
-
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_HDL, KC_STAT
 from rdf_utils.models.vocab import (
@@ -41,7 +39,7 @@ ex:limit a <{URI_KC_EXT_TYPE_JOINT_LIMIT}>, <{URI_KC_STAT_JNT_POSITION}> ;
 def test_only_a_continuous_joint_equality_error_wraps(limit: str, leaves: set, wraps) -> None:
     graph = Dataset(default_union=True)
     graph.default_graph.parse(data=JOINT_EQUALITY + limit, format="turtle")
-    model = Model(graph=graph, app_path=Path("model-app.ld.json"))
+    model = Model(graph=graph)
     assert continuous_joint_leaves(model) == leaves
     function = ErrorEvaluator().function_step(model, EX.eval)
     assert function is not None

@@ -15,20 +15,14 @@ import rdflib
 from motion_spec_dsl.rdf_parser.vocab import EXEC
 from rdflib.namespace import SDO
 
-from motion_spec.runs.provenance import (
-    GENERATION_DOCUMENT,
-    GRAPH_DSL,
-    dsl_document,
-    read_generation_dataset,
-)
+from motion_spec.runs.provenance import kept_dsl_document
 
 MODEL_REL = Path("generated") / "model"
 
 
 def model_document(generation_dir: Path | str) -> Path | None:
     """The document the DSL generated, as the generation's provenance records it."""
-    generated = Path(generation_dir) / "generated"
-    return dsl_document(read_generation_dataset(generated / GENERATION_DOCUMENT).graph(GRAPH_DSL))
+    return kept_dsl_document(Path(generation_dir) / "generated")
 
 
 def graph_sizes(dataset: rdflib.Dataset) -> dict[str, int]:

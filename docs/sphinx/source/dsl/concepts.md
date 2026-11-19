@@ -1163,7 +1163,7 @@ The generated RDF uses the corresponding QUDT terms.
 | `generated/provenance/generation.ld.json` | DSL, coordinate and motion-spec provenance, one named graph each |
 | `generated/provenance/derived.ld.json` | what IR generation derived, and from what |
 | `build/` | Reusable compiled controller |
-| `runs/<run-id>/` | Runtime logs, REC graph, and consumer manifest |
+| `runs/<run-id>/` | Runtime logs, REC record and execution provenance |
 
 JSON-LD files use the `.ld.json` suffix. RDF data is handled as RDF graphs, not as
 application-specific JSON objects.

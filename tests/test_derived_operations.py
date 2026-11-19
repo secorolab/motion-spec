@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import (
     CSTR,
@@ -168,7 +166,7 @@ def test_each_coordinate_of_one_relation_computes_its_own_value() -> None:
     """
     g = Dataset(default_union=True)
     g.default_graph.parse(data=TWO_DISTANCE_COORDINATES, format="turtle")
-    materialize_linear_distance_operations(Model(graph=g, app_path=Path("model-app.ld.json")))
+    materialize_linear_distance_operations(Model(graph=g))
 
     first, second = URIRef(BASE + "dist"), URIRef(BASE + "dist-2")
     outputs = {
@@ -181,7 +179,7 @@ def test_each_coordinate_of_one_relation_computes_its_own_value() -> None:
 def test_pose_reference_cross_frame_reexpresses_reference() -> None:
     g = Dataset(default_union=True)
     g.default_graph.parse(data=CROSS_FRAME_EQUALITY, format="turtle")
-    materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
+    materialize_pose_reference_transforms(Model(graph=g))
 
     constraint = URIRef(BASE + "c-eq")
     reexpressed = URIRef(f"{constraint}.derived-reference-in-target")
@@ -209,7 +207,7 @@ def test_pose_reference_rejects_body_mismatch() -> None:
     )
 
     with pytest.raises(ConstraintViolation, match="compares a pose"):
-        materialize_pose_reference_transforms(Model(graph=g, app_path=Path("model-app.ld.json")))
+        materialize_pose_reference_transforms(Model(graph=g))
 
 
 @pytest.mark.parametrize(
@@ -235,9 +233,7 @@ def test_pose_reference_rejects_body_mismatch() -> None:
 def test_relative_orientation_reads_operands_in_slot_order(operands: str, order: tuple) -> None:
     g = Dataset(default_union=True)
     g.default_graph.parse(data=RELATIVE_ORIENTATION + operands, format="turtle")
-    read = relative_orientation(
-        Model(graph=g, app_path=Path("model-app.ld.json")), URIRef(BASE + "relative-orientation")
-    )
+    read = relative_orientation(Model(graph=g), URIRef(BASE + "relative-orientation"))
     assert order[0] in read[0] and order[1] in read[1]
     # The delta is authored as an Euler triple and leaves as the quaternion it denotes.
     delta = read[order.index("delta")]
@@ -277,7 +273,7 @@ def test_a_placement_keeps_its_quaternion_composes_to_the_anchor_and_scales_to_m
         ),
         format="turtle",
     )
-    model = Model(graph=g, app_path=Path("model-app.ld.json"))
+    model = Model(graph=g)
     anchor = URIRef(BASE + "frame-ground")
 
     position, orientation = frame_placement(model, URIRef(BASE + "frame-object"), anchor)
@@ -302,9 +298,7 @@ def test_a_placement_keeps_its_quaternion_composes_to_the_anchor_and_scales_to_m
         format="turtle",
     )
     assert frame_placement(
-        Model(graph=g, app_path=Path("model-app.ld.json")),
-        URIRef(BASE + "frame-object"),
-        URIRef(BASE + "frame-world"),
+        Model(graph=g), URIRef(BASE + "frame-object"), URIRef(BASE + "frame-world")
     )[0] == pytest.approx([1.5, -0.5, 7.2])
 
 
@@ -328,11 +322,7 @@ def test_sampled_scene_placements_are_rejected() -> None:
     )
 
     with pytest.raises(ConstraintViolation, match="cannot be drawn"):
-        frame_placement(
-            Model(graph=g, app_path=Path("model-app.ld.json")),
-            URIRef(BASE + "frame-object"),
-            URIRef(BASE + "frame-world"),
-        )
+        frame_placement(Model(graph=g), URIRef(BASE + "frame-object"), URIRef(BASE + "frame-world"))
 
 
 def test_a_constraint_no_evaluator_compiles_is_rejected_by_name() -> None:
@@ -351,7 +341,4 @@ ex:eval-home-while-above-table a cstr-hdl:ErrorEvaluator ;
     )
 
     with pytest.raises(ConstraintViolation, match="above_table.*AngleConstraint"):
-        ErrorEvaluator().function_step(
-            Model(graph=g, app_path=Path("model-app.ld.json")),
-            URIRef(BASE + "eval-home-while-above-table"),
-        )
+        ErrorEvaluator().function_step(Model(graph=g), URIRef(BASE + "eval-home-while-above-table"))

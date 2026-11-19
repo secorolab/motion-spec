@@ -12,6 +12,7 @@ from motion_spec.dashboard.catalog import rdf_name, run_videos
 from motion_spec.dashboard.frames import slot_signals
 from motion_spec.dashboard.sources import authored_lines
 from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.provenance import run_generation
 from motion_spec.runs.replay import resolve_archive, validate_header
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
@@ -31,15 +32,11 @@ GAIN_LABELS = {
 }
 
 
-def run_source_text(run_dir: Path, manifest: dict | None) -> str:
-    """The authored `.robmot` this run was generated from, vendored in the run or beside it."""
-    vendored = [
-        run_dir / rel
-        for rel in (manifest or {}).get("files", {}).get("sources", ())
-        if rel.endswith(".robmot")
-    ]
-    generated = (run_dir.parent.parent / "generated/source").glob("*.robmot")
-    source = next((path for path in (*vendored, *generated) if path.is_file()), None)
+def run_source_text(run_dir: Path) -> str:
+    """The authored `.robmot` this run was generated from, kept in its generation."""
+    generation = run_generation(run_dir)
+    generated = (generation / "generated/source").glob("*.robmot") if generation else ()
+    source = next((path for path in generated if path.is_file()), None)
     return source.read_text() if source else ""
 
 
@@ -152,7 +149,7 @@ def _constraint_row(motion, kind: str, group: list, constants: dict, authored: d
     }
 
 
-def source_constraints(run_dir: Path, manifest: dict | None, contract) -> list[dict]:
+def source_constraints(run_dir: Path, contract) -> list[dict]:
     """Return one row per constraint this run recorded, read off the log's own header.
 
     The header says which constraint every controller and monitor slot serves, which quantity
@@ -163,7 +160,7 @@ def source_constraints(run_dir: Path, manifest: dict | None, contract) -> list[d
     The row shape is a contract with the frontend: motion, handler, line, name, expression,
     kind, evaluator, between, tracking, error, control, monitors, setpoints, gains, tolerance.
     """
-    authored = authored_lines(run_source_text(run_dir, manifest))
+    authored = authored_lines(run_source_text(run_dir))
     constants = {
         key: row.value
         for row in contract.header.constants
@@ -250,16 +247,17 @@ def replay_data(run_dir: Path) -> dict:
     """Return replay metadata without decoding the complete frame log."""
     pending = False
     try:
-        run_dir, log, manifest, contract = resolve_archive(run_dir)
+        run_dir, log, contract = resolve_archive(run_dir)
     except ArchiveError:
         # A run named but not yet writing. The generation's header record is the same one the
         # runtime puts at the front of the log, and is itself a zero-frame log.
-        record = run_dir.parent.parent / "generated/contract/frame_log_header.pb"
-        if not record.is_file():
+        generation = run_generation(run_dir)
+        record = generation / "generated/contract/frame_log_header.pb" if generation else None
+        if record is None or not record.is_file():
             raise
-        log, manifest, contract = record, None, frame_log_pb.read_contract(record)
+        log, contract = record, frame_log_pb.read_contract(record)
         pending = True
-    constraints = source_constraints(run_dir, manifest, contract)
+    constraints = source_constraints(run_dir, contract)
     health = read_health(log) or {}
     frame_count = health.get("written_frames", 0)
     signals = ["timing.compute_ms", "timing.period_ms"]
@@ -315,12 +313,12 @@ def replay_data(run_dir: Path) -> dict:
     for signal in signals:
         if signal not in offered:
             offered.append(signal)
-    # A run copied out of its generation has none to go back to; the log says everything else.
-    generation = run_dir.parent.parent
+    # A generation outside the browsed root has no page to go back to; the log says the rest.
+    generation = run_generation(run_dir)
     return {
         "generation": (
             str(generation.relative_to(roots.GENERATIONS))
-            if roots.GENERATIONS.resolve() in generation.resolve().parents
+            if generation and roots.GENERATIONS.resolve() in generation.resolve().parents
             else None
         ),
         "frames": frame_count,
@@ -518,12 +516,12 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
 def run_verdict(run_dir: Path) -> dict:
     """Per motion: whether each goal was reached and held, when each monitor fired, and how the
     motion was left. Read off the marker scan the page already paid for, never a second pass."""
-    run_dir, log, manifest, contract = resolve_archive(run_dir)
+    run_dir, log, contract = resolve_archive(run_dir)
     scanned = log_events(log, contract)
     tally, exits, windows = scanned["tally"], scanned["exits"], scanned["windows"]
     # The authored motion name, the way the constraint panel spells it.
     spelling: dict[str, str] = {}
-    for row in source_constraints(run_dir, manifest, contract):
+    for row in source_constraints(run_dir, contract):
         spelling.setdefault(row["handler"], row["motion"])
     motions = []
     for motion in sorted(contract.header.motions, key=lambda m: windows.get(m.index, [1 << 62])[0]):
@@ -604,7 +602,7 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
     Sampling follows the window asked for, so a motion that lasted a handful of frames is
     drawn from those frames rather than missed between two samples of the whole run.
     """
-    _, log, _manifest, contract = resolve_archive(run_dir)
+    _, log, contract = resolve_archive(run_dir)
     value = signal_reader(contract)
     health = read_health(log) or {}
     first, last = window or (0, max(0, health.get("written_frames", 0) - 1))

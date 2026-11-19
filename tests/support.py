@@ -9,8 +9,9 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+from rdf_utils.models.prov import get_py_pkg_info
 
-from motion_spec.runs.provenance import GRAPH_MOTION_SPEC, PROV_CONTEXT, prov_uri
+from motion_spec.runs.provenance import PROV_CONTEXT
 
 # A model that publishes or subscribes to a ROS topic resolves its messages through rosidl.
 REQUIRES_ROS = pytest.mark.skipif(
@@ -143,32 +144,40 @@ DASHBOARD_SCHEMA = {
     "schema_hash": "fedcba9876543210",
 }
 
-# The generation document in miniature: one named graph holding one transformation.
+# The DSL's bundle in miniature: one named graph holding one transformation.
+DSL_AGENT = get_py_pkg_info("motion_spec_dsl").purl
 PROVENANCE = {
     "@context": PROV_CONTEXT,
     "@graph": [
         {
-            "@id": str(GRAPH_MOTION_SPEC),
+            "@id": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e01",
             "@graph": [
-                {"@id": prov_uri("entity:app_manifest"), "@type": "Entity"},
                 {
-                    "@id": prov_uri("entity:motion_spec_ir"),
+                    "@id": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e01",
+                    "@type": "http://www.w3.org/ns/prov#Bundle",
+                    "http://www.w3.org/ns/prov#wasAttributedTo": {
+                        "@id": str(DSL_AGENT)
+                    },
+                },
+                {"@id": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e02", "@type": "Entity"},
+                {
+                    "@id": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e03",
                     "@type": "Entity",
-                    "wasGeneratedBy": prov_uri("activity:motion_spec_ir_generation"),
+                    "wasGeneratedBy": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e04",
                 },
                 {
-                    "@id": prov_uri("activity:motion_spec_ir_generation"),
+                    "@id": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e04",
                     "@type": ["Activity", "Transformation"],
-                    "used": prov_uri("entity:app_manifest"),
-                    "wasAssociatedWith": prov_uri("agent:motion_spec"),
+                    "used": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e02",
+                    "wasAssociatedWith": str(DSL_AGENT),
                 },
                 {
-                    "@id": prov_uri("agent:motion_spec"),
+                    "@id": str(DSL_AGENT),
                     "@type": ["Agent", "SoftwareAgent"],
-                    "name": "motion-spec",
+                    "name": "motion_spec_dsl",
                 },
                 {
-                    "@id": prov_uri("agent:modelled:arm1"),
+                    "@id": "https://secorolab.github.io/models/agents/arm1",
                     "@type": ["Agent", "ModelledAgent"],
                     "name": "arm1",
                 },

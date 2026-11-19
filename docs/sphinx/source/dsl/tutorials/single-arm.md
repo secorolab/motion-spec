@@ -265,7 +265,7 @@ motion-spec replay generation/pick-place-run/pick_and_place/<timestamp>/runs/tut
 motion-spec replay generation/pick-place-run/pick_and_place/<timestamp>/runs/tutorial --verify
 ```
 
-The run owns logs, runtime RDF, REC provenance, and its manifest. It references
+The run owns logs, REC provenance and its execution provenance. It references
 the generation's source, model, controller, contract, and provenance instead of
 copying them.
 

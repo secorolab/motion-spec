@@ -9,8 +9,6 @@ the half its terms move in, and the control law divides its error by that norm.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import (
     ALGO_EXT,
@@ -98,7 +96,7 @@ def test_an_expression_runs_along_the_gradient_its_operator_names(subspace, half
         "    geom-op-ext:gradient ex:expr-gradient ; geom-op-ext:norm ex:expr-gradient-norm .\n",
         format="turtle",
     )
-    model = Model(graph=graph, app_path=Path("model-app.ld.json"))
+    model = Model(graph=graph)
     directions = constraint_handler._authored_controller_axes(model)[URIRef(f"{NS}ctrl-hold")]
     (axis,) = directions.axes
     assert axis.subspace == half
@@ -117,9 +115,7 @@ def test_a_controlled_expression_naming_no_gradient_is_refused() -> None:
         format="turtle",
     )
     with pytest.raises(ConstraintViolation, match="names no gradient"):
-        constraint_handler._authored_controller_axes(
-            Model(graph=graph, app_path=Path("model-app.ld.json"))
-        )
+        constraint_handler._authored_controller_axes(Model(graph=graph))
 
 
 def test_a_monitor_on_a_mixed_op_expression_schedules_every_interior_op() -> None:
@@ -142,7 +138,7 @@ ex:residual-band-eval a cstr-hdl:ConstraintEvaluator, cstr-hdl:ErrorEvaluator ;
 """,
         format="turtle",
     )
-    model = Model(graph=graph, app_path=Path("model-app.ld.json"))
+    model = Model(graph=graph)
 
     steps = Schedule(model).of([URIRef(f"{NS}residual-band-eval")], OPS_GENERIC + OPS_HANDLER)
 

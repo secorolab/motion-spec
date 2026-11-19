@@ -131,9 +131,9 @@ directory instead.
    $ motion-spec replay "$GENERATION_DIR/runs/run-1"
    $ motion-spec replay "$GENERATION_DIR/runs/run-1" --verify
 
-The first command prints a summary. The second checks the files the manifest
-names, the log's schema hash against the generation's frame layout, and its frame
-count against what the writer reported.
+The first command prints a summary. The second checks the files the run's
+provenance records, the log's schema hash against the generation's frame layout,
+and its frame count against what the writer reported.
 
 Combined shortcut
 =================

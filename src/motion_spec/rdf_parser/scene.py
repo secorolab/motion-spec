@@ -172,7 +172,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             )
         )
     _expand_scene_geometry(scene)
-    _validate_scene(scene, model.app_path)
+    _validate_scene(scene)
 
     return scene
 
@@ -373,7 +373,7 @@ def _expand_scene_geometry(scene: MjcfSceneSpec) -> None:
                 _expand_vector(obj, name, components, default)
 
 
-def _validate_object_attachments(scene: MjcfSceneSpec, app_path: Path) -> None:
+def _validate_object_attachments(scene: MjcfSceneSpec) -> None:
     """Reject an attachment onto a scene object whose asset states no site to hold it.
 
     The runtime reaches such a site by the object's name and the site's, and only the asset can
@@ -402,11 +402,11 @@ def _validate_object_attachments(scene: MjcfSceneSpec, app_path: Path) -> None:
             )
 
 
-def _validate_scene(scene: MjcfSceneSpec, app_path: Path) -> None:
+def _validate_scene(scene: MjcfSceneSpec) -> None:
     """Reject a procedural scene object that omits geometry: the model must declare it, and a
     silent default would place a body the author never described.
     """
-    _validate_object_attachments(scene, app_path)
+    _validate_object_attachments(scene)
     for obj in scene.objects:
         if obj.path:
             continue

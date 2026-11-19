@@ -38,9 +38,9 @@ Create another run
 
    $ motion-spec run "$GENERATION_DIR" --run-id run-2
 
-Only ``runs/run-2`` is new. Its manifest references the existing generation
-artifacts relatively; the source, model, controller, contracts, provenance, and
-executable are not copied into every run.
+Only ``runs/run-2`` is new. It sits beside the generation's ``generated/`` and
+``build/``: the source, model, controller, contracts, provenance, and executable are
+not copied into every run.
 
 Bound a run
 ===========

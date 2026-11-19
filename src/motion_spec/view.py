@@ -25,11 +25,10 @@ from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
 
 
 def scenex_model(scenex_path: Path) -> Model:
-    """The .scenex as the model the scene readers take, named by the file it was read from."""
+    """The .scenex as the model the scene readers take, in the named graph scene-dsl built."""
     graph = rdflib.Dataset(default_union=True)
-    named = graph.graph(rdflib.URIRef(scenex_path.resolve().as_uri()))
-    named += create_scenex_model_graph(scenex_metamodel().model_from_file(str(scenex_path)))
-    return Model(graph=graph, app_path=scenex_path.resolve())
+    graph.add_graph(create_scenex_model_graph(scenex_metamodel().model_from_file(str(scenex_path))))
+    return Model(graph=graph)
 
 
 def home_poses(model: Model, config_path: Path):

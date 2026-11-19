@@ -15,8 +15,8 @@ import math
 import re
 from dataclasses import dataclass, field
 from functools import wraps
-from pathlib import Path
 from typing import NamedTuple
+from uuid import uuid4
 
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
@@ -127,9 +127,10 @@ class Model:
     """
 
     graph: rdflib.Dataset
-    app_path: Path
     # The namespaces the application document declares: the nodes under them are the model's own.
     namespaces: tuple = ()
+    # Each scene graph's KDL header and its C++ namespace, as the pipeline has scene-dsl write them.
+    scene_headers: dict = field(default_factory=dict)
     cache: dict = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -140,7 +141,7 @@ class Model:
         self._derived: dict[str, _DerivedIri] = {}
         # What IR generation adds to the graph, apart from what was authored: the union reads it,
         # and it is what the derivation document states.
-        self.derived = self.graph.graph(URIRef(f"{Path(self.app_path).resolve().as_uri()}#derived"))
+        self.derived = self.graph.graph(URIRef(uuid4().urn))
 
     # identity
 

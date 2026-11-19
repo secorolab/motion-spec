@@ -69,8 +69,8 @@ def run_status(run_dir: Path) -> dict:
         # page cannot tell a cancel from a crash by the code alone.
         "stopped": bool(started and started.get("stopped")),
         "log": str(Path(started["generation"]) / RUN_LOG) if started else None,
-        # Whether the run keeps a frame log: from its manifest once written, before that from the
-        # choice this dashboard started it with. False means the page must not wait for a log.
+        # Whether the run keeps a frame log: from its provenance once it ended, before that from
+        # the choice this dashboard started it with. False means the page must not wait for a log.
         "recorded": _recorded(run_dir, started),
     }
 

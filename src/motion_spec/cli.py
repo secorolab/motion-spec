@@ -232,7 +232,7 @@ class MotionSpecGroup(click.Group):
                     ("generated/contract/", "Schema, frame layout, and frame-log protocol."),
                     ("generated/provenance/", "Generation and derivation provenance."),
                     ("build/", "Reusable compiled controller."),
-                    ("runs/RUN/", "Run-owned logs, provenance/, and manifest."),
+                    ("runs/RUN/", "Run-owned logs and provenance/."),
                     ("latest", f"Symlink to the newest generation, under ${GENERATION_VARIABLE}."),
                 ]
             )
@@ -1178,8 +1178,8 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
 @click.option(
     "--verify",
     is_flag=True,
-    help="Check the archive: every file its manifest names, the log against the generation's "
-    "contract, and every frame decoded against what the writer reported.",
+    help="Check the archive: every file its provenance records, the log against the "
+    "generation's contract, and every frame decoded against what the writer reported.",
 )
 def replay(log: Path, jsonl: bool, verify: bool) -> None:
     """Inspect a recorded run LOG."""
@@ -1293,6 +1293,8 @@ def run(
     run_dir = generation / "runs" / (run_id or new_id("run"))
     _say("step", f"running {generation.name}")
     _say("info", f"run directory {run_dir}")
+    # The dashboard stops a run with SIGTERM: end it as Ctrl-C does, so rec records the end.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         returncode = run_cataloged(
             run_dir,

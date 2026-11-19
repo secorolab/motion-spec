@@ -45,9 +45,7 @@ app:demo-exec.config a prov:Entity ; prov:atLocation <file:///somewhere/robot.to
 def test_a_config_that_does_not_state_the_pose_is_rejected(config: dict, message: str) -> None:
     graph = Dataset(default_union=True)
     graph.default_graph.parse(data=CONFIG_POSE, format="turtle")
-    model = Model(
-        graph=graph, app_path=Path("model-app.ld.json"), namespaces=(f"{APP}shared/spec/",)
-    )
+    model = Model(graph=graph, namespaces=(f"{APP}shared/spec/",))
     with pytest.raises(ConstraintViolation, match=message):
         config_poses(model, config)
 

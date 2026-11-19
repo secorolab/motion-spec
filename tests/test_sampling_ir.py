@@ -4,8 +4,6 @@
 
 """What the controller draws at startup, and the two ways the scene and the draw disagree."""
 
-from pathlib import Path
-
 import pytest
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.vocab import (
@@ -58,7 +56,7 @@ def test_an_unplaced_frame_with_a_distribution_is_drawn_into_its_tree() -> None:
     graph.default_graph.parse(data=DRAWN_POSITION, format="turtle")
 
     [drawn] = sampled_quantities(
-        Model(graph=graph, app_path=Path("model-app.ld.json"), namespaces=(NS,)),
+        Model(graph=graph, namespaces=(NS,)),
         [{"name": "arm", "cpp_name": "arm", "unplaced_frames": [UNPLACED_MARKER]}],
     )
 
@@ -76,7 +74,7 @@ def test_a_scalar_is_drawn_into_a_member_of_its_own() -> None:
     graph.default_graph.parse(data=DRAWN_SCALAR, format="turtle")
 
     [drawn] = sampled_quantities(
-        Model(graph=graph, app_path=Path("model-app.ld.json"), namespaces=(NS,)),
+        Model(graph=graph, namespaces=(NS,)),
         [{"name": "arm", "cpp_name": "arm", "unplaced_frames": []}],
     )
 
@@ -92,7 +90,7 @@ def test_a_drawn_object_placement_is_a_position_on_no_tree() -> None:
     graph.default_graph.parse(data=DRAWN_POSITION, format="turtle")
 
     [drawn] = sampled_quantities(
-        Model(graph=graph, app_path=Path("model-app.ld.json"), namespaces=(NS,)),
+        Model(graph=graph, namespaces=(NS,)),
         [{"name": "arm", "cpp_name": "arm", "unplaced_frames": []}],
         {f"{NS}marker_position"},
     )
@@ -125,6 +123,6 @@ def test_a_frame_drawn_and_placed_by_anything_but_exactly_one_source_is_an_error
 
     with pytest.raises(ConstraintViolation, match=rejection):
         sampled_quantities(
-            Model(graph=graph, app_path=Path("model-app.ld.json"), namespaces=(NS,)),
+            Model(graph=graph, namespaces=(NS,)),
             [{"name": "arm", "cpp_name": "arm", "unplaced_frames": unplaced}],
         )

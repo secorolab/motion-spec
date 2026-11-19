@@ -17,6 +17,8 @@ from motion_spec.dashboard.graph import GraphService, load_document, model_docum
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
+from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.provenance import run_generation
 from motion_spec.runs.replay import resolve_archive
 from motion_spec.telemetry import frame_log_pb
 
@@ -27,16 +29,6 @@ GRAPH_MAX_TRIPLES = 20_000
 _GRAPHS: dict[tuple[str, int, bool], GraphService] = {}
 
 
-def run_model_manifest(run_dir: Path) -> Path | None:
-    """The model graph this run names, wherever the manifest says it lives."""
-    manifest = json_file(run_dir / "manifest.json").get("files", {})
-    named = manifest.get("model")
-    if not named:
-        return None
-    path = (run_dir / named).resolve()
-    return path if path.is_file() else None
-
-
 def generation_graph(generation_dir: Path) -> GraphService:
     """A generation's model graph on its own."""
     return GraphService(generation_dir)
@@ -44,16 +36,14 @@ def generation_graph(generation_dir: Path) -> GraphService:
 
 def run_graph(run_dir: Path) -> GraphService:
     """One run's queryable model graph. Kept per log revision, as the run list is."""
-    _, log, _manifest, _contract = resolve_archive(run_dir)
+    _, log, _contract = resolve_archive(run_dir)
     key = (str(log), log.stat().st_size, True)
     if key not in _GRAPHS:
+        generation = run_generation(run_dir)
+        if generation is None:
+            raise ArchiveError(run_dir, "the execution document names no generation's provenance")
         _GRAPHS.clear()
-        named = json_file(run_dir / "manifest.json").get("files", {}).get("graphs")
-        _GRAPHS[key] = GraphService(
-            run_dir.parent.parent,
-            document=run_model_manifest(run_dir),
-            graphs=[(run_dir / path).resolve() for path in named] if named else None,
-        )
+        _GRAPHS[key] = GraphService(generation)
     return _GRAPHS[key]
 
 

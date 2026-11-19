@@ -7,6 +7,12 @@ from pathlib import Path
 
 import pytest
 from rdf_utils.constraints import ConstraintViolation
+from rdf_utils.models.prov import (
+    add_directory_location,
+    capture_file_prov,
+    create_bundle,
+    get_py_pkg_info,
+)
 from rdf_utils.resolver import IriToFileResolver, install_resolver
 from rdflib import Dataset, Graph, URIRef
 from rdflib.namespace import PROV, RDF
@@ -63,8 +69,9 @@ def test_the_generation_document_conforms_to_the_prov_shapes(tmp_path: Path) -> 
     controller = generated / "controller"
     (controller / "headers").mkdir(parents=True)
     written = [controller / "CMakeLists.txt", controller / "main.cpp", controller / "headers/r.hpp"]
+    # Distinct bytes: a file is named by them, and one file is generated once.
     for path in written:
-        path.write_text("// generated\n")
+        path.write_text(f"// generated {path.name}\n")
     ir_path = generated / "model" / "ir.json"
     ir_path.parent.mkdir(parents=True)
     ir_path.write_text("{}")
@@ -72,16 +79,13 @@ def test_the_generation_document_conforms_to_the_prov_shapes(tmp_path: Path) -> 
     executable.parent.mkdir()
     executable.write_text("binary")
     now = datetime.now(UTC)
-    graph = Graph()
-    provenance.record_code_generation(graph, generated, ir_path, written, started=now, ended=now)
-    provenance.write_generation_document(
-        generated / provenance.GENERATION_DOCUMENT,
-        {
-            provenance.GRAPH_DSL: Graph(),
-            provenance.GRAPH_COORD_DSL: Graph(),
-            provenance.GRAPH_MOTION_SPEC: graph,
-        },
+    dataset = Dataset()
+    bundle = dataset.graph(create_bundle(dataset, get_py_pkg_info("motion_spec").purl))
+    ir = capture_file_prov(
+        bundle, ir_path, roots={tmp_path.resolve(): add_directory_location(bundle, tmp_path)}
     )
+    provenance.record_code_generation(bundle, tmp_path, [ir], written, started=now, ended=now)
+    provenance.write_generation_document(generated / provenance.GENERATION_DOCUMENT, [bundle])
     provenance.record_build(generated, controller, executable, started=now, ended=now)
     install_resolver(
         IriToFileResolver(
@@ -104,11 +108,7 @@ def test_a_derived_id_has_one_iri_and_never_shadows_an_authored_one() -> None:
     authored = "https://example.org/m/authored/ctrl-x"
     graph = Dataset(default_union=True)
     graph.add((URIRef(authored), RDF.type, PROV.Entity))
-    model = Model(
-        graph=graph,
-        app_path=Path("model-app.ld.json"),
-        namespaces=("https://example.org/m/authored/",),
-    )
+    model = Model(graph=graph, namespaces=("https://example.org/m/authored/",))
 
     assert (
         model.register_derived(

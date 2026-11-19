@@ -41,12 +41,11 @@ Summarize and verify a run
    $ motion-spec replay "$RUN_DIR"
    $ motion-spec replay "$RUN_DIR" --verify
 
-Summary mode reports the run without rewriting it. Verification requires the
-run's ``manifest.json``: it checks that every file the manifest names exists, that
-the log's schema hash matches the generation's frame layout, and that the log
-holds as many frames as the writer reported. A run recorded before
-``manifest.json`` was written (e.g. one killed mid-run) can still be summarized
-and decoded, but not verified.
+Summary mode reports the run without rewriting it. Verification checks every file
+the run's provenance records against its hash, that the log's schema hash matches
+the generation's frame layout, and that the log holds as many frames as the writer
+reported. A run killed before it was archived can still be summarized and decoded,
+but not verified.
 
 Stream decoded frames
 =====================

@@ -18,6 +18,7 @@ from motion_spec.dashboard.replay import log_events
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file, trace
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.provenance import run_generation
 from motion_spec.runs.replay import resolve_archive
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import ctrl_shm_name, shm_name_for
@@ -153,14 +154,18 @@ def _log_less_record(run_dir: Path) -> Path | None:
     started = RUNNING.get(str(run_dir))
     if not started or started.get("recorded") is not False:
         return None
-    record = run_dir.parents[1] / "generated/contract/frame_log_header.pb"
-    return record if record.is_file() else None
+    generation = run_generation(run_dir)
+    record = generation / "generated/contract/frame_log_header.pb" if generation else None
+    return record if record and record.is_file() else None
 
 
 def _live_sampler(run_dir: Path, contract) -> ShmSampler | None:
     """This run's frame-block sampler, started, or None when the generation names no layout."""
     try:
-        layout = FrameLayout.for_generation(run_dir.parent.parent)
+        generation = run_generation(run_dir)
+        if generation is None:
+            raise ValueError("the run's execution document names no generation")
+        layout = FrameLayout.for_generation(generation)
         fields = SignalFields(layout, contract)
     except (OSError, ValueError, KeyError) as error:
         trace(f"live sampler {run_dir.name}: no frame layout ({error})")
@@ -232,7 +237,7 @@ def live_state(run_dir: Path, signals=()) -> dict:
         log_less = False
         # Resolving parses the full header contract -- once per session, never per poll.
         try:
-            _, log, _manifest, contract = resolve_archive(run_dir)
+            _, log, contract = resolve_archive(run_dir)
         except ArchiveError:
             # No frame log yet: named but not writing. A run started with logs off never has
             # one, so its control block is reached through the generation's own contract

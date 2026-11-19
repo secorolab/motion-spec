@@ -6,45 +6,44 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from motion_spec.runs.archive import ArchiveError, load_manifest
+from motion_spec.runs.archive import FRAME_LOG, ArchiveError, verify_run
+from motion_spec.runs.provenance import run_generation, run_outputs
 from motion_spec.telemetry import frame_log_pb
 
 
 def run_dir_for(log_path: Path) -> Path:
+    """The run directory a run directory or its frame log belongs to: a log sits in `logs/`.
+
+    Raises:
+        ArchiveError: LOG_PATH, under either log name, does not exist.
+    """
     # Callers name the log the way it is written, and an archived one has since been packed;
     # resolve before asking whether it is there, or the conventional name reads as missing.
     log_path = frame_log_pb.log_path(log_path)
     if not log_path.exists():
-        raise ArchiveError(f"{log_path}: does not exist")
-    search_start = log_path if log_path.is_dir() else log_path.parent
-    for path in (search_start, *search_start.parents):
-        if (path / "manifest.json").exists():
-            return path
-    # No manifest yet -- e.g. a run killed before the archiving step ran. Fall back to the
-    # conventional layout every archive writer uses instead of rejecting outright: a directory
-    # passed directly is the run dir itself, and a bare frame log lives at <run_dir>/logs/.
+        raise ArchiveError(log_path, "does not exist")
     if log_path.is_dir():
         return log_path
-    return search_start.parent if search_start.name == "logs" else search_start
+    return log_path.parent.parent if log_path.parent.name == "logs" else log_path.parent
 
 
-def resolve_archive(path: Path | str) -> tuple[Path, Path, dict | None, dict]:
+def resolve_archive(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContract]:
+    """A run directory or frame log PATH as (run directory, frame log, the log's contract).
+
+    Raises:
+        ArchiveError: the run has no frame log -- by choice when its provenance records the
+            files it generated and the log is not among them.
+    """
     input_path = Path(path)
     run_dir = run_dir_for(input_path)
-    manifest_path = run_dir / "manifest.json"
-    manifest = None
-    frame_log_rel = "logs/frame_log.pb"
-    if manifest_path.exists():
-        _, manifest = load_manifest(run_dir)
-        frame_log_rel = manifest["files"]["frame_log"]
-        if frame_log_rel is None:
-            raise ArchiveError(f"{run_dir}: the run recorded no frame log")
     # Either name: a run still being written has the plain log, an archived one the packed.
-    log_path = frame_log_pb.log_path(run_dir / frame_log_rel if input_path.is_dir() else input_path)
+    log_path = frame_log_pb.log_path(run_dir / FRAME_LOG if input_path.is_dir() else input_path)
     if not log_path.exists():
-        raise ArchiveError(f"{log_path}: missing frame log")
-    # The log carries its own decode contract; the manifest, when present, only locates it.
-    return run_dir, log_path, manifest, frame_log_pb.read_contract(log_path)
+        outputs = run_outputs(run_dir)
+        if outputs and log_path.resolve() not in [output.resolve() for output in outputs]:
+            raise ArchiveError(run_dir, "the run recorded no frame log")
+        raise ArchiveError(log_path, "missing frame log")
+    return run_dir, log_path, frame_log_pb.read_contract(log_path)
 
 
 def validate_header(log_path: Path | str, contract=None) -> dict:
@@ -58,7 +57,7 @@ def validate_header(log_path: Path | str, contract=None) -> dict:
         contract = frame_log_pb.read_contract(log_path)
     header = contract.header
     if not header.schema_hash:
-        raise ArchiveError(f"{log_path}: frame log header carries no schema hash")
+        raise ArchiveError(log_path, "frame log header carries no schema hash")
     return {"schema_hash": header.schema_hash}
 
 
@@ -66,50 +65,39 @@ def verify_archive(path: Path | str) -> int:
     """Check a run's archive end to end and return how many frames its log holds.
 
     Raises:
-        ArchiveError: a file the manifest names is missing, the log was written against
-            another contract than its generation's, or the log holds other than the frames
-            the writer reported.
+        ArchiveError: the run fails `verify_run`, the log was written against another contract
+            than its generation's, or the log holds other than the frames the writer reported.
     """
-    run_dir, log_path, manifest, contract = resolve_archive(path)
+    run_dir, log_path, contract = resolve_archive(path)
     validate_header(log_path, contract)
-    if manifest is None:
-        raise ArchiveError(f"{run_dir}: no manifest.json")
-    named = [
-        location
-        for value in manifest["files"].values()
-        for location in (value if isinstance(value, list) else [value])
-        if location is not None
-    ]
-    missing = [location for location in named if not (run_dir / location).exists()]
-    if missing:
-        raise ArchiveError(f"{run_dir}: missing {', '.join(missing)}")
-    layout_path = (run_dir / manifest["files"]["frame_log_proto"]).parent / "frame_layout.json"
+    verify_run(run_dir)
+    layout_path = run_generation(run_dir) / "generated" / "contract" / "frame_layout.json"
     expected = json.loads(layout_path.read_text())["schema_hash"]
     if contract.header.schema_hash != expected:
         raise ArchiveError(
-            f"{log_path}: written against schema {contract.header.schema_hash}, "
-            f"the generation's is {expected}"
+            log_path,
+            f"written against schema {contract.header.schema_hash}, the generation's is {expected}",
         )
     frames = sum(1 for _ in frame_log_pb.frame_records(log_path, contract))
     health = frame_log_pb.read_health(log_path)
     if health is None:
-        raise ArchiveError(f"{log_path}: ends without the writer's health record: it never closed")
+        raise ArchiveError(log_path, "ends without the writer's health record: it never closed")
     if health["written_frames"] != frames:
         raise ArchiveError(
-            f"{log_path}: the writer reported {health['written_frames']} frames, the log holds "
-            f"{frames}"
+            log_path,
+            f"the writer reported {health['written_frames']} frames, the log holds {frames}",
         )
     return frames
 
 
 def decode_frames(log_path: Path | str) -> list[dict]:
-    _run_dir, log_path, _manifest, contract = resolve_archive(log_path)
+    _run_dir, log_path, contract = resolve_archive(log_path)
     validate_header(log_path, contract)
     return list(frame_log_pb.frame_records(log_path, contract))
 
 
 def summarize(log_path: Path | str) -> str:
-    run_dir, log_path, _manifest, contract = resolve_archive(log_path)
+    run_dir, log_path, contract = resolve_archive(log_path)
     meta = validate_header(log_path, contract)
     count = 0
     first = last = None

@@ -34,13 +34,11 @@ class LoadedModel:
 
     dataset: rdflib.Dataset
     model: Model
-    # Where the DSL wrote the model's document.
     document: Path
     fsm: dict | None
-    # Each imported scene or FSM document: its source file, the document, and its graph's IRI.
+    # (source file, document, graph IRI) per imported scene or FSM
     imports: list[tuple[Path, object, URIRef]]
-    # The bundles scene-dsl and coord-dsl record their steps in, by package, with the package's
-    # agent: scene-dsl's PackageInfo, coord-dsl's purl.
+    # package -> (bundle, agent): scene-dsl's PackageInfo, coord-dsl's purl
     bundles: dict[str, tuple[URIRef, object]]
 
 
@@ -63,9 +61,7 @@ def create_generation_dir(
     generation = generation.resolve()
     from motion_spec.config import CONFIG_FILE, find_config
 
-    # The settings this generation was made under; a later one may be made under others. From
-    # the generation first: it sits in the workspace whose config applied, which the working
-    # directory need not be anywhere near.
+    # the generation's workspace config first; the cwd may be elsewhere
     path = find_config(generation) or find_config()
     if path is not None:
         shutil.copy2(path, generation / CONFIG_FILE)
@@ -106,8 +102,7 @@ def load_model(model: Path, model_dir: Path) -> LoadedModel:
                 graph_id = record_model_to_graph(
                     loaded_document, dataset, bundle_id, info.purl, create_scenex_model_graph
                 )
-                # The header holds one scene's kinematics, so that scene names it and its C++
-                # namespace, as scene-dsl's own generator names them.
+                # named as scene-dsl's generator names them
                 namespace = get_valid_var_name(source.stem or "scene")
                 namespace = f"scene_{namespace}" if namespace[0].isdigit() else namespace
                 scene_headers[graph_id] = (f"{source.stem}.kdl.hpp", namespace)
@@ -175,7 +170,6 @@ def generate_model(
 
     generated = generation / "generated"
     model_dir = generated / "model"
-    # The whole generation is one activity; each step below is recorded as its own as well.
     generation_activity = URIRef(uuid4().urn)
     generation_started = datetime.now(UTC)
     loaded = load_model(model, model_dir)
@@ -184,8 +178,6 @@ def generate_model(
     record = dataset.graph(create_bundle(dataset, motion_spec))
     roots = {generation.resolve(): add_directory_location(record, generation)}
     dsl = get_py_pkg_info("motion_spec_dsl").purl
-    # The authored sources travel with the generation: each file a tool's bundle records it used,
-    # kept in `source/` as an alternate of the original the tool located.
     source_dir = generated / "source"
     source_dir.mkdir(parents=True)
     originals = set()
@@ -205,9 +197,7 @@ def generate_model(
             copy = capture_file_prov(record, kept, roots=roots)
             record.add((copy, PROV.wasGeneratedBy, generation_activity))
             record.add((copy, PROV.alternateOf, original))
-    # The files the IR is built from, each attributed to the tool that wrote it.
     graph_files = {capture_file_prov(record, loaded.document, roots=roots): dsl}
-    # motion-spec writes the scene and FSM graphs scene-dsl and coord-dsl built, in one step.
     started = datetime.now(UTC)
     written = {}
     for source, _document, graph_id in loaded.imports:
@@ -278,8 +268,6 @@ def generate_model(
             started=started,
             ended=datetime.now(UTC),
         )
-        # scene-dsl renders each scene's KDL header and coord-dsl the FSM's, each recording its
-        # step in its own bundle beside the one that built the graph.
         for source, _document, graph_id in loaded.imports:
             if source.suffix == ".scenex":
                 bundle_id, info = loaded.bundles["scene_dsl"]
@@ -310,17 +298,16 @@ def generate_model(
         add_wall_instant(record, generation_started),
         add_wall_instant(record, datetime.now(UTC)),
     )
-    # motion-spec ran every tool's step: each tool acted on its behalf in this generation.
     for key in ("motion_spec_dsl", *loaded.bundles):
         tool = get_py_pkg_info(key).purl
         add_agent(record, tool, (PROV.SoftwareAgent,), key)
-        # Not blank: rdflib's JSON-LD compaction drops a blank node behind an `@id` term.
+        # not blank: rdflib's JSON-LD compaction drops blank nodes behind `@id` terms
         delegation = URIRef(uuid4().urn)
         record.add((tool, PROV.qualifiedDelegation, delegation))
         record.add((delegation, RDF.type, PROV.Delegation))
         record.add((delegation, PROV.agent, motion_spec))
         record.add((delegation, PROV.hadActivity, generation_activity))
-    # The DSL's bundle stays in the DSL's own document, where the IR's source names it.
+    # the DSL's bundle stays in the DSL's document
     document = rdflib.Dataset()
     for graph in dataset.graphs():
         if (graph.identifier, RDF.type, PROV.Bundle) in graph and (
@@ -356,9 +343,7 @@ def build_generation(
         str(controller),
         "-B",
         str(build),
-        # CMake defaults to no build type, which compiles the control loop unoptimized.
-        # From ENV when there is one: a build type set by the sourced file is part of the
-        # environment the caller asked to build under.
+        # CMake's default is no build type, i.e. unoptimized
         f"-DCMAKE_BUILD_TYPE={(env or os.environ).get(BUILD_TYPE_VARIABLE, BUILD_TYPE)}",
     ]
     if prefixes:

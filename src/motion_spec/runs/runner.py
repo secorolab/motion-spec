@@ -49,7 +49,7 @@ from motion_spec.telemetry.frame_log_pb import (
     shm_name_for,
 )
 
-# zstd's level for the packed frame log: most of the ratio, at a fraction of the top levels' time.
+# most of the ratio at a fraction of the top levels' time
 COMPRESSION_LEVEL = 10
 
 
@@ -92,11 +92,9 @@ def run_cataloged(
         raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
     if frame_log.exists():
         raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
-    # frame_layout.json, not the log: the run's blocks are named before the log exists.
     schema_hash = json.loads((source_dir / "contract" / "frame_layout.json").read_text())[
         "schema_hash"
     ]
-    # What the run is deployed on, where the model states it: the generation's RDF.
     model = generation_model(source_dir)
     platform = platform_facts(model.graph)
     config = Path(platform["config"]) if platform["config"] else None
@@ -112,8 +110,7 @@ def run_cataloged(
     )
 
     try:
-        # The topics the deployment config asks the run to bag, and whether it stamps them in
-        # simulation time: [ros.clock] means the run publishes /clock and every stamp reads from it.
+        # [ros.clock]: the run publishes /clock, so bag in sim time
         topics, use_sim_time = [], False
         if config is not None and config.exists():
             import tomllib
@@ -150,24 +147,17 @@ def run_cataloged(
     if sampling:
         drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
         with run_bundle(run_dir, run_id, bundle_id) as bundle:
-            # The process the run started draws the values: the one agent that acted for another.
             process = next(bundle.subjects(PROV.qualifiedDelegation), None)
             for quantity, values in sampling["draws"].items():
                 record_draw(bundle, process, quantity, values, drawn_at)
-    # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
-    # dying from: the run stopped early but its artifacts are complete, so it is not a
-    # failure. Reached when the signal went to the child alone and never raised here.
+    # 130: stopped by SIGINT/SIGTERM with complete artifacts, not a failure
     verdict = {0: Verdict.PASSED, 130: Verdict.ERROR}.get(returncode, Verdict.FAILED)
 
-    # A run that died before its first frame has nothing to catalogue: what the caller needs to
-    # see is the executable's own error -- not a missing frame log raised on top of it.
-    # A log-less run has no such signal -- catalogue it anyway, or an interrupted --no-log run
-    # would leave nothing saying it ran.
+    # died before its first frame: surface the executable's error, not a missing log
     if returncode != 0 and record_log and not frame_log.exists():
         finish_rec_run(run_dir, run, verdict)
         return returncode
 
-    # rec's end is the record's mark: ended once the run's outputs are recorded, and checked.
     try:
         record_outputs(run_dir, run, bundle_id, recorded=record_log)
         if returncode == 0:
@@ -212,17 +202,12 @@ def start_rec_run(
         rec's handle on the run and the identifier of motion-spec's bundle, which the run's
         later steps record into
     """
-    # One run, one node: rec describes the same IRI the generation provenance describes, so
-    # the bundles union instead of standing side by side. rec records the host it starts on.
     run = rec_run(run_dir, run_id)
     run.start()
     with run_bundle(run_dir, run_id) as bundle:
-        # A simulation's config is as much what it ran with: its [run] section sets how.
         inputs = [config] if config is not None else []
         script = Path(environment_script or "")
         if script.is_file():
-            # Kept with the run: the workspace's file can change or go, and its path is the
-            # machine's.
             kept = run_dir / "files" / f"environment{script.suffix}"
             kept.parent.mkdir(exist_ok=True)
             shutil.copy2(script, kept)
@@ -259,10 +244,8 @@ def rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False
     options.rmw_serialization_format = "cdr"
     options.disable_keyboard_controls = True
     options.use_sim_time = use_sim_time
-    # The run's own topics appear only once it starts, so this is how much of the first cycle
-    # discovery can miss.
     options.topic_polling_interval = timedelta(milliseconds=50)
-    # NO: an rclpy handler would take SIGINT ahead of the run's own, which reports the stop.
+    # SIGINT belongs to the run's own handler
     started_rclpy = not rclpy_ok()
     if started_rclpy:
         rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
@@ -270,7 +253,6 @@ def rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False
     spinner = threading.Thread(target=recorder.record, daemon=True)
     spinner.start()
     try:
-        # The run must not start without the bag open.
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
             if bag_dir.exists():
@@ -282,7 +264,7 @@ def rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False
             time.sleep(0.01)
         else:
             raise RunnerError(f"{bag_dir}: the rosbag2 recorder did not open the bag in 30s")
-        # record() subscribes; without the spin the bag lists every topic and holds no message.
+        # without the spin the bag lists topics but holds no message
         recorder.start_spin()
         yield
     finally:
@@ -329,26 +311,17 @@ def run_executable(
     base_env: dict[str, str] | None = None,
     schema_hash: str | None = None,
 ) -> int:
-    # logs/ holds the console tee and any camera videos too, so it is made whether or not the
-    # frame log goes in it.
     frame_log.parent.mkdir(parents=True, exist_ok=True)
-    # The run's own variables are set on top of whatever the caller's environment file left,
-    # so a sourced ROS overlay reaches the controller and the frame log still lands here.
     env = dict(base_env) if base_env is not None else os.environ.copy()
-    # Blocks named per run, so runs of one generation can go side by side; an operator's own
-    # names win.
     if schema_hash:
         env.setdefault("MOTION_SPEC_SHM_NAME", shm_name_for(schema_hash, run_id))
         env.setdefault("MOTION_SPEC_CTRL_SHM_NAME", ctrl_shm_name(schema_hash, run_id))
-    # An empty path is how the runtime is told to record nothing (--no-log).
+    # empty: record nothing
     env["MOTION_SPEC_FRAME_LOG"] = str(frame_log.resolve()) if record_log else ""
-    # A camera to record, and where the video goes: the runtime renders the frame, so it
-    # writes the file, beside the log of the same run.
     if record:
         env["MOTION_SPEC_RECORD_CAMERAS"] = ",".join(record)
         env["MOTION_SPEC_RECORD_DIR"] = str(frame_log.parent.resolve())
     command = [str(executable)]
-    # Why a run died is otherwise only on the operator's terminal: tee it into the run dir.
     console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")
     try:
         process = subprocess.Popen(
@@ -356,7 +329,7 @@ def run_executable(
             cwd=str(cwd) if cwd else None,
             env=env,
             stdout=subprocess.PIPE,
-            # Merged so one pump drains both and no half-read pipe can block the exit.
+            # one pump drains both, so no half-read pipe blocks the exit
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
@@ -374,8 +347,6 @@ def run_executable(
                 return process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
-            # `motion-spec cancel` asks through rec; the program leaves its loop on SIGTERM, and
-            # one that does not within 5 s is killed.
             if canceled_at is None:
                 if run.lifecycle()[0] is State.CANCELING:
                     process.terminate()
@@ -383,8 +354,6 @@ def run_executable(
             elif time.monotonic() - canceled_at > 5:
                 process.kill()
     except KeyboardInterrupt:
-        # Ctrl-C, or the CLI's SIGTERM handler, is the operator asking the run to stop: a cancel.
-        # The run is recorded and ended as any cancelled run is, so rec records it canceled.
         if run.lifecycle()[0] is State.IN_PROGRESS:
             run.cancel()
         process.terminate()
@@ -395,7 +364,7 @@ def run_executable(
             process.wait()
         return 130
     finally:
-        # A grandchild holding the pipe open must not stall the run's bookkeeping.
+        # a grandchild may hold the pipe open
         pump.join(timeout=5)
         process.stdout.close()
         console.close()
@@ -410,7 +379,7 @@ def tee(stream, sink) -> None:
             sink.write(line)
             sink.flush()
     except ValueError:
-        return  # the run gave up waiting for this pump and closed the log under it
+        return  # log closed after the join timed out
 
 
 def record_outputs(run_dir: Path, run, bundle_id: URIRef, *, recorded: bool = True) -> None:

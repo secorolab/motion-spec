@@ -121,7 +121,6 @@ def write_sample(root: Path, declared: bool = False, ros: bool = False) -> Path 
     from motion_spec.formats import FORMATS
     from motion_spec.health import ros_distro
 
-    # Every key this file understands, at the value the run that wrote it used.
     declared_root = root if declared else None
     newline = "\n"
     version = FORMATS["config"].current

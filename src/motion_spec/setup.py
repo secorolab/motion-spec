@@ -22,7 +22,7 @@ from urllib.request import urlretrieve
 
 from motion_spec.utils import tee, total_memory, trash, usable_cores
 
-# An editable install has no shipped copy of the manifests: they are at the clone's root.
+# editable install: the manifests are at the clone's root
 CHECKOUT = Path(__file__).resolve().parents[2]
 MANIFEST = "motion_spec.repos"
 REAL_MANIFEST = "motion_spec.real.repos"
@@ -35,15 +35,12 @@ JARS = {
     ),
 }
 WORKSPACE_VARIABLE = "MOTION_SPEC_WS"
-# Where `vcs import src < motion_spec.repos` puts the checkouts.
 SOURCE_DIRECTORY = "src"
 BUILD_DIRECTORY = "build"
 INSTALL_DIRECTORY = "install"
-# colcon's, not motion-spec's: `colcon build` writes it beside build/ and install/.
 COLCON_LOG_DIRECTORY = "log"
 GENERATION_DIRECTORY = "generations"
 GENERATION_VARIABLE = "MOTION_SPEC_GEN"
-# For sources colcon has no business building; `setup` marks it with a COLCON_IGNORE.
 THIRDPARTY_DIRECTORY = "thirdparty"
 COLCON_IGNORE = "COLCON_IGNORE"
 MANAGED = Path("share") / "motion-spec"
@@ -224,7 +221,6 @@ def workspace(argument: Path | None = None) -> Path:
 
     chosen = setting("workspace.root", argument).value
     if chosen is None and (path := find_config()) is not None:
-        # The file's own directory is the workspace unless it says otherwise.
         chosen = path.parent
     if chosen is None:
         raise RuntimeError(
@@ -275,7 +271,7 @@ def missing_prerequisites(
         ros_distro,
     )
 
-    # Scoped, so `setup coord2b` is not refused for want of the Ant that only STST uses.
+    # scoped: only STST needs Ant
     needed = []
     if any(
         not Path(repository.path).is_relative_to(THIRDPARTY_DIRECTORY)
@@ -285,8 +281,6 @@ def missing_prerequisites(
     if any(repository.path == STST_REPOSITORY for repository in repositories):
         needed.append("codegen")
     profiles = (*needed, *(("ros",) if ros and needed else ()))
-    # The ROS checks run even for a selection with no profile at all: without them a
-    # Python-only `setup` in a colcon workspace fails on the distro only at the last step.
     packages = (
         apt_packages(
             check_health(
@@ -300,8 +294,6 @@ def missing_prerequisites(
     )
     others = []
     if ros:
-        # The environment file is written last, so an unresolved distro would surface only
-        # after everything is built -- and the build would have used whatever was sourced.
         if ros_distro() is None:
             installed = ", ".join(installed_ros_distros()) or "none under /opt/ros"
             others.append(
@@ -309,8 +301,7 @@ def missing_prerequisites(
             )
         if shutil.which("colcon") is None:
             others.append("colcon: apt install python3-colcon-common-extensions")
-        # Asked of a module rather than of pyvenv.cfg: a venv built on an interpreter that is
-        # not the system one sets `include-system-site-packages` and still reaches nothing from apt.
+        # not pyvenv.cfg: system site packages of a non-system interpreter lack apt's
         if module_path("yaml") is None:
             others.append(
                 "the distribution's Python packages: recreate the environment with "
@@ -337,9 +328,7 @@ class SourceState:
     path: Path
     usable: bool
     reason: str = ""
-    # The commit actually in the tree, which is what the marker records.
     ref: str = ""
-    # Set when that commit is not the pinned one, for the caller to report.
     drift: str = ""
 
 
@@ -351,7 +340,6 @@ def find_stst(path: str | None = None, workspace: str | None = None) -> str | No
     on_path = shutil.which("stst", path=path) if path is not None else shutil.which("stst")
     if on_path:
         return on_path
-    # Derived, not a variable of its own: one more to keep in step is one more to disagree.
     if workspace is None and path is None:
         workspace = os.environ.get(WORKSPACE_VARIABLE)
     managed = (
@@ -380,7 +368,7 @@ def package_installed(name: str, prefix: Path, checkout: Path) -> bool:
     Against the checkout's HEAD, so an adopted source at another ref is a no-op until that tree
     moves, rather than rebuilt on every run for not being the pin.
     """
-    # Edits are not in any commit, so nothing recorded can prove the install matches.
+    # uncommitted edits: nothing recorded can prove a match
     if not (checkout / ".git").is_dir() or git(
         checkout, "status", "--porcelain", "--untracked-files=no"
     ):
@@ -419,9 +407,8 @@ def install_stst(
 
     if not state.usable:
         raise RuntimeError(f"{state.path} {state.reason}")
-    # A half-built installation must not read as installed.
+    # a half-built install must not read as installed
     marker.unlink(missing_ok=True)
-    # Whatever tree the checkout is in: the launcher must name the jar ant just built.
     source = state.path
     tee(["ant", "-f", str(source / "build.xml")], log=log)
 
@@ -469,7 +456,7 @@ def source_state(pinned: Repository, root: Path) -> SourceState:
             else "is missing; vcs import the manifests into src/ first"
         )
         return SourceState(repository, False, reason)
-    # The remote first: a local branch still points where it did.
+    # remote first: a local branch may be stale
     commit = next(
         (
             found
@@ -492,9 +479,7 @@ def source_state(pinned: Repository, root: Path) -> SourceState:
             ref=head,
             drift="has uncommitted changes; building them, and rebuilding on every run",
         )
-    # A checkout already here is the operator's answer to which version this workspace wants.
-    # It is built as it stands and the ref is recorded, so nothing silently returns it to the
-    # pin; drift is said out loud instead, because a fork that merely compiles is the danger.
+    # an existing checkout is built as it stands; drift is reported, never reset
     if commit is None or head != commit:
         described = git(repository, "describe", "--all", "--always", "HEAD") or head
         return SourceState(
@@ -537,9 +522,7 @@ def install_package(
     """
     prefix = root / INSTALL_DIRECTORY
     marker = prefix / MANAGED / f".{package.name}-managed"
-    # A half-built installation must not read as installed.
     marker.unlink(missing_ok=True)
-    # Seeded from the shipped one the first time and edited by hand after.
     meta = root / COLCON_META
     if not meta.exists():
         shutil.copyfile(Path(__file__).parent / COLCON_META, meta)
@@ -547,9 +530,7 @@ def install_package(
     interpreter = extension_options(python, log) if package.cmake else ()
 
     if package.cmake and ros:
-        # colcon reads configured from --metas itself; the rest is this machine. One package
-        # per call rather than one `colcon build`: coord2b and robif2b carry no package.xml,
-        # so colcon has no dependency to order them by.
+        # one package per call: coord2b and robif2b have no package.xml to order by
         parallel = build_jobs(jobs)
         if shutil.which("colcon") is None:
             raise RuntimeError(
@@ -563,8 +544,6 @@ def install_package(
                 package.name,
                 "--base-paths",
                 str(root / SOURCE_DIRECTORY),
-                # Named, not left to colcon's cwd defaults: the prefix must be the one the
-                # markers and the environment file describe.
                 "--build-base",
                 str(root / BUILD_DIRECTORY),
                 "--install-base",
@@ -578,7 +557,7 @@ def install_package(
             ],
             log=log,
             cwd=root,
-            # colcon derives -j from the core count unless MAKEFLAGS already names one.
+            # colcon derives -j from the core count unless MAKEFLAGS sets it
             env={**os.environ, "MAKEFLAGS": f"-j{parallel} -l{parallel}"},
         )
     elif package.cmake:
@@ -603,12 +582,11 @@ def install_package(
             ],
             log=log,
         )
-        # A bare --parallel is make -j: unlimited, and it overrides the env and MAKEFLAGS too.
+        # a bare --parallel is an unlimited make -j
         tee([cmake, "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log)
         tee([cmake, "--install", str(build)], log=log)
 
     if package.python:
-        # The same -D options the CMake build got, so an extension links what the build linked.
         defines = (
             (*configured, *interpreter, f"-DCMAKE_PREFIX_PATH={cmake_prefix_path(prefix)}")
             if package.cmake
@@ -616,8 +594,7 @@ def install_package(
         )
         pip_install(package.path, log, dev, python, ros and package.cmake, defines)
 
-    # What was built, not what was wanted: an adopted checkout at another ref is recorded as
-    # that ref, so a rerun compares against the tree rather than the pin it does not match.
+    # the ref built, not the pin
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{state.ref}\n")
 
@@ -643,7 +620,7 @@ def installer(python: Path | None = None) -> list[str]:
     return [uv, "pip", "install", "--python", interpreter]
 
 
-# mj_kdl_wrapper's bindings build with this; PyKDL must share its pybind11 to share its types.
+# PyKDL must share mj_kdl_wrapper's pybind11 to share its types
 PYBIND11_REQUIREMENT = "pybind11>=2.13"
 _EXTENSION_PROBE = (
     "import pybind11, sysconfig; print(pybind11.get_cmake_dir()); "
@@ -718,11 +695,9 @@ def pip_install(
     requirements go in first and the flag stays off everything that does not need it.
     """
     arguments = ["--editable", str(source)] if editable else [str(source)]
-    # The same -D options the CMake build got, so the extension links what the build linked.
     for define in defines:
         arguments += ["-C", f"cmake.define.{define.removeprefix('-D')}"]
     if ros:
-        # What PEP 518 says the checkout needs to build, since nothing else will install them.
         manifest = source / "pyproject.toml"
         if manifest.is_file():
             import tomllib
@@ -755,14 +730,12 @@ def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path
                 "no ROS distribution: set [ros] distro, or source one, for a [ros] workspace"
             )
         overlay = shlex.quote(str(prefix / f"setup.{using}"))
-        # Each sourcing is skipped when this shell has already done it: sourcing a distro
-        # twice is noise, and sourcing an overlay twice repeats it on every path it sets.
+        # sourcing an overlay twice repeats its paths
         sourcing = (
             f'[ "${{ROS_DISTRO:-}}" = {distro} ] || . /opt/ros/{distro}/setup.{using}\n'
             f'case ":${{COLCON_PREFIX_PATH:-}}:" in *:{prefix}:*) ;; *)'
             f" [ -f {overlay} ] && . {overlay} ;; esac\n"
         )
-        # stst is ant-built into the prefix, so it is in no colcon package and on no overlay.
         paths = 'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
     else:
         sourcing = ""
@@ -771,8 +744,6 @@ def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path
             'export CMAKE_PREFIX_PATH="$MOTION_SPEC_PREFIX${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"\n'
             'export LD_LIBRARY_PATH="$MOTION_SPEC_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
         )
-    # Sourcing the file is the one step between a fresh shell and a working workspace, and a
-    # `motion-spec: command not found` right after it helps nobody.
     venv = python.parent.parent if python else Path(sys.prefix)
     activate = venv / "bin" / "activate"
     activation = (
@@ -829,11 +800,10 @@ def capture_environment(script: Path) -> dict[str, str]:
     """The environment a shell is left with after sourcing SCRIPT."""
     shell = "zsh" if script.suffix == ".zsh" else "bash"
     if shutil.which(shell) is None:
-        # A .zsh file is still a POSIX export list; the extension should not strand it.
         shell = next((found for found in ("bash", "sh") if shutil.which(found)), None)
         if shell is None:
             raise RuntimeError(f"no shell to source {script} with")
-    # stdout redirected so echoes stay out of the dump; env -0 because a value may hold newlines.
+    # env -0: a value may hold newlines
     done = subprocess.run(
         [shell, "-c", f". {shlex.quote(str(script))} >/dev/null && env -0"],
         capture_output=True,

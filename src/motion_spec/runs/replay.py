@@ -19,17 +19,14 @@ def resolve_run(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContract]
             files it generated and the log is not among them.
     """
     input_path = Path(path)
-    # Callers name the log the way it is written, and a recorded one has since been packed;
-    # resolve before asking whether it is there, or the conventional name reads as missing.
+    # a recorded log has been packed since: resolve before the existence check
     named = frame_log_pb.log_path(input_path)
     if not named.exists():
         raise RecordError(named, "does not exist")
     if named.is_dir():
         run_dir = named
     else:
-        # A log sits in the run directory's `logs/`.
         run_dir = named.parent.parent if named.parent.name == "logs" else named.parent
-    # Either name: a run still being written has the plain log, a recorded one the packed.
     log_path = frame_log_pb.log_path(run_dir / FRAME_LOG if input_path.is_dir() else input_path)
     if not log_path.exists():
         outputs = run_outputs(run_dir)

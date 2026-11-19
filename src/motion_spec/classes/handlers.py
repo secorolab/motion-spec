@@ -35,15 +35,14 @@ class ConstraintEvaluator:
     type_: EvaluatorType
     constraint: Constraint
     error: Quantity | None
-    # The authored band this constraint is satisfied within; unset falls back to the global one.
+    # unset falls back to the global tolerance
     tolerance: Quantity | None = None
     is_elapsed: bool = False
     elapsed_op: str | None = None
     elapsed_threshold_s: float | None = None
     elapsed_tolerance_s: float | None = None
-    # The instant slot an observation-age clock counts from; None counts from motion entry.
+    # None counts from motion entry
     observed_at_id: str | None = None
-    # The action_msgs GoalStatus constant an action goal must reach for this to hold.
     goal_status: str | None = None
     type: str = field(default="ConstraintEvaluator")
 
@@ -55,16 +54,10 @@ class Controller:
     id: str
     control_signal: Quantity
     output_saturation: Saturation | None = None
-    # Abstract signal ids folded from the error-evaluator function; the C++ access
-    # expression is rendered by access-expr (computation/values.stg).
     measured_signal: str | None = None
     setpoint_signal: str | None = None
-    # The band its constraint is satisfied within, as the model authored it.
     tolerance_id: str = ""
-    # The shared norm of an expression's gradient: the error along the direction it drives is
-    # the expression's error divided by it.
     gradient_norm: str | None = None
-    # The constraint this controller serves; per-axis controllers share the authored one.
     constraint: str | None = None
     constraint_uri: str | None = None
 
@@ -99,8 +92,7 @@ class FeedForwardController(Controller):
     """A feed-forward controller."""
 
     reference_signal: Quantity | None = None
-    # Not consumed by the controller; folded from its constraint's evaluator so the logged
-    # slot carries the real error instead of a zero.
+    # logged only, not consumed by the controller
     error_signal: str | None = None
     type: str = "FeedForwardController"
 
@@ -112,20 +104,13 @@ class Monitor:
     id: str
     monitor_type: str
     error: Quantity | None
-    # The band its constraint is satisfied within, when the model authored one.
     tolerance: Quantity | None = None
-    # Set when the monitor targets an expression node: the member constraint ids it
-    # aggregates, and whether they combine with 'any' rather than 'all'.
     group_constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_constraint_tolerances: list[str] = field(default_factory=list, metadata=INTERNAL)
-    # The constraints this monitor watches, by id: how a term read directly off shared state --
-    # an elapsed clock, an action goal's status -- is matched to the monitor that reads it.
     constraint_ids: list[str] = field(default_factory=list, metadata=INTERNAL)
-    # The same constraints by URI, for joins against the model graph.
     constraint_uris: list[str] = field(default_factory=list, metadata=INTERNAL)
     group_any: bool = field(default=False, metadata=INTERNAL)
-    # Structured active-phase boolean terms (rendered to C++ by the bool-condition template).
     has_active: bool = False
     active_terms: list | None = None
     active_any: bool = False
@@ -156,13 +141,8 @@ class EdgeMonitor(Monitor):
     event_uri: str | None = None
     event_name: str | None = None
     fallback_motion: str | None = None
-    # Its satisfied edge starts the motion it guards, inside that motion's own state.
     opens_gate: bool = False
-    # The authored duration the constraint must hold before the edge fires, by id: the runtime
-    # accumulates measured cycle time against that D-block, so the model's bound has one
-    # source of truth. None when absent.
     debounce_id: str | None = None
-    # FSM binding (folded when the monitor's event lives in the FSM namespace).
     fsm_namespace: str | None = None
     type: str = field(default="EdgeMonitor")
 
@@ -187,13 +167,8 @@ class RosPublication:
     on_violated: list[dict] = field(default_factory=list)
     auto_time: list[str] = field(default_factory=list)
     auto_context_id: list[str] = field(default_factory=list)
-    # How often the verdict goes out, as the model states it and as the loop counts it. Without
-    # a rate it goes out every cycle the motion is active, so `divider` stays unset.
     rate_hz: float | None = field(default=None, metadata=INTERNAL)
     divider: int | None = None
-    # Occurrence form: the payload field an announced event's IRI is written into, instead of
-    # authored field rows. `occurrence_events` are the events the monitor announces, resolved to
-    # their FSM enum tokens; one message is published per event that fired this cycle.
     occurrence_path: str | None = None
     occurrence_events: list = field(default_factory=list)
     occurrence_namespace: str | None = None
@@ -248,15 +223,9 @@ class Perturbation:
     wrench_id: str
     applied_id: str
     active_id: str
-    # The authored window length, by id: the runtime accumulates measured cycle time against that
-    # D-block. None when the window lasts until the state exits.
     duration_id: str | None = None
-    # The pose whose translation the force direction is normalized from, by id: the body-to-target
-    # vector, which is what a guide line to the aimed-at point is drawn along. None when the
-    # direction is a fixed authored vector, which points at nothing in particular.
     target_pose_id: str | None = None
     has_gate: bool = False
-    # Structured boolean terms, rendered by the same template a monitor's condition uses.
     terms: list = field(default_factory=list)
     gate_any: bool = False
     type: str = field(default="Perturbation")

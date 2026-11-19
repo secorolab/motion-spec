@@ -65,8 +65,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         ]
         if not mapped:
             continue
-        # The first mapping is the one the object is spawned as; the rest are further bodies of
-        # the same asset, which the scene already carries -- they are named, not spawned again.
+        # further mappings are bodies of the same asset: named, not spawned again
         asset, body, _entity = mapped[0]
         object_id = local_name(obj)
         attachment = attach_by_body.get(body, ("World", "", body, None, None))
@@ -76,12 +75,9 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             (None, None) if drawn else quantities.placement_of(model, attachment, anchor)
         )
         parent_of[local_name(body)] = local_name(parent) if parent is not None else None
-        # A file in a ROS package resolves against the package's share directory here, so the
-        # runtime is handed a path it can open without knowing about ROS.
         try:
             asset_path = get_linked_file_path(graph, asset, DCTERMS.source)
         except ImportError as missing:
-            # The one place that can say which asset needed ROS, instead of a bare import error.
             raise RuntimeError(
                 f"asset '{asset}' is in a ROS package, which cannot be located without ROS on the "
                 f"path: source /opt/ros/$ROS_DISTRO/setup.bash (and the workspace's own setup) in "
@@ -112,7 +108,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 },
             )
         )
-    # The runtime resolves a parent site as it spawns, so a bolted-on object follows its host.
+    # hosts first: the runtime resolves a parent site as it spawns
     scene.objects = hosts_first(scene.objects, parent_of)
 
     assemblies = agent_assemblies(model, attach_by_body)
@@ -132,12 +128,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         )
         scene.cameras.extend(assembly.cameras)
 
-    # A frame on a body an object maps beyond its root goes on that body under the name the
-    # composed scene gives it, not under its kgraph name, which names nothing in the scene.
     body_names = {uri: name for obj in scene.objects for uri, name in obj.secondary_bodies.items()}
-    # A body's own root frame is where the body is, so it needs no marker of its own; the rest are
-    # posed against it, which is the frame the runtime builds each body on.
-    # Every body the scene graph itself holds, as opposed to one a robot asset brings in.
     static_bodies = {
         body.id: body
         for kgraph in kinematic_graphs(scene_graph(model))
@@ -152,10 +143,8 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         for frame in body.frames
         if frame != body.root_frame.id and GEOM_ENT.Frame in get_node_types(graph, frame)
     ]
-    # A site is named after its frame, and carries its body only when another body has a frame
-    # of the same name -- the name has to be unique, and it has to stay readable in a viewer.
+    # a site name carries its body only on a clash
     counts = Counter(local_name(frame) for _body, frame in marked)
-    # A frame the tree could not place is marked from the tree that will place it at runtime.
     drawn_frames = {
         entry["iri"]: (tree["cpp_name"], entry) for tree in trees for entry in unplaced_frames(tree)
     }
@@ -180,8 +169,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         position, orientation = quantities.frame_placement(
             model, frame, quantities.placement_frame(model, body)
         )
-        # A frame no pose leads to is left out rather than placed at the body's origin, which
-        # would invent a spot.
+        # left out rather than invent a spot at the body's origin
         if position is None:
             continue
         frames.append(
@@ -194,8 +182,6 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             )
         )
     scene.frames = frames
-    # A camera on a static scene frame is built into the composed scene at that frame's site
-    # pose; a camera on a robot-asset frame rides the asset's own MJCF instead.
     frames_by_uri = {frame.uri: frame for frame in scene.frames}
     for camera in scene.cameras:
         frame = frames_by_uri.get(camera.frame_uri)
@@ -215,10 +201,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 )
             )
             continue
-        # A scene frame the placement search cannot reach from its own body is one the model
-        # posed against the anchor instead: it stands in the world rather than riding the body
-        # it is declared under, so it is built on the world body at the pose the anchor gives
-        # it. A camera on a robot asset is not this case -- it rides that asset's own MJCF.
+        # a frame posed against the anchor stands in the world, not on its body
         camera_frame = URIRef(camera.frame_uri)
         if body_of_frame(camera_frame, graph) not in static_bodies:
             continue
@@ -234,8 +217,6 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
             )
         )
-    # A path-backed object takes its geometry from its asset, so only a procedural one expands.
-    # What a procedural object leaves out is rejected below, so the expansion never depends on it.
     for robot in scene.robots:
         for item in (robot, *robot.attachments):
             for name, components, default in _PLACEMENT_VECTORS:
@@ -250,9 +231,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             if getattr(obj, name) is not None:
                 expand_vector(obj, name, components, default)
 
-    # The runtime reaches a site on a scene object by the object's name and the site's, and only
-    # the asset can say the site is there -- unchecked, the model builds and the scene fails to
-    # assemble.
+    # unchecked, the model builds and the scene fails to assemble
     for assembly, robot in zip(assemblies, scene.robots):
         if robot.attach_kind != "Site":
             continue
@@ -273,8 +252,6 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 f"'{obj.path}' states no site for. The asset holds an attachment by a site of "
                 f"the same name; it declares {declared or 'none'}.",
             )
-    # A procedural scene object that omits geometry is rejected: the model must declare it, and a
-    # silent default would place a body the author never described.
     for obj in scene.objects:
         if obj.path:
             continue
@@ -283,8 +260,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             raise ConstraintViolation(
                 "scene",
                 f"Procedural scene object '{obj.id}' is missing required field "
-                f"'{missing[0]}'. Add it to the .robmot model -- silent defaults are no "
-                f"longer applied.",
+                f"'{missing[0]}'; add it to the .robmot model",
             )
 
     return scene
@@ -312,14 +288,11 @@ def name_object_attachments(model, attach_by_body) -> None:
     for body, (kind, _name, _frame, parent_body, host_frame) in list(attach_by_body.items()):
         if kind != "Site" or parent_body not in object_ids_by_body:
             continue
-        # The site is the object's root frame, which is the one an asset exposes and the one
-        # the placement is composed against. Naming any other frame on the way up would
-        # measure the offset from one frame and apply it at another.
+        # the root frame: the one the placement is composed against
         name = local_name(quantities.placement_frame(model, parent_body))
         attach_by_body[body] = (
             kind,
-            # The runtime composes this as the object's name and the site, and it names the
-            # object after the body it maps -- so the prefix has to be that body, not the object.
+            # the runtime names the object after the body it maps
             f"{local_name(parent_body)}_{name}",
             host_frame,
             parent_body,
@@ -327,13 +300,10 @@ def name_object_attachments(model, attach_by_body) -> None:
         )
 
 
-# Per scene item, the vector fields expanded into scalar components, with the value an omitted
-# one falls back to. Env placement shorthand: no position means the origin, no rotation identity.
 _PLACEMENT_VECTORS = (
     ("pos", ("x", "y", "z"), None),
     ("quat", ("x", "y", "z", "w"), [0.0, 0.0, 0.0, 1.0]),
 )
-# Procedural geometry a path-less object must declare, and the components each expands into.
 _PROCEDURAL_VECTORS = (
     ("size", ("x", "y", "z"), None),
     ("color", ("r", "g", "b", "a"), None),

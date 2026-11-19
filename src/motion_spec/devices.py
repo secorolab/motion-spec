@@ -18,7 +18,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROBOT_TOML_REL = "generated/source/robot.toml"
-# What a device says to wait for a connection, where its table says nothing.
 CONNECT_TIMEOUT_MS = 1000
 
 
@@ -43,7 +42,7 @@ def endpoints(table: dict, name: str):
             "timeout_ms": table.get("connection_timeout_ms") or CONNECT_TIMEOUT_MS,
         }
     elif name and isinstance(port, str):
-        # every driver here opens the path it is given; a bare name is taken under /dev/
+        # a bare name is taken under /dev/
         yield {"name": name, "kind": "serial", "device": port if "/" in port else f"/dev/{port}"}
     for key, value in table.items():
         if isinstance(value, dict):
@@ -59,11 +58,8 @@ def probe_devices(generation_dir: Path) -> dict:
     toml_path = generation_dir / ROBOT_TOML_REL
     if not toml_path.is_file():
         return {"devices": [], "config": None}
-    # Derived from the data, never from section names.
     found = list(endpoints(tomllib.loads(toml_path.read_text()), ""))
-    # One job per address, so a host with two ports is two jobs and every job is a leaf. Flat
-    # on purpose: a probe that waits inside the pool for another probe in the same pool stops
-    # dead as soon as the pool runs out of threads.
+    # flat: a probe waiting on another in the same pool can deadlock it
     jobs = [
         (index, port)
         for index, endpoint in enumerate(found)
@@ -82,7 +78,6 @@ def probe_devices(generation_dir: Path) -> dict:
         if endpoint["kind"] != "network":
             devices.append({**endpoint, **said[0]})
         else:
-            # A host named with no port to knock on is listed, and answers for nothing.
             devices.append(
                 {**endpoint, "ports": said, "ok": all(p["ok"] for p in said) if said else None}
             )

@@ -38,9 +38,6 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     graph = rdflib.Dataset(default_union=True)
     graph.add_graph(create_scenex_model_graph(scenex_metamodel().model_from_file(str(scenex_path))))
     model = Model(graph=graph)
-    # Each driven chain's start pose, as (root, tip, prefix, q). The config's `[<agent>] home` is
-    # what a run's reset writes into the chain that agent drives, so the viewer resolves the
-    # chains the same way the scene reader does.
     poses = []
     if config:
         robot_config = tomllib.loads(config.read_text())
@@ -97,7 +94,7 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     for obj in scene.objects:
         object_spec = mjk.SceneObject()
         object_spec.name = obj.body
-        # As backend/mj_kdl/robot.stg names it: the scene's mappings use the prefixed element names.
+        # prefixed as backend/mj_kdl/robot.stg names it
         object_spec.prefix = f"{obj.body}_"
         object_spec.attach_to = mjk.AttachTarget(
             getattr(mjk.AttachKind, obj.attach_kind), obj.attach_name
@@ -142,12 +139,10 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
 
     env = mjk.Env.build(spec)
     try:
-        # Held to the end: the env drives a robot only while it lives.
+        # kept alive: the env drives a robot only while it lives
         robots = []
         for root, tip, prefix, home in poses:
-            # The prefix is tried and then dropped: where a scene names its bodies
-            # `left_arm/base_link` the joints are already `left_arm_joint_1`, and prefixing again
-            # looks for a joint called `left_arm_left_arm_joint_1` that no model has.
+            # joint names may already carry the prefix
             for attempt in (prefix, ""):
                 try:
                     robot = env.create_robot(root, tip, attempt)
@@ -188,6 +183,6 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
             env.update()
             if not env.step():
                 break
-            env.pace()  # step() never sleeps; an unpaced loop starves the render thread
+            env.pace()  # step() never sleeps; unpaced, the render thread starves
     finally:
         env.close()

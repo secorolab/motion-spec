@@ -22,18 +22,13 @@ from pathlib import Path
 STATE_DIRECTORY = ".motion-spec"
 LOG_DIRECTORY = "logs"
 
-# Every colour the toolchain writes, as SGR parameters. One table: the CLI paints its own lines
-# from it, and a tool motion-spec runs is handed it, because that tool is another process and the
-# CLI cannot reach into a line it has already printed.
-SGR = "\x1b["  # what a terminal reads as: the rest of this is a colour, until RESET
+SGR = "\x1b["
 RESET = f"{SGR}0m"
 STAMP_COLOUR = "90"
 LEVEL_COLOURS = {"info": "", "step": "1;34", "warn": "1;33", "error": "1;31", "done": "1;32"}
 LEVEL_WIDTH = 6
 
 
-# Painted and padded here, so a tool is handed the finished word rather than the means to
-# build it: padding counts an escape the reader cannot see, and one place should get that right.
 LEVEL_LABELS = {
     level: f"{SGR}{colour}m{level:<{LEVEL_WIDTH}}{RESET}" if colour else f"{level:<{LEVEL_WIDTH}}"
     for level, colour in LEVEL_COLOURS.items()
@@ -66,13 +61,9 @@ class _Mirror:
         return getattr(self._stream, name)
 
 
-# Two spaces before a line motion-spec did not write itself, so a tool's output reads as
-# belonging under the stamped line that started it rather than as a line of its own.
 INDENT = "  "
 
 
-# A line that already carries the stamp is motion-spec speaking through one of its own tools,
-# and belongs in the same column as the rest of what motion-spec says.
 STAMPED = re.compile(rb"^(\x1b\[[0-9;]*m)?\d\d:\d\d:\d\d[\s\x1b]")
 
 
@@ -113,9 +104,8 @@ def for_the_file():
             lines.append(rest)
         out = bytearray()
         for line in lines:
-            # rstrip first: under a pty every line ends CRLF, which redraws nothing.
+            # under a pty every line ends CRLF
             text = ANSI.sub(b"", line.rstrip(b"\r").rpartition(b"\r")[2])
-            # A redrawn line lost its indent along with everything before the last return.
             if text and line.startswith(pad) and not text.startswith(pad):
                 text = pad + text
             out += text + b"\n"
@@ -152,7 +142,7 @@ def total_memory() -> int | None:
     """Bytes of RAM in this machine, or None where the system will not say."""
     try:
         return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-    except (ValueError, OSError):  # not a POSIX machine, or the names are unknown
+    except (ValueError, OSError):
         return None
 
 
@@ -231,14 +221,14 @@ def tee(
                 stderr=worker,
                 close_fds=True,
             )
-            # Closed here, or the read below never sees EOF.
+            # else the read never sees EOF
             os.close(worker)
             worker = -1
             while True:
                 try:
                     chunk = os.read(controller, 65536)
                 except OSError as error:
-                    if error.errno == errno.EIO:  # the child closed the other end
+                    if error.errno == errno.EIO:  # child closed its end
                         break
                     raise
                 if not chunk:
@@ -247,13 +237,13 @@ def tee(
                 sys.stderr.buffer.write(chunk)
                 sys.stderr.buffer.flush()
                 sink.write(readable(chunk))
-                # Two handles append here; unflushed they interleave by buffer, not by time.
+                # two writers: flush to keep time order
                 sink.flush()
             returncode = process.wait()
             sink.write(readable(last=True))
             stamp = datetime.now(UTC).strftime("%H:%M:%S")
             elapsed = time.monotonic() - started
-            # The signal is named, since SIGKILL is what identifies an OOM kill.
+            # named: SIGKILL marks an OOM kill
             if returncode < 0:
                 name = next(
                     (member.name for member in signal.Signals if member.value == -returncode),
@@ -281,15 +271,12 @@ def trash(path: Path) -> Path | None:
             ["gio", "trash", "--", str(path)], check=False, capture_output=True, text=True
         )
     except FileNotFoundError as error:
-        # Deleting it instead is the one outcome this module exists to prevent.
         raise ValueError(f"cannot remove {path.name}: gio is not installed") from error
     if result.returncode:
         raise ValueError(f"could not move {path.name} to trash: {result.stderr.strip()}")
     from configparser import ConfigParser, Error
     from urllib.parse import unquote
 
-    # The newest entry whose .trashinfo names it; none when it went to another filesystem's
-    # trash, which the home trash does not record.
     home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash"
     records = []
     for info in (home / "info").glob("*.trashinfo"):

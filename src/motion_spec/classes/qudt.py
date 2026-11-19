@@ -14,7 +14,6 @@ class QuantityKind:
     """A QUDT quantity kind."""
 
     id: str
-    # The kind as the graph names it, for provenance to state; the id is what code reads.
     iri: str | None = field(default=None, metadata=INTERNAL)
     type: str = field(default="QuantityKind")
 
@@ -49,7 +48,7 @@ class Quantity:
     has_view: bool = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
     reference_value: str | None = None
-    # Drawn by the run at startup, so it has no value here and no place in the header constants.
+    # drawn at startup: no value, no header constant
     sampled: bool = False
     type: str = field(default="Quantity")
 

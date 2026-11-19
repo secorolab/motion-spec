@@ -76,22 +76,19 @@ def verify_run(run_dir: Path | str) -> None:
     model_document = kept_dsl_document(generated)
     if model_document is not None and model_document.is_file():
         model = parse_rdf(rdflib.Dataset(), model_document)
-        # The generation's record names the DSL's nodes, which only the DSL's own bundle describes.
         for bundle in model.graphs():
             if (None, RDF.type, PROV.Bundle) in bundle:
                 provenance.add_graph(bundle)
-    # rec's bundle and motion-spec's, on the one run node.
     rec = parse_rdf(rdflib.Dataset(default_union=True), rec_path)
 
-    # Each bundle is read alone, so a file is checked at the place that bundle states, against
-    # the hash it recorded; rdf-utils hashes it again into a copy without them.
+    # per bundle: each states its own file locations and hashes
     for graph in rec.graphs():
         recorded = dict(graph.subject_objects(DCTERMS.identifier))
         rehashed = rdflib.Graph()
         rehashed += (triple for triple in graph if triple[1] != DCTERMS.identifier)
         for entity, digest in recorded.items():
             path = get_file_path(graph, entity)
-            # An invalidated file, the raw frame log, is gone by the time of the record.
+            # an invalidated file is already gone
             if (entity, PROV.wasInvalidatedBy, None) in graph or path is None:
                 continue
             if not path.exists():
@@ -110,7 +107,6 @@ def verify_run(run_dir: Path | str) -> None:
         raise RecordError(rec_path, f"records the run {run}, not the one in {run_dir}")
     checks = [
         *((provenance_path.name, provenance, (None, RDF.type, kind)) for kind in PROV_TYPES),
-        # rec records the run itself; motion-spec, the files it used, on that node.
         (rec_path.name, rec, (run, RDF.type, URI_PROV_EXT_TYPE_EXECUTION)),
         (rec_path.name, rec, (run, PROV.wasAssociatedWith, None)),
         (rec_path.name, rec, (run, PROV.used, None)),
@@ -123,8 +119,7 @@ def verify_run(run_dir: Path | str) -> None:
     if missing:
         raise RecordError(run_dir, *missing)
 
-    # What the run used was generated, so the generation's provenance says what each of its nodes
-    # is; only that, as the run may describe a package at another version than the generation did.
+    # types only: the run may name a package at another version than the generation
     mentioned = {node for triple in rec for node in (triple[0], triple[2])}
     rec.default_graph += (
         triple for triple in provenance.triples((None, RDF.type, None)) if triple[0] in mentioned

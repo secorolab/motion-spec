@@ -21,31 +21,18 @@ class ChainBinding:
     root: str
     end: str
     tip: str
-    # Identifier-safe (sanitized in Python; ST4 cannot sanitize). `tree` names the kinematic
-    # tree the chain is sliced from, `namespace` the scene header declaring it; `name` is the
-    # chain's own qualified name.
+    # identifier-safe: ST4 cannot sanitize
     tree: str
     namespace: str
     name: str
-    # Ordered revolute joint local names, unprefixed; the runtime prefix is `runtime.prefix`.
     joints: list[str]
-    # Where a scene frame or body sits on this chain: the index of the segment standing for it
-    # and, for a frame, its constant pose on that segment. Keyed by IRI, filled from the scene.
-    # Lowering resolves against these, so no name reaches the generated code to be searched for.
     frames: dict = field(default_factory=dict, metadata=INTERNAL)
     bodies: dict = field(default_factory=dict, metadata=INTERNAL)
-    # The index the chain ends at, for generated code that means "the tip" without a frame.
     tip_segment: int = 0
-    # The world model works in the built tree's own names, not in this chain's numbering: the
-    # segment each chain joint moves, and the chain's endpoints as the whole tree names them.
     joint_segments: list[str] = field(default_factory=list)
     world_root: str = ""
     world_tip: str = ""
-    # The root of the tree the chain is sliced from: a frame on another branch of that tree is
-    # required from here, since the chain's root is not above it.
     tree_root: str = ""
-    # Every scene element this chain reaches, by IRI, named as the tree names it. Startup wiring
-    # resolves an index from a name, so only lowering needs the whole lookup.
     world_segments: dict = field(default_factory=dict, metadata=INTERNAL)
 
 
@@ -71,8 +58,6 @@ class WorldPort:
     segment: str
     mapping: str
     slot: int
-    # The runtime whose device provides it, for a port a bound device answers rather than the
-    # scene; empty otherwise.
     owner_id: str = ""
     iri: str = field(default="", metadata=INTERNAL)
     type: str = field(default="WorldPort")
@@ -84,14 +69,10 @@ class RuntimeBinding:
 
     id: str
     owner: bool
-    # Scopes every scene name this runtime owns; backends and log channels apply it themselves.
     prefix: str
     owned_trees: list = field(metadata=INTERNAL)
-    # Section name in the deployment config; empty under simulation.
     config_key: str
-    # The solver that owns this runtime; every record on it reads that one's world_to_root.
     owner_id: str = ""
-    # The mode the arm starts in: its motions' shared one, else "position"; None when only read.
     command_mode: str | None = "torque"
 
 
@@ -102,11 +83,8 @@ class SensorBinding:
     id: str
     type: str
     frame: str
-    # `id` and `frame` without the runtime prefix, as the robot's own model names them.
     local_id: str
     local_frame: str
-    # What `robot.toml` calls this sensor. The same key a bound device is configured under, so a
-    # deployment property of the sensor -- its tare length -- is stated once for both platforms.
     config_key: str = ""
     observes: list[str] = field(default_factory=list)
 
@@ -124,15 +102,11 @@ class CameraBinding:
     height: int
     rate_hz: float
     uri: str
-    # The frame the camera reports in, named by the sensor the uri points at. A publisher stamps
-    # its images with this, so it must name a frame in the ROS optical convention.
+    # must be a ROS optical frame
     frame_id: str = ""
-    # The scene frame the model mounts the camera on, and its field of view: a camera on a
-    # static scene frame is built into the composed MuJoCo scene from these.
     frame_uri: str = ""
     fovy_deg: float = 45.0
-    # Where a viewer reads this camera, as the model's subscription states it. A camera no
-    # channel carries has no provider, and nothing may guess one from its name.
+    # None without a channel; never guessed from the name
     topic: str | None = None
     message: str | None = None
 
@@ -146,8 +120,6 @@ class DeviceBinding:
     drives: str = ""
     required_by_motion: list[int] = field(default_factory=list)
     health_index: int | None = None
-    # kc-ext:JointCoupling mimic joints this device reports instead of the chain (was the
-    # solver's own flat `gripper_joint_outputs`).
     joint_outputs: list = field(default_factory=list)
 
 

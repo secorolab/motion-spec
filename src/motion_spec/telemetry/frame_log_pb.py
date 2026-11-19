@@ -20,9 +20,7 @@ from motion_spec.runs.verify import RecordError
 
 PROTO_PACKAGE = "motion_spec.telemetry.log"
 
-# A run writes its log uncompressed -- the writer is on the control loop's heels and the
-# dashboard tails the file while it grows -- and archiving compresses it once, afterwards.
-# So a log on disk is one of two files, and everything that reads one has to accept either.
+# written plain, packed after the run: readers accept either
 LOG_SUFFIX = ".zst"
 
 
@@ -133,7 +131,6 @@ def record_class():
     return _CLASS_CACHE["record"]
 
 
-# --- length-delimited framing (a varint size prefix per protobuf record) ---
 def write_delimited(fh, message: bytes) -> None:
     prefix = bytearray()
     size = len(message)
@@ -230,7 +227,6 @@ def tail_is_partial(path: Path | str) -> bool:
             offset = next_offset
 
 
-# --- encode (fixtures/tests) ---
 def frame_record(flat: dict, schema: dict) -> bytes:
     pools = schema["pools"]
     rec = record_class()()
@@ -278,7 +274,6 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     return rec.SerializeToString()
 
 
-# --- decode ---
 SPATIAL_CATEGORIES = (("poses", POSE_NAMES), ("twists", TWIST_NAMES), ("wrenches", WRENCH_NAMES))
 
 
@@ -294,19 +289,13 @@ class LogContract:
         self.record_cls = record_cls
         self.fields = fields
         self.trigger_pool = header.trigger_pool
-        # Per category, motion index to the slot indices that motion writes (absent when none
-        # gated). Proto3 elides a genuine 0.0 exactly as it elides "never written", so absence on
-        # the wire cannot tell an inactive slot from a zero one. The frame carries active_motion
-        # and the header says which slots that motion writes; activity is resolved from that,
-        # never from a missing field. Keyed on the motion rather than the coordinator's state, so
-        # the same decoder reads a log produced under an FSM, a behaviour tree or a plain
-        # sequencer.
+        # proto3 elides 0.0 like an unwritten field: activity comes from the motion's gate
         self.gate = {}
         for category in ("quantities", *(name for name, _ in SPATIAL_CATEGORIES)):
             claimed = {index for motion in header.motions for index in getattr(motion, category)}
             if not claimed:
                 continue
-            # A slot no motion claims is written unconditionally, so it stays visible everywhere.
+            # unclaimed slots are written unconditionally
             unclaimed = {entry["index"] for entry in fields[category]} - claimed
             self.gate[category] = {
                 motion.index: unclaimed | set(getattr(motion, category))
@@ -331,7 +320,7 @@ def read_contract(path: Path | str) -> LogContract:
         raise RecordError(path, "first record is not a frame-log header carrying its schema")
     record_cls = record_class_of(embedded)
     record = record_cls.FromString(data)
-    # The schema is the log's own: one written before the field existed has no version to read.
+    # older embedded schemas lack the field
     version = (
         record.header.format_version
         if "format_version" in record.header.DESCRIPTOR.fields_by_name
@@ -341,7 +330,6 @@ def read_contract(path: Path | str) -> LogContract:
         raise RecordError(
             path, f"frame-log format {version}; this motion-spec reads format {FORMAT_VERSION}"
         )
-    # Per-category slot list: pooled slots by index, model slots as the header names them.
     motions = record.header.motions
     pools = {
         "constraints": max((len(motion.controllers) for motion in motions), default=0),
@@ -378,8 +366,7 @@ def parse_frame(msg, contract: LogContract) -> dict:
             "compute_ns": msg.compute_ns,
         },
     }
-    # `active` is derived, not carried: the header already says how many constraint and monitor
-    # slots the active motion drives. Slots beyond that count belong to some other motion.
+    # `active` is not on the wire: derived from the active motion's slot counts
     counts = contract.counts.get(msg.active_motion, {})
 
     for category, keys, counted in (
@@ -395,12 +382,10 @@ def parse_frame(msg, contract: LogContract) -> dict:
             for i in range(len(fields[category]))
         ]
     qids = contract.quantity_ids
-    # A quantity slot the frame leaves out is zero.
     values = [0.0] * len(qids)
     for index, value in zip(msg.quantity_slots, msg.quantities):
         values[index] = value
     triggers = [{k: getattr(entry, k) for k in TRIGGER_KEYS} for entry in msg.triggers]
-    # A gated category is written only by the motions its gate names.
     gate = contract.gate.get("quantities")
     record["quantities"] = {
         qid: values[idx]
@@ -419,8 +404,7 @@ def parse_frame(msg, contract: LogContract) -> dict:
         if triggers and pool_size
         else []
     )
-    # A slot the active state does not write stays a hole in the list rather than a decoded zero;
-    # the list stays positional so a slot keeps one index for the whole run.
+    # unwritten slots stay None so indices hold for the whole run
     for category, names in SPATIAL_CATEGORIES:
         gate = contract.gate.get(category)
         record[category] = [

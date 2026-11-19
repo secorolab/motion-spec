@@ -34,26 +34,18 @@ class DriveUnit:
     happen to be called.
     """
 
-    # The joint names the compiled scene knows, which are the tree's local names: a `map tree`
-    # matches an instantiated body or joint to the asset by its own local name, not by the
-    # instance-qualified one the model refers to it through.
+    # local names: a `map tree` matches by the asset's own name
     pivot_joint: str
     wheels: list[str]
-    # Pivot axis on the platform, (x, y) in the platform root's frame [m].
+    # (x, y) in the platform root frame [m]
     attachment: list[float]
-    # Half the separation of the unit's two axles [m]; hddc2b's `whl_dst`.
+    # hddc2b's `whl_dst` [m]
     wheel_distance: float
-    # Perpendicular distance from the pivot axis to the axle line [m].
+    # [m]
     castor_offset: float
-    # What the joint reads when the drive points along the platform's x, in radians. hddc2b's
-    # pivot angle is the heading of the rolling direction in the platform frame, and a joint's
-    # zero is wherever the model put it, so the two differ by this constant.
+    # joint reading with the drive along platform x [rad]
     pivot_offset: float = 0.0
-    # Per channel, what turns hddc2b's hub convention into this model's joint. Two parts: hddc2b
-    # runs a unit's channels against each other as the real drive's mirrored motors do, and the
-    # model gives each wheel joint whatever spin axis it likes. A unit mounted half a turn round
-    # has its axis against the drive frame, so the signs are not the same on both sides -- assume
-    # they are and a forward push comes out as a couple, and the platform spins instead of driving.
+    # hddc2b hub convention to model joint, per channel; differs per side
     hub_signs: list[float] = field(default_factory=list)
     type: str = field(default="DriveUnit")
 
@@ -68,8 +60,6 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
         ConstraintViolation: no tree in the scene has castor drive units.
     """
     for tree in world_trees:
-        # A drive unit is a body the platform holds by one revolute joint that itself carries
-        # exactly two revolute-jointed bodies: a structural statement, not a naming heuristic.
         children: dict[str, list[dict]] = {}
         for segment in tree["segments"]:
             if segment["joint"] and segment["joint"]["axis"] is not None:
@@ -94,10 +84,7 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
                     )
 
                 pivot_axis = axis / np.linalg.norm(axis)
-                # The axle sits off the pivot axis by the castor offset, and a castor trails: the
-                # drive rolls along the direction that carries the pivot away from its own axle.
-                # That fixes the drive frame, and with it both the pivot angle and which wheel is
-                # which.
+                # a castor trails: the drive rolls away from its axle
                 midpoint = 0.5 * (first + second)
                 trail = midpoint - (midpoint @ pivot_axis) * pivot_axis
                 castor_offset = float(np.linalg.norm(trail))
@@ -110,16 +97,11 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
                 longitudinal = -trail / castor_offset
                 transverse = np.cross(pivot_axis, longitudinal)
 
-                # hddc2b's right channel is the wheel at -y of that frame; getting this backwards
-                # leaves the drive term intact and reverses the steering term.
                 right, left = sorted(
                     wheels,
                     key=lambda w: float(np.asarray(w["joint"]["origin"], dtype=float) @ transverse),
                 )
 
-                # hddc2b's channels counter-rotate; the model's spin axis may run either way
-                # against the drive frame, and on a unit mounted half a turn round it runs the
-                # other way.
                 hub_signs = [
                     mirrored
                     * float(np.sign(np.asarray(w["joint"]["axis"], dtype=float) @ transverse))
@@ -149,10 +131,6 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
     )
 
 
-# Which platform coordinate a controller drives, read off the view of the component it regulates.
-# The platform's three coordinates are longitudinal, transverse and yaw, so a controller closing on
-# the twist's x velocity and one commanding the wrench's x force both produce the same coordinate --
-# the first by regulating it, the second open loop.
 _COORDINATE_BY_COMPONENT = {
     (Subspace.Linear, Axis.X): 0,
     (Subspace.Linear, Axis.Y): 1,
@@ -160,7 +138,7 @@ _COORDINATE_BY_COMPONENT = {
 }
 
 
-# The wrench components the platform can be pushed with, in the order hddc2b takes them.
+# hddc2b's input order
 _PLATFORM_WRENCH_COMPONENTS = (("force", "x"), ("force", "y"), ("torque", "z"))
 
 
@@ -182,7 +160,6 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
         solver.force.id for solver in force_solvers
     }
     by_subobject = views_by_subobject(views)
-    # Every wrench the force distributions are fed, by the controller that commands it.
     wrench_by_controller = {}
     for solver in force_solvers:
         platform_frame = solver.force.as_seen_by
@@ -208,9 +185,6 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
             commanded = wrench_by_controller.get(controller.id)
             if commanded is not None:
                 wrench, frame_key, platform_key = commanded
-                # The wrench is built in the frame its constraint measures in; the platform sums
-                # in its own. Rotated once per wrench, under a local name the terms then read --
-                # unless the two are one frame, which a platform without a chain has no world to ask.
                 local = (
                     f"pltf_{wrench}"
                     if frame_key and platform_key and frame_key != platform_key

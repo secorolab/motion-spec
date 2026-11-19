@@ -43,7 +43,6 @@ class AccelerationConstraint:
 
     id: str
     subspace: Subspace
-    # Axis-aligned constraints carry an axis; derived constraint forms may leave it unset.
     axis: Axis | None
     acceleration_energy: Quantity | None = None
     acceleration: Quantity | None = None
@@ -51,8 +50,6 @@ class AccelerationConstraint:
     as_seen_by: Frame | None = None
     base_aligned: bool = True
     direction: Direction | None = None
-    # The other subspace's half of the same solver column: a scalar of a body-fixed primitive
-    # changes with both halves of the twist, so one row carries two direction vectors.
     moment_direction: Direction | None = None
     saturation: Saturation | None = None
     type: str = field(default="AccelerationConstraint")
@@ -68,13 +65,11 @@ class SolverFamily:
     name: str = ""
     driver_field: str | None = None
     payload_field: str | None = None
-    # Subspace -> the payload's QUDT quantity kind and unit local names.
     payload_kinds: dict = field(default_factory=dict)
     max_axes: int | None = None
     axes_must_be_distinct: bool = False
     read_only: bool = False
     forwards_commands: bool = False
-    # "torque" or "position"; a joint impedance through IPK commands torque instead.
     command_mode: str = "torque"
 
     def payload(self, id: str, subspace: Subspace) -> Quantity:
@@ -107,7 +102,6 @@ class JointForceSpecification:
     id: str
     force_id: str
     joint_name: str
-    # Where the joint sits in the chain's joint array, resolved while generating.
     joint_index: int | None = None
     type: str = field(default="JointForceSpecification")
 
@@ -123,7 +117,6 @@ class PoseTarget:
     id: str
     measured: str
     reference: str
-    # Per chain joint, in chain order; empty without a joint impedance.
     stiffness: list[float] = field(default_factory=list)
     damping: list[float] = field(default_factory=list)
     type: str = field(default="PoseTarget")
@@ -156,35 +149,23 @@ class SolverWithInputAndOutput:
     chain: ChainBinding
     hardware: HardwareBinding
     runtime: RuntimeBinding
-    # What drives this chain, resolved once from the algorithm the model names; the runtime and
-    # the templates dispatch on the name, the lowering reads the record.
     algorithm: SolverFamily = field(metadata=INTERNAL)
     algorithm_name: str | None = None
-    # What the scene mounts on this chain, and what hardware is bound to drive it.
     sensors: list[SensorBinding] = field(default_factory=list)
     devices: list[DeviceBinding] = field(default_factory=list)
     gravity: list[float] | None = None
-    # The gravity field a simulated ACHD run's compensation pass is built with: the opposite of
-    # the root acceleration ACHD itself takes. Nothing else derives a sign from the author.
+    # opposite of the root acceleration ACHD takes
     gravity_compensation: list[float] | None = None
     derived_root_acceleration: list[float] | None = None
-    # The D-block the gravity vector was read from; templates take the numbers above, this
-    # says which recorded constant they came from.
     gravity_source: str | None = field(default=None, metadata=INTERNAL)
     torque_saturation: Saturation | None = None
-    # The widest motion's row count; the motions share one state and zero the rows they leave.
+    # widest motion's rows; narrower motions zero the rest
     constraint_rows: int = 0
-    # Frame-log mirrors of this runtime's joint-space signals; the two lists render at
-    # two different hook sites -- the run block and the command-stage block.
-    # `output` split by what each observation reads. A world output is answered by the one world
-    # model, so the loop computes it every tick whether or not a motion that wants it is running;
-    # a state output is read off this solver's synchronized joint mirror, which only the motion
-    # driving the chain fills.
+    # world outputs run every tick; state outputs only while a motion drives the chain
     world_output: list = field(default_factory=list)
     state_output: list = field(default_factory=list)
     joint_space_samples: list = field(default_factory=list)
     joint_space_cmd_samples: list = field(default_factory=list)
-    # Which resource this solver commands; `resources.robots` is filtered on it.
     kind: str = field(default="serial_chain")
     type: str = field(default="SolverWithInputAndOutput")
 
@@ -207,13 +188,7 @@ class ForceDistributionSolver:
     id: str
     configuration: str
     force: Wrench
-    # The commanded wrenches routed to this solver, one per force controller: what the platform
-    # is asked to push with, before it is distributed over the drives. A controller holding a
-    # scalar -- a distance, say -- contributes through the wrench built from it and its
-    # direction, which is the only form a distribution can take.
     forces: tuple = field(default=())
-    # The world-model read this solver makes per frame IRI: its own, since another solver may
-    # read the same frame under its own key.
     world_keys: dict = field(default_factory=dict, metadata=INTERNAL)
     kind: str = field(default="mobile_base")
     type: str = field(default="ForceDistributionSolver")

@@ -28,9 +28,7 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
     for tree in trees:
         for chain in tree["chains"]:
             if chain["iri"] == chain_iri:
-                # The world model binds a measurement to a segment, not to a joint, so the chain's
-                # joint order has to be carried over to the names the built tree knows. A joint
-                # with no segment would bind the wrong state, and only after startup.
+                # the world model binds measurements to segments, not joints
                 segment_by_joint = {
                     segment["joint"]["name"]: segment["name"]
                     for segment in tree["segments"]
@@ -45,10 +43,7 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
                             f"no segment of tree '{tree['name']}' carries",
                         )
                     joint_segments.append(segment_by_joint[joint["name"]])
-                # Every posed frame has its own KDL leaf, so a frame the chain slice can only reach
-                # as "a parent plus a constant offset" is an exact segment of the tree. A body's
-                # own root frame carries no segment of its own: it resolves through the body the
-                # chain placement points at.
+                # a body's root frame has no segment: resolve it through its chain placement
                 world_segments = {
                     tree["root_iri"]: tree["root"],
                     **{segment["iri"]: segment["name"] for segment in tree["segments"]},

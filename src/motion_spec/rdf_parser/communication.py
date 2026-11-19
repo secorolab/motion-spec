@@ -32,13 +32,9 @@ from motion_spec.rdf_parser import constraint_handler, quantities, ros_messages
 from motion_spec.rdf_parser.data_access import PORT_WRITERS, bound_id
 from motion_spec.rdf_parser.views import views_by_subobject
 
-# Types that get a whole-object frame-log slot rather than per-axis scalar rows.
 _SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
 
 
-# Per role, the descriptive fields a runtime value reports beyond its id and type, in the order
-# the artifact emits them. A value with no role -- the clock, the tare state -- reports only what
-# it holds.
 _RUNTIME_ROW_FIELDS = {
     "controller_internal_state": ("controller", "role", "state"),
     "control_parameter": ("value", "owner", "role", "parameter"),
@@ -65,8 +61,7 @@ def member_desc(member: str):
     }
 
 
-# Per quantity type, the `(component prefix, descriptor)` pairs its per-axis rows carry, in
-# emission order. Key order inside each descriptor is load-bearing for the frame layout.
+# key order inside each descriptor is load-bearing for the frame layout
 _POSE_AXIS_SAMPLES = (
     ("position", lambda quantity_id, axis: {"kind": "pose_pos", "id": quantity_id, "axis": axis}),
     (
@@ -92,8 +87,6 @@ _AXIS_SAMPLES = {
     "PoseDifference": _TWIST_AXIS_SAMPLES,
     "Wrench": (("torque", member_desc("torque")), ("force", member_desc("force"))),
 }
-# The superobject types whose scalar view resolves to a composite-member access; a view onto any
-# other superobject samples the quantity's own shared field instead.
 _COMPOSITE_SUPEROBJECTS = {
     "Pose",
     "Wrench",
@@ -112,10 +105,7 @@ def scalar_descriptor(quantity: dict, quantity_id: str, data_ids, spatial_ids, i
     if viewed:
         views = indexed_views[quantity_id]
         if not all(view.axis is not None for view in views):
-            # An axis-less view names no field, but a D-block is still sampled off its
-            # own. A directionless one is a whole-subspace alias: when a logged spatial slot
-            # carries its superobject, sampling it would put the same value on the wire twice.
-            # A directed projection is new information the superobject slot cannot restate.
+            # a directionless view would repeat its logged superobject slot
             if quantity_id in data_ids and not any(
                 view.direction is None and view.superobject.id in spatial_ids for view in views
             ):
@@ -162,7 +152,7 @@ def ros_publishers(motions, standing=()) -> list:
     """
     by_channel: dict = {}
     for ros in ros_publications(motions):
-        # One channel is one publisher: writers that share a topic share the member too.
+        # writers sharing a topic share the publisher member
         ros.pub_id = publisher_member(
             by_channel, {key: getattr(ros, key) for key in _PUBLISHER_KEYS}
         )
@@ -174,7 +164,6 @@ def ros_publishers(motions, standing=()) -> list:
     return list(by_channel.values())
 
 
-# What a monitor or standing publish contributes to the publisher member it writes through.
 _PUBLISHER_KEYS = (
     "pub_id",
     "channel",
@@ -204,12 +193,8 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
     standing = []
     for node in graph.subjects(RDF["type"], NS_MM_ROS["Topic"]):
         rate_node = graph.value(node, SENSORS["update-rate"])
-        # A monitor states a rate too, but what it publishes belongs to its motion rather than
-        # to the run, so it is published where the motion is and not from here.
         if rate_node is None or CSTR_HDL["Monitor"] in get_node_types(graph, node):
             continue
-        # A member stating a field path maps one field; one stating none is an entry the message
-        # carries whole.
         reported = [
             row
             for row in graph.objects(node, RDFS.member)
@@ -254,10 +239,6 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
                 f"'{model.id(node)}' reports {len(records)} quantities on '{type_name}', which "
                 "carries one; a message reporting many holds an array of them",
             )
-        # Where in the message each reported quantity is written. A message carrying one quantity
-        # has one entry writing straight into it. A message carrying an array has one entry per
-        # quantity, each stating which entity it is about and the frame it says that in -- the
-        # two things a reader needs to tell one entry from another.
         entry_shape = shape["entry"]
         entries = []
         for index, (member, record) in enumerate(records):
@@ -268,18 +249,12 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
                 "carrier": shape["carrier"],
             }
             if entry_shape is None:
-                # The message is the quantity: its frame and its stamp are the message's own, and
-                # the run writes them where the message states them.
                 entry["payload_path"] = shape["payload_path"]
                 entries.append(entry)
                 continue
             at = f"{entry_shape['path']}[{index}]."
-            # An entry states a frame only where it carries a header to state it in.
             stated_in = entry_shape["frame_path"]
             frame_id = stated_against(record, segment_by_iri, pub_id) if stated_in else None
-            # What an entry says it is about: a transform names the segment its pose is of,
-            # anything else the entity the model states -- stated rather than derived, since a
-            # reader matches the entity it models, and a pose is of a frame on that entity.
             if shape["carrier"] == "Transform":
                 subject_id = segment_of(segment_by_iri, record.of.uri, pub_id)
             else:
@@ -310,8 +285,6 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
             if shape["frame_path"]
             else set()
         )
-        # The fields the publish maps itself, each naming the value it reports instead of the
-        # component of the quantity that field would carry.
         fields = []
         for member in graph.objects(node, RDFS.member):
             authored = graph.value(member, NS_MM_ROS["field-path"])
@@ -328,14 +301,13 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
         publish = {
             "pub_id": pub_id,
             "channel": str(graph.value(node, NS_MM_ROS["channel-name"]) or ""),
-            # Every Nth cycle: a rate at or above the loop rate publishes each one.
+            # at or above the loop rate, every cycle
             "divider": max(1, round(1.0 / (rate_hz * period_s))),
             "entries": [
                 {key: value for key, value in entry.items() if value is not None and value != []}
                 for entry in entries
             ],
-            # The array's own header states a frame only when its entries agree on one:
-            # two cameras on one topic leave the message with no single frame to name.
+            # a frame only when all entries agree on one
             "frame_id": frames.pop() if len(frames) == 1 else None,
             "resize": [{"path": entry_shape["path"], "size": len(entries)}] if entry_shape else [],
             "fields": fields,
@@ -381,7 +353,6 @@ def ros_action_clients(model) -> list:
     written = quantities.perceived_written_poses(model)
     clients = []
     for act in graph.subjects(RDF["type"], NS_MM_ROS["Action"]):
-        # A member is a goal arriving: that action is served, not performed.
         if (act, RDFS.member, None) in graph:
             continue
         type_name = str(graph.value(act, NS_MM_ROS["type-name"]) or "")
@@ -389,14 +360,12 @@ def ros_action_clients(model) -> list:
         detect = ros_messages.detect_shape(
             type_name, str(graph.value(act, NS_MM_ROS["field-path"]) or "")
         )
-        # The slot the act's terminal goal status lands in.
         status_slot = graph.value(predicate=PROV.wasDerivedFrom, object=act)
         if status_slot is None:
             raise ConstraintViolation(
                 "communication", f"action '{model.id(act)}' declares no goal-status slot"
             )
         rows = written[str(act)]
-        # The motion that owns the act is the one whose `until` reads the act's status.
         watching = set(graph.subjects(CSTR["quantity"], status_slot))
         for motion in graph.subjects(RDF["type"], MOT["GuardedMotion"]):
             members = set(graph.objects(motion, MOT["until"]))
@@ -480,8 +449,6 @@ def ros_subscriptions(model, segment_by_iri: dict) -> list:
                     {
                         **row,
                         "frame_segment": segment_of(segment_by_iri, row["frame_iri"], sub_id),
-                        # Absent an authored of/wrt the reading is the quantity itself, so both
-                        # ends collapse onto its own frames and the composition is the identity.
                         "observed_wrt_segment": segment_of(
                             segment_by_iri, row.get("observed_wrt_iri") or row["frame_iri"], sub_id
                         ),
@@ -499,8 +466,6 @@ def ros_subscriptions(model, segment_by_iri: dict) -> list:
                             sub_id,
                         ),
                         "reframed": bool(row.get("observed_of_iri")),
-                        # A detection is identified by what it is a reading of, which is the
-                        # observed frame when the channel states one and the target otherwise.
                         "match_iri": row.get("observed_of_iri") or row["target_iri"],
                     }
                     for row in rows
@@ -569,10 +534,6 @@ def action_server(model, fsm) -> dict | None:
             that FSM does not declare or react to -- either way nothing could start
     """
     graph = model.graph
-    # A goal arrives on a served action and starts something: its valueless member is the event
-    # an accepted goal produces. An act the model performs has no member -- nothing arrives on
-    # it -- and a monitor answering a goal states every member with a value, since each is one
-    # field of the result it answers with.
     served = [
         node
         for node in graph.subjects(RDF["type"], NS_MM_ROS["Action"])
@@ -596,7 +557,6 @@ def action_server(model, fsm) -> dict | None:
             "accepted goal has nothing to start",
         )
 
-    # A member with no authored value is not a result row: it is the event a goal produces.
     goal_events = [
         row for row in graph.objects(node, RDFS.member) if graph.value(row, RDF.value) is None
     ]
@@ -607,7 +567,7 @@ def action_server(model, fsm) -> dict | None:
             "produce; it needs exactly one",
         )
     (goal_event,) = goal_events
-    # Tokens, never indices: coord-dsl's enum alone numbers the events.
+    # tokens, never indices: coord-dsl numbers the events
     token_by_uri = {uri: token for token, uri in fsm["event_uris"].items()}
     goal_token = token_by_uri.get(str(goal_event))
     if goal_token is None:
@@ -616,8 +576,7 @@ def action_server(model, fsm) -> dict | None:
             f"'{model.id(node)}' names event '{goal_event}', which FSM '{fsm['name']}' does "
             "not declare",
         )
-    # An FSM event lives one tick, so the goal event is produced only when the FSM sits in a
-    # state that reacts to it -- a goal accepted during startup must not fire into S_START.
+    # an FSM event lives one tick: fire only in a state that reacts to it
     transitions = {row["id"]: row for row in fsm["transitions_table"]}
     armed_states = [
         transitions[row["do_transition"]]["from_state"]
@@ -644,11 +603,7 @@ def action_server(model, fsm) -> dict | None:
         "pkg": shape["package"],
         "goal_event": goal_token,
         "goal_states": armed_states,
-        # The scenario a run belongs to arrives on the goal; the run stamps it on everything it
-        # publishes afterwards.
         "goal_context_id": [path for path, kind in goal["auto"].items() if kind == "context_id"],
-        # A goal may carry more than the run reads. Repeated fields are the ones it can report
-        # having ignored, since only they can be counted.
         "ignored_goal_fields": goal["repeated"],
         "result_auto_time": [path for path, kind in result["auto"].items() if kind == "time"],
         "result_auto_context_id": [
@@ -697,10 +652,7 @@ def build_telemetry(
         RuntimeError: a slot samples a value the analysis has no answer for.
     """
     uri_by_id = {row["id"]: row["uri"] for row in model.uri_rows()}
-    # What an aggregate monitor watches is each member constraint and the error it is evaluated
-    # on: the scalar a conjunction writes says only whether every member holds, and a reader
-    # asking why it does not needs each member's error and the tolerance it is compared with.
-    # By IRI: two motions' until terms may share a short id.
+    # by IRI: until terms may share a short id
     errors = {
         function["constraint_uri"]: function.get("error")
         for function in computation.functions.values()
@@ -752,8 +704,6 @@ def build_telemetry(
                     else None
                 ),
                 "output_signal": bound_id(controller.control_signal),
-                # Folded onto the record by `constraint_handler.annotate_controller_signals`, which
-                # reads the error-evaluator function this controller consumes.
                 "measured_signal": controller.measured_signal,
                 "setpoint_signal": controller.setpoint_signal,
             }
@@ -803,7 +753,7 @@ def build_telemetry(
                     "debounce_signal": edge.debounce_id if edge else None,
                 }
                 monitor_rows.append(monitor_row)
-    # Every row drops the keys it leaves unset, so an absent value is absent rather than null.
+    # unset keys are dropped: absent, not null
     motion_rows, controller_rows, monitor_rows = (
         [
             {key: value for key, value in row.items() if value is not None and value != []}
@@ -816,8 +766,6 @@ def build_telemetry(
     quantity_rows = []
     for item in algorithm_data:
         if item.id in structure_ids:
-            # `snapshot` is a graph fact, not `Provenance`'s -- looked up by id against the
-            # snapshot targets, since this reader holds a record, not a graph node.
             quantity_row = {
                 "id": item.id,
                 "uri": uri_by_id.get(item.id),
@@ -838,7 +786,6 @@ def build_telemetry(
                     if value is not None and value != []
                 }
             )
-        # A boolean flag has no quantity row: it is sampled straight off the algorithm data.
         elif isinstance(item, DataValue) and item.role and item.type == "Quantity":
             quantity_rows.append({**runtime_row(item), "uri": uri_by_id.get(item.id)})
 
@@ -851,8 +798,6 @@ def build_telemetry(
         "quantities": unique_by_id(quantity_rows),
     }
 
-    # The per-quantity frame-log sample rows. Each carries a backend-agnostic descriptor -- a
-    # kind plus ids and an axis -- and the view renders the sampling expression from it.
     data_ids = {item.id for item in algorithm_data if item.id}
     spatial_ids = {
         item.id for item in algorithm_data if item.type in _SPATIAL_SLOT_KINDS and item.id
@@ -878,8 +823,6 @@ def build_telemetry(
     for item in algorithm_data:
         if not item.id or item.id in sampled:
             continue
-        # A runtime value has no `quantities` row of its own to be sampled from, so its row is
-        # built here from what it carries.
         if item.type == "Bool":
             sampled_parts.append((runtime_row(item), "", {"kind": "bool", "id": item.id}))
         elif item.type == "IntCounter":
@@ -903,7 +846,7 @@ def build_telemetry(
             raise RuntimeError(f"telemetry: '{sample['id']}' samples a value with no analysis")
         if found["storage"] == "log":
             logged.append({**sample, "cadence": found["cadence"]})
-        # A draw is recorded by the run that made it, not by the generation's header.
+        # a draw is recorded by the run, not the header
         elif data_access[sample["source_id"]]["write"]["kind"] != "sampled":
             constant = {
                 "id": sample["id"],
@@ -914,7 +857,6 @@ def build_telemetry(
             recorded.append(
                 {key: value for key, value in constant.items() if value is not None and value != []}
             )
-    # The whole-object pose, twist and wrench frame-log slots the run logs.
     spatial = {"poses": [], "twists": [], "wrenches": []}
     for item in algorithm_data:
         pool = _SPATIAL_SLOT_KINDS.get(item.type)

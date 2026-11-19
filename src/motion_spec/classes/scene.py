@@ -41,7 +41,6 @@ class MjcfSceneRobot:
     """A robot placed in the scene, with its attachments."""
 
     id: str
-    # The scene's agent node, which provenance names the robot by.
     agent: str
     path: str
     prefix: str = ""
@@ -71,8 +70,6 @@ class MjcfSceneObject:
     attach_name: str = ""
     pos: list[float] | None = None
     quat: list[float] | None = None
-    # Placed by a drawn position instead of pos/quat: the draw's id, the rotation the pose states
-    # with it, and where the frame it is drawn against sits.
     draw: str | None = None
     draw_rotation: list[float] | None = None
     draw_base_pos: list[float] | None = None
@@ -83,7 +80,6 @@ class MjcfSceneObject:
     color: list[float] | None = None
     mass: float | None = None
     friction: list[float] | None = None
-    # Folded scalar expansions (pos/quat always; geometry only for non-path objects).
     pos_x: float | None = None
     pos_y: float | None = None
     pos_z: float | None = None
@@ -102,13 +98,9 @@ class MjcfSceneObject:
     friction_slide: float | None = None
     friction_torsion: float | None = None
     friction_roll: float | None = None
-    # Every body of this asset the model maps beyond the one the object is spawned as, by body
-    # uri, named the way the composed scene names it: the object's own name and the mapped
-    # body's, since only the asset's root body is renamed to the object.
+    # only the asset's root body is renamed to the object
     secondary_bodies: dict[str, str] = field(default_factory=dict, metadata=INTERNAL)
-    # The scene body this object is spawned as, so a world tree rooted on it finds its provider.
     body_iri: str = field(default="", metadata=INTERNAL)
-    # The drawn position quantity, so sampling knows the scene places its object by it.
     draw_uri: str = field(default="", metadata=INTERNAL)
     type: str = field(default="MjcfSceneObject")
 
@@ -123,8 +115,6 @@ class MjcfSceneFrame:
 
     body: str
     name: str
-    # The scene node this marks, kept so a pose stated of this frame resolves to the site name
-    # minted here rather than minting a second one that could drift from it.
     uri: str = field(default="", metadata=INTERNAL)
     pos_x: float = 0.0
     pos_y: float = 0.0
@@ -133,7 +123,6 @@ class MjcfSceneFrame:
     quat_y: float = 0.0
     quat_z: float = 0.0
     quat_w: float = 1.0
-    # A frame the run draws the position of is placed from the built tree, not from numbers.
     segment: str | None = None
     body_segment: str | None = None
     tree: str | None = None
@@ -163,14 +152,9 @@ class MjcfSceneSpec:
 
     robots: list[MjcfSceneRobot] = field(default_factory=list)
     objects: list[MjcfSceneObject] = field(default_factory=list)
-    # Cameras are rendered against the composed scene, not read by a solver, so they belong here
-    # and not on the agent that hosts them.
     cameras: list[CameraBinding] = field(default_factory=list)
-    # Every frame the kgraph declares, as a site on its body.
     frames: list[MjcfSceneFrame] = field(default_factory=list)
-    # Cameras whose frame is a static scene frame; robot-asset cameras ride their MJCF instead.
     static_cameras: list[MjcfSceneCamera] = field(default_factory=list)
-    # Physics/control timestep from ENVIRONMENT.timestep; defaults to the backend
-    # interval when the model omits it.
+    # defaults to the backend interval when the model omits it
     timestep_s: float = 0.002
     type: str = field(default="MjcfSceneSpec")

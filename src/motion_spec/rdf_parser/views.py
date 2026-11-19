@@ -62,7 +62,6 @@ from motion_spec.rdf_parser.quantities import (
     wrench,
 )
 
-# The superobject reader each view type dispatches to.
 _VIEW_SUPEROBJECTS = (
     (MAP_EXT["PoseCoordinateView"], pose),
     (MAP_EXT["VelocityTwistCoordinateView"], velocity_twist),
@@ -70,11 +69,9 @@ _VIEW_SUPEROBJECTS = (
     (MAP_EXT["PoseDifferenceView"], pose_difference),
     (MAP_EXT["WrenchCoordinateView"], wrench),
 )
-# A component view of a superobject that is itself a 3-vector carries no coordinate-view type of
-# its own -- there is no subspace to cut -- so it is dispatched on what its superobject is.
+# a 3-vector superobject's view has no coordinate-view type of its own
 _VECTOR_SUPEROBJECTS = ((GEOM_COORD["DirectionCoordinate"], direction),)
-# A combined PoseCoordinate is also a PositionCoordinate and an OrientationCoordinate; dispatch
-# the most specific type first, and dedupe by id afterwards.
+# most specific type first
 _DATA_STRUCTURE_READERS = (
     (GEOM_COORD["DirectionCoordinate"], direction),
     (GEOM_COORD["PoseCoordinate"], pose),
@@ -115,14 +112,11 @@ def read_views(model) -> dict:
                 "geometry", f"MAP view {node} has an unrecognized type; no view reader matched"
             )
         axis_node = graph.value(node, MAP["axis"])
-        # A superobject that is itself a 3-vector has no half to name, so its component view
-        # states only the axis.
         subspace_node = graph.value(node, MAP["subspace"])
         views[model.id(node)] = View(
             model.id(node),
             superobject,
-            # The view itself, not its bare subobject: a pooled relation has several
-            # coordinates and the view's superobject pins which sampling is meant.
+            # the view, not its subobject: it pins which pooled sampling is meant
             quantity(model, node),
             subspace(subspace_node) if subspace_node is not None else None,
             axis(axis_node) if axis_node is not None else None,
@@ -155,10 +149,8 @@ def read_data_structures(model) -> list:
     reader_by_node = {}
     for type_, read in _DATA_STRUCTURE_READERS:
         for node in model.graph[: RDF["type"] : type_]:
-            # A pooled relation is no slot of its own: each of its samplings is one.
             if own.get(model.id(node)) != node or is_pooled_relation(model, node):
                 continue
-            # The readers run most specific first; a node keeps the first that matches it.
             reader_by_node.setdefault(node, read)
     return [read(model, node) for node, read in reader_by_node.items()]
 
@@ -185,9 +177,7 @@ def views_for_access(
         ConstraintViolation: a subobject is left with neither a direct write nor one agreed
             reading, so nothing could compute it.
     """
-    # A declared pose's components are bound *into* it. Reading one back off the pose it helps
-    # define is circular -- and it is the quantity's own superobject that says how to read it --
-    # so the binding is not a candidate reading, however much it looks like one.
+    # reading a component back off the pose it defines is circular
     bound_into_pose = {
         (pose_id, component["ref"])
         for pose_id, parts in pose_components.items()
@@ -214,15 +204,12 @@ def views_for_access(
 
     indexed: dict[str, object] = {}
     for view in views.values():
-        # A constraint may name the view itself (relations are pooled), so every view also
-        # maps under its own id; view ids are unique, so this never conflicts.
+        # a constraint may name the view itself
         indexed.setdefault(view.id, view)
         subobject_id = view.subobject.id
         if not subobject_id or subobject_id in direct_ids:
             continue
         if subobject_id == view.superobject.id:
-            # A whole-component view of a pooled relation reads the superobject's own
-            # sampling; the superobject is computed elsewhere, not through this view.
             continue
         if (view.superobject.id, subobject_id) in bound_into_pose:
             continue
@@ -237,9 +224,7 @@ def views_for_access(
         ):
             indexed[subobject_id] = None
 
-    # Dropping the reading here used to leave the quantity to render as its own shared field --
-    # a field nothing writes, which compiles to a zero and flies the robot at it. Nothing can
-    # compute this quantity, so say so instead of emitting the zero.
+    # an unwritten field would compile to a zero target
     unreadable = [id_ for id_, view in indexed.items() if view is None]
     if unreadable:
         raise ConstraintViolation(
@@ -280,7 +265,6 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
         equality-constraint controller drives it
     """
     groups: dict[str, PoseErrorRegroup] = {}
-    # Only a per-axis view joins a group; a whole part's view reads its subobject as the pose itself.
     indexed = views_by_subobject({key: view for key, view in views.items() if view.axis is not None})
     for node, evaluator in evaluators_by_node.items():
         if CSTR_HDL["ErrorEvaluator"] not in get_node_types(model.graph, node):
@@ -303,7 +287,6 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
         superobject_type = view.superobject.type
         if superobject_type not in _GROUPABLE_SUPEROBJECTS:
             continue
-        # Which half of the superobject the view selects, or None when it joins no group.
         mapping = _GROUP_AXIS_BY_SUBSPACE.get(view.subspace)
         if mapping is None and superobject_type == "Pose":
             kind = (
@@ -313,8 +296,6 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
                 "rotation" in quantity_record.id
             ):
                 mapping = ("angular", True)
-        # A whole-subspace view has no per-axis component, so it cannot join a per-axis group;
-        # its own equality-constraint controller drives it.
         if mapping is None or view.axis is None:
             continue
         half, is_angular = mapping
@@ -376,7 +357,6 @@ def snapshots_for_motion(
             subobjects_by_super.setdefault(super_id, []).append(subobject_id)
             supers_by_subobject.setdefault(subobject_id, []).append(super_id)
 
-    # Every id reachable from a reference or a scheduled function's ids, in both view directions.
     pending = list(referenced)
     for step in schedule:
         for value in (functions.get(step) or {}).values():
@@ -395,12 +375,9 @@ def snapshots_for_motion(
         referred = indexes.data_reference.get(current)
         if referred:
             pending.append(referred)
-        # superobject -> subobject (forward decomposition), and subobject -> superobject (a
-        # composite pose's snapshot is only referenced through its scalar components, so
-        # climb back to capture the composite).
+        # both directions: a composite snapshot is referenced only through its components
         pending.extend(subobjects_by_super.get(current, ()))
         pending.extend(supers_by_subobject.get(current, ()))
-        # A composed orientation names its base pose only through the compose operator.
         parts = indexes.pose_components.get(current)
         if parts is not None:
             pending.extend(
@@ -413,11 +390,7 @@ def snapshots_for_motion(
     for target_id in referenced:
         if target_id not in indexes.snapshot_source:
             continue
-        # Capture only what this motion declares: re-capturing another motion's snapshot would
-        # overwrite its value. A shared-context snapshot is owned by no motion, so every motion
-        # that reads it emits the capture: one naming a trigger is re-sampled on that event by
-        # whichever reading motion is active on the tick it is current, one naming none is
-        # latched once for the run.
+        # re-capturing another motion's snapshot would overwrite its value
         owner = indexes.snapshot_owner.get(target_id)
         if owner in tokens and owner != token:
             continue
@@ -440,7 +413,6 @@ def snapshots_for_motion(
                 target_id=target_id,
                 source_id=source_id,
                 scope=scope,
-                # Only a run-scoped capture is latched; an entry- or event-scoped one re-captures.
                 captured_id=f"{target_id}_captured" if scope == "task" else None,
                 source_function_id=next(iter(writers), None),
                 trigger_event=trigger,
@@ -556,7 +528,6 @@ def build_pose_components(model, views: dict, data: list) -> dict:
         coordinate = PoseCoordModel(
             pose_nodes[item.id], model.graph, coord_policy=recorded_coord_policy
         )
-        # A position the run draws is no authored component; the tree it joins carries the pose.
         if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.position_coord.types:
             continue
         representation = item.orientation_representation or "quaternion"
@@ -566,8 +537,6 @@ def build_pose_components(model, views: dict, data: list) -> dict:
             for name, value in zip("xyz", values):
                 setattr(entry, f"position_{name}", ComponentRef(value=str(value)))
         if representation == "quaternion":
-            # Euler angles, quaternion or direction cosines all resolve to one quaternion here;
-            # anything sourced at runtime keeps its shape and is rendered, not resolved.
             rotation = orientation_quaternion(model, coordinate.orientation_coord)
             for name, value in zip("xyzw", rotation or ()):
                 setattr(entry, f"orientation_{name}", ComponentRef(value=str(value)))
@@ -581,8 +550,7 @@ def build_pose_components(model, views: dict, data: list) -> dict:
     snapshot_ids = snapshot_target_ids(model)
     for view in views.values():
         superobject = view.superobject
-        # A snapshot pose is captured whole at runtime, so a per-axis view of it is a reading
-        # off the captured frame, never a component bound into the pose.
+        # a snapshot pose is captured whole at runtime
         if superobject.type != "Pose" or superobject.id in snapshot_ids:
             continue
         if not (superobject.provenance.authored or superobject.euler_axes_sequence):
@@ -635,9 +603,7 @@ def build_pose_components(model, views: dict, data: list) -> dict:
                     "geometry",
                     f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'.",
                 )
-            # An extrinsic sequence turns about axes that stay put, so the rotation authored last
-            # multiplies on the left; an intrinsic one turns about axes carried along, so the
-            # order reverses.
+            # extrinsic: last rotation multiplies on the left; intrinsic reverses the order
             parts.euler_factors = (
                 factors if is_pose and pose_record.euler_intrinsic else list(reversed(factors))
             )
@@ -652,8 +618,7 @@ def declared_pose_component_entries(
     data_by_id = {item.id: item for item in data if item.id}
     snapshot_ids = snapshot_target_ids(model)
 
-    # A composed orientation names its base pose only through the compose operator, so the
-    # motion's own references miss it; and the base has to be built before what composes it.
+    # a base pose is reached only through its compose operator, and is built first
     ordered: list[str] = []
     visiting: set[str] = set()
 

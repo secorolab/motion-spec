@@ -49,12 +49,7 @@ class Frame:
     """A named reference frame."""
 
     id: str
-    # The scene node this stands for, kept so lowering can place it on a solver's chain.
     uri: str = field(default="", metadata=INTERNAL)
-    # Where the frame sits on that chain, once a solver has resolved it: the segment index the
-    # forward kinematics is asked for, and the frame's constant pose on that segment when it is
-    # not the segment's own. Both are resolved while generating, so nothing is searched for at
-    # run time.
     segment: int | None = None
     offset: dict | None = None
     type: str = field(default="Frame")
@@ -127,11 +122,7 @@ class Pose:
     euler_intrinsic: bool = field(default=False, metadata=INTERNAL)
     orientation_representation: str = field(default="quaternion", metadata=INTERNAL)
     orientation_operands: list | None = None
-    # Set when wrt/as-seen-by name a chain frame other than the root: the pose is then composed
-    # from two world-model reads instead of one read off the chain root. Codegen-facing.
     relative_to_frame: Frame | None = None
-    # Stated in the chain root's axes while measured from another frame: the orientation is the
-    # subject's own and only the translation is taken between the two.
     seen_by_root: bool = False
     provenance: Provenance = field(default_factory=Provenance)
     type: str = field(default="Pose")
@@ -158,8 +149,7 @@ class VelocityTwist(SpatialCoordinate):
 
     of: SimplicialComplex
     with_respect_to: SimplicialComplex = field(metadata=INTERNAL)
-    # Chain FK answers in the chain's root frame, so a twist seen there is already the answer
-    # and one seen elsewhere is that answer rotated into a frame that moves with the arm.
+    # chain FK answers in the root frame; elsewhere it is rotated
     seen_by_root: bool = True
     type: str = field(default="VelocityTwist")
 
@@ -191,15 +181,10 @@ class WrenchEstimator:
 class Wrench(SpatialCoordinate):
     """A wrench (force/torque) quantity, optionally read from a force/torque sensor."""
 
-    # Set when the wrench is estimated from the chain's own torques instead of measured.
     estimator: WrenchEstimator | None = None
     sensor_frame: Frame | None = None
-    # Non-empty when this wrench is measured from a force/torque sensor (the FT-read
-    # solver-output reads and tares this sensor into shared.<id>). Empty for
-    # computed/commanded wrenches.
+    # empty for computed or commanded wrenches
     sensor_name: str = ""
-    # Events that re-take the tare. IRIs as authored; coordination resolves them to the symbols
-    # codegen emits.
     retare_event_uris: tuple[str, ...] = ()
     retare_events: tuple[str, ...] = ()
     type: str = field(default="Wrench")
@@ -212,9 +197,8 @@ class View:
     id: str
     superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench
     subobject: Quantity = field(metadata=INTERNAL)
-    # None when the superobject is itself a 3-vector: the axis alone names the component.
+    # None for a 3-vector superobject
     subspace: Subspace | None
     axis: Axis | None
-    # A view onto a runtime direction rather than a frame axis: the component along it.
     direction: Direction | None = None
     type: str = field(default="View")

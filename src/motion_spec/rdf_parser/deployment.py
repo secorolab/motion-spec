@@ -26,7 +26,6 @@ from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.agents import DRIVEN_DEVICES
 from motion_spec.rdf_parser.model import local_name
 
-# What a quantity is ultimately stated on, and where a walk from a constraint stops.
 _GEOMETRIC_ENTITY_TYPES = {
     GEOM_ENT.Point,
     GEOM_ENT.Frame,
@@ -34,12 +33,8 @@ _GEOMETRIC_ENTITY_TYPES = {
     GEOM_ENT.RigidBody,
     ENV.RigidObject,
 }
-# Which codegen backend serves an authored simulation platform. The platform is the model's; the
-# backend is an implementation detail of running it, so the mapping lives here and nowhere else.
 SIMULATION_BACKENDS = {"mujoco": "mj_kdl"}
-# The MuJoCo trajectory trace is a viewer-only overlay authored in the scene, not the motion spec;
-# it is no longer part of this graph, so it stays disabled and costs nothing for headless or
-# non-MuJoCo runtimes. Codegen guards on trace.enabled.
+# the trace is a viewer-only overlay authored in the scene
 TRACE_DISABLED = {
     "enabled": False,
     "length": 4096,
@@ -93,7 +88,6 @@ def read_platform(model) -> dict:
         real = URIRef(platform["uri"]) if platform["uri"] is not None else None
         reject_scene_objects_on_hardware(model, real)
         if real is not None:
-            # The grammar decides what a model may name; this decides what the backend can drive.
             bound = {
                 str(model.graph.value(device, SDO.model) or "")
                 for device in model.graph.subjects(EXEC["realizes"], None)
@@ -106,8 +100,7 @@ def read_platform(model) -> dict:
                     f"Driven: {', '.join(DRIVEN_DEVICES)}. Remove the binding, or add "
                     "the driver templates before binding it.",
                 )
-            # In simulation the simulator answers for every sensor; on hardware a reading comes
-            # from a device or from uninitialised memory.
+            # on hardware an unbound sensor reads uninitialised memory
             unbound = [
                 local_name(sensor)
                 for sensor in set(model.graph.objects(None, SOSA.madeBySensor))
@@ -146,8 +139,6 @@ def reject_scene_objects_on_hardware(model, context) -> None:
             for quantity in graph.objects(constraint, CSTR.quantity)
         },
     )
-    # A subscriber names the world quantity it observes; the object stands behind that
-    # quantity, so the observation is walked down to entities the same way constraints are.
     observed = entities_from(graph, set(graph.objects(None, SOSA.hasFeatureOfInterest)))
     objects = []
     for obj, models in quantities.scene_instance(model).object_models.items():
@@ -186,8 +177,6 @@ def entities_from(graph, starts: set) -> set:
             entities.add(node)
             continue
         queue.extend(graph.objects(node, None))
-        # A view holds no frames of its own: they belong to the quantity it reads, which it
-        # points at rather than being pointed at by.
         for view in graph.subjects(MAP.subobject, node):
             queue.extend(graph.objects(view, MAP.superobject))
 
@@ -209,12 +198,9 @@ def platform_config(platform: dict) -> dict:
     return tomllib.loads(resolved.read_text())
 
 
-# The key an agent's reset configuration is stated under. Only a simulated run resets to it: a
-# real arm is wherever it was left, so nothing reads this on hardware.
+# only a simulated run resets to it
 AGENT_HOME_KEY = "home"
 
-# What a `[config.<key>]` pose section states. Checked at generation for presence and here for
-# shape, and again before a run, which reads the numbers the deployment may have retuned since.
 CONFIG_POSE_FIELDS = ("position", "orientation")
 
 
@@ -273,7 +259,7 @@ def config_poses(model, config: dict) -> list[dict]:
             position and an orientation of three numbers each.
     """
     entries = []
-    # Anchored at the context's config: provenance in the same dataset derives files too.
+    # other provenance in the dataset derives files too
     derived = {
         node
         for context in model.graph.subjects(RDF.type, EXEC.ExecutionContext)
@@ -305,8 +291,6 @@ def config_poses(model, config: dict) -> list[dict]:
     return entries
 
 
-# The deployment states the topic and the rate; the section's presence is what turns the
-# publisher on, so retuning either needs no regeneration.
 ROS_JOINT_STATES_KEY = "ros.joint_states"
 
 
@@ -318,7 +302,7 @@ def ros_joint_states(platform: dict, config: dict, serial_chains) -> dict | None
         ConstraintViolation: the config declares the section but the exec-context declares no
             config to read it from, or the model drives no serial chain to report.
     """
-    # Presence is the switch; an empty section means "on, all defaults".
+    # presence is the switch; an empty section means all defaults
     if "joint_states" not in (config.get("ros") or {}):
         return None
     if not platform.get("config"):
@@ -334,8 +318,7 @@ def ros_joint_states(platform: dict, config: dict, serial_chains) -> dict | None
         by_channel: dict[str, dict[int, str]] = {}
         for sample in solver.joint_space_samples:
             by_channel.setdefault(sample["channel"], {})[sample["index"]] = sample["id"]
-        # Chain joints are stored unprefixed; the runtime's own channels are scoped, so the
-        # published names are too.
+        # runtime channels are scoped, so published names are too
         for index, joint in enumerate(solver.chain.joints):
             joints.append(
                 {
@@ -345,12 +328,7 @@ def ros_joint_states(platform: dict, config: dict, serial_chains) -> dict | None
                     "effort": by_channel["tau_ctrl"][index],
                 }
             )
-        # A joint the chain does not articulate -- a gripper's driver joint -- is measured
-        # elsewhere: under robif2b by the device `annotate_runtime` moved it onto, under a
-        # simulated backend by the simulator answering for its name. Its name is already
-        # runtime-scoped, and only its position is read on either route: neither the serial nor
-        # the interconnect gripper reports a joint velocity or effort, and a zero there would
-        # claim the finger is standing still and unloaded.
+        # grippers report no joint velocity or effort, so only position is published
         for out in [*solver.output, *(o for d in solver.devices for o in d.joint_outputs)]:
             if out.type == "JointPosition" and out.joint_index is None:
                 joints.append({"name": out.joint_name, "position": out.id})
@@ -375,7 +353,6 @@ def ros_clock(platform: dict, config: dict) -> dict | None:
         ConstraintViolation: the config declares the section but the exec-context declares no
             config to read it from, or the platform is not a simulation.
     """
-    # Presence is the switch; an empty section means "on, all defaults".
     if "clock" not in (config.get("ros") or {}):
         return None
     if not platform.get("config"):
@@ -384,7 +361,6 @@ def ros_clock(platform: dict, config: dict) -> dict | None:
             f"[{ROS_CLOCK_KEY}] needs the exec-context to declare `config:`; the topic and rate "
             "are read from that file at run time.",
         )
-    # On hardware the loop already runs on the wall clock every other node reads.
     if not platform.get("simulated", False):
         raise ConstraintViolation(
             "platform",
@@ -436,9 +412,7 @@ def ros_tf(
     observed: dict[str, None] = {}
     for camera in cameras:
         if camera.topic:
-            # Perception places the camera, so the tree publisher leaves out its segment and those
-            # of every frame the scene poses against it -- its optical frame. The built tree hangs
-            # each frame off its body, so what is posed against what is read off the scene.
+            # perception places the camera and the frames posed against it
             frames = [URIRef(camera.frame_uri)]
             for frame in frames:
                 for posed, _pose in relation_neighbors(

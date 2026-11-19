@@ -9,9 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 
-# Marks a field as a construction input rather than part of the published IR: ir_gen reads
-# it off the live object, ir.json leaves it out. New fields default to internal until a
-# template or a downstream consumer needs them.
+# construction input: read by ir_gen, left out of ir.json
 INTERNAL = {"ir_internal": True}
 
 

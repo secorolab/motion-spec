@@ -123,8 +123,7 @@ def guarded_motion(model, node) -> GuardedMotion:
     )
 
 
-# Timing relations, and how each states its threshold. An elapsed constraint has no solver error:
-# codegen compares the world clock to the threshold, so the reader resolves both to seconds.
+# no solver error: codegen compares the world clock to the threshold, in seconds
 _ELAPSED_RELATIONS = (
     (CSTR["GreaterThanConstraint"], ">=", CSTR["threshold"]),
     (CSTR["EqualityConstraint"], "==", CSTR["reference-value"]),
@@ -145,14 +144,12 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
         reference = graph.value(constraint_node, CSTR["reference-value"])
         goal_status = str(graph.value(reference, RDF.value))
 
-    # A timing constraint is measured against the clock rather than a solver.
     is_elapsed = constraint_node is not None and CSTR_EXT["TimeConstraint"] in get_node_types(
         graph, constraint_node
     )
     operator, threshold, elapsed_tolerance, observed_at = None, None, None, None
     if is_elapsed:
-        # An age constraint counts from an observation instant when the beginning of the interval
-        # it measures is a world quantity's sosa:phenomenonTime, and from entry otherwise.
+        # from sosa:phenomenonTime when the interval starts at one, else from entry
         interval = graph.value(constraint_node, TIME.hasTime)
         begin = graph.value(interval, TIME.hasBeginning) if interval is not None else None
         observed = (
@@ -182,8 +179,6 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
         if operator == "==":
             band_node = graph.value(constraint_node, CSTR_EXT["tolerance"])
             elapsed_tolerance = quantities.duration_seconds(model, band_node)
-    # An authored band on a spatial equality; the elapsed branch reads its own, in seconds,
-    # because a duration's magnitude rides on qudt rather than on a D-block.
     band = None if is_elapsed else graph.value(constraint_node, CSTR_EXT["tolerance"])
 
     return ConstraintEvaluator(
@@ -219,9 +214,6 @@ def monitor_entry(model, node):
     )
     is_until_aggregate = aggregate and monitored == sections["until"]
     is_when_aggregate = aggregate and monitored == sections["when"]
-    # The expression node the monitor targets: its member ids, IRIs, tolerances, and its logic. A
-    # named group and a whole-section conjunction/disjunction are the same thing here: one
-    # condition carrying its own members and join, which the monitor's terms are built from.
     expressions = [item for item in monitored if quantities.is_constraint_aggregate(model, item)]
     if not expressions:
         group_ids, group_uris, group_bands, group_any = [], [], [], False
@@ -245,7 +237,6 @@ def monitor_entry(model, node):
         if is_until_aggregate or is_when_aggregate or group_ids or error_node is None
         else quantities.quantity(model, error_node)
     )
-    # The band belongs to the constraint, so a monitor carries it only when it watches one.
     band = (
         graph.value(next(iter(monitored)), CSTR_EXT["tolerance"])
         if error is not None and len(monitored) == 1
@@ -263,8 +254,6 @@ def monitor_entry(model, node):
         "constraint_uris": [str(item) for item in monitored],
     }
     publication = ros_publication(model, node)
-    # A monitor that only publishes is neither edge- nor level-triggered: it names no signal,
-    # it just reports the state of the constraint it watches.
     if CSTR_HDL["EdgeTriggeredMonitor"] not in get_node_types(graph, node):
         flag_node = graph.value(node, CSTR_HDL["flag"])
         return LevelMonitor(
@@ -326,8 +315,6 @@ def build_constraint_handlers(model, schedule, derivation):
         steps.extend(
             schedule.of(list(graph.objects(node, CSTR_HDL.evaluators)), OPS_GENERIC + OPS_HANDLER)
         )
-        # A single-axis controller's evaluator is not reachable from its own error signal, so
-        # append it once its dependencies are scheduled.
         for plan in plans:
             if len(plan.axes) > 1 or CSTR_HDL_EXT.FeedForwardController in get_node_types(
                 graph, plan.controller
@@ -337,8 +324,7 @@ def build_constraint_handlers(model, schedule, derivation):
             evaluator = next(graph.subjects(CSTR_HDL.error, error), None)
             if evaluator is not None and model.id(evaluator) not in steps:
                 steps.append(model.id(evaluator))
-        # Controllers run after what feeds them, and a pose command's difference evaluator after
-        # every controller reading it; both in reverse, so the emitted order is the authored one.
+        # reversed, so the emitted order is the authored one
         steps.extend(
             controller.id
             for plan in reversed(plans)
@@ -402,8 +388,7 @@ class PhaseNodes:
             phase = self.monitor_phase(graph, node)
             if phase is not None:
                 self.monitors[phase].append(node)
-        # An evaluator or controller bound to no phase is silently excluded from all schedules,
-        # which is intended; classifying one the handler never declared is not.
+        # an unphased item is excluded by intent; an undeclared one is refused
         for kind, by_phase, declared_predicate in (
             ("evaluators", self.evaluators, CSTR_HDL["evaluators"]),
             ("monitors", self.monitors, CSTR_HDL["monitors"]),
@@ -419,8 +404,6 @@ class PhaseNodes:
         """The phase a monitor belongs to, by what it watches or, failing that, what it reads."""
         monitored = set(graph.objects(node, CSTR_HDL["constraint"]))
         if monitored:
-            # A group monitor names one of the section's nodes, not the whole section, and the
-            # group node itself never appears in the expanded member sets.
             for phase in ("when", "until"):
                 if monitored <= self.raw[phase]:
                     return phase
@@ -451,8 +434,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         model.id(graph.value(model.node_by_id[handler.id], CSTR_HDL["motion"]))
         for handler in handlers
     }
-    # A per-motion slice copies nothing off its solver: `solver_id` resolves through the
-    # resources index, exactly as templates do through `resources.by_id`.
     solvers_by_id = robots.by_id
     owner = computation.indexes.function_owner
     function_input = computation.indexes.function_input
@@ -463,19 +444,13 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         token = model.id(motion_node)
         phase = PhaseNodes(model, handler, handler_node, motion_node)
         plans = derivation.controllers_by_handler.get(handler_node, ())
-        # The authored controllers whose constraints this motion holds during.
         active_plans = [plan for plan in plans if plan.constraint in phase.constraints["while"]]
         active_controllers = [
             controller for plan in active_plans for controller in derivation.controllers_for(plan)
         ]
-        # A declared solver counts even when no controller routes to it: a monitor-only handler
-        # still owns its arm runtime for state reading, FK and command forwarding.
         solver_ids = {model.id(plan.solver) for plan in plans} | {
             model.id(solver) for solver in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
         }
-        # The arm solvers this handler commands, sliced to the motion driver it drives them with.
-        # No copy of the solver's own facts (`algorithm`, `gravity`, `chain.root`, ...) -- a
-        # template reaches them through `solver_id` into `resources.by_id`.
         chain_solvers = []
         for solver in robots.serial_chains:
             if solver.id not in solver_ids or not solver.motion_drivers:
@@ -504,10 +479,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             model, dict(zip(phase.evaluators["while"], evaluators["while"])), computation.views
         )
 
-        # The three schedules the motion runs, in loop order.
         scope = Schedule(model)
-        # Elapsed and goal-status conditions have no function to schedule: the monitor reads the
-        # clock or the act's status slot directly.
         live = {"until": [], "while": []}
         for kind, nodes in live.items():
             for node in phase.evaluators[kind]:
@@ -520,21 +492,15 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                 if quantities.goal_status_act(model, quantity) is None:
                     nodes.append(node)
 
-        # Until monitors run before control each tick, so build the until schedule first: a
-        # quantity an until monitor consumes must be scheduled in the earlier phase, or the monitor
-        # reads the previous tick's value on its first tick.
+        # until first, or its monitor reads the previous tick's value
         until = scope.of(live["until"], OPS_GENERIC + OPS_HANDLER)
-        # Until evaluators have no controller error signal to drive backward discovery, so append
-        # them after their dependencies to keep the emitted call order right.
         until.extend(model.id(node) for node in live["until"] if scope.claim(model.id(node)))
 
         grouped_ids = {component.eval_id for group in groups for component in group.components}
         grouped_nodes = [
             node for node in phase.evaluators["while"] if model.id(node) in grouped_ids
         ]
-        # A grouped evaluator's error is emitted inline ahead of the schedule block, but whatever
-        # produces its reference still has to run first -- so walk the grouped nodes before the
-        # main pass rather than skipping those producers entirely.
+        # producers of a grouped reference run before its inline error
         while_pre = [
             step
             for step in scope.of(grouped_nodes, OPS_GENERIC + OPS_HANDLER)
@@ -554,8 +520,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             else:
                 leading.append(node)
 
-        # The controller calls themselves are appended in authored order below, so drop whatever
-        # the backward walk found of them.
         controller_ids = {controller.id for controller in active_controllers} | {
             model.id(plan.controller) for plan in active_plans
         }
@@ -564,12 +528,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             for step in scope.of(leading, OPS_GENERIC + OPS_HANDLER)
             if step not in controller_ids
         ]
-        # Compute ops for every alignment the motion holds during: rotated direction, angle, then
-        # the direction the constraint is driven along -- a rotation vector onto the reference,
-        # or, off zero, the gradient axis. Both are read through shared state, by a moment
-        # controller's wrench or by a solver row, so the backward walk from either never reaches
-        # these; the ops are emitted once for the whole model, and every motion that holds the
-        # constraint has to name them itself.
+        # the backward walk never reaches alignment ops: each motion names them itself
         for constraint in phase.constraints["while"]:
             quantity = graph.value(constraint, CSTR.quantity)
             if quantity is None:
@@ -583,8 +542,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                     [model.id(op) for op in alignment_chain_ops(model, quantity)]
                     + [model.id(drive_op)],
                 )
-        # The interpolation and difference calls a per-axis pose command adds to the active block.
-        # An alignment has no pose pair to interpolate or difference; its own chain is scheduled.
         for plan in active_plans:
             if (
                 len(plan.axes) <= 1
@@ -601,10 +558,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             if interpolation is not None:
                 append_new(active, scope.of([interpolation], OPS_GENERIC + OPS_HANDLER))
             append_new(active, [SolverIdFactory(model, plan.controller).pose_evaluator()])
-        # Each controlled expression's unit gradient and the norm it came from: a solver row and
-        # the control law read them through shared state, so the backward walk from either never
-        # reaches them; walking back from the ops writing the unit vectors reaches the norm and
-        # every term they combine.
         gradient_units = [
             unit
             for plan in active_plans
@@ -620,7 +573,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             ),
         )
         append_new(active, [model.id(node) for node in leading])
-        # The authored Cartesian forces the handler's own controllers ultimately drive.
         control_outputs = {controller.control_signal.id for controller in handler.controllers}
         force_nodes = []
         driver_nodes = [
@@ -630,7 +582,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             )
             if node is not None
         ]
-        # A force distribution's drivers hang off the solver, not off a chain.
         driver_nodes.extend(
             driver
             for solver_node in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
@@ -643,7 +594,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                 if force is None:
                     continue
                 force_id = model.id(force)
-                # Every data id that feeds the force, however many functions deep.
                 feeding: set[str] = set()
                 pending = list(function_input.get(force_id, ()))
                 while pending:
@@ -654,14 +604,10 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                     pending.extend(function_input.get(item, ()))
                 if ({force_id} | feeding) & control_outputs:
                     force_nodes.append(node)
-        # Claimed here so the walk still resolves shared prerequisites in this position, but
-        # emitted after the control laws run: the wrench reads the control signal they write this
-        # tick.
+        # claimed here, emitted after the control laws it reads
         commanded_force = scope.of(force_nodes, OPS_GENERIC + OPS_SOLVER + OPS_HANDLER)
         active.extend(scope.of(trailing, OPS_GENERIC + OPS_HANDLER))
         append_new(active, [model.id(node) for node in trailing])
-        # A perturbation is reachable from no controller and no monitor, so nothing else pulls the
-        # ops composing its wrench or evaluating its gate into a schedule.
         for node in perturbations.nodes(model, handler_node):
             gate = perturbations.evaluator_nodes(model, node)
             append_new(active, scope.of(gate, OPS_GENERIC + OPS_HANDLER))
@@ -670,8 +616,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                 [model.id(evaluator) for evaluator in gate if scope.claim(model.id(evaluator))],
             )
             append_new(active, scope.of(perturbations.compose_ops(model, node), OPS_GENERIC))
-        # The calls `monitor_when` runs, in their own scope: a step evaluated in both phases emits
-        # in both, so the when block never shares the active block's emitted-once set.
         when_scope = Schedule(model)
         when_live = [
             node
@@ -680,11 +624,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             or CSTR_EXT["TimeConstraint"] not in get_node_types(graph, constraint)
         ]
         when = when_scope.of(when_live, OPS_GENERIC + OPS_HANDLER)
-        # Nothing downstream reaches the when evaluators, so they are scheduled explicitly.
         when.extend(model.id(node) for node in when_live if when_scope.claim(model.id(node)))
 
-        # Drop the calls another motion owns: the backward walk can reach its functions, and
-        # running them here would recompute its outputs while it is inactive.
+        # another motion's calls would recompute its outputs while it is inactive
         active = [step for step in active if owner.get(step, token) == token]
         while_pre = [step for step in while_pre if owner.get(step, token) == token]
         append_new(active, [controller.id for controller in reversed(active_controllers)])
@@ -696,8 +638,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         when_monitors = [monitor_entry(model, node) for node in phase.monitors["when"]]
         while_monitors = [monitor_entry(model, node) for node in phase.monitors["while"]]
         until_monitors = [monitor_entry(model, node) for node in phase.monitors["until"]]
-        # The controller outputs written straight to a joint rather than through a solver,
-        # resolved from the joint, not the agent: a gripper's joint rides the arm's runtime.
         forwarded_commands = []
         for plan in active_plans:
             if not derivation.algorithm_by_solver[plan.solver].forwards_commands:
@@ -734,8 +674,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                     runtime.id,
                 )
             )
-        # What state runs this motion, when the model says so rather than leaving it derived from
-        # the event that ends the motion -- which a motion meant to keep running never fires.
         runs_in = graph.value(handler_node, CSTR_HDL_EXT["runs-in-state"])
         unit = MotionUnit(
             id=handler.id,
@@ -767,8 +705,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
                 handler.motion.while_ + handler.motion.when + handler.motion.until,
                 computation.indexes,
                 computation.views,
-                # while_pre too: a grouped row's setpoint generator runs there and may read a
-                # snapshot.
+                # while_pre too: its setpoint generators may read a snapshot
                 while_pre + active + when + until,
                 computation.functions,
                 token,
@@ -780,9 +717,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             runs_in_state=str(runs_in) if runs_in is not None else "",
         )
         motions.append(unit)
-        # The handler's perturbations, each with the boolean terms its gate opens on. The terms
-        # are folded here rather than in the reader: they are the same rows a monitor's condition
-        # is built from, so both go through `evaluator_term` and render identically.
         chains = [(slice_.id, solvers_by_id[slice_.solver_id]) for slice_ in chain_solvers]
         records = []
         for node in perturbations.nodes(model, handler_node):
@@ -802,7 +736,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         unit.entry_snapshots = [s for s in unit.snapshots if s.scope == "entry"]
         unit.task_snapshots = [s for s in unit.snapshots if s.scope == "task"]
 
-    # What needs the whole set of motions to be known.
     for motion in motions:
         set_motion_conditions(motion)
         for group in motion.pose_axis_error_groups:
@@ -817,15 +750,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             computation.indexes.pose_components,
             collect_motion_references(motion, computation.functions),
         )
-    # Ordered: the FSM wiring tags monitors and motions, then the capability booleans, then the
-    # gate calls that read them.
     meta = apply_fsm_wiring(motions, fsm, solvers_by_id.values())
-    # The capability booleans each generated function's signature is built from, and each
-    # motion's telemetry index, so the frame-log schema and the generated sample switch read one
-    # field rather than agreeing with a second generator.
     for index, motion in enumerate(motions):
         motion.index = index
-        # Only a when-elapsed clock lives in state; an observation age is read off shared.
         motion.when_needs_state = bool(motion.when_elapsed_ids or motion.when_monitors)
         motion.when_needs_data = bool(
             motion.when_elapsed_ids
@@ -838,8 +765,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         motion.until_needs_data = bool(motion.until_schedule or motion.until_monitors)
         motion.until_needs_robot = any(monitor.fsm_namespace for monitor in motion.until_monitors)
         motion.apply_needs_state = bool(motion.serial_chain_solvers or motion.perturbations)
-        # Gate on the torque limit, not on the joint-space samples: this runs before the
-        # telemetry artifact exists, so the sample list does not yet.
+        # not on the joint-space samples: they do not exist yet
         motion.apply_needs_data = (
             bool(motion.forwarded_commands)
             or any(
@@ -851,8 +777,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         motion.apply_needs_robot = bool(
             motion.serial_chain_solvers or motion.forwarded_commands or motion.perturbations
         )
-        # An edge is the occurrence: a flag monitor holds a level and never reaches the buffer,
-        # and an FSM-namespaced edge is produced on the sequencer, not recorded in the buffer.
         motion.when_needs_events, motion.until_needs_events, motion.control_needs_events = (
             any(monitor.is_edge_triggered and not monitor.fsm_namespace for monitor in monitors)
             for monitors in (motion.when_monitors, motion.until_monitors, motion.while_monitors)
@@ -863,7 +787,6 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
     return motions, meta
 
 
-# Per superobject type, the branch flags a pose-axis error group renders through.
 _GROUP_TYPE_FLAGS = {
     "is_pose": ("Pose",),
     "is_twist": ("VelocityTwist", "AccelerationTwist"),
@@ -908,7 +831,6 @@ def evaluator_term(evaluator) -> dict:
         operator = evaluator.elapsed_op or ">="
         threshold = evaluator.elapsed_threshold_s or 0.0
         elapsed_id = elapsed_coordinate_id(evaluator)
-        # Pre-format the threshold so the emitted literal is stable.
         if operator == "==":
             tolerance = evaluator.elapsed_tolerance_s or 0.0
 
@@ -930,7 +852,7 @@ def evaluator_term(evaluator) -> dict:
         "kind": "constraint",
         "error_id": evaluator.error.id if evaluator.error is not None else None,
     }
-    # Omitted, not empty: ST4 reads an empty string as present, and would emit a bare access.
+    # omitted, not empty: ST4 reads "" as present
     if evaluator.tolerance is not None and evaluator.tolerance.id:
         term["tolerance_id"] = evaluator.tolerance.id
 
@@ -974,8 +896,7 @@ def set_motion_conditions(motion) -> None:
             for evaluator in evaluators
             if evaluator.error or evaluator.is_elapsed
         ]
-        # Keyed by constraint, not by error: two goal-status items on one act share the status
-        # slot, so the error alone cannot say which status a monitor is watching for.
+        # by constraint: goal-status items on one act share a status slot
         direct_by_constraint = {
             evaluator.constraint.id: evaluator_term(evaluator)
             for evaluator in evaluators
@@ -996,10 +917,7 @@ def set_motion_conditions(motion) -> None:
                     f"the '{phase}' group in motion '{motion.id}'",
                 )
                 continue
-            # A whole-section monitor over a flat constraint list, from a graph minted before
-            # sections carried an expression node. Archived generations vendor those graphs and
-            # telemetry replay rebuilds the IR from them, so the join is spelled out here: a
-            # section only ever linked flat when it meant a conjunction.
+            # a flat section in an archived graph means a conjunction
             if monitor.is_until_aggregate if phase == "until" else monitor.is_when_aggregate:
                 stamp_terms(monitor, terms, False, f"the whole '{phase}' section of '{motion.id}'")
                 continue

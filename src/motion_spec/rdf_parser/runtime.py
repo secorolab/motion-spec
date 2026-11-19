@@ -45,7 +45,6 @@ def runtime_data(model, serial_chains, control_period_ns: int, platform_uri) -> 
     """
     if not platform_uri:
         raise RuntimeError("measured dt: the execution platform has no IRI to derive a clock from")
-    # Which clock it is is the platform's to say: the port derives from the exec context.
     clock_iri = model.register_derived("clock", platform_uri, "clock", PROV.wasDerivedFrom)
     for name in ("clock_time_s", "dt_measured_s"):
         model.register_derived(name, clock_iri, name, PROV.wasDerivedFrom)
@@ -66,7 +65,6 @@ def runtime_data(model, serial_chains, control_period_ns: int, platform_uri) -> 
             else:
                 continue
             companion_ids = companions_by_reading.setdefault(out.id, [])
-            # The tare state is computed from the reading, so it derives from that output's node.
             reading_iri = model.iri_of(out.id)
             if reading_iri is None:
                 raise RuntimeError(
@@ -94,7 +92,6 @@ _FT_TARE_MEMBERS = (
     ("ft_confirming", "Bool"),
 )
 
-# An estimate has no sensor zero or load to take out; its tare is the held weight it re-converges to.
 _ESTIMATE_TARE_MEMBERS = (
     ("est_payload", "Wrench"),
     ("est_payload_new", "Wrench"),
@@ -103,10 +100,7 @@ _ESTIMATE_TARE_MEMBERS = (
 )
 
 
-# What answers an observation, per backend. A twist is derived by KDL from the solver's joint
-# mirror on either backend; a joint position is read off the simulator on mj_kdl but off that
-# mirror on robif2b. Everything else is answered by the world model or a sensor, so the loop can
-# compute it whether or not a motion that reads it is running.
+# per backend, read off the joint mirror; the world model answers the rest every tick
 _STATE_ANSWERED = {
     "mj_kdl": {"VelocityTwist"},
     "robif2b": {"VelocityTwist", "JointPosition", "JointVelocity"},
@@ -160,7 +154,6 @@ def world_ports(
     """
     from motion_spec.generation.scene_kdl import segment_of_joint
 
-    # A subscription binds the base of what it observes itself, so that root has its provider.
     placed_by_perception = {
         row["observed_body_segment"]
         for subscription in subscriptions
@@ -169,8 +162,6 @@ def world_ports(
     }
     object_by_body = {obj.body_iri: obj for obj in scene.objects if obj.body_iri}
 
-    # Which MJCF body a free-floating agent tree is spawned as, so a platform that articulates
-    # can still be placed. Keyed by the ktree the agent's model maps.
     body_by_tree = {
         mapping.target_id: mapping.entity
         for models in quantities.scene_instance(model).agent_models.values()
@@ -193,9 +184,7 @@ def world_ports(
     )
     free_roots, joints, aux_cmds, wrench_cmds = [], [], [], []
     for tree in world_trees:
-        # Trees are maximal joint-connected sets, so every tree but the anchored one stands on a
-        # root no joint holds -- a mobile platform included, which articulates below that root.
-        # Nothing measures a free body unless something places it.
+        # nothing measures a free body unless something places it
         if tree["root"] == anchored_root or tree["root"] in placed_by_perception:
             continue
         obj = object_by_body.get(tree["root_iri"])
@@ -314,7 +303,6 @@ def annotate_runtime(
     runtime_by_signature: dict[tuple, str] = {}
     owner_by_runtime: dict[str, str] = {}
     for solver in serial_chains:
-        # Two solvers are one runtime when they drive the same chain with the same tool.
         signature = (
             backend,
             solver.hardware.model,
@@ -329,7 +317,7 @@ def annotate_runtime(
         solver.runtime.id = runtime_id
         solver.runtime.owner = solver.id == owner_by_runtime[runtime_id]
         solver.runtime.owner_id = owner_by_runtime[runtime_id]
-        # ST4's <if(x)> treats "" as truthy, so a bare robot's empty tool fields must be None.
+        # ST4 treats "" as truthy
         solver.hardware.tool_body = solver.hardware.tool_body or None
         solver.hardware.tcp_frame = solver.hardware.tcp_frame or None
 
@@ -343,8 +331,7 @@ def annotate_runtime(
         for solver in serial_chains
         for frame in place_solver_on_chain(solver, world_index or {}, root_by_segment)
     ]
-    # A force distribution sums commanded wrenches into its own frame, so it reads both frames
-    # from the world model. Keyed by segment, not by frame id: two arms carry one `bracelet_link`.
+    # keyed by segment: two arms carry the same frame name
     for solver in force_solvers:
         for frame in [solver.force.as_seen_by, *(spec.force.as_seen_by for spec in solver.forces)]:
             if frame is None or not frame.uri:
@@ -366,7 +353,6 @@ def annotate_runtime(
                 }
             )
 
-    # Keyed by runtime owner and frame: all the records on one runtime read the same index.
     claimed: dict[tuple[str, str], dict] = {}
     for frame in reads:
         key = (frame["solver_id"], frame["frame_id"])
@@ -377,7 +363,6 @@ def annotate_runtime(
             )
     world_frames = list(claimed.values())
 
-    # Torque from dynamics or a joint impedance, position from inverse kinematics.
     modes = collections.defaultdict(set)
     mode_by_driver = {}
     for solver in serial_chains:
@@ -394,7 +379,6 @@ def annotate_runtime(
         solver.runtime.command_mode = (
             next(iter(found)) if len(found) == 1 else "position" if found else None
         )
-        # Forward position kinematics states poses only.
         fpk = SOLVER_FAMILIES[KC_OP.ForwardPositionKinematics]
         twist = next((out for out in solver.output if isinstance(out, VelocityTwist)), None)
         if solver.algorithm is fpk and twist is not None:
@@ -403,11 +387,8 @@ def annotate_runtime(
                 f"solver '{solver.id}' is forward position kinematics, but twist "
                 f"'{twist.id}' is read through it; name 'fvk' to read twists.",
             )
-        # The robif2b arm cannot measure a mimic joint, so the bound gripper answers for it and
-        # the joint moves onto that device's own `joint_outputs`. A simulated backend measures
-        # every joint by name, so there the output stays an ordinary solver output.
+        # robif2b cannot measure a mimic joint; the bound gripper answers it
         if backend == "robif2b":
-            # Chain joints are published unprefixed; the outputs' joint names arrive runtime-scoped.
             chain_joints = {f"{solver.runtime.prefix}{joint}" for joint in solver.chain.joints}
             outputs, gripper_outputs = [], []
             for out in solver.output:
@@ -434,14 +415,10 @@ def annotate_runtime(
             for device in solver.devices:
                 if device.kind in GRIPPER_DEVICES:
                     device.joint_outputs = gripper_outputs
-        # Last, so it sees the outputs a gripper device took over: what the loop answers is
-        # decided from the list as it finally stands.
         from_state = _STATE_ANSWERED.get(backend, {"VelocityTwist"})
         solver.state_output = [out for out in solver.output if out.type in from_state]
         solver.world_output = [out for out in solver.output if out.type not in from_state]
         index_chain_joints(solver)
-    # Each runtime's outputs go onto the per-motion slices of it, with the mode the motion
-    # commands it in; a slice reaches `runtime_id`/`runtime_owner` through `solver_id`.
     by_id = {solver.id: solver for solver in serial_chains}
     for motion in motions:
         mode_by_runtime = {}
@@ -466,8 +443,7 @@ def annotate_runtime(
                 if device.kind in GRIPPER_DEVICES
                 for out in device.joint_outputs
             ]
-            # One arm is either commanded or held: a kinematics-only motion on a commanded arm
-            # would stage nothing while active, and a torque-streamed arm drops.
+            # commanded or held, never both: a torque-streamed arm drops
             if solver.read_only and canonical.runtime.id in commanding:
                 raise ConstraintViolation(
                     "solver",
@@ -488,19 +464,13 @@ def annotate_runtime(
             if device.kind == "RobotiqFT300s":
                 device.health_index = health_index
                 health_index += 1
-    # What the model authored, passed to whatever solver it names exactly as written. The one
-    # exception is the RNE pass a simulated ACHD run adds to gravity-compensate its command:
-    # that pass wants the field, and the value beside it is the root acceleration ACHD takes,
-    # so its opposite is derived here rather than being asked of the author twice.
-    # Full solvers only: a slice resolves gravity through `solver_id`.
     for solver in serial_chains:
         if solver.derived_root_acceleration:
             solver.gravity = list(solver.derived_root_acceleration)
             solver.gravity_compensation = [
                 -component or 0.0 for component in solver.derived_root_acceleration
             ]
-    # The observer reconstructs the chain's momentum, which is gravity-dependent: without the
-    # vector it would report the arm's own weight as an external push.
+    # without gravity the observer reports the arm's weight as a push
     for solver in serial_chains:
         if solver.gravity:
             continue
@@ -535,17 +505,14 @@ def annotate_device_dependencies(serial_chains, motions) -> None:
             ]
 
 
-# Diagnostics name the world-block keyword the author wrote, not the parsed record's type.
 _OUTPUT_KEYWORD = {
     "JointPosition": "joint-position",
     "JointVelocity": "joint-velocity",
     "JointForce": "joint-force",
 }
 
-# Every reading addressed by joint rather than by frame; each resolves to a chain index or a port.
 _JOINT_OUTPUT_KINDS = set(_OUTPUT_KEYWORD)
 
-# Readings the robif2b arm cannot take on a chain joint: only a bound gripper device answers them.
 _GRIPPER_ONLY_OUTPUTS = {"JointVelocity"}
 
 
@@ -612,13 +579,11 @@ JOINT_SPACE_CHANNELS = (
         "qdd", "solver", NS_MM_QUDT_QTY["AngularAcceleration"], NS_MM_QUDT_UNIT["RAD-PER-SEC2"]
     ),
     JointSpaceChannel("tau_ctrl", "solver", NS_MM_QUDT_QTY["Torque"], NS_MM_QUDT_UNIT["N-M"]),
-    # robif2b reads eff_msr off the hardware; under mj_kdl torque control jnt_trq_msr mirrors
-    # qfrc_actuator and is zero by construction, not by measurement.
+    # under mj_kdl torque control jnt_trq_msr is zero by construction
     JointSpaceChannel(
         "tau_msr", "sensor", NS_MM_QUDT_QTY["Torque"], NS_MM_QUDT_UNIT["N-M"], ("robif2b",)
     ),
 )
-# Emitted only where a torque limit is authored; that saturation is its writer, not the solver.
 JOINT_SPACE_COMMAND_CHANNEL = JointSpaceChannel(
     "tau_cmd", "saturation", NS_MM_QUDT_QTY["Torque"], NS_MM_QUDT_UNIT["N-M"]
 )
@@ -644,15 +609,12 @@ def add_joint_space_mirrors(model, robots, motions, algorithm_data: list, backen
 
     present = {item.id for item in algorithm_data}
     for runtime_id, solvers in by_runtime.items():
-        # Channel ids name the runtime's own joints, so the chain's joints get its prefix here.
         joints = [f"{solvers[0].runtime.prefix}{joint}" for joint in solvers[0].chain.joints]
         if not joints:
             raise RuntimeError(
                 f"joint-space mirror: solver '{solvers[0].id}' has no chain joints; the shared "
                 "ids are compile-time names, so a wrong joint count mislabels every channel"
             )
-        # tau_cmd differs from tau_ctrl only where a limit clamps it, so that saturation is its
-        # writer -- named only when the runtime carries exactly one.
         saturations = {
             solver.torque_saturation.id for solver in solvers if solver.torque_saturation
         }
@@ -665,11 +627,9 @@ def add_joint_space_mirrors(model, robots, motions, algorithm_data: list, backen
         writer_id = {
             "port": runtime_id,
             "sensor": runtime_id,
-            # None where several instances write the value: no one of them is its writer.
             "solver": solvers[0].id if len(solvers) == 1 else None,
             "saturation": next(iter(saturations)) if len(saturations) == 1 else None,
         }
-        # Mirrors are keyed by runtime, so they derive from the runtime's own solver node.
         parent = model.iri_of(runtime_id) or model.iri_of(solvers[0].id)
         if parent is None:
             raise RuntimeError(
@@ -706,7 +666,6 @@ def add_joint_space_mirrors(model, robots, motions, algorithm_data: list, backen
                 )
                 ids_by_channel[channel.name].append({"id": member_id, "index": index})
 
-        # Every solver on the runtime mirrors the same ids: whichever motion is active writes them.
         samples = [
             {"id": entry["id"], "channel": channel.name, "index": entry["index"]}
             for channel in available

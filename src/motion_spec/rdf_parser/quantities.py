@@ -206,7 +206,6 @@ _SUBSPACES = {
     MAP_EXT["linear"]: Subspace.Linear,
     MAP_EXT["angular"]: Subspace.Angular,
 }
-# Every RDF term that names a Cartesian axis, whatever metamodel states it.
 _AXES = {
     MAP["x"]: Axis.X,
     MAP["y"]: Axis.Y,
@@ -216,7 +215,6 @@ _AXES = {
     SLV["y"]: Axis.Y,
     SLV["z"]: Axis.Z,
 }
-# The same axes by the name a derived direction carries, which is a string rather than a term.
 AXIS_BY_NAME = {"x": Axis.X, "y": Axis.Y, "z": Axis.Z}
 
 
@@ -231,8 +229,7 @@ class SpatialAxis:
     subspace: Subspace
     axis: str
     direction: str | None = None
-    # A second runtime vector filling this row's other subspace: a scalar of a body-fixed
-    # primitive changes with both halves of the twist, and both land in one solver column.
+    # a body-fixed primitive's scalar moves with both halves of the twist
     moment: str | None = None
 
     @property
@@ -274,7 +271,7 @@ def spatial_axes(
     Returns:
         the directions, empty when nothing Cartesian is commanded
     """
-    # An impedance on an angular subspace states Torque; only an unstated one defaults to Force.
+    # only an unstated impedance command defaults to Force
     if controller_type == CSTR_HDL.ImpedanceController and command_type != "Torque":
         command_type = "Force"
     if command_type == "Force" or subspace == "force":
@@ -451,8 +448,6 @@ def optional_pose_reference(model, node):
     return None
 
 
-# Rotations whose components already resolve to one quaternion, and the wider set a literal
-# delta may be written in.
 _RESOLVED_ROTATION = {URI_GEOM_TYPE_QUATERNION, URI_GEOM_TYPE_DIRECTION_COSINE_XYZ}
 _LITERAL_ROTATION = _RESOLVED_ROTATION | {URI_GEOM_TYPE_ANGLES_ABG}
 
@@ -493,7 +488,6 @@ def relative_orientation(model, node) -> list[dict]:
     ordered component values and rotation representation).
     """
     graph = model.graph
-    # An orientation stated by reference is the referenced pose's, composed with nothing.
     reference = graph.value(node, CSTR["reference-value"])
     if reference is not None:
         pose = graph.value(reference, MAP.superobject)
@@ -530,7 +524,6 @@ def relative_orientation(model, node) -> list[dict]:
                 f"Relative orientation operand '{operand_node}' is neither a pose nor an "
                 "orientation",
             )
-        # A delta is literal by construction, so it folds to a quaternion here.
         rotation = orientation_quaternion(model, ModelBase(node_id=operand_node, graph=graph))
         if rotation is None:
             raise ConstraintViolation(
@@ -607,10 +600,7 @@ def pose(model, node) -> Pose:
     orientation_node = coordinate.orientation_coord.id
     representation = orientation_representation(model, orientation_node)
 
-    # A symbolic triple keeps its convention: the backend composes per-axis quaternions, and the
-    # sequence decides both the axes and the order they multiply in. A config pose is stamped
-    # Euler for lack of an authored coordinate to inspect, but it carries no per-axis factors --
-    # its whole frame is read from the deployment config, not composed from a sequence.
+    # a config pose is read whole from the deployment config, not composed per axis
     euler_axes_sequence = None
     euler_intrinsic = False
     if representation == "euler" and (node, PROV.wasDerivedFrom, None) not in graph:
@@ -625,7 +615,6 @@ def pose(model, node) -> Pose:
             for unit in graph[component : QUDT_SCHEMA["unit"]]
         }
     )
-    # A config pose's value is read from the deployment config file, not authored in the model.
     if is_snapshot(model, node) or (node, PROV.wasDerivedFrom, None) in graph:
         authored = False
     else:
@@ -829,15 +818,12 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
     for act in sources:
         rows = []
         for target in graph.objects(act, SOSA.hasFeatureOfInterest):
-            # A camera is what a channel carries, not a pose it writes: a viewer reads those
-            # images, and nothing in the loop does.
+            # cameras feed a viewer, not the loop
             if URI_SENS_TYPE_CAMERA in get_node_types(graph, target):
                 continue
             if NS_MM_ROS["Topic"] in get_node_types(graph, act):
                 item = pose(model, target)
                 target_iri = item.of.uri
-                # The reading's own of/wrt when the channel states them: the composition into
-                # this quantity is the model's, so both ends travel with the row.
                 observed = graph.value(act, SOSA.observedProperty)
                 of_frame = graph.value(observed, GEOM_REL.of)
                 rows.append(
@@ -847,8 +833,6 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                         "frame_id": item.with_respect_to.id,
                         "frame_iri": item.with_respect_to.uri,
                         "observed_of_iri": str(of_frame or ""),
-                        # The body the reading places: its root segment is what the world model
-                        # binds, so every other frame on it follows from the one measurement.
                         "observed_body_iri": str(
                             body_of_frame(of_frame, graph) if of_frame is not None else ""
                         ),
@@ -875,8 +859,6 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                     "target_iri": str(target),
                     "pose_id": item.id,
                     "frame_id": item.with_respect_to.id,
-                    # A scene object as an endpoint carries no frame IRI; the consumer that needs
-                    # one to place the pose says so itself.
                     "frame_iri": item.with_respect_to.uri,
                     "observed_at_id": observed_at_id(model, model.node_by_id[item.id]),
                 }
@@ -910,14 +892,11 @@ def quantity(model, node):
     graph = model.graph
     viewed = graph.value(node, MAP.subobject)
     if viewed is not None:
-        # A constraint names the per-quantity view. The subobject is the pooled relation (or
-        # scalar); when the relation carries several coordinates the view's superobject pins
-        # which sampling is meant, so a component-typed superobject dispatches as coordinate.
+        # the superobject pins which sampling of a pooled relation is meant
         superobject = graph.value(node, MAP.superobject)
         subspace = graph.value(node, MAP.subspace)
         if (node, MAP.axis, None) in graph:
-            # A single-axis view names its own scalar; only whole-component views need the
-            # superobject to pin one sampling of the pooled relation.
+            # a single-axis view names its own scalar
             superobject = None
         sup_types = get_node_types(graph, superobject) if superobject is not None else set()
         if (
@@ -928,7 +907,6 @@ def quantity(model, node):
         ):
             node = superobject
         elif subspace in (MAP_EXT.position, MAP_EXT.orientation) and superobject is not None:
-            # A composite pose: its own component coordinate is the recorded selection.
             component = local_name(subspace)
             usage = graph.value(
                 rdflib.URIRef(f"{superobject}-{component}-selection"), PROV.qualifiedUsage
@@ -945,8 +923,7 @@ def quantity(model, node):
     if URI_GEOM_TYPE_POSE_COORD in types:
         return pose(model, node)
     if URI_GEOM_TYPE_POSE in types:
-        # A geom-rel:Pose with no PoseCoordinate: a snapshot or reference pose filled at runtime,
-        # with frame endpoints but no authored values.
+        # snapshot or reference pose: frames, no authored values
         of_node = graph.value(node, GEOM_REL["of"])
         wrt_node = graph.value(node, GEOM_REL["with-respect-to"])
         seen_node = graph.value(node, GEOM_COORD["as-seen-by"])
@@ -983,13 +960,12 @@ def quantity(model, node):
 
     kind_node = graph.value(node, QUDT_SCHEMA.hasQuantityKind)
     kind = QuantityKind(model.id(kind_node), str(kind_node))
-    # Values below are converted, so the unit reported alongside them is the SI one.
+    # values are converted to SI
     unit_node = graph.value(node, QUDT_SCHEMA["unit"])
     si_node = si_unit(unit_node)
     unit = Unit(model.id(si_node), str(si_node))
     has_view = (node, ~MAP["subobject"], None) in graph
-    # Authored and snapshot are mutually exclusive: a snapshot wins, because its authored literal is
-    # only the value it holds before the first capture.
+    # a snapshot's literal is only its value before the first capture
     provenance = Provenance(authored=not is_snapshot(model, node) and is_authored(model, node))
 
     if CSTR_HDL_EXT["SetpointGenerator"] in types:
@@ -1020,7 +996,7 @@ def duration_quantity(model, node) -> Quantity:
     """An authored duration or a runtime elapsed-duration coordinate, in seconds."""
     if not is_duration(model, node):
         raise ValueError(f"Expected a duration at '{node}'")
-    # An elapsed coordinate has no authored value; the clock fills it at runtime.
+    # an elapsed coordinate is filled by the clock at runtime
     authored = model.graph.value(node, QUDT_SCHEMA["value"])
     value = (
         None
@@ -1039,7 +1015,6 @@ def duration_quantity(model, node) -> Quantity:
     )
 
 
-# The joint-space coordinates, by the IR type each reads as.
 JOINT_QUANTITY_TYPES = {
     KC_STAT.JointPositionCoordinate: "JointPosition",
     KC_STAT.JointVelocityCoordinate: "JointVelocity",
@@ -1079,7 +1054,6 @@ def normalization(model, node) -> dict | None:
     return bounds
 
 
-# The predicates whose presence means a user wrote the value down.
 _AUTHORED_VALUE_PREDICATES = (
     QUDT_SCHEMA["value"],
     CSTR["reference-value"],
@@ -1098,7 +1072,7 @@ _AUTHORED_VALUE_PREDICATES = (
 
 def is_authored(model, node) -> bool:
     """True when a quantity's value was authored by the user rather than computed."""
-    # A path parameter's value is only its starting point; the traversal drives it per tick.
+    # a path parameter's value is only its start; the traversal drives it
     if (None, GEOM_OP_EXT["path-parameter"], node) in model.graph:
         return False
     return any((node, predicate, None) in model.graph for predicate in _AUTHORED_VALUE_PREDICATES)
@@ -1242,8 +1216,7 @@ def placement_of(model, attachment, anchor):
     kind, _name, frame, parent, _host_frame = attachment
     if kind != "World":
         return frame_placement(model, frame, placement_frame(model, parent))
-    # What the runtime places is the body, so its root frame -- not whichever of its frames a
-    # joint happens to hang it by, which may sit anywhere on it.
+    # the runtime places the body, not the frame a joint hangs it by
     is_frame = GEOM_ENT.Frame in get_node_types(model.graph, frame)
     return frame_placement(model, body_of_frame(frame, model.graph) if is_frame else frame, anchor)
 
@@ -1293,14 +1266,12 @@ def placement_graph(model):
     """
     graph = Graph()
     graph += model.graph.triples((None, None, None))
-    # A relation is pooled per frame pair, so a context quantity is a coordinate on a
-    # relation the scene also samples: strip the quantity's own nodes, keep the relation --
-    # unless nothing places it any more, in which case the relation goes too.
+    # relations are pooled per frame pair: keep one unless nothing places it any more
     for type_ in (URI_GEOM_TYPE_POSE, URI_GEOM_TYPE_POSE_COORD):
         for node in model.graph.subjects(RDF["type"], type_):
             if next(model.graph.subjects(PROV.hadMember, node), None) is not None:
                 graph.remove((node, None, None))
-    # A pose an operation computes each cycle holds no coordinates until the run; it places nothing.
+    # computed each cycle: no coordinates until the run
     for predicate in (GEOM_OP.composite, GEOM_OP.out):
         for node in model.graph.objects(None, predicate):
             graph.remove((node, None, None))
@@ -1319,7 +1290,6 @@ def frame_placement(model, node, wrt):
     leads to is placed by the joint that holds it, and comes back coincident.
     """
     frame = placement_frame(model, node)
-    # A placement is built into the world before the run draws anything.
     graph = placement_graph(model)
     for pose, coords in get_pose_coords(graph=graph, poses=find_pose_path(frame, wrt, graph) or []):
         for coord in coords:

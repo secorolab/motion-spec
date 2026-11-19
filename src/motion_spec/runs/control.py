@@ -160,7 +160,7 @@ def control_run(run_dir: Path, action: str, value: float | None = None) -> dict:
             raise ValueError(f"'speed' needs a factor, {SPEED_MIN} to {SPEED_MAX}")
         channel.set_speed(value)
     else:
-        # Re-publish what the block says, to ask the loop for an ack.
+        # re-publish the current state to ask the loop for an ack
         channel.set_pause(bool(channel.paused))
     return {
         "available": channel.available,

@@ -52,8 +52,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     """
     operations.normalize(model)
 
-    # The platform, the scene and the FSM are pure functions of the graph, and everything the
-    # pass builds afterwards is shaped by them.
     platform = deployment.read_platform(model)
     platform_config = deployment.platform_config(platform)
     backend = platform["backend"]
@@ -64,19 +62,14 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         model, world_trees, {obj.draw_uri for obj in scene.objects if obj.draw_uri}
     )
 
-    # One scope for the whole active block: a step reachable from both a solver and a handler is
-    # emitted once, and the four sections are only ever read as their union.
     schedule = operations.Schedule(model)
-    # A pose perception writes has one writer -- the detect result or the subscription. The
-    # kinematics must not also write it, so the chains are built knowing which poses are not theirs.
+    # a perceived pose has one writer; the chains must not write it
     perceived_pose_ids = {
         row["pose_id"]
         for rows in quantities.perceived_written_poses(model).values()
         for row in rows
     }
     robots = agents.build_robots(model, schedule, setups, derivation, backend, perceived_pose_ids)
-    # Every scene element the world model holds, by IRI: a world read resolves against all of
-    # them, not only the tree the reading solver's chain is sliced from.
     world_index = agents.tree_segments(model, setups, world_trees)
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
     coordination.assign_event_indexes(handlers)
@@ -87,7 +80,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     data_structures = read_data_structures(model)
     constraint_handler.augment_data(model, derivation, data_structures, views)
     computation = build_indexes(model, functions, data_structures, views)
-    # After pose components exist, before motions are built: a path's goal is one of them.
     operations.resolve_function_operands(functions, computation.indexes, data_structures)
 
     motions, fsm_meta = coordination.build_motions(
@@ -106,8 +98,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     communication.annotate_publish_rates(motions, control_period_ns)
 
     action_clients = communication.ros_action_clients(model)
-    # A subscription places its detections through the world model, so it is built against the
-    # same segment names the chains resolved against.
     subscriptions = communication.ros_subscriptions(model, world_index)
     standing_publishes = communication.ros_standing(
         model, data_structures, control_period_ns, world_index
@@ -135,21 +125,14 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         model, robots.serial_chains, control_period_ns, platform.get("uri")
     )
     algorithm_data += runtime_members
-    # A snapshot the shared context declares is captured once for the run, so its guard belongs
-    # to the run and not to whichever motion happened to reach it first.
     latches = {s.target_id: s.captured_id for motion in motions for s in motion.task_snapshots}
     for target_id, captured_id in latches.items():
         node = model.node_by_id.get(target_id)
         if node is None:
             raise RuntimeError(f"task snapshot '{target_id}' has no node to derive its guard from")
         model.register_derived(captured_id, node, "captured", PROV.wasDerivedFrom)
-        # Carries its initial value, which is also what gives it a writer: a
-        # member nothing produces is pruned as absent.
         algorithm_data.append(DataValue(id=captured_id, type="Bool", value=False))
 
-    # An observation instant is written by the channel that perceives its pose, from the executor
-    # thread; until the first reading lands it is minus infinity, so the age read off it is
-    # infinite and a freshness gate stays shut.
     observed_at_ids = {
         row["observed_at_id"]
         for channel in (*action_clients, *subscriptions)
@@ -159,9 +142,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     for observed_at_id in observed_at_ids:
         algorithm_data.append(DataValue(id=observed_at_id, type="Quantity", unset=True))
 
-    # A perturbation's applied wrench and its open/closed flag are runtime state no model entity
-    # declares: the wrench the ops compose is stated in the robot's base frame, and what the run
-    # has to answer for is the world-frame wrench the simulator was actually given.
     run_perturbations = [p for motion in motions for p in motion.perturbations]
     for perturbation in run_perturbations:
         node = model.node_by_id[perturbation.id]
@@ -169,21 +149,15 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         model.register_derived(perturbation.active_id, node, "active", PROV.wasDerivedFrom)
         algorithm_data.append(DataValue(id=perturbation.applied_id, type="Wrench"))
         algorithm_data.append(DataValue(id=perturbation.active_id, type="Bool", value=False))
-    # The values the computations keep between ticks, then the ones the chains and the action
-    # channels write from outside: every D-block the data access constraints connect exists first.
     constraint_handler.add_controller_state(model, functions, algorithm_data, motions)
     constraint_handler.add_control_parameters(model, functions, algorithm_data, motions)
     runtime.add_joint_space_mirrors(model, robots, motions, algorithm_data, backend)
     communication.add_goal_status_values(model, algorithm_data, action_clients)
-    # One body's applied-wrench slots hold the sum of everything pushing it. Written per
-    # perturbation instead, whichever ran last would be the only one the simulator ever saw --
-    # and a closed window writes zero, so an idle perturbation would erase a live one.
+    # summed per body: a closed window writes zero and would erase a live one
     perturbation_groups: dict[str, dict] = {}
     for perturbation in run_perturbations:
         group = perturbation_groups.setdefault(
             perturbation.body,
-            # Every solver on one simulation shares its model and data, so any member's
-            # runtime resolves the body.
             {"body": perturbation.body, "robot_id": perturbation.robot_id, "members": []},
         )
         group["members"].append(perturbation)
@@ -200,9 +174,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     )
 
     config_poses = deployment.config_poses(model, platform_config)
-    # Which F-block writes and reads each D-block (Bruyninckx 2026, §2.3.4), then what an analysis
-    # of that over the schedules concludes; what the run records taps both, and provenance states
-    # where each id came from (Aho et al., *Compilers*, 2nd ed., §9.2: analysis precedes codegen).
+    # F/D-block access (Bruyninckx 2026, §2.3.4); analysis precedes codegen (Aho et al., §9.2)
     data_access = build_data_access(
         algorithm_data,
         functions,
@@ -226,8 +198,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         "configuration": {
             "control_period_ns": control_period_ns,
             "backend": backend,
-            # The authored execution platform, so provenance and the runtime graph read the
-            # model's own answer instead of matching substrings of a derived id.
             "platform": platform,
             "agent_homes": deployment.agent_home_positions(
                 platform, robots.serial_chains, platform_config
@@ -237,9 +207,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         },
     }
 
-    # An arm and a wheeled base are both actuated resources with kinematics, solvers and devices,
-    # so they ride in one kind-tagged collection; the by-kind cuts are made here because ST4
-    # cannot filter, and each is absent rather than empty when the model has none of that kind.
+    # split by kind here, ST4 cannot filter; absent rather than empty
     robots_by_kind = {}
     if robots.serial_chains:
         robots_by_kind["serial_chain"] = robots.serial_chains
@@ -248,8 +216,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         robots_by_kind["mobile_base"] = {
             "velocity_solvers": robots.platform_velocity,
             "force_solvers": robots.platform_force,
-            # The platform's geometry as the scene tree states it, so the deployment config
-            # carries none of it and the backend only adds joint names and indices.
             "drives": drives,
             "num_drives": len(drives),
             "wrench_by_motion": mobile_base.wrench_terms_by_motion(
@@ -257,32 +223,22 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
             ),
         }
 
-    # Every device and sensor kind the model binds, as a membership map: templates emit code for
-    # a kind only when the platform block or the scene names it.
     device_kinds = {device.kind for robot in robots.serial_chains for device in robot.devices} | {
         sensor.type for robot in robots.serial_chains for sensor in robot.sensors
     }
 
-    # `by_id` is how a per-motion solver slice resolves everything the solver owns.
     resources = {
         "robots": [*robots.serial_chains, *robots.platform_velocity, *robots.platform_force],
         "by_kind": robots_by_kind,
-        # Whether the program drives anything at all, and whether a platform is the only thing it
-        # drives. ST4 can only test one attribute, so the two questions the loop asks -- "is
-        # there a scene to build" and "who steps it" -- are answered here rather than there.
         "driven": bool(robots_by_kind) or None,
         "base_owns_runtime": (
             "mobile_base" in robots_by_kind and not robots.serial_chains
         ) or None,
         "by_id": robots.by_id,
         "device_kinds": {kind: True for kind in device_kinds},
-        # One entry per shared observation, not per solver that could answer it: several
-        # solvers drive the same chain, and computing a value once per solver would repeat the
-        # same reading -- ten times over, in a scene with ten motions.
         "world_observations": runtime.world_observations(robots.serial_chains),
     }
     if world_trees:
-        # A drawn frame joins its tree after the draw, under the segment its pose is stated against.
         resources["world_trees"] = [
             {
                 "name": tree["name"],
@@ -299,7 +255,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         ]
     if world_frames:
         resources["world_frames"] = world_frames
-    # Split by kind here, not in the templates: a template may iterate but not filter.
+    # ST4 cannot filter
     resources["world_ports"] = {kind: rows for kind, rows in ports.items() if rows}
     ir["resources"] = resources
 
@@ -313,15 +269,11 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
             views, algorithm_data, motions, functions, computation.indexes.pose_components
         ),
     }
-    # Elapsed constraints compare seconds from the runtime clock; naming the clock says what it
-    # is, where a flag would only have asserted that one is wanted.
     if any(motion.has_elapsed for motion in motions):
         ir["computation"]["clock"] = {"id": "clock", "time_id": "clock_time_s"}
 
     ir["coordination"] = {"motions": motions}
-    # Every perturbation in the run, not only the active motion's: the simulator holds an applied
-    # wrench until something clears it, so the clearing pass has to reach the ones whose state
-    # just exited, which by then selects no motion at all.
+    # all of them: clearing must reach states that just exited
     if run_perturbations:
         ir["coordination"]["perturbations"] = run_perturbations
         ir["coordination"]["perturbation_bodies"] = perturbation_bodies
@@ -347,7 +299,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     ):
         packages = {publisher["pkg"] for publisher in publishers}
         ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
-        # A run belongs to a scenario where a message carries one, and always where a goal names it.
         if any(publisher["auto_context_id"] for publisher in publishers) or server is not None:
             ros["scenario_context_id"] = True
         if server is not None:
@@ -374,8 +325,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         ros["packages"] = list(packages)
         ir["communication"]["ros"] = ros
 
-    # Last: every section above may mint a derived id, and each must be stated here -- an id with
-    # no IRI means a derived entity was minted without registering the node it came from.
+    # last: every section above may mint a derived id
     uris = model.uri_rows()
     uri_by_id = {row["id"]: row["uri"] for row in uris if row.get("uri")}
     published = [(value_id, "data_access") for value_id in data_access]
@@ -403,7 +353,6 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     derivations = model.derivation_nodes()
     for row in derivations:
         member = members.get(row["id"])
-        # Only a scalar names one kind and unit; a spatial record lists one per component.
         scalar = isinstance(
             member, (Quantity, FreeVector, SetpointQuantity, DataValue, Position, Orientation)
         )

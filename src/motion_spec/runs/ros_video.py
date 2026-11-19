@@ -68,13 +68,13 @@ class RosImageSubscription:
         except ImportError as exc:
             self.error = f"no ROS environment: {exc}"
             return self._ready.set()
-        # Its own context, so it never disturbs an rclpy anyone else in this process initialised.
+        # own context: leaves any other rclpy in this process alone
         context = rclpy.Context()
         node = executor = None
         try:
             rclpy.init(context=context)
             node = rclpy.create_node(self.node_name, context=context)
-            # Sensor QoS: best-effort still matches a reliable publisher, the reverse does not.
+            # best-effort matches reliable publishers too
             node.create_subscription(Image, self.topic, self.absorb, qos_profile_sensor_data)
             executor = SingleThreadedExecutor(context=context)
             executor.add_node(node)
@@ -135,7 +135,6 @@ class RosImageRecorder(RosImageSubscription):
             self.error = self.error or f"dropped {self.dropped} frames (encoder fell behind)"
 
     def absorb(self, message) -> None:
-        # The executor thread only hands the frame over; every copy and write happens off it.
         try:
             self._frames.put_nowait((time.time(), message))
         except queue.Full:
@@ -183,12 +182,10 @@ class RosImageRecorder(RosImageSubscription):
                             str(self.output),
                         ],
                         stdin=subprocess.PIPE,
-                        # Its own session: a terminal interrupt is for the controller, not for
-                        # ffmpeg.
+                        # Ctrl-C is for the controller, not ffmpeg
                         start_new_session=True,
                     )
                 assert self._ffmpeg is not None and self._ffmpeg.stdin is not None
-                # The capture time, falling back to receipt when the driver did not stamp it.
                 header_stamp = message.header.stamp
                 stamp = (
                     header_stamp.sec + header_stamp.nanosec * 1e-9
@@ -200,7 +197,7 @@ class RosImageRecorder(RosImageSubscription):
                     slot = 0
                 else:
                     slot = round((stamp - origin) * self.recording.rate_hz)
-                    # A slot already holds a frame: the newcomer is a duplicate or arrived late.
+                    # duplicate or late frame
                     if slot <= last_slot:
                         continue
                 frame = rgb_rows(message)

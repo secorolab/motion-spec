@@ -35,13 +35,9 @@ from rdf_utils.namespace import NS_MM_QUDT
 from rdflib import Dataset, Graph, Literal, URIRef
 from rdflib.namespace import PROV, RDF, SDO
 
-# A generation's and a run's provenance documents sit in its `provenance/`.
 PROVENANCE_DIR = "provenance"
-# One generation, one provenance document: a bundle per tool that wrote into it. One run, one
-# document, rec's: its bundle and motion-spec's beside it, what rec does not say about the run.
 GENERATION_DOCUMENT = f"{PROVENANCE_DIR}/generation.ld.json"
 DERIVED_DOCUMENT = f"{PROVENANCE_DIR}/derived.ld.json"
-# A run's frame log once the runner has packed it.
 FRAME_LOG_PACKED = "frame_log.pb.zst"
 
 
@@ -178,7 +174,7 @@ def record_ir_generation(
     Returns:
         URI of the IR
     """
-    # Located under the generation directory, so the record moves with it.
+    # relative to the generation directory, so the record moves with it
     roots = {generation.resolve(): add_directory_location(bundle, generation)}
     targets = [capture_file_prov(bundle, path, roots=roots) for path in (ir_path, derived_path)]
     load_transformation_prov(
@@ -193,7 +189,6 @@ def record_ir_generation(
     for source, agent in inputs.items():
         bundle.add((source, PROV.wasAttributedTo, agent))
 
-    # The robots the scene models, by the scene's own nodes for them.
     for robot in (ir["composition"]["scene"] or {}).get("robots") or ():
         add_agent(bundle, URIRef(robot["agent"]), (URI_AGN_TYPE_MOD_AGN,), robot["id"])
     return targets[0]
@@ -215,7 +210,6 @@ def record_code_generation(
     activity = load_transformation_prov(
         bundle, inputs, targets, add_package(bundle, "motion_spec"), started=started, ended=ended
     )
-    # motion-spec drives it; stst renders every template.
     bundle.add((activity, PROV.wasAssociatedWith, add_package(bundle, "stst")))
 
 
@@ -226,7 +220,7 @@ def record_build(
     in a bundle of its own in the generation's document."""
     document = generated / GENERATION_DOCUMENT
     dataset = read_generation_dataset(document)
-    # Whichever tool wrote a source, it is a file in the controller tree cmake compiled.
+    # sources from any tool, as long as they are in the controller tree
     sources = {
         entity
         for entity in dataset.subjects(PROV.wasGeneratedBy)
@@ -240,7 +234,6 @@ def record_build(
     activity = load_transformation_prov(
         bundle, sources, [target], add_package(bundle, "cmake"), started=started, ended=ended
     )
-    # motion-spec drives it; cmake compiles.
     bundle.add((activity, PROV.wasAssociatedWith, add_package(bundle, "motion_spec")))
     document.write_text(
         dataset.serialize(format=DatasetFormat.JSON_LD, indent=2, auto_compact=True)
@@ -258,7 +251,7 @@ def build_derivation_document(
     is the IR's generation, as the generation document names it.
     """
     provenance = ir["provenance"]
-    # The provenance section names every id and its derivation once; that is not a use of it.
+    # the provenance section itself is not a use
     used: set[str] = set()
     pending = [ir]
     while pending:
@@ -284,7 +277,6 @@ def build_derivation_document(
         if entry["relation"] == "specializationOf":
             add_entity(graph, URIRef(entry["parent"]))
             graph.add((node, PROV.specializationOf, URIRef(entry["parent"])))
-        # What it is computed from when the IR says; otherwise only the node it derives from.
         sources = entry.get("sources") or (
             [entry["parent"]] if entry["relation"] == "wasDerivedFrom" else []
         )
@@ -315,7 +307,7 @@ def record_run_file(
     file's modification time, and return the entity."""
     roots = {generation.resolve(): add_directory_location(bundle, generation)}
     entity = capture_file_prov(bundle, path, roots=roots)
-    # Not blank: rdflib's JSON-LD compaction drops a blank node behind an `@id` term.
+    # not blank: rdflib's JSON-LD compaction drops blank nodes behind `@id` terms
     qualified = URIRef(uuid4().urn)
     if generated:
         bundle.add((entity, PROV.wasGeneratedBy, run))
@@ -352,7 +344,6 @@ def record_execution(
     generation_document = generated / GENERATION_DOCUMENT
     generation = read_generation_dataset(generation_document)
     motion_spec = add_package(bundle, "motion_spec")
-    # A simulated run steps the wrapper's physics; a real one runs on the platform it names.
     if platform_facts.get("simulated"):
         runtime = add_package(bundle, "mj_kdl_wrapper")
     else:
@@ -362,7 +353,7 @@ def record_execution(
     process = URIRef(uuid4().urn)
     add_agent(bundle, process, (PROV.SoftwareAgent,), executable.name)
     for responsible in (motion_spec, runtime):
-        # Not blank: rdflib's JSON-LD compaction drops a blank node behind an `@id` term.
+        # not blank, see record_run_file
         delegation = URIRef(uuid4().urn)
         bundle.add((process, PROV.qualifiedDelegation, delegation))
         bundle.add((delegation, RDF.type, PROV.Delegation))
@@ -370,8 +361,7 @@ def record_execution(
         bundle.add((delegation, PROV.hadActivity, run))
     for agent in set(generation.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         add_agent(bundle, agent, (URI_AGN_TYPE_MOD_AGN,), str(generation.value(agent, SDO.name)))
-    # The executable is the node the generation's build generated, found by where it is: one
-    # file entity per location, as rdf-utils names it.
+    # rdf-utils names one file entity per location
     executable_path = Path(executable).resolve()
     built = next(
         (
@@ -383,8 +373,7 @@ def record_execution(
         None,
     )
     used = [] if built is None else [built]
-    # PROV-AQ's link from what the run ran to the record that describes it, the generation's.
-    # Located, not hashed: later steps of the generation add to that record.
+    # located, not hashed: later generation steps add to the record
     generation_dir = generated.resolve().parent
     record = add_file_entity(
         bundle,
@@ -396,12 +385,10 @@ def record_execution(
     if platform_facts.get("uri"):
         used.append(URIRef(platform_facts["uri"]))
         add_entity(bundle, used[-1])
-    # rec records when the run began and ended.
     bundle.add((run, RDF.type, PROV.Activity))
     bundle.add((run, RDF.type, URI_PROV_EXT_TYPE_EXECUTION))
     for entity in used:
         bundle.add((run, PROV.used, entity))
-    # motion-spec ran it; the process carried it out, driving the robots the scene models.
     for agent in (motion_spec, process, *bundle.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         bundle.add((run, PROV.wasAssociatedWith, agent))
 
@@ -437,7 +424,7 @@ def record_files(bundle: Graph, run: URIRef, run_dir: Path) -> None:
     """
     logs = run_dir / "logs"
     generated = [logs / "console.log", *logs.glob("*.mp4")]
-    # metadata.yaml is what says rosbag2 closed the bag.
+    # rosbag2 writes metadata.yaml on close
     if (run_dir / "bag" / "metadata.yaml").is_file():
         generated.extend(path for path in (run_dir / "bag").rglob("*") if path.is_file())
     for path in generated:
@@ -473,7 +460,6 @@ def run_generation(run_dir: Path) -> Path | None:
     graph.default_union = True
     for used in graph.objects(run.node, PROV.used):
         for record in graph.objects(used, PROV.has_provenance):
-            # The record is located under the generation directory's own location.
             return get_file_path(graph, graph.value(record, PROV.atLocation))
     return None
 

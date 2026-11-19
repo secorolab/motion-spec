@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 
-# The shared-memory Frame struct frame_layout.json describes; a reader refuses any other.
+# readers refuse any other version
 FRAME_LAYOUT_VERSION = 5
 FIELD_BYTES = 8
 TRIGGER_POOL_SIZE = 32
@@ -100,7 +100,6 @@ def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
     return fmt, names
 
 
-# The field holding the numbers a `vec` header slot reads, per D-block type.
 _VECTOR_FIELDS = {
     "Position": "position",
     "Pose": "position",
@@ -118,8 +117,7 @@ def signal_id(value) -> str | None:
     return None
 
 
-# What an evaluator compares, by function type: the operand keys, in the order the function reads
-# them. A numeric literal in one of these slots is a value, not an id, so only strings travel.
+# operand keys in read order; a numeric literal here is a value, not an id
 _EVALUATOR_OPERANDS = {
     "PoseDiffEvaluator": ("in1", "in2"),
     "ErrorEvaluator": (
@@ -157,9 +155,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
     """Build the run's telemetry schema (pools, per-state slots, quantities, provenance) and its schema_hash."""
     telemetry = ir["communication"]["telemetry"]
     uri_by_id = {row["id"]: row["uri"] for row in ir["provenance"]["uris"] if row["uri"]}
-    # Evaluator function keyed by every error signal it produces: what computes that error.
     evaluators: dict = {}
-    # Function records differ by type, so their keys stay optional; only an evaluator has errors.
     for function in ir["computation"]["functions"].values():
         if not isinstance(function, dict):
             continue
@@ -182,9 +178,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
     else:
         state_index = {state: idx for idx, state in enumerate(fsm_ir["states"])}
         event_index = {event: idx for idx, event in enumerate(fsm_ir["events"])}
-        # A transition can be driven by more than one event, so collect them all rather than let
-        # the last reaction win. `event`/`event_index` stay singular and are only filled when the
-        # answer is unambiguous; a reader that needs the full picture uses `events`/`event_indices`.
+        # several events can drive one transition; `event` is set only when unambiguous
         transition_events: dict[str, list] = {}
         for reaction in fsm_ir["reactions_table"]:
             transition_events.setdefault(reaction["do_transition"], []).append(
@@ -228,12 +222,9 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
     controller_rows = {row["id"]: row for row in telemetry["controllers"]}
     states = fsm["states"]
     state_by_id = {state["id"]: state for state in states}
-    # Slots are keyed by the motion that computes them, not by the coordinator state that happens
-    # to select it: a motion owns the functions and solvers that write its values under an FSM, a
-    # behaviour tree or a plain sequencer alike. The index space is ir_gen's motion order,
-    # so nothing downstream has to agree with a second generator about what index 3 means.
+    # keyed by motion, not coordinator state, so any coordinator decodes alike
     by_motion = {}
-    # ir_gen owns this index (add_motion_function_interfaces); read it, never re-derive it.
+    # owned by ir_gen; never re-derive
     motion_index = {motion["id"]: motion["index"] for motion in motions}
     if -1 in motion_index.values():
         raise RuntimeError(f"motions without an telemetry index: {list(motion_index)}")
@@ -254,7 +245,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
 
         controller_slots = []
         for idx, controller in enumerate(motion["controllers"]):
-            # A row drops every key it leaves unset, so its signals are read as optional.
             row = controller_rows[controller["id"]]
             error_id = row.get("error_signal")
             output_id = row.get("output_signal")
@@ -270,7 +260,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
                     "uri": row.get("uri"),
                     "motion": row.get("motion"),
                     "type": row.get("type"),
-                    # The constraint this controller serves: what a plot of its error is about.
                     "constraint": row.get("constraint"),
                     "constraint_uri": row.get("constraint_uri"),
                     "gains": {
@@ -315,9 +304,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
             )
         monitor_slots = []
         for idx, (phase, monitor, owner) in enumerate(monitor_sources):
-            # The published row carries the watched constraints, which are construction-only on
-            # the coordination record. A row drops the keys it leaves unset; on the record, the
-            # event fields exist only on an edge monitor and `flag` only on a level one.
+            # watched constraints are only on the published row
             row = monitor_rows[monitor["id"]]
             error = monitor["error"]
             error_id = signal_id(error)
@@ -341,7 +328,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
                     "flag": monitor.get("flag"),
                     "error_signal": error_id,
                     "error_signal_uri": uri_by_id.get(error_id),
-                    # Only when authored: an always-present key would move every schema hash.
+                    # an always-present key would move every schema hash
                     **({"tolerance_signal": tolerance_id} if tolerance_id else {}),
                     "composite_error": isinstance(error, dict)
                     and error["type"] in {"Pose", "VelocityTwist"},
@@ -363,8 +350,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
     quantities = [
         {"index": idx, **quantity} for idx, quantity in enumerate(telemetry["quantity_samples"])
     ]
-    # A gated slot keeps its global index for the whole run -- only the set_ call is gated -- so a
-    # decoder resolves "unset" against the writing motions here rather than guessing from absence.
     spatial = telemetry["spatial_samples"]
     data_access = ir["computation"]["data_access"]
     data_by_id = {item["id"]: item for item in ir["computation"]["data"]}
@@ -390,7 +375,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
                 "source_id": row["source_id"],
                 "value": value,
                 **({"uri": row["uri"]} if row.get("uri") else {}),
-                # The blocks that read it, as its data access constraints state.
                 **(
                     {"readers": readers}
                     if (readers := data_access[row["source_id"]].get("read"))
@@ -398,7 +382,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
                 ),
             }
         )
-    # A model with no arm has no serial chain.
     devices = [
         {
             "index": device["health_index"],
@@ -410,9 +393,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
         for device in solver["devices"]
         if device["health_index"] is not None
     ]
-    # What this program can record, named as the runtime names it. A reader of the run -- the
-    # dashboard, a script -- asks the contract what the cameras are; the model behind them is
-    # the generator's to read, not theirs.
     cameras = [
         {
             key: camera[key]
@@ -428,7 +408,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
         for category, rows in spatial.items()
         for row in rows
     ]
-    # A cadence is already expressed in motions -- no coordinator in between.
     for category, slot_index, cadence in gated_slots:
         for motion_id in cadence["motions"] if isinstance(cadence, dict) else ():
             entry = by_motion.get(motion_id)
@@ -441,8 +420,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
         "monitors": max_monitors,
         "quantities": len(quantities),
         "devices": len(devices),
-        # Sized for the events one tick can produce; the heartbeat is not recorded, so it
-        # needs no slot.
+        # events one tick can produce; the heartbeat is not recorded
         "triggers": max(TRIGGER_POOL_SIZE, len(fsm["events"]), max_monitors),
         "poses": len(spatial["poses"]),
         "twists": len(spatial["twists"]),
@@ -450,11 +428,8 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
     }
     schema = {
         "generated_by": "motion_spec.generation.codegen",
-        # Portable basenames only — absolute build-tree paths here would leak machine
-        # paths into the archive AND make schema_hash (carried in the frame-log header)
-        # depend on where the build ran. The archive resolves these against its own dirs.
+        # basename: schema_hash must not depend on where the build ran
         "ir_path": Path(ir_path).name,
-        # For the log header's platform fields; frame_layout.json does not carry it.
         "platform": ir["configuration"]["platform"],
         "pools": pools,
         "timing": {"nominal_period_ns": telemetry["control_period_ns"]},
@@ -467,10 +442,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
         "quantities": quantities,
         "devices": devices,
         "cameras": cameras,
-        # Written once at init: one copy in the header says everything repeating it per tick would.
         "constants": constants,
-        # The data access constraints of every D-block the program keeps, so a reader can see who
-        # writes and who reads each without re-deriving it from the model graph.
         "catalogue": [{"id": value_id, **entry} for value_id, entry in data_access.items()],
         "spatial": spatial,
     }
@@ -504,9 +476,7 @@ def build_frame_layout(schema: dict) -> dict:
 def build_telemetry_model(schema: dict, ir: dict) -> dict:
     """Per-FSM-state sample model (controller/monitor exprs, quantity/spatial ids) that the telemetry_model template renders."""
     data_ids = {item["id"] for item in ir["computation"]["data"]}
-    # A value only its own motion recomputes is stale whenever another motion is active, so its
-    # sample call moves into that motion's case; one written by the global schedule stays
-    # unconditional.
+    # a motion-only value is stale under other motions: sample it in that motion's case
     spatial = schema["spatial"]
     slots = {
         "quantities": {
@@ -518,7 +488,6 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
             for category, rows in spatial.items()
         },
     }
-    # A motion entry carries a category only when one of its slots is gated to it.
     gated = {
         category: {
             index for entry in schema["by_motion"].values() for index in entry.get(category, [])
@@ -533,16 +502,14 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
     for entry in schema["by_motion"].values():
         controllers = []
         for slot in entry["controllers"]:
-            # error/output are the controller's own dedicated data fields (never views), so the
-            # template reads them with data-sig. measured/setpoint may reference a view, so they
-            # go through access-expr(id, views) instead. A slot names a tolerance only when authored.
+            # error/output are data fields, never views; measured/setpoint may be views
             for role in ("error_signal", "tolerance_signal", "output_signal"):
                 if slot.get(role) and slot[role] not in data_ids:
                     raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
             controllers.append(
                 {
                     "index": slot["index"],
-                    # Safe in a C++ line comment: no newlines, no comment terminator.
+                    # safe inside a C++ comment
                     "uri_comment": re.sub(r"[\r\n]|\*/", " ", slot["uri"] or ""),
                     "error_signal": slot["error_signal"] or None,
                     "tolerance_signal": slot.get("tolerance_signal") or None,
@@ -553,9 +520,6 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
             )
         monitors = []
         for slot in entry["monitors"]:
-            # Active (aggregate/elapsed) monitors: the boolean value/satisfied condition is
-            # rendered from the structured terms by the bool-condition template. Plain error
-            # monitors: sample the error value + constraint_satisfied (a plain shared field).
             if slot["has_active"]:
                 monitors.append(
                     {
@@ -607,8 +571,7 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
     header_record = build_frame_log_header_record(schema)
-    # The same delimited record the runtime writes as the log's first bytes: a reader gets the
-    # decode contract from the generation before any run has written a log.
+    # the record the runtime writes first, readable before any run
     from motion_spec.telemetry import frame_log_pb
 
     with (output_dir / "frame_log_header.pb").open("wb") as fh:
@@ -624,7 +587,6 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
             "frame_layout_hash": layout["frame_layout_hash"],
             "end_state": end_state if end_state is not None else -1,
             "nominal_period_ns": schema["control_period_ns"] or 0,
-            # Byte literals in rows, so the emitted array is not one enormous line.
             "header_record_rows": [
                 header_bytes[i : i + 16] for i in range(0, len(header_bytes), 16)
             ],
@@ -633,14 +595,12 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
     }
 
 
-# Header field <- slot-entry key: the quantity ids that join a slot to the quantity pool.
 _SLOT_SIGNAL_FIELDS = (
     ("error_id", "error_signal"),
     ("output_id", "output_signal"),
     ("measured_id", "measured_signal"),
     ("setpoint_id", "setpoint_signal"),
     ("tolerance_id", "tolerance_signal"),
-    # The function that evaluates the constraint, and the difference it writes.
     ("difference_id", "difference_id"),
     ("evaluator_id", "evaluator_id"),
 )
@@ -650,9 +610,7 @@ def fill_slot(slot, slot_entry: dict) -> None:
     """The fields a controller and a monitor share, and the signal ids this message carries."""
     slot.number, slot.id = slot_entry["index"], slot_entry["id"]
     slot.iri = slot_entry["uri"] or ""
-    # A controller slot names one constraint, a monitor slot a list; the signal ids and the
-    # evaluator terms are there only when the slot has them.
-    # The scalar only when it is unambiguous: an aggregate monitor watches several.
+    # the scalar only when unambiguous: an aggregate monitor watches several
     iris = slot_entry.get("constraint_uris") or (
         [uri] if (uri := slot_entry.get("constraint_uri")) else []
     )
@@ -667,7 +625,6 @@ def fill_slot(slot, slot_entry: dict) -> None:
     for field, key in _SLOT_SIGNAL_FIELDS:
         if field in carried:
             setattr(slot, field, slot_entry.get(key) or "")
-    # The two quantities the evaluator compares: what "between" is drawn from.
     slot.operand_ids.extend(slot_entry.get("operand_ids") or ())
 
 
@@ -686,7 +643,6 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header.descriptor_set = frame_log_pb.descriptor_set()
     header.trigger_pool = schema["pools"]["triggers"]
     platform = schema["platform"]
-    # A real platform has no name; a simulator does.
     header.platform_name = platform["name"] or ""
     header.simulated = bool(platform["simulated"])
     fsm = schema["fsm"]
@@ -696,7 +652,6 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header.fsm_namespace = fsm["namespace"] or ""
 
     spatial = schema["spatial"]
-    # A quantity row carries the IRI it was registered under; a spatial or device row may not.
     for category, entries in (
         ("quantities", schema["quantities"]),
         ("poses", spatial["poses"]),
@@ -726,15 +681,12 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         for slot_entry in entry["monitors"]:
             slot = gate.monitors.add()
             fill_slot(slot, slot_entry)
-            # The event it fires: runtime.ttl attributes an occurrence to it, not to the slot.
             slot.event_iri = slot_entry["event_uri"] or ""
             slot.phase = slot_entry["phase"]
             slot.constraint_iris.extend(
                 slot_entry.get("constraint_uris")
                 or ([uri] if (uri := slot_entry.get("constraint_uri")) else [])
             )
-            # An aggregate monitor's members, each with the error it is evaluated on; a member's
-            # signals are dropped when unset.
             for member in slot_entry["watched"]:
                 watched = slot.watched.add()
                 watched.id = member["id"]
@@ -753,7 +705,7 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         transition = header.fsm_transitions.add()
         transition.index, transition.id = index, str(row["id"])
         transition.iri = row["uri"] or ""
-        # -1, not 0: 0 is a real state index, so a missing endpoint must not read as one.
+        # -1: 0 is a real state index
         transition.from_state = row["from"] if row["from"] is not None else -1
         transition.to_state = row["to"] if row["to"] is not None else -1
         event_index = row["event_index"]
@@ -765,10 +717,8 @@ def build_frame_log_header_record(schema: dict) -> bytes:
         constant.id = entry["id"]
         constant.source_id = entry["source_id"]
         constant.value = float(entry["value"])
-        # A constant drops the IRI and the readers it has none of.
         constant.uri = entry.get("uri") or ""
-        # Empty means the deriver looked and found nobody, not that it did not look: scene
-        # geometry is baked into poses at generation time and no reader binds it.
+        # empty means no reader found, e.g. scene geometry baked into poses
         for reader in entry.get("readers") or ():
             added = constant.readers.add()
             added.id = reader["id"]

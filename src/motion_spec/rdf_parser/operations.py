@@ -88,10 +88,7 @@ def normalize(model) -> None:
     materialize_pose_reference_transforms(model)
     materialize_linear_distance_operations(model)
 
-    # Forward kinematics publishes a link's pose only with respect to the chain root, so a pose
-    # of one link with respect to another has no producer. When both links are also stated in one
-    # common frame C, it is their composition ``X_wrt_of = Inverse(X_C_wrt) * X_C_of``; with no
-    # such pair it stays unwritten, which the data access check reports.
+    # FK gives poses only wrt the chain root: X_wrt_of = Inverse(X_C_wrt) * X_C_of
     graph = model.graph
     frames = {}
     for node in graph.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD):
@@ -100,7 +97,6 @@ def normalize(model) -> None:
         try:
             frames[node] = pose_frames(model, node)
         except ValueError:
-            # A pose stated in coordinates alone names no frames to triangulate between.
             continue
 
     for node, (of_frame, wrt_frame) in frames.items():
@@ -152,8 +148,7 @@ def pose_frames(model, pose) -> tuple[URIRef, URIRef]:
     return relation.of_id, relation.wrt_id
 
 
-# The relation nodes a runtime-derived pose needs to read like an authored one: the role each is
-# minted under, the type it carries, and which of the four endpoints it relates.
+# (role, type, of endpoint, wrt endpoint)
 _DERIVED_POSE_RELATIONS = (
     ("pose", URI_GEOM_TYPE_POSE, "of_frame", "wrt_frame"),
     ("position", URI_GEOM_TYPE_POSITION, "of_origin", "wrt_origin"),
@@ -214,7 +209,6 @@ def pose_edges(model) -> dict:
         try:
             of_frame, wrt_frame = pose_frames(model, pose)
         except ValueError:
-            # A pose with no frame endpoints joins no path; it is stated in coordinates already.
             continue
         edges[wrt_frame].append((of_frame, pose, False))
         edges[of_frame].append((wrt_frame, pose, True))
@@ -306,8 +300,6 @@ def materialize_linear_distance_operations(model) -> None:
             raise ConstraintViolation(
                 "geometry", f"Distance coordinate {distance} states no linear distance."
             )
-        # `between-entities` names frame-origin Points; which pose coordinate each endpoint
-        # reads is the selection the DSL recorded per role (see `recorded_coord_policy`).
         start = recorded_distance_operand(graph, distance, "start")
         end = recorded_distance_operand(graph, distance, "end")
         if start is None or end is None:
@@ -358,7 +350,7 @@ def materialize_linear_distance_operations(model) -> None:
         model.derived.add((magnitude, GEOM_OP.pose, relative_pose))
         model.derived.add((magnitude, GEOM_OP.distance, distance))
 
-        # A direction taken off this distance means the line it measures, which is this pose.
+        # a direction off the distance runs along the relative pose
         for direction_op in [
             subject
             for subject in graph.subjects(GEOM_OP.pose, distance)
@@ -390,8 +382,7 @@ def materialize_pose_reference_transforms(model) -> None:
             target_of, target_wrt = pose_frames(model, quantity)
             source_of, source_wrt = pose_frames(model, reference)
         except ValueError:
-            # A coordinate-authored goal pose carries no of/with-respect-to frames; it is already
-            # stated in the constrained pose's frame.
+            # a coordinate-authored goal is already in the constrained pose's frame
             continue
         if source_wrt == target_wrt:
             continue
@@ -419,10 +410,7 @@ def materialize_pose_reference_transforms(model) -> None:
         model.derived.add((constraint, CSTR["reference-value"], reference_in_target))
 
 
-# Every operator answers three questions, and each answers all three: what function one of its
-# calls renders to (`function_step`), what data its inputs read (`operand_inputs`), and what calls
-# produce a given output (`scheduler_step`). An operator with nothing to say returns None or an
-# empty step rather than omitting the method, so `Schedule` never probes for one.
+# every operator implements all three steps, so `Schedule` never probes
 
 
 def parse_argument(graph, function_id, argument, to_id):
@@ -475,7 +463,7 @@ class Operator:
 
     def __init__(self, type_, input, output, parameters=()):
         self.type_ = type_
-        # The name templates dispatch on: the metamodel term's own, not a model node's id.
+        # templates dispatch on the metamodel term, not a node id
         self.keyword = identifier(local_name(type_))
         self.input = list(input)
         self.output = list(output)
@@ -494,8 +482,7 @@ class Operator:
         for in_ in self.input:
             for data_in in graph.objects(node, in_):
                 data_structures.add(data_in)
-                # A path produces nothing, so the output-to-input walk never reaches its
-                # parameters as a producer's outputs; they are contributed here instead.
+                # the output-to-input walk never reaches a path's parameters
                 if GEOM_PATH.Path in get_node_types(graph, data_in):
                     data_structures.update(
                         obj for pred, obj in graph.predicate_objects(data_in) if pred != RDF["type"]
@@ -512,7 +499,6 @@ class Operator:
             for call in graph[:out:data_out]:
                 if self.type_ not in get_node_types(graph, call):
                     continue
-                # A call with no input cannot be scheduled.
                 inputs = self.operand_inputs(model, call)
                 if inputs:
                     data_structures |= inputs
@@ -639,8 +625,7 @@ class ErrorEvaluator:
 
         graph = model.graph
         constraint_id = graph.value(node, CSTR_HDL["constraint"])
-        # A goal status is runtime-written, never computed: its equality is read directly by
-        # the monitor's goal-status term, so the evaluator yields no function (elapsed precedent).
+        # a goal status is runtime-written, never computed
         quantity = graph.value(constraint_id, CSTR["quantity"])
         if goal_status_act(model, quantity) is not None:
             return None
@@ -651,13 +636,11 @@ class ErrorEvaluator:
                 "id": model.id(node),
                 "type": self.keyword,
                 "constraint": operator.keyword,
-                # Which constraint this evaluates, not just what kind: a monitor watching an
-                # aggregate reaches its members' errors through this.
+                # a monitor on an aggregate reaches its members' errors through this
                 "constraint_id": model.id(constraint_id),
                 "constraint_uri": str(constraint_id),
             }
-            # An equality error on a continuous joint wraps to the shortest arc, unless the
-            # controller driving it states the interval its error is read into.
+            # continuous joints wrap to the shortest arc unless an interval is authored
             if operator.type_ == CSTR["EqualityConstraint"]:
                 authored = authored_error_normalization(model, constraint_id)
                 if authored is not None:
@@ -670,10 +653,9 @@ class ErrorEvaluator:
                         function["angular_wrap"] = True
             fill_function_args(graph, function, model.id, operator, node, constraint_id)
 
-            return function  # first matching constraint type wins
+            return function
 
-        # An authored bound that reaches no evaluator is never compared anywhere in the program,
-        # so say which constraint states it rather than emit a program that ignores it.
+        # an unevaluated bound would be silently ignored
         stated = [
             local_name(type_)
             for type_ in get_node_types(graph, constraint_id)
@@ -706,7 +688,6 @@ class ErrorEvaluator:
                 for call in graph.subjects(out, data_out):
                     if op.type_ not in constraint_types(graph, call):
                         continue
-                    # A call with no input cannot be scheduled.
                     inputs = constraint_inputs(graph, call, op.input)
                     if inputs:
                         data_structures |= inputs
@@ -760,9 +741,7 @@ def output_predicates(op) -> set:
     return set(op.output)
 
 
-# A path is geometry: data with no output, so it is never found by the output-to-input walk and
-# yields no function of its own. The evaluator that traverses it is the computation, and folds the
-# path's geometry into its call.
+# a path has no output; its evaluator folds the geometry in
 _OPS_PATH = [
     Specification(GEOM_PATH["LinearPath"], [GEOM_PATH["start"], GEOM_PATH["goal"]], []),
     Specification(
@@ -954,11 +933,7 @@ OPS_SOLVER = [
     Specification(SLV["ForceDistributionSolver"], [SLV["force"]], []),
 ]
 
-# Function kinds no operator fully registers: "Controller" and the pose-equality
-# "PoseDiffEvaluator" functions are hand-built by
-# constraint_handler.augment_functions; AssignmentEvaluator's write is one of its *inputs*
-# (`quantity`, the value it assigns into), not its (empty) declared output; PathEvaluator's
-# `setpoint` is folded on by the PathEvaluator function hook, not declared as an operator output.
+# outputs no operator declares
 _EXTRA_FUNCTION_OUTPUTS = {
     "AssignmentEvaluator": ("quantity",),
     "PathEvaluator": ("setpoint",),
@@ -1047,7 +1022,7 @@ def filter_controller(model, node, function) -> _FilterBinding:
             "computation",
             f"{function['type']} '{function['id']}' output is not bound to a constraint.",
         )
-    # Evaluators and monitors carry cstr-hdl:constraint too; filter state belongs to the controller.
+    # evaluators and monitors carry cstr-hdl:constraint too
     controller = ensure_one_typed_subject_uri(
         graph, constraint, CSTR_HDL.constraint, CSTR_HDL.Controller
     )
@@ -1075,7 +1050,6 @@ def fold_velocity_profile(model, node, function) -> None:
         fold_path(model, node, function)
 
 
-# Per operator type, the post-processing its function needs beyond its declared operands.
 _FUNCTION_HOOKS = {
     GEOM_OP_EXT.PathProjection: fold_path,
     GEOM_OP_EXT.PathTangentFrame: fold_path,
@@ -1164,7 +1138,6 @@ class Schedule:
         while pending:
             data_out = pending.pop()
             preds_into = set(graph.predicates(None, data_out))
-            # Only ops whose output predicate points into data_out can match here.
             for out_set, op in by_predicates:
                 if out_set.isdisjoint(preds_into):
                     continue
@@ -1179,8 +1152,7 @@ class Schedule:
                         pending.append(data_in)
                         data_structures.add(data_in)
 
-            # An inline/declared Pose is no operator's output, so follow its per-axis views to
-            # schedule the functions producing its components.
+            # a declared pose is no operator's output; follow its per-axis views
             view_subobjects = (
                 graph.value(view, MAP["subobject"])
                 for view in graph.subjects(MAP["superobject"], data_out)
@@ -1216,7 +1188,6 @@ class Schedule:
                         producers_of.setdefault(output, set()).add(call)
             call_inputs[call] = inputs
 
-        # A consumer runs after every call writing what it reads.
         deps = {
             call: {
                 producer
@@ -1389,12 +1360,10 @@ def resolve_function_operands(functions: dict, indexes, data_structures: list) -
             if not isinstance(goal, str):
                 continue
             if goal in indexes.pose_components and function.get("type") == "PathProjection":
-                # The template builds the pose frame. Only the projection assigns: it is scheduled
-                # before the frame and the evaluator, which read the same shared goal.
+                # only the projection assigns the shared goal
                 function["goal_components"] = indexes.pose_components[goal]
                 function["assign_goal"] = True
             else:
-                # goal is a shared signal id (already on the function as function["goal"]).
                 function["assign_goal"] = False
         elif shape == "Arc":
             end = function.get("end")

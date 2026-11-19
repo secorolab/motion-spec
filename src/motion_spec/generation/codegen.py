@@ -17,20 +17,14 @@ from motion_spec.generation.artifacts import write_telemetry_artifacts
 from motion_spec.rdf_parser.deployment import AGENT_HOME_KEY, CONFIG_POSE_FIELDS
 from motion_spec.telemetry import frame_log_pb
 
-# The real-hardware program's robot config check, beside its sources in the controller tree.
 CONFIG_CHECK = "check_config.py"
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
-# The templates ship inside the package, so they sit beside it however it was installed.
 TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
 
-# A render that reaches the end of the group still exits 0; anything it could not resolve is
-# reported on stderr under this prefix. A group that fails to parse or a template that does not
-# exist exits non-zero instead, so those never reach here.
+# stderr prefix of what a render that still exits 0 could not resolve
 ST_RUNTIME_ERROR = "Runtime Error:"
-# ST4 reports a read of an absent JSON property this way while still returning null, and the
-# templates rely on exactly that to ask whether an optional section was emitted at all
-# (`<if(resources.by_kind.mobile_base)>`). It is the one runtime error that means nothing.
+# absent optional property: templates test sections this way, harmless
 ST_OPTIONAL_READ = "no such property or can't access"
 
 
@@ -95,10 +89,7 @@ def render_template(
             ) from exc
         raise RuntimeError(error_text) from exc
 
-    # ST4 exits 0 after a dispatch that found no template, a call with the wrong arity, or an
-    # undefined attribute: it renders the fragment as nothing and reports the reason on stderr.
-    # Written out, that is C++ which compiles and does less than the model asked -- the empty
-    # `switch` that stepped no motion and left a torque-controlled arm commanding zero.
+    # ST4 renders an unresolved fragment as nothing and still exits 0
     dropped = [
         line.strip()
         for line in result.stderr.splitlines()
@@ -164,7 +155,6 @@ def generate_code(
             f"{ir_path}: the model declares no FSM; FSM-less execution is not supported. "
             "Coordinate the model with an FSM to generate C++."
         )
-    # Here, not at run time: a controller that cannot load its scene must not build at all.
     missing = sorted(
         {node["path"] for node in asset_nodes(ir) if not Path(node["path"]).is_file()}
     )
@@ -178,11 +168,8 @@ def generate_code(
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)
-    # coord-dsl's FSM header stays at the source root (like frame_layout.h); the bare
-    # include in algorithm_data.hpp resolves it via the root include dir, so no headers/ copy
-    # is needed — copying it there just duplicated the file in the tree and the archive.
 
-    # What the program calls into the runtime for, by name: runtime.hpp carries only these.
+    # runtime.hpp carries only these
     uses = set()
     for function in ir["computation"]["functions"].values():
         kind = function["type"]
@@ -195,7 +182,6 @@ def generate_code(
             )
         if function.get("error_normalization"):
             uses.add("JointNormalization")
-        # A control law with gains names its kind, so only the classes a model runs are emitted.
         if function.get("controller_type"):
             uses.add(function["controller_type"])
     solvers = (ir["resources"].get("by_id") or {}).values()
@@ -204,8 +190,6 @@ def generate_code(
             uses.add(f"Solver{solver['algorithm_name']}")
         if any(out.get("normalization") for out in solver.get("output") or ()):
             uses.add("JointNormalization")
-    # A monitor whose error signal is a whole pose or twist reduces it to one value before
-    # comparing it with the tolerance.
     composite = {
         item["id"]
         for item in ir["computation"].get("data") or ()
@@ -228,18 +212,14 @@ def generate_code(
                     uses.add("Flag")
     ir["computation"]["uses"] = dict.fromkeys(uses, True)
     ir["configuration"]["name"] = program
-    # The robot config's own terms, as deployment reads them, for the check shipped beside a
-    # real-hardware program.
     ir["configuration"]["config_check"] = {
         "home_key": AGENT_HOME_KEY,
         "pose_fields": list(CONFIG_POSE_FIELDS),
     }
-    # What stst renders from is scratch, not part of the generation.
     scratch = tempfile.TemporaryDirectory(prefix="motion-spec-stst-")
     payload_dir = Path(scratch.name)
     ir_payload_path = payload_dir / "ir.json"
     write_payload(ir_payload_path, ir)
-    # The backend's root group: its own rules first, so it answers every hook the shared ones call.
     root = f"backend/{ir['configuration']['backend']}/main"
 
     shutil.copyfile(frame_log_pb.PROTO, contract_dir / "frame_log.proto")
@@ -276,12 +256,8 @@ def generate_code(
     renders += [
         ("main_source", ir_payload_path, output_dir / "main.cpp"),
         ("cmake_project", ir_payload_path, output_dir / "CMakeLists.txt"),
-        # Both backends read deployment properties (the FT tare length) from the same config.
         ("robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"),
     ]
-    # Only real hardware has serial devices the loop must not block on; whether anything includes
-    # this header is the backend template's decision. The runner runs the config check before
-    # launch: it checks the config from the file alone.
     if ir["configuration"]["backend"] == "robif2b":
         renders += [
             ("device_io_header", ir_payload_path, output_dir / "device_io.hpp"),

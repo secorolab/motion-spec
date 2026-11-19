@@ -49,9 +49,7 @@ def local_name(node) -> str | None:
 
 
 _TEMPORAL_UNITS = {NS_MM_QUDT_UNIT["SEC"], NS_MM_QUDT_UNIT["MilliSEC"]}
-# The DSL records the unit a model was written in and never rescales a value, so putting one on SI
-# is the reader's job -- codegen emits metres, radians and seconds. A unit absent here is already
-# SI (N, N-M, M-PER-SEC2, KiloGM, UNITLESS, ...).
+# the DSL never rescales; a unit absent here is already SI
 _SI_EQUIVALENT = {
     NS_MM_QUDT_UNIT["CentiM"]: (NS_MM_QUDT_UNIT["M"], 1e-2),
     NS_MM_QUDT_UNIT["MilliM"]: (NS_MM_QUDT_UNIT["M"], 1e-3),
@@ -121,23 +119,16 @@ class Model:
     """
 
     graph: rdflib.Dataset
-    # The namespaces the application document declares: the nodes under them are the model's own.
     namespaces: tuple = ()
-    # Each scene graph's KDL header and its C++ namespace, as the pipeline has scene-dsl write them.
     scene_headers: dict = field(default_factory=dict)
     cache: dict = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         self._ids: dict = {}
-        # Each of the model's own ids, and the one node it names.
         self._app_nodes: dict[str, URIRef] = {}
         self._walked = False
         self._derived: dict[str, _DerivedIri] = {}
-        # What IR generation adds to the graph, apart from what was authored: the union reads it,
-        # and it is what the derivation document states.
         self.derived = self.graph.graph(URIRef(uuid4().urn))
-
-    # identity
 
     def id(self, node) -> str:
         """The generated id of a node.
@@ -190,8 +181,6 @@ class Model:
         except (TypeError, ValueError):
             return str(node)
 
-    # the id/IRI index
-
     @property
     def node_by_id(self) -> dict:
         """The node each of the model's own ids names.
@@ -204,8 +193,6 @@ class Model:
                 self.id(node)
             self._walked = True
         return self._app_nodes
-
-    # derived IRIs
 
     def iri_of(self, id_) -> str | None:
         """The IRI an id resolves to, authored or already derived; None when neither."""
@@ -239,7 +226,7 @@ class Model:
         """
         if not id_ or not parent_iri:
             return None
-        # An authored node always wins: a derived IRI must never shadow a model's own.
+        # a derived IRI never shadows an authored node
         authored = self.node_by_id.get(id_)
         if authored is not None:
             return str(authored)

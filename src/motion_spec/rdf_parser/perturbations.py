@@ -99,8 +99,7 @@ def read(model, node, chains) -> Perturbation:
         )
     duration = graph.value(node, TIME["hasDuration"])
     constraints, gate_any = gate_constraints(model, node)
-    # A direction computed between two frames is that pose's translation made unit, so the pose
-    # still carries how far away the target is -- which is what a line drawn to it needs.
+    # the pose keeps the target distance a drawn line needs
     poses = {
         graph.value(source, GEOM_OP["pose"])
         for op in graph.subjects(RBDYN_OP["wrench"], wrench)
@@ -126,8 +125,7 @@ def read(model, node, chains) -> Perturbation:
             "so the simulator has no body to apply the wrench to",
         )
 
-    # The simulator reads applied wrenches in the world frame; the chain rooted where the wrench
-    # is stated already tracks its own world-to-root pose every cycle.
+    # the simulator reads applied wrenches in the world frame
     frame = graph.value(wrench, RBDYN_COORD["as-seen-by"])
     if frame is None:
         raise ConstraintViolation(

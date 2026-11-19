@@ -65,4 +65,3 @@ def test_real_world_execution_rejects_a_constrained_scene_object() -> None:
         deployment.reject_scene_objects_on_hardware(
             Model(graph=graph), URIRef("https://example.test/real-exec")
         )
-

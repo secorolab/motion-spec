@@ -63,11 +63,17 @@ def test_a_read_only_slice_on_a_torque_commanded_runtime_is_rejected(read_end, r
             until_schedule=[],
             serial_chain_solvers=[
                 MotionSolverSlice(
-                    id=sid, solver_id=sid, output=[], motion_driver=None, read_only=read_only
+                    id=sid,
+                    solver_id=sid,
+                    output=[],
+                    motion_driver=solver.motion_drivers[0],
+                    read_only=read_only,
                 )
             ],
         )
-        for mid, sid, read_only in (("m1", "a", False), ("m2", "b", True))
+        for (mid, sid, read_only), solver in zip(
+            (("m1", "a", False), ("m2", "b", True)), chain, strict=True
+        )
     ]
     with (
         pytest.raises(ConstraintViolation, match=rejection)

@@ -84,7 +84,6 @@ _ARM_SECTION = (
     "port_real_time=2\nsession_timeout_ms=3\nconnection_timeout_ms=4\n"
 )
 _FT_SECTION = "[arm1.wrist_ft]\nport='ttyUSB0'\nbaudrate=19200\nslave_address=9\n"
-_GRIPPER_SECTION = "[agents.gripper1]\nport='ttyUSB1'\nbaudrate=115200\nslave_address=9\n"
 _FT = {"kind": "RobotiqFT300s", "config_key": "arm1.wrist_ft", "drives": "wrist_ft"}
 _ARM = {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""}
 
@@ -138,10 +137,6 @@ def test_robot_config_must_cover_every_bound_device(tmp_path: Path, source: Path
 
     config.write_text(_ARM_SECTION + _FT_SECTION)
     validate_robot_config(source, tmp_path)
-
-    config.write_text(_ARM_SECTION + _FT_SECTION + _GRIPPER_SECTION)
-    with pytest.raises(RunnerError, match=r"\[agents.gripper1\] configures nothing"):
-        validate_robot_config(source, tmp_path)
 
 
 @pytest.mark.skipif(STST is None, reason="no stst; run `motion-spec setup`")
@@ -203,16 +198,11 @@ def test_a_home_is_rejected_on_a_real_device(tmp_path: Path, source: Path) -> No
 
 
 @pytest.mark.parametrize(
-    ("devices", "unreachable", "missing"),
+    ("devices", "missing"),
     [
-        (
-            [{"kind": "KinovaGen3-2F85", "config_key": "agents.arm1", "drives": ""}, _FT],
-            r"\[agents.gripper1\] configures nothing",
-            None,
-        ),
+        ([{"kind": "KinovaGen3-2F85", "config_key": "agents.arm1", "drives": ""}, _FT], None),
         (
             [_ARM, {"kind": "Robotiq2F85", "config_key": "agents.gripper1", "drives": ""}, _FT],
-            None,
             r"no \[agents.gripper1\] section",
         ),
     ],
@@ -220,10 +210,10 @@ def test_a_home_is_rejected_on_a_real_device(tmp_path: Path, source: Path) -> No
 )
 @pytest.mark.skipif(STST is None, reason="no stst; run `motion-spec setup`")
 def test_the_authored_device_decides_which_sections_the_config_needs(
-    tmp_path: Path, source: Path, devices: list, unreachable: str | None, missing: str | None
+    tmp_path: Path, source: Path, devices: list, missing: str | None
 ) -> None:
     """The gripper's route is authored, not inferred: one section under the arm's device, two
-    under separate ones. A section the run cannot reach is as wrong as a missing one."""
+    under separate ones."""
     payload = tmp_path / "payload.json"
     payload.write_text(
         json.dumps(
@@ -235,13 +225,9 @@ def test_the_authored_device_decides_which_sections_the_config_needs(
     )
     render_template(STST, ROBIF2B, "config_check", payload, source / "controller" / CONFIG_CHECK)
     config = tmp_path / "robot.toml"
-    for sections, rejection in (
-        (_ARM_SECTION + _FT_SECTION, missing),
-        (_ARM_SECTION + _FT_SECTION + _GRIPPER_SECTION, unreachable),
-    ):
-        config.write_text(sections)
-        if rejection:
-            with pytest.raises(RunnerError, match=rejection):
-                validate_robot_config(source, tmp_path)
-        else:
+    config.write_text(_ARM_SECTION + _FT_SECTION)
+    if missing:
+        with pytest.raises(RunnerError, match=missing):
             validate_robot_config(source, tmp_path)
+    else:
+        validate_robot_config(source, tmp_path)

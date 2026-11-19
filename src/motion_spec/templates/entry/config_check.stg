@@ -8,9 +8,9 @@ config_check(configuration, resources) ::= <<
 """Check the robot config <configuration.name> reads, before it connects to any hardware.
 
 Each device it drives has its section with the keys that device's reader needs, each pose it
-reads has three-number <configuration.config_check.pose_fields; separator=" and ">, no section configures something
-it does not bind, and nothing in it is read only by a simulation. Exits 1 with every problem on
-stderr; 0 when the config holds what the program reads.
+reads has three-number <configuration.config_check.pose_fields; separator=" and ">, and nothing in it is read
+only by a simulation. Exits 1 with every problem on stderr; 0 when the config holds what the
+program reads.
 """
 
 import sys
@@ -32,8 +32,6 @@ DEVICE_KEYS = {
 POSES = [<configuration.config_poses:{pose | "<pose.config_key>"}; separator=", ">]
 POSE_FIELDS = (<configuration.config_check.pose_fields:{field | "<field>"}; separator=", ">)
 HOME_KEY = "<configuration.config_check.home_key>"
-# Sections that configure the program's publishers and the run's recording, not a device.
-NOT_DEVICES = ("ros", "rosbag")
 
 
 def section_of(table, key):
@@ -41,17 +39,6 @@ def section_of(table, key):
     for part in key.split("."):
         table = table.get(part) if isinstance(table, dict) else None
     return table if isinstance(table, dict) else None
-
-
-def sections(table, prefix=""):
-    """Every dotted path in the file that carries values: what a device's key names."""
-    found = []
-    for name, value in table.items():
-        if isinstance(value, dict):
-            if any(not isinstance(entry, dict) for entry in value.values()):
-                found.append(prefix + name)
-            found += sections(value, prefix + name + ".")
-    return found
 
 
 path = sys.argv[1] if len(sys.argv) == 2 else CONFIG
@@ -84,19 +71,6 @@ for key in POSES:
         values = section.get(field)
         if not isinstance(values, list) or len(values) != 3:
             problems.append(f"[{key}] states no three-number `{field}`")
-read = [key for key, _ in devices] + POSES
-unbound = [
-    key
-    for key in sections(config)
-    if key.split(".")[0] not in NOT_DEVICES
-    and key not in read
-    and not any(field in (section_of(config, key) or {}) for field in POSE_FIELDS)
-]
-if unbound:
-    problems.append(
-        f"[{'], ['.join(unbound)}] configures nothing this program binds, so it would reach "
-        f"hardware the run never commands. Comment it out, or correct its name"
-    )
 if problems:
     sys.exit("\\n".join(f"{path}: {problem}" for problem in problems))
 >>

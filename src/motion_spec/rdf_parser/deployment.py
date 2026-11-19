@@ -16,9 +16,10 @@ from motion_spec_dsl.rdf_parser.vocab import CSTR, ENV, EXEC, GEOM_ENT, MAP, SOS
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.geom_rel import relation_neighbors
+from rdf_utils.models.prov import get_file_path
 from rdf_utils.models.vocab import URI_GEOM_TYPE_POSE
 from rdflib import Graph, URIRef
-from rdflib.namespace import RDF, SDO, SSN
+from rdflib.namespace import PROV, RDF, SDO, SSN
 
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.agents import DRIVEN_DEVICES, device_of, model_mappings
@@ -93,9 +94,9 @@ def read_platform(model) -> dict:
 
 
 def _config_path(model, context) -> str | None:
-    """The deployment config's path, resolved by the DSL against the model that declares it."""
-    config = model.graph.value(context, EXEC["has-resource"])
-    return str(model.graph.value(config, EXEC.path)) if config is not None else None
+    """The deployment config's path, from the location the DSL states for the file."""
+    config = model.graph.value(context, PROV.wasDerivedFrom)
+    return str(get_file_path(model.graph, config)) if config is not None else None
 
 
 def _reject_undriven_devices(model, context) -> None:
@@ -304,7 +305,13 @@ def config_poses(model, config: dict) -> list[dict]:
             position and an orientation of three numbers each.
     """
     entries = []
-    for node in model.graph.subjects(EXEC["has-resource"], None):
+    # Anchored at the context's config: provenance in the same dataset derives files too.
+    configs = {
+        config
+        for context in model.graph.subjects(RDF.type, EXEC.ExecutionContext)
+        for config in model.graph.objects(context, PROV.wasDerivedFrom)
+    }
+    for node in {node for config in configs for node in model.graph.subjects(PROV.wasDerivedFrom, config)}:
         if EXEC.ExecutionContext in get_node_types(model.graph, node):
             continue
         key = str(model.graph.value(node, SDO.identifier))

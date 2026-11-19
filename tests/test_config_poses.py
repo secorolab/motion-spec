@@ -22,9 +22,10 @@ APP = "https://secorolab.github.io/models/demo/"
 CONFIG_POSE = f"""
 @prefix app: <{APP}> .
 @prefix exec: <{EXEC}> .
-app:demo-exec a exec:ExecutionContext ; exec:has-resource app:demo-exec.config .
-app:demo-exec.config exec:path "/somewhere/robot.toml" .
-<{APP}shared/spec/look-at-table> exec:has-resource app:demo-exec.config ;
+@prefix prov: <http://www.w3.org/ns/prov#> .
+app:demo-exec a exec:ExecutionContext ; prov:wasDerivedFrom app:demo-exec.config .
+app:demo-exec.config a prov:Entity ; prov:atLocation <file:///somewhere/robot.toml> .
+<{APP}shared/spec/look-at-table> prov:wasDerivedFrom app:demo-exec.config ;
     <https://schema.org/identifier> "poses.table" .
 """
 

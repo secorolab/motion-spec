@@ -1115,7 +1115,7 @@ def _is_config_pose(model, node) -> bool:
     the model. Its orientation is stamped Euler-typed by the DSL for lack of an authored
     coordinate to inspect -- that stamp must not be read as a literal, decomposed pose.
     """
-    return (node, EXEC["has-resource"], None) in model.graph
+    return (node, PROV.wasDerivedFrom, None) in model.graph
 
 
 @reader

@@ -16,27 +16,43 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from rdflib import URIRef
+from rdf_utils.models.prov import (
+    add_directory_location,
+    capture_file_prov,
+    load_transformation_prov,
+)
+from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import PROV
 from rec import State, Verdict
 
-from motion_spec.runs.archive import archive_run, verify_run
+from motion_spec.generation.codegen import CONFIG_CHECK
+from motion_spec.rdf_parser.agents import agent_cameras
+from motion_spec.rdf_parser.deployment import platform_facts
 from motion_spec.runs.lifecycle_events import publish_lifecycle
 from motion_spec.runs.provenance import (
-    EXECUTION_DOCUMENT,
     GENERATION_DOCUMENT,
-    motion_spec_bundle,
-    read_generation_dataset,
+    add_package,
+    generation_model,
     rec_document,
     rec_run,
     rec_run_lifecycle_from_file,
     record_draw,
     record_execution,
+    record_files,
     record_run_file,
-    write_generation_graph,
+    run_bundle,
 )
 from motion_spec.runs.ros_video import RosImageRecorder, real_camera_recordings
-from motion_spec.telemetry.frame_log_pb import ctrl_shm_name, read_sampling, shm_name_for
+from motion_spec.runs.verify import verify_run
+from motion_spec.telemetry.frame_log_pb import (
+    LOG_SUFFIX,
+    ctrl_shm_name,
+    read_sampling,
+    shm_name_for,
+)
+
+# zstd's level for the packed frame log: most of the ratio, at a fraction of the top levels' time.
+COMPRESSION_LEVEL = 10
 
 
 class RunnerError(RuntimeError):
@@ -64,44 +80,51 @@ def run_cataloged(
     executable = Path(executable).resolve()
     run_id = run_id or run_dir.name
     frame_log = run_dir / "logs" / "frame_log.pb"
-    rec_path = rec_document(run_dir, run_id)
 
     _validate_new_run(run_dir, source_dir, executable, run_id, Path(cwd).resolve() if cwd else None)
-    # frame_layout.json, not the log: the run is recorded before the log exists.
-    schema = json.loads((source_dir / "contract" / "frame_layout.json").read_text())
+    # frame_layout.json, not the log: the run's blocks are named before the log exists.
+    schema_hash = json.loads((source_dir / "contract" / "frame_layout.json").read_text())[
+        "schema_hash"
+    ]
+    # What the run is deployed on, where the model states it: the generation's RDF.
+    model = generation_model(source_dir)
+    platform = platform_facts(model.graph)
+    config = Path(platform["config"]) if platform["config"] else None
     run_dir.mkdir(parents=True, exist_ok=True)
-    start_rec_run(
+    run, bundle_id = start_rec_run(
         run_dir,
         run_id,
         source_dir,
         executable,
-        schema,
-        cwd=Path(cwd).resolve() if cwd else None,
+        platform,
+        config=config,
         environment=environment_provenance,
     )
 
     try:
         with (
-            _rosbag_recorder(run_dir, *_rosbag_settings(source_dir)),
-            _real_camera_recorders(schema, record, frame_log.parent),
+            _rosbag_recorder(run_dir, *_rosbag_settings(config)),
+            _real_camera_recorders(
+                [] if platform["simulated"] else agent_cameras(model), record, frame_log.parent
+            ),
         ):
             returncode = _run_executable(
                 executable,
                 cwd=Path(cwd).resolve() if cwd else None,
                 frame_log=frame_log,
                 run_id=run_id,
-                rec_path=rec_path,
+                run=run,
                 record=record,
                 record_log=record_log,
                 base_env=env,
-                schema_hash=schema.get("schema_hash"),
+                schema_hash=schema_hash,
             )
     except Exception:
-        _finish_rec_run(rec_path, run_id, Verdict.FAILED)
+        _finish_rec_run(run_dir, run, Verdict.FAILED)
         raise
     sampling = read_sampling(frame_log) if record_log and frame_log.exists() else None
     if sampling:
-        _record_sampling(rec_path, sampling)
+        _record_sampling(run_dir, run_id, bundle_id, sampling)
     # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
     # dying from: the run stopped early but its artifacts are complete, so it is not a
     # failure. Reached when the signal went to the child alone and never raised here.
@@ -112,165 +135,36 @@ def run_cataloged(
     # A log-less run has no such signal -- catalogue it anyway, or an interrupted --no-log run
     # would leave nothing saying it ran.
     if returncode != 0 and record_log and not frame_log.exists():
-        _finish_rec_run(rec_path, run_id, verdict)
+        _finish_rec_run(run_dir, run, verdict)
         return returncode
 
-    # rec's end is the archive's mark: ended once the run is archived, and checked.
+    # rec's end is the record's mark: ended once the run's outputs are recorded, and checked.
     try:
-        archive_run(
-            run_dir,
-            source_dir=source_dir,
-            run_id=run_id,
-            frame_log=frame_log,
-            log_producer_executable=executable,
-            complete_rec=False,
-            recorded=record_log,
-        )
+        record_outputs(run_dir, run, bundle_id, recorded=record_log)
         if returncode == 0:
             verify_run(run_dir)
     except Exception:
-        _finish_rec_run(rec_path, run_id, Verdict.FAILED if returncode == 0 else verdict)
+        _finish_rec_run(run_dir, run, Verdict.FAILED if returncode == 0 else verdict)
         raise
-    _finish_rec_run(rec_path, run_id, verdict)
+    _finish_rec_run(run_dir, run, verdict)
     return returncode
 
 
-_ROBOT_CONFIG_KEYS = (
-    "ip",
-    "user",
-    "password",
-    "port",
-    "port_real_time",
-    "session_timeout_ms",
-    "connection_timeout_ms",
-)
-
-# What each device kind's reader in robot_config.hpp demands of its section. Optional keys
-# (timeout_ms, bias_samples, poll_interval_ms) have documented defaults there and are not
-# required here.
-_DEVICE_CONFIG_KEYS = {
-    "KinovaGen3": _ROBOT_CONFIG_KEYS,
-    "KinovaGen3-2F85": _ROBOT_CONFIG_KEYS,
-    "Robotiq2F85": ("port", "baudrate", "slave_address"),
-    "RobotiqFT300s": ("port", "baudrate", "slave_address"),
-}
-
-
-def _config_sections(table: dict, prefix: str = "") -> list[str]:
-    """Every dotted path in the file that carries values -- what a device's config_key names.
-
-    A table holding only tables is the namespace an authored FQN passes through
-    (`agents` in `[agents.arm1]`), not a section anything is configured in.
-    """
-    found = []
-    for name, value in table.items():
-        if not isinstance(value, dict):
-            continue
-        path = f"{prefix}{name}"
-        if any(not isinstance(entry, dict) for entry in value.values()):
-            found.append(path)
-        found += _config_sections(value, f"{path}.")
-    return found
-
-
-def _config_section(table: dict, key: str) -> dict | None:
-    """The table a dotted config key names, or None when the file states no such path."""
-    section = table
-    for part in key.split("."):
-        section = section.get(part) if isinstance(section, dict) else None
-    return section if isinstance(section, dict) else None
-
-
 def validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
-    """Check the deployment config before launching, so a typo fails here, not against hardware."""
-    import tomllib
+    """Check the deployment config before launching, so a typo fails here, not against hardware.
 
-    from motion_spec.rdf_parser.deployment import AGENT_HOME_KEY, CONFIG_POSE_FIELDS
-
-    ir_path = source_dir / "model" / "ir.json"
-    if not ir_path.exists():
+    A real-hardware generation ships the check beside its program, with the sections the program
+    reads baked in, so it reads the config file alone; run in CWD, which a relative config path
+    is resolved against, as the program resolves it. A simulation ships none.
+    """
+    check = source_dir / "controller" / CONFIG_CHECK
+    if not check.is_file():
         return
-    ir = json.loads(ir_path.read_text())
-    if (ir["configuration"].get("platform") or {}).get("simulated", True):
-        return
-    declared = (ir["configuration"]["platform"] or {}).get("config") or ""
-    if not declared:
-        raise RunnerError(
-            "real-world run declares no config; it has nowhere to read addresses from"
-        )
-    # Resolved exactly as the executable will resolve it: against the working directory the run
-    # gets. Checking any other file would clear a config the run never opens.
-    config_path = Path(declared)
-    if not config_path.is_absolute():
-        config_path = (Path(cwd) if cwd else Path.cwd()) / declared
-    if not config_path.exists():
-        raise RunnerError(f"{config_path}: robot config not found")
-    try:
-        config = tomllib.loads(config_path.read_text())
-    except tomllib.TOMLDecodeError as error:
-        raise RunnerError(f"{config_path}: {error}") from error
-    # A chain that shares another's runtime repeats its owner's devices; the pair is the fact.
-    bound = []
-    for solver in ir.get("resources", {}).get("robots") or ():
-        if solver.get("kind") != "serial_chain":
-            continue
-        for device in solver.get("devices") or ():
-            pair = (device.get("config_key"), device.get("kind"))
-            if pair[0] and pair not in bound:
-                bound.append(pair)
-    for key, kind in bound:
-        section = _config_section(config, key)
-        if section is None:
-            raise RunnerError(f"{config_path}: no [{key}] section for the bound {kind}")
-        missing = [field for field in _DEVICE_CONFIG_KEYS.get(kind, ()) if field not in section]
-        if missing:
-            raise RunnerError(f"{config_path}: [{key}] is missing {', '.join(missing)}")
-    # Only a simulated run resets an agent to a home; on hardware the arm is wherever it was left,
-    # so a home here is a number the deployment believes in and nothing acts on.
-    homed = [key for key, _ in bound if AGENT_HOME_KEY in (_config_section(config, key) or {})]
-    if homed:
-        raise RunnerError(
-            f"{config_path}: `{AGENT_HOME_KEY}` in [{'], ['.join(homed)}] is read only by a "
-            "simulated run.\n"
-            "  This run drives the real devices, which start wherever they were left, so nothing "
-            "resets to it.\n"
-            f"  Comment the `{AGENT_HOME_KEY}` line out -- keeping the numbers for the simulated "
-            "platform -- or run that platform instead."
-        )
-    # A pose the model reads with `[config.<key>]` binds its section as much as a device does:
-    # generation refuses a model whose pose section is absent, so the run must not refuse it for
-    # being present. Its numbers are re-read here because they may change without regeneration.
-    poses = []
-    for entry in ir["configuration"].get("config_poses") or ():
-        if entry.get("config_key") and entry["config_key"] not in poses:
-            poses.append(entry["config_key"])
-    for key in poses:
-        section = _config_section(config, key) or {}
-        for field in CONFIG_POSE_FIELDS:
-            values = section.get(field)
-            if not isinstance(values, list) or len(values) != 3:
-                raise RunnerError(f"{config_path}: [{key}] states no three-number `{field}`")
-    # A section for nothing bound is a mis-key or a stale device: it would connect to hardware
-    # this run never commands. Under KinovaGen3-2F85 a separate gripper section lands here.
-    # [ros.*] configures the generated publishers and [rosbag] the run's recording, not a
-    # device this run binds.
-    read = [key for key, _ in bound] + poses
-    # An unread pose section is a pose on offer, not a mistake; only the read ones are checked.
-    unbound = [
-        key
-        for key in _config_sections(config)
-        if key.split(".")[0] not in ("ros", "rosbag")
-        and key not in read
-        and not any(field in (_config_section(config, key) or {}) for field in CONFIG_POSE_FIELDS)
-    ]
-    if unbound:
-        binds = ", ".join(f"[{key}]" for key in read)
-        raise RunnerError(
-            f"{config_path}: [{'], ['.join(unbound)}] configures nothing this run binds.\n"
-            f"  This run binds {binds or 'no sections'}, and a device section is named by the "
-            "agent its solver realizes -- so this one reaches hardware the run never commands.\n"
-            f"  Comment it out, or correct its name. This run was generated at {ir_path}."
-        )
+    done = subprocess.run(
+        [sys.executable, str(check)], cwd=cwd, capture_output=True, text=True, check=False
+    )
+    if done.returncode:
+        raise RunnerError(done.stderr.strip())
 
 
 def _validate_new_run(
@@ -296,44 +190,45 @@ def start_rec_run(
     run_id: str,
     source_dir: Path,
     executable: Path,
-    schema: dict,
-    cwd: Path | None = None,
+    platform: dict,
+    config: Path | None = None,
     environment: dict | None = None,
-) -> None:
+):
+    """Start the run in rec and record in motion-spec's bundle what it runs and under what:
+    the deployment CONFIG, the model's, and the ENVIRONMENT it was given.
+
+    Returns:
+        rec's handle on the run and the identifier of motion-spec's bundle, which the run's
+        later steps record into
+    """
     # One run, one node: rec describes the same IRI the generation provenance describes, so
-    # the documents union instead of standing side by side. rec records the host it starts on.
+    # the bundles union instead of standing side by side. rec records the host it starts on.
     run = rec_run(run_dir, run_id)
     run.start()
-    _record_execution_inputs(run.node, run_dir, schema, cwd, environment)
-    record_execution(
-        run_dir,
-        run.node,
-        source_dir / GENERATION_DOCUMENT,
-        executable,
-        schema.get("platform") or {},
-    )
+    with run_bundle(run_dir, run_id) as bundle:
+        _record_execution_inputs(bundle, run.node, run_dir, config, environment)
+        record_execution(
+            bundle,
+            run.node,
+            source_dir / GENERATION_DOCUMENT,
+            executable,
+            platform,
+        )
     _publish(run_dir, run_id)
+    return run, bundle.identifier
 
 
 def _record_execution_inputs(
+    bundle: Graph,
     run: URIRef,
     run_dir: Path,
-    schema: dict,
-    cwd: Path | None,
+    config: Path | None,
     environment: dict | None,
 ) -> None:
-    """What the execution ran under: its deployment and its environment. The executable is the
-    generation's node, which `record_execution` states the run used."""
-    inputs = []
-    platform = schema.get("platform") or {}
-    declared = platform.get("config") or ""
+    """What the execution ran under: its deployment CONFIG and its environment. The executable
+    is the generation's node, which `record_execution` states the run used."""
     # A simulation's config is as much what it ran with: its [run] section sets how.
-    if declared:
-        # Resolved exactly as the executable resolves it: against the working directory it gets.
-        config = Path(declared)
-        if not config.is_absolute():
-            config = (cwd or Path.cwd()) / declared
-        inputs.append(config)
+    inputs = [config] if config is not None else []
     script = Path((environment or {}).get("script") or "")
     if script.is_file():
         # Kept with the run: the workspace's file can change or go, and its path is the machine's.
@@ -341,27 +236,18 @@ def _record_execution_inputs(
         kept.parent.mkdir(exist_ok=True)
         shutil.copy2(script, kept)
         inputs.append(kept)
-    bundle = motion_spec_bundle(run_dir / EXECUTION_DOCUMENT)
     for path in inputs:
         if path.exists():
             record_run_file(bundle, run, run_dir.parents[1], path, generated=False)
-    write_generation_graph(run_dir / EXECUTION_DOCUMENT, bundle)
 
 
-def _rosbag_settings(source_dir: Path) -> tuple[list[str], bool]:
-    """The topics the deployment config asks the run to bag, and whether it stamps them in
-    simulation time: [ros.clock] means the run publishes /clock and every stamp reads from it."""
+def _rosbag_settings(config_path: Path | None) -> tuple[list[str], bool]:
+    """The topics the deployment config at CONFIG_PATH asks the run to bag, and whether it stamps
+    them in simulation time: [ros.clock] means the run publishes /clock and every stamp reads
+    from it."""
     import tomllib
 
-    ir_path = source_dir / "model" / "ir.json"
-    if not ir_path.exists():
-        return [], False
-    ir = json.loads(ir_path.read_text())
-    declared = (ir["configuration"].get("platform") or {}).get("config") or ""
-    if not declared:
-        return [], False
-    config_path = Path(declared)
-    if not config_path.exists():
+    if config_path is None or not config_path.exists():
         return [], False
     try:
         config = tomllib.loads(config_path.read_text())
@@ -434,11 +320,11 @@ def _await_rosbag_ready(bag_dir: Path, spinner: threading.Thread, timeout_s: flo
 
 
 @contextmanager
-def _real_camera_recorders(schema: dict, record: list[str] | None, output_dir: Path):
+def _real_camera_recorders(cameras: list, record: list[str] | None, output_dir: Path):
     """Record selected real RGB camera topics while the generated controller runs."""
     recorders = [
         RosImageRecorder(camera, output_dir / f"{camera.id}.mp4")
-        for camera in real_camera_recordings(schema, record)
+        for camera in real_camera_recordings(cameras, record)
     ]
     for recorder in recorders:
         recorder.start()
@@ -462,7 +348,7 @@ def _run_executable(
     cwd: Path | None,
     frame_log: Path,
     run_id: str,
-    rec_path: Path,
+    run,
     record: list[str] | None = None,
     record_log: bool = True,
     base_env: dict[str, str] | None = None,
@@ -513,22 +399,25 @@ def _run_executable(
                 return process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
-            # Any holder of the run's id may cancel it through rec; the program leaves its loop
-            # on SIGTERM, and one that does not within 5 s is killed.
+            # `motion-spec cancel` asks through rec; the program leaves its loop on SIGTERM, and
+            # one that does not within 5 s is killed.
             if canceled_at is None:
-                if rec_run_lifecycle_from_file(rec_path)["state"] == State.CANCELING:
+                if run.lifecycle()[0] is State.CANCELING:
                     process.terminate()
                     canceled_at = time.monotonic()
             elif time.monotonic() - canceled_at > 5:
                 process.kill()
     except KeyboardInterrupt:
+        # Ctrl-C, or the CLI's SIGTERM handler, is the operator asking the run to stop: a cancel.
+        # The run is archived and ended as any cancelled run is, so rec records it canceled.
+        if run.lifecycle()[0] is State.IN_PROGRESS:
+            run.cancel()
         process.terminate()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-        _finish_rec_run(rec_path, run_id, Verdict.ERROR)
         return 130
     finally:
         # A grandchild holding the pipe open must not stall the run's bookkeeping.
@@ -549,30 +438,62 @@ def _tee(stream, sink) -> None:
         return  # the run gave up waiting for this pump and closed the log under it
 
 
-def _finish_rec_run(rec_path: Path, run_id: str, verdict: Verdict) -> None:
-    """End the run with VERDICT: passed, or error for a run stopped early, else failed.
+def record_outputs(run_dir: Path, run, bundle_id: URIRef, *, recorded: bool = True) -> None:
+    """Record in motion-spec's bundle of the run what it left in RUN_DIR once the program exited.
 
-    A run that has already ended keeps its first end: rec refuses to end a run twice.
+    The frame log of a RECORDED run is packed with zstd, as nothing appends to it any more and
+    neighbouring frames nearly repeat: the run generated the raw log, and the packing derived
+    the packed one from it and invalidated the raw one. Every other file it generated -- the
+    console log, camera videos, the rosbag -- is recorded as generated by the run.
     """
-    run_dir = rec_path.parent.parent
-    run = rec_run(run_dir, run_id)
-    if run.lifecycle()[0] not in (State.IN_PROGRESS, State.CANCELING):
+    import zstandard
+
+    frame_log = run_dir / "logs" / "frame_log.pb"
+    generation = run_dir.parents[1]
+    with run_bundle(run_dir, run.id, bundle_id) as bundle:
+        if recorded and frame_log.is_file():
+            raw = record_run_file(bundle, run.node, generation, frame_log, generated=True)
+            packed = frame_log.with_name(frame_log.name + LOG_SUFFIX)
+            started = datetime.now(UTC)
+            with frame_log.open("rb") as raw_log, packed.open("wb") as out:
+                zstandard.ZstdCompressor(level=COMPRESSION_LEVEL).copy_stream(raw_log, out)
+            frame_log.unlink()
+            ended = datetime.now(UTC)
+            roots = {generation.resolve(): add_directory_location(bundle, generation)}
+            packing = load_transformation_prov(
+                bundle,
+                [raw],
+                [capture_file_prov(bundle, packed, roots=roots)],
+                add_package(bundle, "motion_spec"),
+                started=started,
+                ended=ended,
+            )
+            bundle.add((raw, PROV.wasInvalidatedBy, packing))
+            bundle.add((raw, PROV.invalidatedAtTime, Literal(ended)))
+        record_files(bundle, run.node, run_dir)
+
+
+def _finish_rec_run(run_dir: Path, run, verdict: Verdict) -> None:
+    """End RUN with VERDICT: passed, or error for a run stopped early, else failed.
+
+    A run that has already ended keeps its first end: rec refuses to end a run twice. A run
+    cancelled while in progress that stopped as asked ends passed, which rec records canceled.
+    """
+    state = run.lifecycle()[0]
+    if state not in (State.IN_PROGRESS, State.CANCELING):
         return
-    run.end(verdict)
-    _publish(run_dir, run_id)
+    run.end(Verdict.PASSED if state is State.CANCELING and verdict is Verdict.ERROR else verdict)
+    _publish(run_dir, run.id)
 
 
-def _record_sampling(rec_path: Path, sampling: dict) -> None:
-    """Each drawn value as an entity the run generated."""
-    run_dir = rec_path.parent.parent
+def _record_sampling(run_dir: Path, run_id: str, bundle_id: URIRef, sampling: dict) -> None:
+    """Each drawn value, recorded in motion-spec's bundle of the run."""
     drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
-    document = run_dir / EXECUTION_DOCUMENT
-    # The process the run started draws the values; it is the agent acting for the runtime.
-    process = next(read_generation_dataset(document).subjects(PROV.actedOnBehalfOf), None)
-    bundle = motion_spec_bundle(document)
-    for quantity, values in sampling["draws"].items():
-        record_draw(bundle, process, quantity, values, drawn_at)
-    write_generation_graph(document, bundle)
+    with run_bundle(run_dir, run_id, bundle_id) as bundle:
+        # The process the run started draws the values; it is the agent acting for the runtime.
+        process = next(bundle.subjects(PROV.actedOnBehalfOf), None)
+        for quantity, values in sampling["draws"].items():
+            record_draw(bundle, process, quantity, values, drawn_at)
 
 
 def _publish(run_dir: Path, run_id: str) -> None:

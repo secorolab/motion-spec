@@ -9,7 +9,9 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+from motion_spec_dsl.rdf_parser.vocab import EXEC
 from rdf_utils.models.prov import get_py_pkg_info
+from rdflib.namespace import SDO, SSN
 
 from motion_spec.runs.provenance import PROV_CONTEXT
 
@@ -142,6 +144,19 @@ DASHBOARD_SCHEMA = {
     },
     "platform": {"name": "MuJoCo", "simulated": True, "backend": "mj_kdl"},
     "schema_hash": "fedcba9876543210",
+}
+
+# The DSL's model document in miniature, beside its bundle: a model deployed on MuJoCo.
+MODEL_GRAPH = {
+    "@id": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e10",
+    "@graph": [
+        {
+            "@id": "https://example.test/exec",
+            "@type": str(EXEC.Simulation),
+            str(SSN.deployedOnPlatform): {"@id": "https://example.test/mujoco"},
+        },
+        {"@id": "https://example.test/mujoco", str(SDO.name): "MuJoCo"},
+    ],
 }
 
 # The DSL's bundle in miniature: one named graph holding one transformation.

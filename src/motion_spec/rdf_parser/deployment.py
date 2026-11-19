@@ -51,52 +51,52 @@ TRACE_DISABLED = {
 }
 
 
-def read_platform(model) -> dict:
-    """The execution platform the model declares, as one record every consumer reads.
+def platform_facts(graph) -> dict:
+    """The execution platform the model in GRAPH declares, as one record every consumer reads.
 
-    The authored node's IRI, its name, whether it is simulated, the backend serving it and the
-    deployment config beside it. Platform identity comes from here and is never re-derived from
-    the backend token or from substrings of an id.
+    The authored node's IRI, its name, whether it is simulated, the backend serving it (None for
+    a simulation platform no backend serves) and the deployment config beside it, from the
+    location the DSL states for the file. Platform identity comes from here and is never
+    re-derived from the backend token or from substrings of an id. A reader of a generation reads
+    it from the generation's model document; generation checks it with `read_platform`.
+    """
+    simulation = next(graph.subjects(RDF.type, EXEC.Simulation), None)
+    context = simulation or next(graph.subjects(RDF.type, EXEC.RealWorld), None)
+    config = graph.value(context, PROV.wasDerivedFrom) if context is not None else None
+    path = get_file_path(graph, config) if config is not None else None
+    name = (
+        str(graph.value(graph.value(simulation, SSN.deployedOnPlatform), SDO.name) or "")
+        if simulation is not None
+        else None
+    )
+    return {
+        "uri": str(context) if context is not None else None,
+        "name": name,
+        "simulated": simulation is not None,
+        "backend": SIMULATION_BACKENDS.get(name.casefold()) if name is not None else "robif2b",
+        "config": str(path) if path is not None else None,
+    }
+
+
+def read_platform(model) -> dict:
+    """The execution platform the model declares, `platform_facts`, checked for generation.
 
     Raises:
         ConstraintViolation: the model names a simulation platform with no backend, real-world
             execution constrains a scene object, binds a device no backend drives, or reads a
             sensor with no device bound.
     """
-    graph = model.graph
-    simulation = next(graph.subjects(RDF.type, EXEC.Simulation), None)
-    if simulation is None:
-        real = next(graph.subjects(RDF.type, EXEC.RealWorld), None)
+    platform = platform_facts(model.graph)
+    if not platform["simulated"]:
+        real = URIRef(platform["uri"]) if platform["uri"] is not None else None
         reject_scene_objects_on_hardware(model, real)
         _reject_undriven_devices(model, real)
         _reject_unbound_sensors_on_hardware(model, real)
-
-        return {
-            "uri": str(real) if real is not None else None,
-            "name": None,
-            "simulated": False,
-            "backend": "robif2b",
-            "config": str(_config_path(model, real)) if real is not None else None,
-        }
-
-    name = str(graph.value(graph.value(simulation, SSN.deployedOnPlatform), SDO.name) or "")
-    backend = SIMULATION_BACKENDS.get(name.casefold())
-    if backend is None:
-        raise ConstraintViolation("platform", f"Unsupported simulation platform '{name}'.")
-
-    return {
-        "uri": str(simulation),
-        "name": name,
-        "simulated": True,
-        "backend": backend,
-        "config": _config_path(model, simulation),
-    }
-
-
-def _config_path(model, context) -> str | None:
-    """The deployment config's path, from the location the DSL states for the file."""
-    config = model.graph.value(context, PROV.wasDerivedFrom)
-    return str(get_file_path(model.graph, config)) if config is not None else None
+    elif platform["backend"] is None:
+        raise ConstraintViolation(
+            "platform", f"Unsupported simulation platform '{platform['name']}'."
+        )
+    return platform
 
 
 def _reject_undriven_devices(model, context) -> None:

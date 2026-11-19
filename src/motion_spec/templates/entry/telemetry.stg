@@ -202,23 +202,22 @@ private:
 struct ControlState {
     bool pause;
     double speed;
-    bool stop;
     bool step;   // advance exactly one tick, though the run is paused
 };
 
-// Pause / speed / stop, set from outside the run (the dashboard) and read once per tick.
+// Pause / step / speed, set from outside the run (`motion-spec control`) and read once per tick.
+// Stopping is not the block's: `motion-spec cancel` asks through rec, and the runner signals.
 // Every word is its own 8-byte-aligned atomic -- no seqlock, because a control word read one
-// tick late is not an error, and the three are independent.
+// tick late is not an error, and the words are independent.
 struct ControlBlock {
     std::uint64_t version;
     std::uint64_t seq;      // bumped by the writer after it sets the fields
     std::int64_t pause;
     std::uint64_t speed_bits;  // an f64 bit pattern; doubles are not valid __atomic operands
-    std::int64_t stop;
     std::uint64_t ack_seq;  // last seq this run has applied
     std::int64_t steps;     // ticks the run still owes a paused stepper; it counts them down
 };
-static_assert(sizeof(ControlBlock) == 56, "ControlBlock must match the dashboard's layout");
+static_assert(sizeof(ControlBlock) == 48, "ControlBlock must match motion_spec.runs.control");
 
 inline constexpr double kMinControlSpeed = 0.1;
 inline constexpr double kMaxControlSpeed = 10.0;
@@ -243,7 +242,7 @@ public:
         std::uint64_t bits = 0;
         std::memcpy(&bits, &speed, sizeof(bits));
         __atomic_store_n(&block_->speed_bits, bits, __ATOMIC_RELAXED);
-        __atomic_store_n(&block_->version, 1ull, __ATOMIC_RELAXED);
+        __atomic_store_n(&block_->version, 2ull, __ATOMIC_RELAXED);
     \}
 
     ~ControlChannel() {
@@ -259,7 +258,7 @@ public:
     \}
 
     ControlState poll() {
-        ControlState state{false, 1.0, false, false};
+        ControlState state{false, 1.0, false};
         if (!block_) return state;
         state.pause = __atomic_load_n(&block_->pause, __ATOMIC_RELAXED) != 0;
         /* Stepping is a pause that owes ticks: the writer adds them, the run takes one per
@@ -268,7 +267,6 @@ public:
             __atomic_fetch_sub(&block_->steps, 1, __ATOMIC_RELAXED);
             state.step = true;
         \}
-        state.stop = __atomic_load_n(&block_->stop, __ATOMIC_RELAXED) != 0;
         const std::uint64_t bits = __atomic_load_n(&block_->speed_bits, __ATOMIC_RELAXED);
         double speed = 0.0;
         std::memcpy(&speed, &bits, sizeof(speed));

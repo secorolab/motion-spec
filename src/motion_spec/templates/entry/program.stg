@@ -118,7 +118,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
     while (!motion_spec::runtime::stop_requested() && (<app-loop-condition(resources.by_kind.serial_chain)>)<if(communication.ros)> && rclcpp::ok()<endif>) {
 <if(configuration.platform.simulated)>
         const auto _ctrl = _telemetry.poll_control();
-        if (_ctrl.stop) motion_spec::runtime::request_stop(0);
 <if(resources.by_kind.serial_chain)>
 <app-chain-control-apply(resources.by_kind.serial_chain)>
 <endif>

@@ -11,9 +11,9 @@ from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import rdf_name, run_videos
 from motion_spec.dashboard.frames import slot_signals
 from motion_spec.dashboard.sources import authored_lines
-from motion_spec.runs.archive import ArchiveError
 from motion_spec.runs.provenance import run_generation
 from motion_spec.runs.replay import resolve_archive, validate_header
+from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
 
@@ -248,7 +248,7 @@ def replay_data(run_dir: Path) -> dict:
     pending = False
     try:
         run_dir, log, contract = resolve_archive(run_dir)
-    except ArchiveError:
+    except RecordError:
         # A run named but not yet writing. The generation's header record is the same one the
         # runtime puts at the front of the log, and is itself a zero-frame log.
         generation = run_generation(run_dir)

@@ -18,6 +18,7 @@ from motion_spec.telemetry.frame_log_pb import (
     SPATIAL_CATEGORIES,
     TRIGGER_KEYS,
     shm_name_for,
+    shm_path,
 )
 
 _CORE_KEYS = (
@@ -76,13 +77,6 @@ def slot_signals(contract) -> dict:
         for field in contract.fields.get(kind, ())
         for part, attribute in parts.items()
     }
-
-
-def shm_path(name: str) -> Path:
-    """A POSIX shm name resolves under /dev/shm; anything else is taken as a file path."""
-    if name.startswith("/") and "/" not in name[1:]:
-        return Path("/dev/shm") / name[1:]
-    return Path(name)
 
 
 class FrameLayout:

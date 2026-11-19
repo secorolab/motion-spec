@@ -735,6 +735,18 @@ def scene_graph(model):
     return graph
 
 
+def agent_cameras(model) -> list:
+    """Every camera the model's agents carry, as the runtime renders them: the scene's cameras
+    the IR states, for a reader that chooses what to record before a run."""
+    bound_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
+    attach_by_body, _root = fixed_attachments(model, bound_trees)
+    return [
+        camera
+        for assembly in agent_assemblies(model, attach_by_body)
+        for camera in assembly.cameras
+    ]
+
+
 def robot_setups(model):
     """Per-robot chain setups, sourced from the scene-dsl graph.
 

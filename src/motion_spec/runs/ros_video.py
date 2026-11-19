@@ -22,24 +22,15 @@ class CameraRecording:
     rate_hz: float
 
 
-def real_camera_recordings(schema: dict, requested: list[str] | None) -> list[CameraRecording]:
-    """Resolve requested real-camera names through the generated contract."""
-    if not requested or schema.get("platform", {}).get("simulated"):
-        return []
-    cameras = {
-        camera.get("id"): camera
-        for camera in schema.get("cameras") or []
-        if camera.get("id") and camera.get("topic")
-    }
-    recordings = []
-    for camera_id in requested:
-        camera = cameras.get(camera_id)
-        if camera is None:
-            continue
-        recordings.append(
-            CameraRecording(camera_id, camera["topic"], float(camera.get("rate_hz") or 30.0))
-        )
-    return recordings
+def real_camera_recordings(cameras: list, requested: list[str] | None) -> list[CameraRecording]:
+    """The REQUESTED cameras among CAMERAS, a real platform's as the model declares them, that
+    name a ROS image topic to record."""
+    by_id = {camera.id: camera for camera in cameras if camera.topic}
+    return [
+        CameraRecording(camera_id, by_id[camera_id].topic, float(by_id[camera_id].rate_hz or 30.0))
+        for camera_id in requested or ()
+        if camera_id in by_id
+    ]
 
 
 def frame_slot(stamp: float, origin: float, rate_hz: float) -> int:

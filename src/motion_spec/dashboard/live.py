@@ -11,17 +11,17 @@ from collections import deque
 from pathlib import Path
 
 from motion_spec.dashboard.catalog import run_ended
-from motion_spec.dashboard.control import SPEED_MAX, SPEED_MIN, ControlChannel
-from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader, SignalFields, shm_path
+from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader, SignalFields
 from motion_spec.dashboard.jobs import RUNNING, mark_stopped
 from motion_spec.dashboard.replay import log_events
-from motion_spec.dashboard.roots import LAYOUT_REL, json_file, trace
+from motion_spec.dashboard.roots import trace
 from motion_spec.dashboard.tail import FrameLogTail
-from motion_spec.runs.archive import ArchiveError
-from motion_spec.runs.provenance import run_generation
+from motion_spec.runs.control import SPEED_MAX, SPEED_MIN, acknowledged, control_run, run_channel
+from motion_spec.runs.provenance import rec_run, run_generation
 from motion_spec.runs.replay import resolve_archive
+from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
-from motion_spec.telemetry.frame_log_pb import ctrl_shm_name, shm_name_for
+from motion_spec.telemetry.frame_log_pb import shm_name_for, shm_path
 
 _LIVE: dict[str, dict] = {}
 
@@ -164,7 +164,7 @@ def _live_sampler(run_dir: Path, contract) -> ShmSampler | None:
     try:
         generation = run_generation(run_dir)
         if generation is None:
-            raise ValueError("the run's execution document names no generation")
+            raise ValueError("the run's document names no generation")
         layout = FrameLayout.for_generation(generation)
         fields = SignalFields(layout, contract)
     except (OSError, ValueError, KeyError) as error:
@@ -238,7 +238,7 @@ def live_state(run_dir: Path, signals=()) -> dict:
         # Resolving parses the full header contract -- once per session, never per poll.
         try:
             _, log, contract = resolve_archive(run_dir)
-        except ArchiveError:
+        except RecordError:
             # No frame log yet: named but not writing. A run started with logs off never has
             # one, so its control block is reached through the generation's own contract
             # record instead; the page then has a loop to drive and the run has a play button.
@@ -344,7 +344,7 @@ def _control_status(session: dict, run_dir: Path, moving: bool) -> dict:
     """
     channel = session.get("channel")
     if channel is None:
-        channel = session["channel"] = _control_channel(run_dir)
+        channel = session["channel"] = run_channel(run_dir)
     now = time.monotonic()
     if moving:
         alive = True
@@ -371,58 +371,17 @@ def _control_status(session: dict, run_dir: Path, moving: bool) -> dict:
     }
 
 
-def _control_channel(run_dir: Path) -> ControlChannel:
-    """This run's control block, named as the runner named it for the runtime."""
-    schema_hash = json_file(run_dir.parents[1] / LAYOUT_REL).get("schema_hash")
-    name = os.environ.get("MOTION_SPEC_CTRL_SHM_NAME") or ctrl_shm_name(schema_hash, run_dir.name)
-    return ControlChannel(name=name)
-
-
 def run_control(run_dir: Path, options: dict) -> dict:
-    """Pause, step, cancel, or slow a simulation through the block its loop polls.
+    """What `motion-spec control` and `motion-spec cancel` do, for the live page.
 
     `alive` is the loop's own ack, not a guess about who started it; only a simulated run
     creates the block.
     """
-    channel = _control_channel(run_dir)
-    action = options.get("action")
-    if action == "pause":
-        channel.set_pause(True)
-    elif action == "resume":
-        channel.set_pause(False)
-    elif action == "step":
-        channel.set_pause(True)
-        channel.request_steps(int(options.get("ticks") or 1))
-    elif action == "speed":
-        channel.set_speed(float(options.get("speed")))
-    elif action == "cancel":
-        channel.request_stop()
-        # The loop will exit non-zero, the same as a crash. Say the end was asked for, so the
-        # generation page reports a cancel as a stop rather than posting a failure post-mortem.
+    action = options.get("action") or "status"
+    if action == "cancel":
+        # Said before asking, so the generation page reports the end as a stop, not a failure.
         mark_stopped(run_dir)
-    elif action is None:
-        # re-publish what the block says, to ask the loop for an ack
-        channel.set_pause(bool(channel.paused))
-    else:
-        raise ValueError(f"unknown control action: {action}")
-    return {
-        "available": channel.available,
-        "alive": acknowledged(channel),
-        "paused": channel.paused,
-        "speed": channel.speed,
-        "seq": channel.seq,
-        "applied": channel.applied,
-        "speed_range": [SPEED_MIN, SPEED_MAX],
-    }
-
-
-def acknowledged(channel: ControlChannel, timeout_s: float = 0.4) -> bool:
-    """Whether the loop reads the block: it copies each seq back once applied."""
-    if not channel.available:
-        return False
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if (channel.applied or 0) >= (channel.seq or 0):
-            return True
-        time.sleep(0.01)
-    return False
+        rec_run(run_dir).cancel()
+        action = "status"
+    value = options.get("ticks") if action == "step" else options.get("speed")
+    return control_run(run_dir, action, None if value is None else float(value))

@@ -20,12 +20,14 @@ from rec import Verdict
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import deployed_devices
 from motion_spec.dashboard.metadata import annotations, baseline
-from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, stamp_iso, trace
+from motion_spec.dashboard.roots import directory_size, json_file, stamp_iso, trace
 from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
-from motion_spec.runs.archive import ArchiveError
-from motion_spec.runs.provenance import FRAME_LOG_PACKED, run_outputs
+from motion_spec.rdf_parser.agents import agent_cameras
+from motion_spec.rdf_parser.deployment import platform_facts
+from motion_spec.runs.provenance import FRAME_LOG_PACKED, generation_model, run_outputs
 from motion_spec.runs.replay import resolve_archive
+from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
 
@@ -46,6 +48,7 @@ def _last_run(path: Path) -> dict | None:
 
 def generation_info(path: Path) -> dict:
     layout = json_file(path / "generated/contract/frame_layout.json")
+    platform = generation_platform(path)
     source = next((item for item in (path / "generated/source").glob("*.robmot")), None)
     return {
         **annotations(path),
@@ -57,9 +60,9 @@ def generation_info(path: Path) -> dict:
         "variant": (path.parent.name if path.parent.parent != roots.GENERATIONS else None),
         "built_at": datetime.fromtimestamp(GenerationInfo(path).built_at, UTC).isoformat(),
         "source": source.name if source else None,
-        "backend": layout.get("platform", {}).get("backend"),
-        "platform": layout.get("platform", {}).get("name"),
-        "simulated": layout.get("platform", {}).get("simulated"),
+        "backend": platform.get("backend"),
+        "platform": platform.get("name"),
+        "simulated": platform.get("simulated"),
         "schema_hash": layout.get("schema_hash"),
         "size_bytes": directory_size(path),
         "pools": layout.get("pools", {}),
@@ -167,10 +170,10 @@ def source_drift(generation_dir: Path, name: str | None = None) -> dict:
 def generation_model_dir(generation_dir: Path) -> str | None:
     """The working directory this generation's model was authored in, if it is still there.
 
-    The contract records the absolute config path the run was generated from; its parent is the
-    model's own directory, which is where most of a generation's sources came from.
+    The model states its deployment config's path; its parent is the model's own directory,
+    which is where most of a generation's sources came from.
     """
-    config = json_file(generation_dir / LAYOUT_REL).get("platform", {}).get("config")
+    config = generation_platform(generation_dir).get("config")
     if not config:
         return None
     folder = Path(config).parent
@@ -424,7 +427,7 @@ def run_info(path: Path) -> dict:
     # A run that has only just started has no readable log yet; it still belongs in the list.
     try:
         period_ns = resolve_archive(path)[2].header.nominal_period_ns
-    except (ArchiveError, DecodeError, OSError):
+    except (RecordError, DecodeError, OSError):
         period_ns = 0
     match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)
     tags = []
@@ -450,25 +453,37 @@ def run_info(path: Path) -> dict:
     }
 
 
+def generation_platform(generation_dir: Path) -> dict:
+    """What this generation is deployed on, as its model states it; empty while the generation
+    has not yet written its model."""
+    try:
+        return platform_facts(generation_model(generation_dir / "generated").graph)
+    except ValueError:
+        return {}
+
+
 def generation_cameras(generation_dir: Path) -> list[dict]:
-    """The cameras this generation can record, as its contract names them."""
+    """The cameras this generation can record, as its model's agents carry them."""
+    try:
+        cameras = agent_cameras(generation_model(generation_dir / "generated"))
+    except ValueError:
+        return []
     return [
         {
-            "id": camera["id"],
-            "width": camera.get("width"),
-            "height": camera.get("height"),
+            "id": camera.id,
+            "width": camera.width,
+            "height": camera.height,
             # Where a viewer reads it, or nothing: the page shows no live pane without one.
-            "topic": camera.get("topic"),
-            "message": camera.get("message"),
+            "topic": camera.topic,
+            "message": camera.message,
         }
-        for camera in json_file(generation_dir / LAYOUT_REL).get("cameras") or []
-        if camera.get("id")
+        for camera in cameras
     ]
 
 
 def is_simulated(generation_dir: Path) -> bool:
     """Whether this generation targets a simulator, which is what makes a display a choice."""
-    return bool(json_file(generation_dir / LAYOUT_REL).get("platform", {}).get("simulated"))
+    return bool(generation_platform(generation_dir).get("simulated"))
 
 
 def run_files(run_dir: Path) -> list[dict]:

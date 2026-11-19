@@ -187,27 +187,33 @@ def mark_stopped(run_dir: Path) -> None:
 
 
 def stop_run(run_dir: Path) -> dict:
-    """End a run this dashboard started, by signalling the process group it was started in.
+    """End a run this dashboard started.
 
-    The control block is the polite way to stop a loop, and only a loop already ticking reads
-    it: a run still connecting to its hardware, or one that never gets that far, answers
-    nothing. This is the signal for that.
+    A run rec has started is cancelled as `motion-spec cancel` does it: its runner stops the
+    program and rec records it canceled. A job still generating or building has no run to
+    cancel yet, so the process group the dashboard started it in is signalled.
     """
+    from rec import State
+
+    from motion_spec.runs.provenance import rec_run
+
     started = RUNNING.get(str(run_dir))
     process = started["process"] if started else None
     if process is None or process.poll() is not None:
         raise ValueError(f"{run_dir.name} is not running here")
-    # Remembered before the signal, so the exit this sets up is already known to be asked for
+    # Remembered before asking, so the exit this sets up is already known to be asked for
     # by the time anything reads the status back.
     mark_stopped(run_dir)
-    # The whole session: the CLI starts the runtime as a child, and it is the one holding the
-    # devices open.
-    group = os.getpgid(process.pid)
-    os.killpg(group, signal.SIGTERM)
+    run = rec_run(run_dir)
+    if run.lifecycle()[0] is State.IN_PROGRESS:
+        run.cancel()
+    else:
+        # The whole session: the CLI starts the runtime as a child.
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
     try:
-        process.wait(timeout=STOP_GRACE_S)
+        process.wait(timeout=2 * STOP_GRACE_S)
     except subprocess.TimeoutExpired:
-        os.killpg(group, signal.SIGKILL)
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         process.wait(timeout=STOP_GRACE_S)
     return run_status(run_dir)
 

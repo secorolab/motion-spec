@@ -8,7 +8,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
@@ -50,14 +53,13 @@ PROV_CONTEXT = [
 
 # A generation's and a run's provenance documents sit in its `provenance/`.
 PROVENANCE_DIR = "provenance"
-# One generation, one provenance document: a bundle per tool that wrote into it.
-# One run, one execution document beside rec's record: what rec does not say about the run.
+# One generation, one provenance document: a bundle per tool that wrote into it. One run, one
+# document, rec's: its bundle and motion-spec's beside it, what rec does not say about the run.
 GENERATION_DOCUMENT = f"{PROVENANCE_DIR}/generation.ld.json"
 DERIVED_DOCUMENT = f"{PROVENANCE_DIR}/derived.ld.json"
-EXECUTION_DOCUMENT = f"{PROVENANCE_DIR}/execution.ld.json"
-# What rec is told to mint run nodes under, so its record and the execution document share the node.
+# What rec is told to mint run nodes under, so both bundles describe the one run node.
 RUN_IRI_BASE = str(MSPROV["run/"])
-# A run's frame log once archived.
+# A run's frame log once the runner has packed it.
 FRAME_LOG_PACKED = "frame_log.pb.zst"
 
 
@@ -75,6 +77,23 @@ def rec_run(run_dir: Path, run_id: str | None = None):
     return Run(
         FileStore(Path(run_dir) / PROVENANCE_DIR), run_id or Path(run_dir).name, base=RUN_IRI_BASE
     )
+
+
+@contextmanager
+def run_bundle(
+    run_dir: Path, run_id: str | None = None, bundle_id: URIRef | None = None
+) -> Iterator[Graph]:
+    """motion-spec's bundle in the run's document, beside rec's: what rec does not record of the
+    run, edited under rec's store lock so neither tool overwrites the other.
+
+    BUNDLE_ID is the bundle an earlier step of the run created; None creates it, and the caller
+    keeps the yielded graph's identifier for the steps after.
+    """
+    run = rec_run(run_dir, run_id)
+    with run.store.edit(run.id) as dataset:
+        yield dataset.graph(
+            bundle_id or create_bundle(dataset, get_py_pkg_info("motion_spec").purl)
+        )
 
 
 def located_entities(graph: Graph, path: Path) -> list[URIRef]:
@@ -97,6 +116,34 @@ def kept_dsl_document(generated: Path) -> Path | None:
                 if str(graph.value(agent, SDO.name)) == "motion_spec_dsl":
                     return get_file_path(graph, source)
     return None
+
+
+@lru_cache(maxsize=64)
+def generation_model(generated: Path):
+    """The model a generation was made from, as the RDF its tools wrote: the DSL's document, as
+    the generation's provenance names it, and the scene and FSM graphs beside it, each a named
+    graph, read as a `Model` for the `rdf_parser` readers. Kept per generation, which no step
+    changes once written.
+
+    Raises:
+        ValueError: the generation's provenance records no model document the DSL generated.
+    """
+    from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+
+    from motion_spec.rdf_parser.model import Model
+
+    document = kept_dsl_document(generated)
+    if document is None or not document.is_file():
+        raise ValueError(f"{generated}: its provenance records no model document the DSL generated")
+    install_metamodel_resolver()
+    dataset = Dataset(default_union=True)
+    for path in (
+        document,
+        *(generated / "model").glob("*.scenex.ld.json"),
+        *(generated / "model").glob("*.fsm.ld.json"),
+    ):
+        dataset.parse(path, format="json-ld")
+    return Model(graph=dataset)
 
 
 def add_package(graph: Graph, key: str) -> URIRef:
@@ -375,13 +422,13 @@ def record_run_file(
 
 
 def record_execution(
-    run_dir: Path,
+    bundle: Graph,
     run: URIRef,
     generation_document: Path,
     executable: Path,
     platform_facts: dict,
 ) -> None:
-    """Write into RUN_DIR's execution document what rec does not record of RUN.
+    """Add to motion-spec's BUNDLE in the run's document what rec does not record of RUN.
 
     The run, on the node rec's record describes, is an execution by motion-spec that used
     the executable the generation's build generated -- which has its
@@ -389,8 +436,6 @@ def record_execution(
     associated with the process EXECUTABLE ran as, which acted for the runtime (mj_kdl_wrapper
     in simulation, else the named backend), and with every robot GENERATION_DOCUMENT models.
     """
-    document = run_dir / EXECUTION_DOCUMENT
-    bundle = motion_spec_bundle(document)
     generation = read_generation_dataset(generation_document)
     # A simulated run steps the wrapper's physics; a real one runs on the platform it names.
     if platform_facts.get("simulated"):
@@ -430,7 +475,6 @@ def record_execution(
         *bundle.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN),
     ):
         bundle.add((run, PROV.wasAssociatedWith, agent))
-    write_generation_graph(document, bundle)
 
 
 def record_draw(bundle: Graph, agent: URIRef, quantity: str, values, drawn_at) -> None:
@@ -473,15 +517,15 @@ def record_files(bundle: Graph, run: URIRef, run_dir: Path) -> None:
 
 
 def execution_node(graph: Graph) -> URIRef | None:
-    """The run an execution document or rec's record describes: its one `prov-ext:Execution`."""
+    """The run a run's document describes: its one `prov-ext:Execution`."""
     return next(iter(graph.subjects(RDF.type, URI_PROV_EXT_TYPE_EXECUTION)), None)
 
 
 def run_outputs(run_dir: Path) -> list[Path]:
-    """The local paths of the files the execution document in RUN_DIR records the run as having
+    """The local paths of the files the run's document in RUN_DIR records the run as having
     generated, or derived from one, like the packed frame log; empty before the run is archived
     or when the document does not exist."""
-    graph = read_generation_dataset(run_dir / EXECUTION_DOCUMENT)
+    graph = read_generation_dataset(rec_document(run_dir))
     run = execution_node(graph)
     if run is None:
         return []
@@ -494,10 +538,10 @@ def run_outputs(run_dir: Path) -> list[Path]:
 
 
 def run_generation(run_dir: Path) -> Path | None:
-    """The generation directory of the run in RUN_DIR: the one whose provenance its execution
+    """The generation directory of the run in RUN_DIR: the one whose provenance the run's
     document names for the executable the run used, at the location it states; None before
-    that document is written."""
-    graph = read_generation_dataset(run_dir / EXECUTION_DOCUMENT)
+    motion-spec has recorded the run."""
+    graph = read_generation_dataset(rec_document(run_dir))
     run = execution_node(graph)
     if run is None:
         return None

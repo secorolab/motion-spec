@@ -16,7 +16,6 @@ from support import EXAMPLES
 
 from motion_spec.generation.pipeline import generate_model
 from motion_spec.runs import replay
-from motion_spec.runs.archive import ArchiveError, archive_run, verify_run
 from motion_spec.runs.provenance import (
     GENERATION_DOCUMENT,
     RUN_IRI_BASE,
@@ -24,45 +23,34 @@ from motion_spec.runs.provenance import (
     rec_document,
 )
 from motion_spec.runs.replay import decode_frames, summarize, validate_header
-from motion_spec.runs.runner import start_rec_run
+from motion_spec.runs.runner import record_outputs, start_rec_run
+from motion_spec.runs.verify import RecordError, verify_run
 
 
 @pytest.fixture
 def run_dir(tmp_path: Path, source_tree: Path) -> Path:
-    """A run catalogued the way the runner catalogues it before it launches the executable."""
+    """A run the runner recorded: started, its program having left its log and console in
+    `logs/`, and its outputs recorded once it exited."""
     run_dir = tmp_path / "runs" / "run-test"
     (run_dir / "logs").mkdir(parents=True)
-    (tmp_path / "main").write_text("binary\n")
     schema = json.loads((source_tree / "contract" / "frame_layout.json").read_text())
-    start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema)
+    run, bundle_id = start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema)
+    shutil.copyfile(source_tree / "frame_log.pb", run_dir / "logs" / "frame_log.pb")
+    (run_dir / "logs" / "console.log").write_text("started\n")
+    record_outputs(run_dir, run, bundle_id)
     return run_dir
 
 
 def test_verify_rejects_a_file_that_no_longer_hashes_to_what_rec_recorded(
-    tmp_path: Path, source_tree: Path, run_dir: Path
+    run_dir: Path,
 ) -> None:
-    (run_dir / "logs" / "console.log").write_text("started\n")
-    archive_run(
-        run_dir,
-        source_dir=source_tree,
-        run_id="run-test",
-        log_producer_executable=tmp_path / "main",
-        frame_log=source_tree / "frame_log.pb",
-    )
     (run_dir / "logs" / "console.log").write_text("tampered\n")
 
-    with pytest.raises(ArchiveError, match="content differs"):
+    with pytest.raises(RecordError, match="content differs"):
         verify_run(run_dir)
 
 
-def test_verification_writes_nothing(tmp_path: Path, source_tree: Path, run_dir: Path) -> None:
-    archive_run(
-        run_dir,
-        source_dir=source_tree,
-        run_id="run-test",
-        log_producer_executable=tmp_path / "main",
-        frame_log=source_tree / "frame_log.pb",
-    )
+def test_verification_writes_nothing(run_dir: Path) -> None:
     before = {path.name for path in run_dir.rglob("*")}
 
     verify_run(run_dir)
@@ -78,26 +66,19 @@ def test_verification_writes_nothing(tmp_path: Path, source_tree: Path, run_dir:
     ],
     ids=["not-an-execution", "another-run"],
 )
-def test_verify_requires_the_run_to_be_its_recorded_execution(
-    tmp_path: Path, source_tree: Path, run_dir: Path, old, new
-) -> None:
-    archive_run(
-        run_dir,
-        source_dir=source_tree,
-        run_id="run-test",
-        log_producer_executable=tmp_path / "main",
-        frame_log=source_tree / "frame_log.pb",
-    )
+def test_verify_requires_the_run_to_be_its_recorded_execution(run_dir: Path, old, new) -> None:
     rec_path = rec_document(run_dir, "run-test")
     assert old in rec_path.read_text()
     rec_path.write_text(rec_path.read_text().replace(old, new))
 
-    with pytest.raises(ArchiveError):
+    with pytest.raises(RecordError):
         verify_run(run_dir)
 
 
-def test_replay_works_on_a_run_killed_before_archiving(tmp_path: Path, source_tree: Path) -> None:
-    # A run killed before archiving leaves its log and no record of it; the log carries its contract.
+def test_replay_works_on_a_run_killed_before_its_outputs_were_recorded(
+    tmp_path: Path, source_tree: Path
+) -> None:
+    # A run killed mid-run leaves its log and no record of it; the log carries its contract.
     run_dir = tmp_path / "runs" / "aborted-run"
     (run_dir / "logs").mkdir(parents=True)
     frame_log = run_dir / "logs" / "frame_log.pb"
@@ -111,36 +92,25 @@ def test_replay_works_on_a_run_killed_before_archiving(tmp_path: Path, source_tr
 
 
 def test_a_logless_run_verifies_and_its_provenance_says_it_kept_no_log(
-    tmp_path: Path, source_tree: Path, run_dir: Path
+    tmp_path: Path, source_tree: Path
 ) -> None:
+    run_dir = tmp_path / "runs" / "run-quiet"
+    (run_dir / "logs").mkdir(parents=True)
+    schema = json.loads((source_tree / "contract" / "frame_layout.json").read_text())
+    run, bundle_id = start_rec_run(run_dir, "run-quiet", source_tree, tmp_path / "main", schema)
     (run_dir / "logs" / "console.log").write_text("started\n")
 
-    archive_run(
-        run_dir,
-        source_dir=source_tree,
-        run_id="run-test",
-        log_producer_executable=tmp_path / "main",
-        recorded=False,
-    )
+    record_outputs(run_dir, run, bundle_id, recorded=False)
 
     verify_run(run_dir)
-    with pytest.raises(ArchiveError, match="recorded no frame log"):
+    with pytest.raises(RecordError, match="recorded no frame log"):
         replay.resolve_archive(run_dir)
 
 
-def test_a_recorded_log_that_is_lost_fails_verification(
-    tmp_path: Path, source_tree: Path, run_dir: Path
-) -> None:
-    archive_run(
-        run_dir,
-        source_dir=source_tree,
-        run_id="run-test",
-        log_producer_executable=tmp_path / "main",
-        frame_log=source_tree / "frame_log.pb",
-    )
+def test_a_recorded_log_that_is_lost_fails_verification(run_dir: Path) -> None:
     (run_dir / "logs" / "frame_log.pb.zst").unlink()
 
-    with pytest.raises(ArchiveError, match="frame_log.pb.zst: missing"):
+    with pytest.raises(RecordError, match="frame_log.pb.zst: missing"):
         verify_run(run_dir)
 
 

@@ -17,9 +17,9 @@ from motion_spec.dashboard.graph import GraphService, load_document, model_docum
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
 from motion_spec.dashboard.sources import declaration_lines
-from motion_spec.runs.archive import ArchiveError
 from motion_spec.runs.provenance import run_generation
 from motion_spec.runs.replay import resolve_archive
+from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 
 # A picture of a hundred thousand triples is a locked browser, not an answer.
@@ -41,7 +41,7 @@ def run_graph(run_dir: Path) -> GraphService:
     if key not in _GRAPHS:
         generation = run_generation(run_dir)
         if generation is None:
-            raise ArchiveError(run_dir, "the execution document names no generation's provenance")
+            raise RecordError(run_dir, "the run's document names no generation's provenance")
         _GRAPHS.clear()
         _GRAPHS[key] = GraphService(generation)
     return _GRAPHS[key]

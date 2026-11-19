@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from motion_spec.runs.archive import verify_run
-from motion_spec.runs.provenance import record_build, run_outputs
+from rdflib.namespace import PROV, RDF
+from rec import State
+
+from motion_spec.runs.provenance import (
+    read_generation_dataset,
+    rec_document,
+    rec_run,
+    record_build,
+    run_outputs,
+)
 from motion_spec.runs.runner import run_cataloged
+from motion_spec.runs.verify import verify_run
 
 # Writes to both streams, copies `source_log` as its frame log when named, then exits with
 # `exit_code`.
@@ -70,10 +80,39 @@ def test_run_without_a_log_still_catalogs_itself(tmp_path: Path, source_tree: Pa
     assert result == 0
     assert "frame log: ''" in (run_dir / "logs" / "console.log").read_text()
     assert not (run_dir / "logs" / "frame_log.pb").exists()
+    # One document: rec's bundle and motion-spec's, every step of the run writing to its own.
+    document = read_generation_dataset(rec_document(run_dir))
+    assert len([g for g in document.graphs() if (g.identifier, RDF.type, PROV.Bundle) in g]) == 2
     verify_run(run_dir)
     outputs = [path.resolve() for path in run_outputs(run_dir)]
     assert (run_dir / "logs" / "console.log").resolve() in outputs
     assert not any(path.name.startswith("frame_log.pb") for path in outputs)
+
+
+def test_a_run_cancelled_in_progress_stops_and_ends_canceled(
+    tmp_path: Path, source_tree: Path
+) -> None:
+    # Copies its log, then runs until it is signalled, leaving its loop as the generated one does.
+    executable = tmp_path / "until-stopped"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, shutil, signal, sys, time\n"
+        f"shutil.copyfile({str(source_tree / 'frame_log.pb')!r}, os.environ['MOTION_SPEC_FRAME_LOG'])\n"
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(130))\n"
+        "time.sleep(60)\n"
+    )
+    executable.chmod(0o755)
+    now = datetime.now(UTC)
+    record_build(source_tree, source_tree / "controller", executable, started=now, ended=now)
+    run_dir = tmp_path / "runs" / "run-006"
+    # What `motion-spec cancel` does, from another handle on the run, while the program runs.
+    asker = threading.Timer(3.0, lambda: rec_run(run_dir).cancel())
+    asker.start()
+
+    run_cataloged(run_dir, source_dir=source_tree, executable=executable, run_id="run-006")
+    asker.join()
+
+    assert rec_run(run_dir).lifecycle()[0] is State.CANCELED
 
 
 def test_crashed_run_leaves_its_error_output(tmp_path: Path, source_tree: Path) -> None:

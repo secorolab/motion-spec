@@ -21,7 +21,7 @@ from rdf_utils.models.prov import (
 )
 from rdflib import Dataset
 from rdflib.namespace import PROV
-from support import FRAME, PROVENANCE, SCHEMA
+from support import FRAME, MODEL_GRAPH, PROVENANCE, SCHEMA
 
 from motion_spec.generation.artifacts import (
     build_frame_layout,
@@ -47,7 +47,8 @@ def source_tree(tmp_path: Path) -> Path:
     (path / GENERATION_DOCUMENT).parent.mkdir()
     (path / GENERATION_DOCUMENT).write_text(json.dumps(PROVENANCE, indent=4))
     (path / "model").mkdir()
-    (path / "model" / "model-app.ld.json").write_text(json.dumps(PROVENANCE, indent=4))
+    model_document = {**PROVENANCE, "@graph": [*PROVENANCE["@graph"], MODEL_GRAPH]}
+    (path / "model" / "model-app.ld.json").write_text(json.dumps(model_document, indent=4))
     (path / "model" / "ir.json").write_text(
         json.dumps({"configuration": {"platform": {"simulated": True}}})
     )

@@ -25,7 +25,7 @@ from motion_spec.generation.artifacts import (
 )
 from motion_spec.rdf_parser.constraint_handler import SOLVER_FAMILIES
 from motion_spec.rdf_parser.data_access import analyse_data_access, build_data_access
-from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 
 # The storage table, restated so the test pins the contract rather than the implementation's constant.
@@ -323,5 +323,5 @@ def test_a_log_without_an_embedded_descriptor_is_rejected(tmp_path: Path, schema
     log = tmp_path / "frame_log.pb"
     with log.open("wb") as fh:
         frame_log_pb.write_delimited(fh, stale.SerializeToString())
-    with pytest.raises(ArchiveError, match="not a frame-log header carrying its schema"):
+    with pytest.raises(RecordError, match="not a frame-log header carrying its schema"):
         frame_log_pb.read_contract(log)

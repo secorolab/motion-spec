@@ -16,7 +16,7 @@ from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
-from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.verify import RecordError
 
 PROTO_PACKAGE = "motion_spec.telemetry.log"
 
@@ -37,6 +37,13 @@ def shm_name_for(schema_hash: str, run_id: str | None = None) -> str:
 def ctrl_shm_name(schema_hash: str, run_id: str | None = None) -> str:
     """The control block of a simulated run, absent a MOTION_SPEC_CTRL_SHM_NAME override."""
     return f"/motion_spec_ctrl_{schema_hash[:16]}" + (f"_{run_id}" if run_id else "")
+
+
+def shm_path(name: str) -> Path:
+    """A POSIX shm name resolves under /dev/shm; anything else is taken as a file path."""
+    if name.startswith("/") and "/" not in name[1:]:
+        return Path("/dev/shm") / name[1:]
+    return Path(name)
 
 
 def log_path(path: Path | str) -> Path:
@@ -153,7 +160,7 @@ def _varint_at(data: bytes, offset: int) -> tuple[int, int]:
     value = shift = 0
     while True:
         if offset >= len(data) or shift > 63:
-            raise ArchiveError(None, "frame log record is not protobuf")
+            raise RecordError(None, "frame log record is not protobuf")
         byte = data[offset]
         value |= (byte & 0x7F) << shift
         offset, shift = offset + 1, shift + 7
@@ -177,7 +184,7 @@ def _length_delimited(data: bytes, number: int) -> bytes | None:
         elif wire in (1, 5):
             offset += 8 if wire == 1 else 4
         else:
-            raise ArchiveError(None, "frame log record is not protobuf")
+            raise RecordError(None, "frame log record is not protobuf")
     return None
 
 
@@ -197,7 +204,7 @@ def _read_delimited_at(fh, offset: int) -> tuple[bytes | None, int]:
         if not byte[0] & 0x80:
             break
         if len(prefix) > 10:
-            raise ArchiveError(getattr(fh, "name", None), "frame log length prefix is not a varint")
+            raise RecordError(getattr(fh, "name", None), "frame log length prefix is not a varint")
     size = 0
     for shift, b in enumerate(prefix):
         size |= (b & 0x7F) << (7 * shift)
@@ -220,7 +227,7 @@ def _read_delimited(fh, *, partial_ok: bool = False) -> bytes | None:
     if data is None:
         if partial_ok or fh.seek(0, 2) == start:
             return None
-        raise ArchiveError(getattr(fh, "name", None), "truncated protobuf frame log")
+        raise RecordError(getattr(fh, "name", None), "truncated protobuf frame log")
     fh.seek(end)
     return data
 
@@ -374,11 +381,11 @@ def read_contract(path: Path | str) -> LogContract:
     with open_log(path) as fh:
         data = _read_delimited(fh)
     if data is None:
-        raise ArchiveError(path, "empty frame log")
+        raise RecordError(path, "empty frame log")
     header = _length_delimited(data, 1)
     embedded = _length_delimited(header, 4) if header is not None else None
     if not embedded:
-        raise ArchiveError(path, "first record is not a frame-log header carrying its schema")
+        raise RecordError(path, "first record is not a frame-log header carrying its schema")
     record_cls = _record_class_of(embedded)
     record = record_cls.FromString(data)
     # The schema is the log's own: one written before the field existed has no version to read.
@@ -388,7 +395,7 @@ def read_contract(path: Path | str) -> LogContract:
         else 0
     )
     if version != FORMAT_VERSION:
-        raise ArchiveError(
+        raise RecordError(
             path, f"frame-log format {version}; this motion-spec reads format {FORMAT_VERSION}"
         )
     return LogContract(record.header, record_cls, _fields_from_header(record.header))

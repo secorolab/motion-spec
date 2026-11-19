@@ -534,11 +534,6 @@ def build_frame_layout(schema: dict) -> dict:
         "field_bytes": FIELD_BYTES,
         "frame_size_bytes": frame_size,
         "schema_hash": schema["schema_hash"],
-        # The runner records the run before any log exists, so this one fact cannot
-        # come from the log's own header.
-        "platform": schema["platform"],
-        # Recording is chosen before a run starts, so the choice is offered from here.
-        "cameras": schema["cameras"],
         "fields": fields,
     }
     layout["frame_layout_hash"] = hashlib.sha256(

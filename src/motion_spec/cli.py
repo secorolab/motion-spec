@@ -219,6 +219,8 @@ class MotionSpecGroup(click.Group):
                     ("build", "Configure and compile a generation."),
                     ("run", "Execute the controller and create a recorded run archive."),
                     ("rerun", "Run the last generation again, without naming it."),
+                    ("cancel", "Ask a run in progress to stop; rec records it canceled."),
+                    ("control", "Pause, resume, step or pace a simulated run in progress."),
                     ("replay", "Verify, summarize, or recover data from a recorded run."),
                     ("view", "Compose a .scenex in MuJoCo and view it."),
                 ]
@@ -1183,8 +1185,8 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
 )
 def replay(log: Path, jsonl: bool, verify: bool) -> None:
     """Inspect a recorded run LOG."""
-    from motion_spec.runs.archive import ArchiveError
     from motion_spec.runs.replay import decode_frames, summarize, verify_archive
+    from motion_spec.runs.verify import RecordError
 
     try:
         if verify:
@@ -1194,7 +1196,7 @@ def replay(log: Path, jsonl: bool, verify: bool) -> None:
                 click.echo(json.dumps(record, separators=(",", ":")))
         else:
             click.echo(summarize(log))
-    except ArchiveError as exc:
+    except RecordError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
@@ -1261,8 +1263,8 @@ def run(
     with _requirements_reported():
         from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import build_generation, generate_model, new_id
-        from motion_spec.runs.archive import ArchiveError
         from motion_spec.runs.runner import RunnerError, run_cataloged
+        from motion_spec.runs.verify import RecordError
 
     if input.suffix == ".robmot":
         try:
@@ -1307,7 +1309,7 @@ def run(
             env=env,
             environment_provenance=environment_record,
         )
-    except (ArchiveError, RunnerError) as exc:
+    except (RecordError, RunnerError) as exc:
         raise click.ClickException(str(exc)) from exc
     # Said before the exit: an interrupt leaves a complete archive, and that is when the
     # caller most needs the path.
@@ -1333,3 +1335,48 @@ def rerun(ctx: click.Context, generation: Path | None, **options) -> None:
     generation = (generation or _latest_generation()).resolve()
     _say("info", f"generation {generation}")
     ctx.invoke(run, input=generation, prefixes=(), jobs=None, name=None, **options)
+
+
+@main.command()
+@click.argument("run_dir", metavar="RUN", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def cancel(run_dir: Path) -> None:
+    """Ask the run in RUN, while it is in progress, to stop.
+
+    rec records it canceling; the runner running it stops the program within its grace period
+    and ends the run, which rec records canceled.
+    """
+    from motion_spec.runs.provenance import rec_run
+
+    try:
+        rec_run(run_dir).cancel()
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _say("done", f"asked {run_dir.name} to stop")
+
+
+@main.command()
+@click.argument("run_dir", metavar="RUN", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("action", type=click.Choice(["pause", "resume", "step", "speed", "status"]))
+@click.argument("value", required=False, type=float)
+def control(run_dir: Path, action: str, value: float | None) -> None:
+    """Pause, resume, step or pace the simulated run in RUN while its loop runs.
+
+    `step [N]` advances a paused run N ticks, 1 by default; `speed X` paces the simulation clock
+    at X times real time, 0.1 to 10; `status` asks the loop to acknowledge and reports the block.
+    A run started paused (`[run] start_paused`) waits here for `resume` or `step`.
+    """
+    from motion_spec.runs.control import control_run
+
+    try:
+        status = control_run(run_dir, action, value)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not status["available"]:
+        raise click.ClickException(
+            f"{run_dir.name} has no control block: it is not a simulated run in progress"
+        )
+    _say(
+        "done" if status["alive"] else "warn",
+        f"{run_dir.name}: {'paused' if status['paused'] else 'running'} at {status['speed']:g}x"
+        + ("" if status["alive"] else ", and the loop did not acknowledge"),
+    )

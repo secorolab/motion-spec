@@ -7,7 +7,7 @@ from pathlib import Path
 
 from google.protobuf.message import DecodeError
 
-from motion_spec.runs.archive import ArchiveError
+from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 
 
@@ -33,7 +33,7 @@ class FrameLogTail:
             return False
         try:
             self.contract = frame_log_pb.read_contract(self.path)
-        except (ArchiveError, DecodeError):
+        except (RecordError, DecodeError):
             return False  # header still being written
         # A live log is tailed as it grows; an archived one is packed and no longer moves.
         self._fh = frame_log_pb.open_log(self.path)

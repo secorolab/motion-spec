@@ -15,7 +15,11 @@ from pathlib import Path
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.generation.artifacts import write_telemetry_artifacts
+from motion_spec.rdf_parser.deployment import AGENT_HOME_KEY, CONFIG_POSE_FIELDS
 from motion_spec.telemetry import frame_log_pb
+
+# The real-hardware program's robot config check, beside its sources in the controller tree.
+CONFIG_CHECK = "check_config.py"
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 # The templates ship inside the package, so they sit beside it however it was installed.
@@ -263,6 +267,12 @@ def generate_code(
 
     ir["computation"]["uses"] = runtime_uses(ir)
     ir["configuration"]["name"] = program
+    # The robot config's own terms, as deployment reads them, for the check shipped beside a
+    # real-hardware program.
+    ir["configuration"]["config_check"] = {
+        "home_key": AGENT_HOME_KEY,
+        "pose_fields": list(CONFIG_POSE_FIELDS),
+    }
     # What stst renders from is scratch, not part of the generation.
     scratch = tempfile.TemporaryDirectory(prefix="motion-spec-stst-")
     payload_dir = Path(scratch.name)
@@ -366,6 +376,12 @@ def generate_code(
         written.append(
             render_template(
                 stst_bin, root, "device_io_header", ir_payload_path, output_dir / "device_io.hpp"
+            )
+        )
+        # The runner runs it before launch: it checks the config from the file alone.
+        written.append(
+            render_template(
+                stst_bin, root, "config_check", ir_payload_path, output_dir / CONFIG_CHECK
             )
         )
     scratch.cleanup()

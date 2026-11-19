@@ -6,8 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from motion_spec.runs.archive import FRAME_LOG, ArchiveError, verify_run
 from motion_spec.runs.provenance import run_generation, run_outputs
+from motion_spec.runs.verify import FRAME_LOG, RecordError, verify_run
 from motion_spec.telemetry import frame_log_pb
 
 
@@ -15,13 +15,13 @@ def run_dir_for(log_path: Path) -> Path:
     """The run directory a run directory or its frame log belongs to: a log sits in `logs/`.
 
     Raises:
-        ArchiveError: LOG_PATH, under either log name, does not exist.
+        RecordError: LOG_PATH, under either log name, does not exist.
     """
     # Callers name the log the way it is written, and an archived one has since been packed;
     # resolve before asking whether it is there, or the conventional name reads as missing.
     log_path = frame_log_pb.log_path(log_path)
     if not log_path.exists():
-        raise ArchiveError(log_path, "does not exist")
+        raise RecordError(log_path, "does not exist")
     if log_path.is_dir():
         return log_path
     return log_path.parent.parent if log_path.parent.name == "logs" else log_path.parent
@@ -31,7 +31,7 @@ def resolve_archive(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContr
     """A run directory or frame log PATH as (run directory, frame log, the log's contract).
 
     Raises:
-        ArchiveError: the run has no frame log -- by choice when its provenance records the
+        RecordError: the run has no frame log -- by choice when its provenance records the
             files it generated and the log is not among them.
     """
     input_path = Path(path)
@@ -41,8 +41,8 @@ def resolve_archive(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContr
     if not log_path.exists():
         outputs = run_outputs(run_dir)
         if outputs and log_path.resolve() not in [output.resolve() for output in outputs]:
-            raise ArchiveError(run_dir, "the run recorded no frame log")
-        raise ArchiveError(log_path, "missing frame log")
+            raise RecordError(run_dir, "the run recorded no frame log")
+        raise RecordError(log_path, "missing frame log")
     return run_dir, log_path, frame_log_pb.read_contract(log_path)
 
 
@@ -57,7 +57,7 @@ def validate_header(log_path: Path | str, contract=None) -> dict:
         contract = frame_log_pb.read_contract(log_path)
     header = contract.header
     if not header.schema_hash:
-        raise ArchiveError(log_path, "frame log header carries no schema hash")
+        raise RecordError(log_path, "frame log header carries no schema hash")
     return {"schema_hash": header.schema_hash}
 
 
@@ -65,7 +65,7 @@ def verify_archive(path: Path | str) -> int:
     """Check a run's archive end to end and return how many frames its log holds.
 
     Raises:
-        ArchiveError: the run fails `verify_run`, the log was written against another contract
+        RecordError: the run fails `verify_run`, the log was written against another contract
             than its generation's, or the log holds other than the frames the writer reported.
     """
     run_dir, log_path, contract = resolve_archive(path)
@@ -74,16 +74,16 @@ def verify_archive(path: Path | str) -> int:
     layout_path = run_generation(run_dir) / "generated" / "contract" / "frame_layout.json"
     expected = json.loads(layout_path.read_text())["schema_hash"]
     if contract.header.schema_hash != expected:
-        raise ArchiveError(
+        raise RecordError(
             log_path,
             f"written against schema {contract.header.schema_hash}, the generation's is {expected}",
         )
     frames = sum(1 for _ in frame_log_pb.frame_records(log_path, contract))
     health = frame_log_pb.read_health(log_path)
     if health is None:
-        raise ArchiveError(log_path, "ends without the writer's health record: it never closed")
+        raise RecordError(log_path, "ends without the writer's health record: it never closed")
     if health["written_frames"] != frames:
-        raise ArchiveError(
+        raise RecordError(
             log_path,
             f"the writer reported {health['written_frames']} frames, the log holds {frames}",
         )

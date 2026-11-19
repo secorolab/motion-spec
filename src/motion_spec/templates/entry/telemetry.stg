@@ -12,7 +12,6 @@ frame_layout_header(communication) ::= <<
 #include \<cstdint\>
 
 namespace motion_spec::telemetry {
-
 inline constexpr std::size_t kNumConstraints = <communication.telemetry_artifacts.frame_layout.pools.constraints>;
 inline constexpr std::size_t kNumMonitors = <communication.telemetry_artifacts.frame_layout.pools.monitors>;
 inline constexpr std::size_t kNumQuantities = <communication.telemetry_artifacts.frame_layout.pools.quantities>;
@@ -35,7 +34,6 @@ inline constexpr unsigned char kFrameLogHeaderRecord[] = {
 <communication.telemetry_artifacts.frame_layout.header_record_rows:{row|    <row; separator=", ">}; separator=",\n">
 };
 inline constexpr std::size_t kFrameLogHeaderRecordSize = sizeof(kFrameLogHeaderRecord);
-
 } // namespace motion_spec::telemetry
 >>
 
@@ -63,7 +61,6 @@ telemetry_header(communication, configuration) ::= <<
 #include \<vector\>
 
 namespace motion_spec::telemetry {
-
 struct ControllerSample {
     std::int64_t active;
     double error;
@@ -658,7 +655,6 @@ private:
     std::int64_t last_tick_ns_ = 0;
     std::int64_t last_event_count_ = 0;
 };
-
 } // namespace motion_spec::telemetry
 >>
 
@@ -721,7 +717,6 @@ telemetry_model_header(communication, computation) ::= <<
 #include \<cstdint\>
 
 namespace motion_spec::telemetry {
-
 // `state_index` is coordinator context recorded in the frame; `active_motion` is what selects the
 // slots, because a motion is what computes them.
 inline void sample_model(RunPublisher &pub, int active_motion, algorithm_data &data) {
@@ -736,6 +731,5 @@ inline void sample_model(RunPublisher &pub, int active_motion, algorithm_data &d
         break;
     \}
 }
-
 } // namespace motion_spec::telemetry
 >>

@@ -19,8 +19,8 @@ import rdflib
 from rdflib import URIRef
 from rdflib.namespace import PROV, RDF
 
-from motion_spec.setup import build_jobs
-from motion_spec.utils import generation_log, tee
+from motion_spec.setup import BUILD_TYPE, BUILD_TYPE_VARIABLE, build_jobs
+from motion_spec.utils import LOG_DIRECTORY, tee
 
 if TYPE_CHECKING:
     from motion_spec.rdf_parser.model import Model
@@ -61,21 +61,15 @@ def create_generation_dir(
     generation = base / (name or model.stem) / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     generation.mkdir(parents=True, exist_ok=False)
     generation = generation.resolve()
-    _copy_config(generation)
-    return generation
-
-
-def _copy_config(generation: Path) -> None:
-    """Keep the settings this generation was made under; a later one may be made under others.
-
-    From the generation first: it sits in the workspace whose config applied, which the working
-    directory need not be anywhere near.
-    """
     from motion_spec.config import CONFIG_FILE, find_config
 
+    # The settings this generation was made under; a later one may be made under others. From
+    # the generation first: it sits in the workspace whose config applied, which the working
+    # directory need not be anywhere near.
     path = find_config(generation) or find_config()
     if path is not None:
         shutil.copy2(path, generation / CONFIG_FILE)
+    return generation
 
 
 def load_model(model: Path, model_dir: Path) -> LoadedModel:
@@ -152,6 +146,7 @@ def generate_model(
     """
     from coord_dsl.rdf.provenance import render
     from motion_spec_dsl.rdf_parser.check import validate_dataset
+    from rdf_utils import DatasetFormat
     from rdf_utils.models.prov import (
         add_activity,
         add_agent,
@@ -176,7 +171,6 @@ def generate_model(
         build_derivation_document,
         record_code_generation,
         record_ir_generation,
-        write_generation_document,
     )
 
     generated = generation / "generated"
@@ -249,10 +243,9 @@ def generate_model(
     ]
     activity = URIRef(uuid4().urn)
     derived_path.write_text(
-        json.dumps(
-            build_derivation_document(ir, loaded.model.derived, authored, activity), indent=4
+        build_derivation_document(ir, loaded.model.derived, authored, activity).serialize(
+            format=DatasetFormat.JSON_LD, indent=2, auto_compact=True
         )
-        + "\n"
     )
     ir_entity = record_ir_generation(
         record,
@@ -328,13 +321,17 @@ def generate_model(
         record.add((delegation, PROV.agent, motion_spec))
         record.add((delegation, PROV.hadActivity, generation_activity))
     # The DSL's bundle stays in the DSL's own document, where the IR's source names it.
-    bundles = [
-        graph
-        for graph in dataset.graphs()
-        if (graph.identifier, RDF.type, PROV.Bundle) in graph
-        and (graph.identifier, PROV.wasAttributedTo, dsl) not in graph
-    ]
-    write_generation_document(generated / GENERATION_DOCUMENT, bundles)
+    document = rdflib.Dataset()
+    for graph in dataset.graphs():
+        if (graph.identifier, RDF.type, PROV.Bundle) in graph and (
+            graph.identifier,
+            PROV.wasAttributedTo,
+            dsl,
+        ) not in graph:
+            document.add_graph(graph)
+    (generated / GENERATION_DOCUMENT).write_text(
+        document.serialize(format=DatasetFormat.JSON_LD, indent=2, auto_compact=True)
+    )
     return generated
 
 
@@ -362,7 +359,7 @@ def build_generation(
         # CMake defaults to no build type, which compiles the control loop unoptimized.
         # From ENV when there is one: a build type set by the sourced file is part of the
         # environment the caller asked to build under.
-        f"-DCMAKE_BUILD_TYPE={(env or os.environ).get('MOTION_SPEC_BUILD_TYPE', 'RelWithDebInfo')}",
+        f"-DCMAKE_BUILD_TYPE={(env or os.environ).get(BUILD_TYPE_VARIABLE, BUILD_TYPE)}",
     ]
     if prefixes:
         configure.append(
@@ -370,7 +367,7 @@ def build_generation(
         )
     from motion_spec.runs.provenance import record_build
 
-    log = generation_log(generation)
+    log = generation / LOG_DIRECTORY / "console.log"
     started = datetime.now(UTC)
     tee(configure, log=log, env=env)
     tee(["cmake", "--build", str(build), "--parallel", str(build_jobs(jobs))], log=log, env=env)

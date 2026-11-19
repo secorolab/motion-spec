@@ -57,12 +57,12 @@ class ControlChannel:
             self._mm.close()
             self._mm = None
 
-    def _read(self, offset: int, fmt: str):
+    def read(self, offset: int, fmt: str):
         if not self.available:
             return None
         return struct.unpack_from(fmt, self._mm, offset)[0]
 
-    def _write(self, offset: int, fmt: str, value) -> int | None:
+    def write(self, offset: int, fmt: str, value) -> int | None:
         """Set one field, then publish it by bumping seq; returns the seq the runtime must ack."""
         if not self.available:
             return None
@@ -72,39 +72,39 @@ class ControlChannel:
         return seq
 
     def set_pause(self, paused: bool) -> int | None:
-        return self._write(_PAUSE_OFF, "<q", 1 if paused else 0)
+        return self.write(_PAUSE_OFF, "<q", 1 if paused else 0)
 
     def set_speed(self, speed: float) -> int | None:
-        return self._write(_SPEED_OFF, "<d", min(max(float(speed), SPEED_MIN), SPEED_MAX))
+        return self.write(_SPEED_OFF, "<d", min(max(float(speed), SPEED_MIN), SPEED_MAX))
 
     def request_steps(self, ticks: int = 1) -> int | None:
         """Owe a paused run this many more ticks; it counts them down one per poll."""
         if not self.available:
             return None
         pending = struct.unpack_from("<q", self._mm, _STEPS_OFF)[0]
-        return self._write(_STEPS_OFF, "<q", max(0, pending) + max(1, int(ticks)))
+        return self.write(_STEPS_OFF, "<q", max(0, pending) + max(1, int(ticks)))
 
     @property
     def version(self) -> int | None:
-        return self._read(_VERSION_OFF, "<Q")
+        return self.read(_VERSION_OFF, "<Q")
 
     @property
     def seq(self) -> int | None:
-        return self._read(_SEQ_OFF, "<Q")
+        return self.read(_SEQ_OFF, "<Q")
 
     @property
     def applied(self) -> int | None:
         """The last seq the runtime acknowledged; equal to `seq` once the command took effect."""
-        return self._read(_ACK_OFF, "<Q")
+        return self.read(_ACK_OFF, "<Q")
 
     @property
     def paused(self) -> bool | None:
-        value = self._read(_PAUSE_OFF, "<q")
+        value = self.read(_PAUSE_OFF, "<q")
         return None if value is None else bool(value)
 
     @property
     def speed(self) -> float | None:
-        value = self._read(_SPEED_OFF, "<d")
+        value = self.read(_SPEED_OFF, "<d")
         return None if value is None else (value or 1.0)
 
 

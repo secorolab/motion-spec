@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import collections
 
-from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT
+from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT, KC_OP
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdf_utils.naming import get_valid_var_name
@@ -22,16 +22,20 @@ from motion_spec.classes.geometry import VelocityTwist, Wrench
 from motion_spec.classes.motion import DataValue
 from motion_spec.classes.qudt import QuantityKind, Unit
 from motion_spec.rdf_parser.agents import GRIPPER_DEVICES, model_mappings, place_solver_on_chain
+from motion_spec.rdf_parser.constraint_handler import SOLVER_FAMILIES
 from motion_spec.rdf_parser.model import identifier, local_name
 
 
-def runtime_data(model, serial_chains, control_period_ns: int, platform_uri) -> list:
+def runtime_data(model, serial_chains, control_period_ns: int, platform_uri) -> tuple[list, dict]:
     """The D-blocks the runtime writes that no model entity declares.
 
     The measured control period and the clock beside it, plus, for every force/torque reading: the
     raw sample, the tare state computed from it, and the counters that report how taring went.
     Each is a contracted D-block: written from a port or computed from a reading, and read
     like any other.
+
+    Returns:
+        the members, and the ids of the tare companions minted per wrench reading id
 
     Raises:
         RuntimeError: the platform or a sensor output has no IRI to derive the value from.
@@ -47,10 +51,10 @@ def runtime_data(model, serial_chains, control_period_ns: int, platform_uri) -> 
         DataValue(id="dt_measured_s", type="Quantity", value=control_period_ns * 1e-9),
     ]
 
-    seen = set()
+    companions_by_reading: dict[str, list[str]] = {}
     for solver in serial_chains:
         for out in solver.output:
-            if not isinstance(out, Wrench) or out.id in seen:
+            if not isinstance(out, Wrench) or out.id in companions_by_reading:
                 continue
             if out.sensor_name:
                 companions = _FT_TARE_MEMBERS
@@ -58,7 +62,7 @@ def runtime_data(model, serial_chains, control_period_ns: int, platform_uri) -> 
                 companions = _ESTIMATE_TARE_MEMBERS
             else:
                 continue
-            seen.add(out.id)
+            companion_ids = companions_by_reading.setdefault(out.id, [])
             # The tare state is computed from the reading, so it derives from that output's node.
             reading_iri = model.iri_of(out.id)
             if reading_iri is None:
@@ -68,9 +72,10 @@ def runtime_data(model, serial_chains, control_period_ns: int, platform_uri) -> 
             for suffix, member_type in companions:
                 member_id = f"{out.id}_{suffix}"
                 members.append(DataValue(id=member_id, type=member_type))
+                companion_ids.append(member_id)
                 model.register_derived(member_id, reading_iri, suffix, PROV.wasDerivedFrom)
 
-    return members
+    return members, companions_by_reading
 
 
 _FT_TARE_MEMBERS = (
@@ -103,13 +108,6 @@ _STATE_ANSWERED = {
     "mj_kdl": {"VelocityTwist"},
     "robif2b": {"VelocityTwist", "JointPosition", "JointVelocity"},
 }
-
-
-def _split_outputs(solver, backend: str) -> None:
-    """Split a solver's observations into the ones the loop answers and the ones its motion does."""
-    from_state = _STATE_ANSWERED.get(backend, {"VelocityTwist"})
-    solver.state_output = [out for out in solver.output if out.type in from_state]
-    solver.world_output = [out for out in solver.output if out.type not in from_state]
 
 
 def world_observations(serial_chains) -> list[dict]:
@@ -191,9 +189,7 @@ def world_ports(
         # Trees are maximal joint-connected sets, so every tree but the anchored one stands on a
         # root no joint holds -- a mobile platform included, which articulates below that root.
         # Nothing measures a free body unless something places it.
-        if tree["root"] == anchored_root:
-            continue
-        if tree["root"] in placed_by_perception:
+        if tree["root"] == anchored_root or tree["root"] in placed_by_perception:
             continue
         obj = object_by_body.get(tree["root_iri"])
         mapped_body = next(
@@ -204,24 +200,13 @@ def world_ports(
             ),
             None,
         )
-        if obj is None and mapped_body is not None:
-            free_roots.append(
-                WorldPort(
-                    kind="free_root",
-                    segment=tree["root"],
-                    mapping=mapped_body,
-                    slot=len(free_roots),
-                    iri=tree["root_iri"],
-                )
-            )
-            continue
-        if obj is None:
+        if obj is None and mapped_body is None:
             raise ConstraintViolation(
                 "kinematics",
                 f"'{tree['name']}' is a free body the scene does not place, so nothing can "
                 "measure it",
             )
-        if backend != "mj_kdl":
+        if obj is not None and backend != "mj_kdl":
             raise ConstraintViolation(
                 "kinematics",
                 f"'{tree['name']}' is a free body nothing places on {backend}: only a "
@@ -231,7 +216,7 @@ def world_ports(
             WorldPort(
                 kind="free_root",
                 segment=tree["root"],
-                mapping=obj.body,
+                mapping=obj.body if obj is not None else mapped_body,
                 slot=len(free_roots),
                 iri=tree["root_iri"],
             )
@@ -402,13 +387,92 @@ def annotate_runtime(
         solver.runtime.command_mode = (
             next(iter(found)) if len(found) == 1 else "position" if found else None
         )
-        _refuse_twist_without_velocity_kinematics(solver)
-        _split_gripper_outputs(solver, backend)
+        # Forward position kinematics states poses only.
+        fpk = SOLVER_FAMILIES[KC_OP.ForwardPositionKinematics]
+        twist = next((out for out in solver.output if isinstance(out, VelocityTwist)), None)
+        if solver.algorithm is fpk and twist is not None:
+            raise ConstraintViolation(
+                "solver",
+                f"solver '{solver.id}' is forward position kinematics, but twist "
+                f"'{twist.id}' is read through it; name 'fvk' to read twists.",
+            )
+        # The robif2b arm cannot measure a mimic joint, so the bound gripper answers for it and
+        # the joint moves onto that device's own `joint_outputs`. A simulated backend measures
+        # every joint by name, so there the output stays an ordinary solver output.
+        if backend == "robif2b":
+            # Chain joints are published unprefixed; the outputs' joint names arrive runtime-scoped.
+            chain_joints = {f"{solver.runtime.prefix}{joint}" for joint in solver.chain.joints}
+            outputs, gripper_outputs = [], []
+            for out in solver.output:
+                joint = str(out.joint_name) if isinstance(out, JointQuantity) else ""
+                out_type = out.type
+                if out_type in _GRIPPER_ONLY_OUTPUTS and joint in chain_joints:
+                    raise ConstraintViolation(
+                        "solver",
+                        f"{_OUTPUT_KEYWORD[out_type]} '{out.id}' reads chain joint '{joint}'; "
+                        "only a bound gripper reports it",
+                    )
+                if out_type not in _OUTPUT_KEYWORD or joint in chain_joints:
+                    outputs.append(out)
+                    continue
+                gripper_outputs.append(out)
+                if not any(device.kind in GRIPPER_DEVICES for device in solver.devices):
+                    raise ConstraintViolation(
+                        "solver",
+                        f"{_OUTPUT_KEYWORD[out_type]} '{out.id}' reads joint '{joint}', which is "
+                        f"outside solver '{solver.id}'s chain and no gripper device is bound to "
+                        "report it",
+                    )
+            solver.output = outputs
+            for device in solver.devices:
+                if device.kind in GRIPPER_DEVICES:
+                    device.joint_outputs = gripper_outputs
         # Last, so it sees the outputs a gripper device took over: what the loop answers is
         # decided from the list as it finally stands.
-        _split_outputs(solver, backend)
+        from_state = _STATE_ANSWERED.get(backend, {"VelocityTwist"})
+        solver.state_output = [out for out in solver.output if out.type in from_state]
+        solver.world_output = [out for out in solver.output if out.type not in from_state]
         index_chain_joints(solver)
-    _apply_runtime_to_motions(serial_chains, motions, commanding, mode_by_driver)
+    # Each runtime's outputs go onto the per-motion slices of it, with the mode the motion
+    # commands it in; a slice reaches `runtime_id`/`runtime_owner` through `solver_id`.
+    by_id = {solver.id: solver for solver in serial_chains}
+    for motion in motions:
+        mode_by_runtime = {}
+        for solver in motion.serial_chain_solvers:
+            canonical = by_id.get(solver.id)
+            if canonical is None:
+                continue
+            solver.command_mode = mode_by_driver.get(solver.motion_driver.id)
+            held = mode_by_runtime.get(canonical.runtime.id)
+            if held and solver.command_mode and held != solver.command_mode:
+                raise ConstraintViolation(
+                    "solver",
+                    f"motion '{motion.id}' commands arm '{canonical.runtime.id}' with both "
+                    f"{held} and {solver.command_mode}; an arm takes one mode at a time",
+                )
+            if solver.command_mode:
+                mode_by_runtime[canonical.runtime.id] = solver.command_mode
+            solver.output = canonical.output
+            solver.gripper_joint_outputs = [
+                out
+                for device in canonical.devices
+                if device.kind in GRIPPER_DEVICES
+                for out in device.joint_outputs
+            ]
+            # One arm is either commanded or held: a kinematics-only motion on a commanded arm
+            # would stage nothing while active, and a torque-streamed arm drops.
+            if solver.read_only and canonical.runtime.id in commanding:
+                raise ConstraintViolation(
+                    "solver",
+                    f"motion '{motion.id}' only reads arm '{canonical.runtime.id}' through "
+                    f"'{solver.id}' ({canonical.algorithm_name}), but another motion drives it "
+                    f"with {canonical.runtime.command_mode}; name a driving algorithm in both or "
+                    "forward kinematics in both",
+                )
+        for command in motion.forwarded_commands:
+            canonical = by_id.get(command.robot_id)
+            if canonical is not None:
+                command.robot_id = canonical.runtime.id
     health_index = 0
     for solver in serial_chains:
         if not solver.runtime.owner:
@@ -478,62 +542,7 @@ _JOINT_OUTPUT_KINDS = set(_OUTPUT_KEYWORD)
 _GRIPPER_ONLY_OUTPUTS = {"JointVelocity"}
 
 
-def _refuse_twist_without_velocity_kinematics(solver) -> None:
-    """Forward position kinematics states poses only.
-
-    Raises:
-        ConstraintViolation: the model reads a twist through an FPK solver.
-    """
-    if solver.algorithm_name != "FPK":
-        return
-    for out in solver.output:
-        if isinstance(out, VelocityTwist):
-            raise ConstraintViolation(
-                "solver",
-                f"solver '{solver.id}' is forward position kinematics, but twist '{out.id}' is "
-                "read through it; name 'fvk' to read twists.",
-            )
-
-
-def _split_gripper_outputs(solver, backend: str) -> None:
-    """Move a joint the chain does not articulate onto the gripper device that reports it.
-
-    Only where a device is the reporter: the robif2b arm cannot measure a mimic joint, so the
-    bound gripper answers for it and the joint lands on that device's own `joint_outputs`. A
-    simulated backend measures every joint by name, so there the output stays an ordinary
-    solver output and no device carries it.
-    """
-    if backend != "robif2b":
-        return
-    # Chain joints are published unprefixed; the outputs' joint names arrive runtime-scoped.
-    chain_joints = {f"{solver.runtime.prefix}{joint}" for joint in solver.chain.joints}
-    outputs, gripper_outputs = [], []
-    for out in solver.output:
-        joint = str(out.joint_name) if isinstance(out, JointQuantity) else ""
-        out_type = out.type
-        if out_type in _GRIPPER_ONLY_OUTPUTS and joint in chain_joints:
-            raise ConstraintViolation(
-                "solver",
-                f"{_OUTPUT_KEYWORD[out_type]} '{out.id}' reads chain joint '{joint}'; only a "
-                "bound gripper reports it",
-            )
-        if out_type not in _OUTPUT_KEYWORD or joint in chain_joints:
-            outputs.append(out)
-            continue
-        gripper_outputs.append(out)
-        if not any(device.kind in GRIPPER_DEVICES for device in solver.devices):
-            raise ConstraintViolation(
-                "solver",
-                f"{_OUTPUT_KEYWORD[out_type]} '{out.id}' reads joint '{joint}', which is outside "
-                f"solver '{solver.id}'s chain and no gripper device is bound to report it",
-            )
-    solver.output = outputs
-    for device in solver.devices:
-        if device.kind in GRIPPER_DEVICES:
-            device.joint_outputs = gripper_outputs
-
-
-def _chain_joint_index(solver, joint_name: str) -> int | None:
+def chain_joint_index(solver, joint_name: str) -> int | None:
     """Where a joint sits in the chain's joint array, or None when it is not on the chain.
 
     Outputs carry the joint runtime-scoped and an authored joint force carries it bare, so both
@@ -566,7 +575,7 @@ def index_chain_joints(solver) -> None:
     ]
     for out in joint_outputs:
         if out.type in _JOINT_OUTPUT_KINDS:
-            out.joint_index = _chain_joint_index(solver, out.joint_name)
+            out.joint_index = chain_joint_index(solver, out.joint_name)
             out.on_chain = out.joint_index is not None
         if out.type == "JointForce" and not out.on_chain:
             raise ConstraintViolation(
@@ -576,7 +585,7 @@ def index_chain_joints(solver) -> None:
             )
     for driver in solver.motion_drivers:
         for force in driver.joint_force:
-            force.joint_index = _chain_joint_index(solver, force.joint_name)
+            force.joint_index = chain_joint_index(solver, force.joint_name)
             if force.joint_index is None:
                 raise ConstraintViolation(
                     "solver",
@@ -585,53 +594,6 @@ def index_chain_joints(solver) -> None:
                     f"'{solver.chain.tip}'. A joint force is added to that chain's joint torques, "
                     "so it has to name a joint the chain articulates.",
                 )
-
-
-def _apply_runtime_to_motions(serial_chains, motions, commanding, mode_by_driver) -> None:
-    """Copy each runtime's outputs onto the per-motion slices of it, with the mode the motion
-    commands it in.
-
-    The slice no longer copies `runtime_id`/`runtime_owner`: those are reached through
-    `solver_id` once a template resolves the full solver.
-    """
-    by_id = {solver.id: solver for solver in serial_chains}
-    for motion in motions:
-        mode_by_runtime = {}
-        for solver in motion.serial_chain_solvers:
-            canonical = by_id.get(solver.id)
-            if canonical is None:
-                continue
-            solver.command_mode = mode_by_driver.get(solver.motion_driver.id)
-            held = mode_by_runtime.get(canonical.runtime.id)
-            if held and solver.command_mode and held != solver.command_mode:
-                raise ConstraintViolation(
-                    "solver",
-                    f"motion '{motion.id}' commands arm '{canonical.runtime.id}' with both "
-                    f"{held} and {solver.command_mode}; an arm takes one mode at a time",
-                )
-            if solver.command_mode:
-                mode_by_runtime[canonical.runtime.id] = solver.command_mode
-            solver.output = canonical.output
-            solver.gripper_joint_outputs = [
-                out
-                for device in canonical.devices
-                if device.kind in GRIPPER_DEVICES
-                for out in device.joint_outputs
-            ]
-            # One arm is either commanded or held: a kinematics-only motion on a commanded arm
-            # would stage nothing while active, and a torque-streamed arm drops.
-            if solver.read_only and canonical.runtime.id in commanding:
-                raise ConstraintViolation(
-                    "solver",
-                    f"motion '{motion.id}' only reads arm '{canonical.runtime.id}' through "
-                    f"'{solver.id}' ({canonical.algorithm_name}), but another motion drives it "
-                    f"with {canonical.runtime.command_mode}; name a driving algorithm in both or "
-                    "forward kinematics in both",
-                )
-        for command in motion.forwarded_commands:
-            canonical = by_id.get(command.robot_id)
-            if canonical is not None:
-                command.robot_id = canonical.runtime.id
 
 
 JOINT_SPACE_CHANNELS = (
@@ -697,7 +659,7 @@ def add_joint_space_mirrors(model, robots, motions, algorithm_data: list, backen
             "port": runtime_id,
             "sensor": runtime_id,
             # None where several instances write the value: no one of them is its writer.
-            "solver": next(iter({s.id for s in solvers}), None) if len(solvers) == 1 else None,
+            "solver": solvers[0].id if len(solvers) == 1 else None,
             "saturation": next(iter(saturations)) if len(saturations) == 1 else None,
         }
         # Mirrors are keyed by runtime, so they derive from the runtime's own solver node.

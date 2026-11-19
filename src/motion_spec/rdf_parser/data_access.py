@@ -52,49 +52,6 @@ class ComputationIndexes:
     pose_components: dict
 
 
-class _SnapshotMaps(NamedTuple):
-    """The three things a snapshot output is looked up by."""
-
-    source: dict
-    owner: dict
-    trigger: dict
-
-
-def _snapshot_maps(model) -> _SnapshotMaps:
-    """One walk over the snapshots for the three maps codegen asks about.
-
-    ``source``: each snapshot output to its source quantity. ``owner``: each output to the block
-    whose context declares it (`prov:hadMember`) -- every motion captures each snapshot it
-    references and they share one slot, so without an owner a motion silently retargets another's.
-    ``trigger``: each event-triggered snapshot to its trigger event's IRI, keyed by
-    (declaring block, output id) -- a motion's own re-samples only for it, a shared one for
-    whichever motion reads it.
-    """
-    graph = model.graph
-    source: dict[str, str] = {}
-    owner: dict[str, str] = {}
-    trigger: dict[tuple[str, str], str] = {}
-    for schedule in graph.subjects(RDF.type, URI_TIME_TYPE_AFTER_EVT):
-        output_node = graph.value(schedule, URI_TIME_PRED_OF_CONSTRAINT)
-        if output_node is None:
-            continue
-        source_node = graph.value(output_node, PROV.wasDerivedFrom)
-        if source_node is None:
-            # A sensor tare: scheduled the same way, but nothing is derived.
-            continue
-        output_id = model.id(output_node)
-        source[output_id] = model.id(source_node)
-        block = declaring_block(model, output_node)
-        if block is None:
-            continue
-        owner[output_id] = model.id(block)
-        trigger_node = graph.value(schedule, URI_TIME_PRED_AFTER_EVT)
-        if trigger_node is not None:
-            trigger[(owner[output_id], output_id)] = str(trigger_node)
-
-    return _SnapshotMaps(source, owner, trigger)
-
-
 @dataclass(frozen=True)
 class Computation:
     """What is computed this run: the functions, the values they read and write, the views onto
@@ -114,7 +71,32 @@ def build_indexes(model, functions: dict, data_structures: list, views: dict) ->
         ConstraintViolation: a declared pose is missing a component, or an Euler pose has no
             component for every axis of its sequence.
     """
-    source, owner, trigger = _snapshot_maps(model)
+    graph = model.graph
+    source: dict[str, str] = {}
+    # Each snapshot output to the block whose context declares it (`prov:hadMember`): every motion
+    # captures each snapshot it references and they share one slot, so without an owner a motion
+    # silently retargets another's.
+    owner: dict[str, str] = {}
+    # Keyed by (declaring block, output id): a motion's own re-samples only for it, a shared one
+    # for whichever motion reads it.
+    trigger: dict[tuple[str, str], str] = {}
+    for schedule in graph.subjects(RDF.type, URI_TIME_TYPE_AFTER_EVT):
+        output_node = graph.value(schedule, URI_TIME_PRED_OF_CONSTRAINT)
+        if output_node is None:
+            continue
+        source_node = graph.value(output_node, PROV.wasDerivedFrom)
+        if source_node is None:
+            # A sensor tare: scheduled the same way, but nothing is derived.
+            continue
+        output_id = model.id(output_node)
+        source[output_id] = model.id(source_node)
+        block = declaring_block(model, output_node)
+        if block is None:
+            continue
+        owner[output_id] = model.id(block)
+        trigger_node = graph.value(schedule, URI_TIME_PRED_AFTER_EVT)
+        if trigger_node is not None:
+            trigger[(owner[output_id], output_id)] = str(trigger_node)
     function_output, function_input = function_maps(functions)
     indexes = ComputationIndexes(
         snapshot_source=source,
@@ -197,57 +179,6 @@ def bound_id(value):
     return value.id
 
 
-def _sole(ids) -> str | None:
-    """The one id in a set, or None when several instances write the same value."""
-    return next(iter(ids)) if len(ids) == 1 else None
-
-
-class _SolverWrites(NamedTuple):
-    """Which solver writes each output, and which of those are sensor readings."""
-
-    by_output: dict
-    sensor_outputs: set
-
-
-def _writers_by_output(serial_chain_solvers) -> _SolverWrites:
-    """Which solver writes each output, and which of those are sensor readings (the tare
-    companions are written alongside the reading, not measured).
-    """
-    by_output: dict[str, set] = {}
-    sensor_outputs: set = set()
-    for solver in serial_chain_solvers:
-        # Full solvers carry gripper outputs on their gripper device(s), not as a flat list.
-        gripper_outputs = [out for device in solver.devices for out in device.joint_outputs]
-        for out in [*solver.output, *gripper_outputs]:
-            by_output.setdefault(out.id, set()).add(solver.id)
-            if not isinstance(out, Wrench):
-                continue
-            if out.estimator is not None:
-                # payload tare, written alongside the estimate (runtime.runtime_data)
-                for suffix in ("est_payload", "est_payload_new", "est_settle", "est_tares"):
-                    by_output.setdefault(f"{out.id}_{suffix}", set()).add(solver.id)
-            if not out.sensor_name:
-                continue
-            sensor_outputs.add(out.id)
-            # tare state, written alongside the reading (runtime.runtime_data)
-            for companion in (
-                f"{out.id}_ft_raw",
-                f"{out.id}_ft_bias",
-                f"{out.id}_ft_bias_new",
-                f"{out.id}_ft_bias_prev",
-                f"{out.id}_ft_load",
-                f"{out.id}_ft_payload",
-                f"{out.id}_ft_settle",
-                f"{out.id}_ft_tares",
-                f"{out.id}_ft_rejects",
-                f"{out.id}_ft_confirming",
-            ):
-                by_output.setdefault(companion, set()).add(solver.id)
-                sensor_outputs.add(companion)
-
-    return _SolverWrites(by_output, sensor_outputs)
-
-
 class _ValueOwners(NamedTuple):
     """Which motions write each value, and which values a per-motion block is responsible for."""
 
@@ -255,7 +186,7 @@ class _ValueOwners(NamedTuple):
     block_ids: dict
 
 
-def _owners_by_value(motions, functions: dict, serial_chain_solvers) -> _ValueOwners:
+def owners_by_value(motions, functions: dict, serial_chain_solvers) -> _ValueOwners:
     """Which motions write each value, and which values the per-motion blocks -- rather than any
     schedule -- are responsible for.
 
@@ -281,7 +212,7 @@ def _owners_by_value(motions, functions: dict, serial_chain_solvers) -> _ValueOw
                 owned.append((out_id, motion.id, None))
         for solver in motion.serial_chain_solvers:
             for out in [*solver.output, *solver.gripper_joint_outputs]:
-                # A world observation is not a motion's work: _split_outputs sorts every output
+                # A world observation is not a motion's work: annotate_runtime sorts every output
                 # the loop answers into solver.world_output, and world-state-block writes those
                 # once per tick, before the FSM is dispatched. Attributing one to whichever
                 # motions happen to read it gates its frame-log slot behind active_motion and
@@ -319,7 +250,7 @@ def _owners_by_value(motions, functions: dict, serial_chain_solvers) -> _ValueOw
     return _ValueOwners(owners, block_ids)
 
 
-def _superobjects_by_view(views) -> dict[str, set]:
+def superobjects_by_view(views) -> dict[str, set]:
     """Each value a view selects, to the values it is selected from: one subobject can MAP into
     several superobjects, and it is rewritten whenever any of them is."""
     superobjects_of: dict[str, set] = {}
@@ -337,6 +268,7 @@ def build_data_access(
     functions: dict,
     motions,
     serial_chain_solvers,
+    tare_companions: dict,
     views,
     subscriptions=(),
     config_poses=(),
@@ -347,13 +279,29 @@ def build_data_access(
     that read it, each through a port.
 
     What the model states, built from its records; when a D-block is written, and the storage that
-    follows, is `analyse_data_access`'s.
+    follows, is `analyse_data_access`'s. `tare_companions` is `runtime_data`'s: the tare state ids
+    per wrench reading id.
     """
     function_by_output: dict[str, set] = {}
     for function_id, function in functions.items():
         for out_id in function_output_ids(function):
             function_by_output.setdefault(out_id, set()).add(function_id)
-    solver_by_output, sensor_outputs = _writers_by_output(serial_chain_solvers)
+    solver_by_output: dict[str, set] = {}
+    # The tare companions are written alongside the reading, not measured.
+    sensor_outputs: set = set()
+    for solver in serial_chain_solvers:
+        # Full solvers carry gripper outputs on their gripper device(s), not as a flat list.
+        gripper_outputs = [out for device in solver.devices for out in device.joint_outputs]
+        for out in [*solver.output, *gripper_outputs]:
+            solver_by_output.setdefault(out.id, set()).add(solver.id)
+            if not isinstance(out, Wrench):
+                continue
+            if out.sensor_name:
+                sensor_outputs.add(out.id)
+            for companion_id in tare_companions.get(out.id, ()):
+                solver_by_output.setdefault(companion_id, set()).add(solver.id)
+                if out.sensor_name:
+                    sensor_outputs.add(companion_id)
     # A platform's twist is composed from the measured hub rates every tick, not forwarded along
     # a chain, so its writer is the composition solver itself. The component views the
     # constraints read inherit that from the twist, as every other view does.
@@ -365,7 +313,7 @@ def build_data_access(
     for solver in platform_force_solvers:
         if solver.force.id:
             solver_by_output.setdefault(solver.force.id, set()).add(solver.id)
-    block_ids = _owners_by_value(motions, functions, serial_chain_solvers).block_ids
+    block_ids = owners_by_value(motions, functions, serial_chain_solvers).block_ids
     # Named by the mechanism that produced the value, so the artifact says whether a pose was
     # asked for once or arrived on a standing channel.
     perceived_by_output = {
@@ -414,16 +362,18 @@ def build_data_access(
             writers = function_by_output[item.id]
             types = {(functions.get(cid) or {}).get("type") for cid in writers}
             kind = "controller" if types == {"Controller"} else "function"
-            writer = {"kind": kind, "id": _sole(writers)}
+            # No sole id when several instances write the same value.
+            writer = {"kind": kind, "id": next(iter(writers)) if len(writers) == 1 else None}
             if writer["id"] is not None:
                 writer["port"] = next(
                     port
-                    for value, port in _bound_ids(functions[writer["id"]], "")
+                    for value, port in bound_ids(functions[writer["id"]], "")
                     if value == item.id
                 )
         elif item.id in solver_by_output:
             kind = "sensor" if item.id in sensor_outputs else "solver"
-            writer = {"kind": kind, "id": _sole(solver_by_output[item.id])}
+            solvers = solver_by_output[item.id]
+            writer = {"kind": kind, "id": next(iter(solvers)) if len(solvers) == 1 else None}
         elif block is not None:
             writer = {"kind": block, "id": item.id}
         elif isinstance(item, Quantity) and item.sampled:
@@ -447,15 +397,89 @@ def build_data_access(
 
     # A view's value is its superobject's, read through the view: whatever rewrites the
     # superobject at run time writes it, and so does any superobject of a value nothing else writes.
-    for subobject_id, superobject_ids in _superobjects_by_view(views).items():
+    for subobject_id, superobject_ids in superobjects_by_view(views).items():
         entry = data_access.get(subobject_id)
         kinds = [data_access[sid]["write"]["kind"] for sid in superobject_ids if sid in data_access]
         if entry is None or not kinds:
             continue
         if entry["write"]["kind"] == "none" or any(kind not in _STATIC_WRITERS for kind in kinds):
-            entry["write"] = {"kind": "view", "id": _sole(superobject_ids)}
+            entry["write"] = {
+                "kind": "view",
+                "id": next(iter(superobject_ids)) if len(superobject_ids) == 1 else None,
+            }
 
-    for data_id, readers in _readers_by_id(functions, motions, serial_chain_solvers).items():
+    # The blocks that read each D-block, and the port each reads it through, from their own
+    # records. By IRI: two motions' until terms may share a short id.
+    errors_by_constraint = {
+        function["constraint_uri"]: bound_id(function.get("error"))
+        for function in functions.values()
+        if function.get("type") == "ErrorEvaluator" and function.get("constraint_uri")
+    }
+    reads = []  # (data id, reader kind, reader id, port)
+    for motion in motions:
+        for monitor in (*motion.when_monitors, *motion.while_monitors, *motion.until_monitors):
+            reads.append((bound_id(monitor.error), "monitor", monitor.id, "error"))
+            # Without this the band is a D-block nothing reads, and the analysis drops it.
+            reads.append((bound_id(monitor.tolerance), "monitor", monitor.id, "tolerance"))
+            # An aggregate monitor evaluates each member constraint against its own tolerance, so
+            # the terms bind values the monitor's own two signals never name.
+            for _member, uri, band in zip(
+                monitor.group_constraint_ids,
+                monitor.group_constraint_uris,
+                monitor.group_constraint_tolerances or [""] * len(monitor.group_constraint_ids),
+                strict=False,
+            ):
+                reads.append((errors_by_constraint.get(uri), "monitor", monitor.id, "error"))
+                reads.append((band or None, "monitor", monitor.id, "tolerance"))
+            if isinstance(monitor, EdgeMonitor):
+                reads.append((monitor.debounce_id, "monitor", monitor.id, "debounce"))
+        for controller in motion.controllers:
+            for port, value in (
+                ("error_signal", controller.error_signal),
+                ("measured_signal", controller.measured_signal),
+                ("setpoint_signal", controller.setpoint_signal),
+                ("tolerance_signal", controller.tolerance_id or None),
+            ):
+                reads.append((bound_id(value), "controller", controller.id, port))
+        for snapshot in motion.task_snapshots:
+            reads.append((snapshot.target_id, "motion", motion.id, "snapshot.target"))
+            reads.append((snapshot.captured_id, "motion", motion.id, "snapshot.captured"))
+        # The pose materializer reads a composed orientation's base pose; no function binds it.
+        for entry in motion.declared_pose_components:
+            reads += [
+                (operand.get("pose"), "motion", motion.id, "pose.orientation.base")
+                for operand in entry.get("orientation_operands") or ()
+            ]
+    for function_id, function in functions.items():
+        # A pose evaluator copies its difference's per-axis views into `errors`: it writes them.
+        outputs = function_output_ids(function) | set(function.get("errors") or ())
+        reads += [
+            (value, "function", function_id, port)
+            for value, port in bound_ids(function, "")
+            if value not in outputs
+        ]
+    for solver in serial_chain_solvers:
+        # The gravity field and the torque bound are the D-blocks a solver binds; everything
+        # else on the record is a chain, a device or an output it writes.
+        reads.append((solver.gravity_source, "solver", solver.id, "gravity"))
+        saturation = solver.torque_saturation
+        if saturation is not None:
+            for bound, quantity in (
+                ("maximum", saturation.maximum),
+                ("lower", saturation.lower),
+                ("upper", saturation.upper),
+            ):
+                if quantity is not None:
+                    reads.append((quantity.id, "solver", solver.id, f"torque_saturation.{bound}"))
+    readers_by_id: dict[str, list] = {}
+    for data_id, kind, reader_id, port in reads:
+        reader = {"kind": kind, "id": reader_id, "port": port}
+        if isinstance(data_id, str) and reader_id:
+            readers = readers_by_id.setdefault(data_id, [])
+            if reader not in readers:
+                readers.append(reader)
+
+    for data_id, readers in readers_by_id.items():
         if data_id in data_access:
             data_access[data_id]["read"] = readers
 
@@ -476,7 +500,7 @@ def analyse_data_access(
         RuntimeError: a value is read but never written -- a broken binding that would feed its
             reader a zero forever.
     """
-    owners = _owners_by_value(motions, functions, serial_chain_solvers).owners
+    owners = owners_by_value(motions, functions, serial_chain_solvers).owners
     items = {item.id: item for item in algorithm_data if item.id}
     analysis = {}
     for value_id, entry in data_access.items():
@@ -504,7 +528,7 @@ def analyse_data_access(
         analysis[value_id] = {"cadence": cadence}
 
     # A view is written exactly when its superobject is; a view onto a view waits for that one.
-    superobjects_of = _superobjects_by_view(views)
+    superobjects_of = superobjects_by_view(views)
     pending = [vid for vid, entry in data_access.items() if entry["write"]["kind"] == "view"]
     while pending:
         waiting = []
@@ -561,7 +585,7 @@ def analyse_data_access(
     return analysis
 
 
-def _bound_ids(value, path: str):
+def bound_ids(value, path: str):
     """Every string a reader record binds, with the dotted field path that named it.
 
     Nested, because a record does not keep all its bindings at the top: a controller function
@@ -581,84 +605,7 @@ def _bound_ids(value, path: str):
             yield value["id"], path
         for key, item in value.items():
             if key not in {"id", "type"}:
-                yield from _bound_ids(item, f"{path}.{key}" if path else key)
+                yield from bound_ids(item, f"{path}.{key}" if path else key)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            yield from _bound_ids(item, path)
-
-
-def _readers_by_id(functions: dict, motions, serial_chain_solvers) -> dict[str, list]:
-    """The blocks that read each D-block, and the port each reads it through: the monitors,
-    controllers, functions, solvers and motion entry code bound to it, from their own records."""
-    # By IRI: two motions' until terms may share a short id.
-    errors_by_constraint = {
-        function["constraint_uri"]: bound_id(function.get("error"))
-        for function in functions.values()
-        if function.get("type") == "ErrorEvaluator" and function.get("constraint_uri")
-    }
-    reads = []  # (data id, reader kind, reader id, port)
-    for motion in motions:
-        for monitor in (*motion.when_monitors, *motion.while_monitors, *motion.until_monitors):
-            reads.append((bound_id(monitor.error), "monitor", monitor.id, "error"))
-            # Without this the band is a D-block nothing reads, and the analysis drops it.
-            reads.append((bound_id(monitor.tolerance), "monitor", monitor.id, "tolerance"))
-            # An aggregate monitor evaluates each member constraint against its own tolerance, so
-            # the terms bind values the monitor's own two signals never name.
-            for _member, uri, band in zip(
-                monitor.group_constraint_ids,
-                monitor.group_constraint_uris,
-                monitor.group_constraint_tolerances or [""] * len(monitor.group_constraint_ids),
-                strict=False,
-            ):
-                reads.append((errors_by_constraint.get(uri), "monitor", monitor.id, "error"))
-                reads.append((band or None, "monitor", monitor.id, "tolerance"))
-            if isinstance(monitor, EdgeMonitor):
-                reads.append((monitor.debounce_id, "monitor", monitor.id, "debounce"))
-        for controller in motion.controllers:
-            for port, value in (
-                ("error_signal", controller.error_signal),
-                ("measured_signal", controller.measured_signal),
-                ("setpoint_signal", controller.setpoint_signal),
-                ("tolerance_signal", controller.tolerance_id or None),
-            ):
-                reads.append((bound_id(value), "controller", controller.id, port))
-        for snapshot in motion.task_snapshots:
-            reads.append((snapshot.target_id, "motion", motion.id, "snapshot.target"))
-            reads.append((snapshot.captured_id, "motion", motion.id, "snapshot.captured"))
-        # The pose materializer reads a composed orientation's base pose; no function binds it.
-        for entry in motion.declared_pose_components:
-            reads += [
-                (operand.get("pose"), "motion", motion.id, "pose.orientation.base")
-                for operand in entry.get("orientation_operands") or ()
-            ]
-    for function_id, function in functions.items():
-        # A pose evaluator copies its difference's per-axis views into `errors`: it writes them.
-        outputs = function_output_ids(function) | set(function.get("errors") or ())
-        reads += [
-            (value, "function", function_id, port)
-            for value, port in _bound_ids(function, "")
-            if value not in outputs
-        ]
-    for solver in serial_chain_solvers:
-        # The gravity field and the torque bound are the D-blocks a solver binds; everything
-        # else on the record is a chain, a device or an output it writes.
-        reads.append((solver.gravity_source, "solver", solver.id, "gravity"))
-        saturation = solver.torque_saturation
-        if saturation is not None:
-            for bound, quantity in (
-                ("maximum", saturation.maximum),
-                ("lower", saturation.lower),
-                ("upper", saturation.upper),
-            ):
-                if quantity is not None:
-                    reads.append((quantity.id, "solver", solver.id, f"torque_saturation.{bound}"))
-
-    readers_by_id: dict[str, list] = {}
-    for data_id, kind, reader_id, port in reads:
-        reader = {"kind": kind, "id": reader_id, "port": port}
-        if isinstance(data_id, str) and reader_id:
-            readers = readers_by_id.setdefault(data_id, [])
-            if reader not in readers:
-                readers.append(reader)
-
-    return readers_by_id
+            yield from bound_ids(item, path)

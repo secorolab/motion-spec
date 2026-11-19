@@ -87,7 +87,42 @@ def normalize(model) -> None:
     """
     materialize_pose_reference_transforms(model)
     materialize_linear_distance_operations(model)
-    _materialize_link_pair_poses(model)
+
+    # Forward kinematics publishes a link's pose only with respect to the chain root, so a pose
+    # of one link with respect to another has no producer. When both links are also stated in one
+    # common frame C, it is their composition ``X_wrt_of = Inverse(X_C_wrt) * X_C_of``; with no
+    # such pair it stays unwritten, which the data access check reports.
+    graph = model.graph
+    frames = {}
+    for node in graph.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD):
+        if (node, RDF.type, SOSA.ObservableProperty) not in graph:
+            continue
+        try:
+            frames[node] = pose_frames(model, node)
+        except ValueError:
+            # A pose stated in coordinates alone names no frames to triangulate between.
+            continue
+
+    for node, (of_frame, wrt_frame) in frames.items():
+        if next(graph.subjects(GEOM_OP.composite, node), None) is not None:
+            continue
+        through_of = {
+            reference: pose
+            for pose, (pose_of, reference) in frames.items()
+            if pose != node and pose_of == of_frame and reference not in (of_frame, wrt_frame)
+        }
+        for pose, (pose_of, reference) in frames.items():
+            if pose != node and pose_of == wrt_frame and reference in through_of:
+                of_in_shared, wrt_in_shared = through_of[reference], pose
+                break
+        else:
+            continue
+        _, shared_frame = frames[wrt_in_shared]
+
+        inverted = model.derived_node(node, "wrt-inverse")
+        emit_derived_pose(model, inverted, shared_frame, wrt_frame)
+        invert(model, node, "invert-wrt", wrt_in_shared, inverted)
+        compose(model, node, "compose-link-pair", inverted, of_in_shared, node)
 
 
 def recorded_coord_policy(candidates, graph=None, coord_id=None, component=None, **kwargs):
@@ -107,7 +142,7 @@ def recorded_coord_policy(candidates, graph=None, coord_id=None, component=None,
     )
 
 
-def _pose_frames(model, pose) -> tuple[URIRef, URIRef]:
+def pose_frames(model, pose) -> tuple[URIRef, URIRef]:
     """A pose quantity's authored `(of, with-respect-to)` frames."""
     relation = (
         PoseModel(pose, model.graph)
@@ -135,22 +170,20 @@ _DERIVED_POSE_COORDINATE_TYPES = (
 )
 
 
-def _emit_derived_pose(model, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) -> None:
+def emit_derived_pose(model, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) -> None:
     """Materialize one runtime-derived pose in comp-rob2b relation/coordinate form."""
     graph = model.graph
     parts = {"of_frame": of_frame, "wrt_frame": wrt_frame}
     for role, frame in (("of_origin", of_frame), ("wrt_origin", wrt_frame)):
         origin = graph.value(frame, URI_GEOM_PRED_ORIGIN)
         if not isinstance(origin, URIRef):
-            origin = model.component_node(frame, "origin")
+            origin = URIRef(f"{frame}-origin")
             model.derived.add((frame, URI_GEOM_PRED_ORIGIN, origin))
         model.derived.add((frame, RDF.type, URI_GEOM_TYPE_FRAME))
         model.derived.add((origin, RDF.type, URI_GEOM_TYPE_POINT))
         parts[role] = origin
 
-    relations = {
-        role: model.component_node(node, f"{role}-rel") for role, *_ in _DERIVED_POSE_RELATIONS
-    }
+    relations = {role: URIRef(f"{node}-{role}-rel") for role, *_ in _DERIVED_POSE_RELATIONS}
     for role, relation_type, of_role, wrt_role in _DERIVED_POSE_RELATIONS:
         relation = relations[role]
         model.derived.add((relation, RDF.type, relation_type))
@@ -174,12 +207,12 @@ def _emit_derived_pose(model, node: URIRef, of_frame: URIRef, wrt_frame: URIRef)
     model.derived.add((node, QUDT_SCHEMA.unit, URI_QUDT_UNIT_RAD))
 
 
-def _pose_edges(model) -> dict:
+def pose_edges(model) -> dict:
     """Frame adjacency over every authored pose, traversable in both directions."""
     edges = collections.defaultdict(list)
     for pose in model.graph.subjects(RDF.type, GEOM_REL.Pose):
         try:
-            of_frame, wrt_frame = _pose_frames(model, pose)
+            of_frame, wrt_frame = pose_frames(model, pose)
         except ValueError:
             # A pose with no frame endpoints joins no path; it is stated in coordinates already.
             continue
@@ -189,7 +222,7 @@ def _pose_edges(model) -> dict:
     return edges
 
 
-def _pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
+def pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
     """Shortest `(pose, inverted)` chain from `start` to `goal`; empty when unreachable."""
     queue = collections.deque([(start, ())])
     seen = {start}
@@ -207,7 +240,7 @@ def _pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
     return ()
 
 
-def _compose(model, owner: URIRef, suffix: str, in1: URIRef, in2: URIRef, out: URIRef) -> None:
+def compose(model, owner: URIRef, suffix: str, in1: URIRef, in2: URIRef, out: URIRef) -> None:
     operation = model.derived_node(owner, suffix)
     model.derived.add((operation, RDF.type, GEOM_OP.ComposePose))
     model.derived.add((operation, GEOM_OP.in1, in1))
@@ -215,39 +248,39 @@ def _compose(model, owner: URIRef, suffix: str, in1: URIRef, in2: URIRef, out: U
     model.derived.add((operation, GEOM_OP.composite, out))
 
 
-def _invert(model, owner: URIRef, suffix: str, pose: URIRef, out: URIRef) -> None:
+def invert(model, owner: URIRef, suffix: str, pose: URIRef, out: URIRef) -> None:
     operation = model.derived_node(owner, suffix)
     model.derived.add((operation, RDF.type, GEOM_OP.InvertPose))
     model.derived.add((operation, GEOM_OP.pose, pose))
     model.derived.add((operation, GEOM_OP.out, out))
 
 
-def _compose_path(model, owner: URIRef, path, start_wrt: URIRef):
+def compose_path(model, owner: URIRef, path, start_wrt: URIRef):
     """Emit the invert/compose operations along `path`; return the composed pose, or None."""
     current = None
     current_wrt = start_wrt
     for index, (pose, inverted) in enumerate(path):
-        pose_of, pose_wrt = _pose_frames(model, pose)
+        pose_of, pose_wrt = pose_frames(model, pose)
         step = pose
         step_of, step_wrt = pose_of, pose_wrt
         if inverted:
             step = model.derived_node(owner, f"path-{index}-inverse")
-            _emit_derived_pose(model, step, pose_wrt, pose_of)
-            _invert(model, owner, f"path-{index}-invert", pose, step)
+            emit_derived_pose(model, step, pose_wrt, pose_of)
+            invert(model, owner, f"path-{index}-invert", pose, step)
             step_of, step_wrt = pose_wrt, pose_of
         if current is None:
             current = step
             current_wrt = step_wrt
             continue
         composite = model.derived_node(owner, f"path-{index}-pose")
-        _emit_derived_pose(model, composite, step_of, current_wrt)
-        _compose(model, owner, f"path-{index}-compose", current, step, composite)
+        emit_derived_pose(model, composite, step_of, current_wrt)
+        compose(model, owner, f"path-{index}-compose", current, step, composite)
         current = composite
 
     return current
 
 
-def _recorded_distance_operand(graph, distance, role):
+def recorded_distance_operand(graph, distance, role):
     """The pose coordinate the DSL recorded for one distance endpoint, or None if unrecorded."""
     usage = graph.value(URIRef(f"{distance}-{role}-selection"), PROV.qualifiedUsage)
     return graph.value(usage, PROV.entity) if usage is not None else None
@@ -264,7 +297,7 @@ def materialize_linear_distance_operations(model) -> None:
     value from its own operands.
     """
     graph = model.graph
-    edges = _pose_edges(model)
+    edges = pose_edges(model)
     for distance in list(graph.subjects(RDF.type, GEOM_COORD.DistanceReference)):
         if next(graph.subjects(CSTR.quantity, distance), None) is None:
             continue
@@ -275,8 +308,8 @@ def materialize_linear_distance_operations(model) -> None:
             )
         # `between-entities` names frame-origin Points; which pose coordinate each endpoint
         # reads is the selection the DSL recorded per role (see `recorded_coord_policy`).
-        start = _recorded_distance_operand(graph, distance, "start")
-        end = _recorded_distance_operand(graph, distance, "end")
+        start = recorded_distance_operand(graph, distance, "start")
+        end = recorded_distance_operand(graph, distance, "end")
         if start is None or end is None:
             endpoints = set(graph.objects(relation, GEOM_REL["between-entities"]))
             if len(endpoints) != 2:
@@ -284,34 +317,34 @@ def materialize_linear_distance_operations(model) -> None:
                     "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
                 )
             start, end = endpoints
-        start_of, start_wrt = _pose_frames(model, start)
-        end_of, end_wrt = _pose_frames(model, end)
+        start_of, start_wrt = pose_frames(model, start)
+        end_of, end_wrt = pose_frames(model, end)
 
         path = ()
         if start_wrt != end_wrt:
-            path = _pose_path(edges, start_wrt, end_wrt)
+            path = pose_path(edges, start_wrt, end_wrt)
             if not path:
                 raise ConstraintViolation(
                     "geometry",
                     f"Linear distance {distance} has no pose path from {start_wrt} to {end_wrt}.",
                 )
-        current = _compose_path(model, distance, path, start_wrt)
+        current = compose_path(model, distance, path, start_wrt)
 
         end_in_start_reference = end
         if current is not None:
             end_in_start_reference = model.derived_node(distance, "end-in-start-reference")
-            _emit_derived_pose(model, end_in_start_reference, end_of, start_wrt)
-            _compose(
+            emit_derived_pose(model, end_in_start_reference, end_of, start_wrt)
+            compose(
                 model, distance, "compose-reference-path", current, end, end_in_start_reference
             )
 
         inverse_start = model.derived_node(distance, "inverse-start")
-        _emit_derived_pose(model, inverse_start, start_wrt, start_of)
-        _invert(model, distance, "invert-start", start, inverse_start)
+        emit_derived_pose(model, inverse_start, start_wrt, start_of)
+        invert(model, distance, "invert-start", start, inverse_start)
 
         relative_pose = model.derived_node(distance, "relative-pose")
-        _emit_derived_pose(model, relative_pose, end_of, start_of)
-        _compose(
+        emit_derived_pose(model, relative_pose, end_of, start_of)
+        compose(
             model,
             distance,
             "compose-relative-pose",
@@ -326,20 +359,13 @@ def materialize_linear_distance_operations(model) -> None:
         model.derived.add((magnitude, GEOM_OP.distance, distance))
 
         # A direction taken off this distance means the line it measures, which is this pose.
-        # The DSL points such an op at the distance itself or at the pose carrier the coordinate
-        # samples -- a node it never emits, and which sits under the motion, not beside the
-        # coordinate, so it is matched on the name the two share.
-        local = str(distance).rsplit("/", 1)[-1]
-        carrier_local = local[: -len(".distance")] if local.endswith(".distance") else None
-        for direction_op, target in [
-            (subject, obj)
-            for subject, obj in graph.subject_objects(GEOM_OP.pose)
+        for direction_op in [
+            subject
+            for subject in graph.subjects(GEOM_OP.pose, distance)
             if (subject, RDF.type, GEOM_OP.PoseToDirection) in graph
         ]:
-            target_local = str(target).rsplit("/", 1)[-1]
-            if target_local == local or (carrier_local and target_local == carrier_local):
-                graph.remove((direction_op, GEOM_OP.pose, target))
-                model.derived.add((direction_op, GEOM_OP.pose, relative_pose))
+            graph.remove((direction_op, GEOM_OP.pose, distance))
+            model.derived.add((direction_op, GEOM_OP.pose, relative_pose))
 
 
 def materialize_pose_reference_transforms(model) -> None:
@@ -350,7 +376,7 @@ def materialize_pose_reference_transforms(model) -> None:
     needs the reference re-expressed.
     """
     graph = model.graph
-    edges = _pose_edges(model)
+    edges = pose_edges(model)
     for constraint in list(graph.subjects(RDF.type, CSTR.EqualityConstraint)):
         quantity = graph.value(constraint, CSTR.quantity)
         reference = graph.value(constraint, CSTR["reference-value"])
@@ -361,8 +387,8 @@ def materialize_pose_reference_transforms(model) -> None:
         if GEOM_REL.Pose not in get_node_types(graph, reference):
             continue
         try:
-            target_of, target_wrt = _pose_frames(model, quantity)
-            source_of, source_wrt = _pose_frames(model, reference)
+            target_of, target_wrt = pose_frames(model, quantity)
+            source_of, source_wrt = pose_frames(model, reference)
         except ValueError:
             # A coordinate-authored goal pose carries no of/with-respect-to frames; it is already
             # stated in the constrained pose's frame.
@@ -376,70 +402,21 @@ def materialize_pose_reference_transforms(model) -> None:
                 f"to a reference of {source_of}.",
             )
 
-        path = _pose_path(edges, target_wrt, source_wrt)
+        path = pose_path(edges, target_wrt, source_wrt)
         if not path:
             raise ConstraintViolation(
                 "geometry",
                 f"Equality constraint {constraint} has no pose path from "
                 f"{target_wrt} to {source_wrt}.",
             )
-        current = _compose_path(model, constraint, path, target_wrt)
+        current = compose_path(model, constraint, path, target_wrt)
 
         reference_in_target = model.derived_node(constraint, "reference-in-target")
-        _emit_derived_pose(model, reference_in_target, source_of, target_wrt)
-        _compose(model, constraint, "compose-reference", current, reference, reference_in_target)
+        emit_derived_pose(model, reference_in_target, source_of, target_wrt)
+        compose(model, constraint, "compose-reference", current, reference, reference_in_target)
 
         graph.remove((constraint, CSTR["reference-value"], reference))
         model.derived.add((constraint, CSTR["reference-value"], reference_in_target))
-
-
-def _shared_reference_pair(frames, node, of_frame, wrt_frame):
-    """Two other poses `(of_frame, C)` and `(wrt_frame, C)` sharing one reference frame C."""
-    through_of = {
-        reference: pose
-        for pose, (pose_of, reference) in frames.items()
-        if pose != node and pose_of == of_frame and reference not in (of_frame, wrt_frame)
-    }
-    for pose, (pose_of, reference) in frames.items():
-        if pose != node and pose_of == wrt_frame and reference in through_of:
-            return through_of[reference], pose
-
-    return None
-
-
-def _materialize_link_pair_poses(model) -> None:
-    """Compose a pose stated between two links out of the two poses that share a reference frame.
-
-    Forward kinematics publishes a link's pose only with respect to the chain root, so a pose of
-    one link with respect to another has no producer. When both links are also stated in one
-    common frame C, the link-pair pose is their composition:
-    ``X_wrt_of = Inverse(X_C_wrt) * X_C_of``. With no such pair the pose stays unwritten, which
-    the data access check reports -- and authoring the two common-frame poses is the fix.
-    """
-    graph = model.graph
-    frames = {}
-    for node in graph.subjects(RDF.type, URI_GEOM_TYPE_POSE_COORD):
-        if (node, RDF.type, SOSA.ObservableProperty) not in graph:
-            continue
-        try:
-            frames[node] = _pose_frames(model, node)
-        except ValueError:
-            # A pose stated in coordinates alone names no frames to triangulate between.
-            continue
-
-    for node, (of_frame, wrt_frame) in frames.items():
-        if next(graph.subjects(GEOM_OP.composite, node), None) is not None:
-            continue
-        pair = _shared_reference_pair(frames, node, of_frame, wrt_frame)
-        if pair is None:
-            continue
-        of_in_shared, wrt_in_shared = pair
-        _, shared_frame = frames[wrt_in_shared]
-
-        inverted = model.derived_node(node, "wrt-inverse")
-        _emit_derived_pose(model, inverted, shared_frame, wrt_frame)
-        _invert(model, node, "invert-wrt", wrt_in_shared, inverted)
-        _compose(model, node, "compose-link-pair", inverted, of_in_shared, node)
 
 
 # Every operator answers three questions, and each answers all three: what function one of its
@@ -448,7 +425,7 @@ def _materialize_link_pair_poses(model) -> None:
 # empty step rather than omitting the method, so `Schedule` never probes for one.
 
 
-def _parse_argument(graph, function_id, argument, to_id):
+def parse_argument(graph, function_id, argument, to_id):
     """Resolve a function argument (input/output/parameter) to id(s); a lone one collapses to a
     scalar. An authored bound is named, never copied: the function carries the quantity's id and
     the call site reads it off the algorithm data, so the model's number has one source of truth.
@@ -460,45 +437,27 @@ def _parse_argument(graph, function_id, argument, to_id):
     return unique[0] if len(unique) == 1 else unique
 
 
-def _fill_function_args(graph, function, to_id, op, function_id, input_subject) -> None:
+def fill_function_args(graph, function, to_id, op, function_id, input_subject) -> None:
     """Fill a function's input/output/parameter slots; inputs may hang off another subject.
     Insertion order is the emitted JSON key order.
     """
     for input_ in op.input:
-        function[identifier(local_name(input_))] = _parse_argument(
+        function[identifier(local_name(input_))] = parse_argument(
             graph, input_subject, input_, to_id
         )
-    for output in op.output:
-        function[identifier(local_name(output))] = _parse_argument(
-            graph, function_id, output, to_id
+    for argument in [*op.output, *op.parameters]:
+        function[identifier(local_name(argument))] = parse_argument(
+            graph, function_id, argument, to_id
         )
-    for param in op.parameters:
-        function[identifier(local_name(param))] = _parse_argument(graph, function_id, param, to_id)
 
 
-def _operator_inputs(graph, operator_id, inputs) -> set:
-    """Data-structure nodes feeding an operator call's inputs, plus any path parameters."""
-    data_structures = set()
-    for in_ in inputs:
-        for data_in in graph.objects(operator_id, in_):
-            data_structures.add(data_in)
-            # A path produces nothing, so the output-to-input walk never reaches its parameters
-            # as a producer's outputs; they are contributed here instead.
-            if GEOM_PATH.Path in get_node_types(graph, data_in):
-                data_structures.update(
-                    obj for pred, obj in graph.predicate_objects(data_in) if pred != RDF["type"]
-                )
-
-    return data_structures
-
-
-def _constraint_types(graph, node) -> set:
+def constraint_types(graph, node) -> set:
     """Types of the constraint a handler call points at; empty when it points at nothing."""
     constraint_id = graph.value(node, CSTR_HDL["constraint"])
     return get_node_types(graph, constraint_id) if constraint_id is not None else set()
 
 
-def _constraint_inputs(graph, operator_id, inputs) -> set:
+def constraint_inputs(graph, operator_id, inputs) -> set:
     """Data-structure nodes reached through a handler call's constraint."""
     return {
         data_in
@@ -525,12 +484,24 @@ class Operator:
     def function_step(self, model, node):
         """The function this operator's call at `node` renders to."""
         function = {"id": model.id(node), "type": self.keyword}
-        _fill_function_args(model.graph, function, model.id, self, node, node)
+        fill_function_args(model.graph, function, model.id, self, node, node)
         return function
 
     def operand_inputs(self, model, node):
         """Data-structure nodes feeding this call's inputs."""
-        return _operator_inputs(model.graph, node, self.input)
+        graph = model.graph
+        data_structures = set()
+        for in_ in self.input:
+            for data_in in graph.objects(node, in_):
+                data_structures.add(data_in)
+                # A path produces nothing, so the output-to-input walk never reaches its
+                # parameters as a producer's outputs; they are contributed here instead.
+                if GEOM_PATH.Path in get_node_types(graph, data_in):
+                    data_structures.update(
+                        obj for pred, obj in graph.predicate_objects(data_in) if pred != RDF["type"]
+                    )
+
+        return data_structures
 
     def scheduler_step(self, model, data_out):
         """Input data structures and schedulable calls producing `data_out`."""
@@ -585,7 +556,7 @@ class Specification(Operator):
         return {"data_structures": data_structures, "schedule": []}
 
 
-def _authored_error_normalization(model, constraint_id) -> dict | None:
+def authored_error_normalization(model, constraint_id) -> dict | None:
     """The interval a controller states its error is read into, for the controller driving this
     constraint. Authored beats derived: a model that says which turn is not second-guessed.
     """
@@ -606,8 +577,8 @@ def _authored_error_normalization(model, constraint_id) -> dict | None:
 
 
 @reader
-def continuous_joint_leaves(model) -> set[str]:
-    """Leaf names of revolute joints with no authored position limit: continuous joints, whose
+def continuous_joints(model) -> set[URIRef]:
+    """Revolute joints with no authored position limit: continuous joints, whose
     position error lives on the circle. Read from absence -- scene-dsl emits a kc-ext:JointLimit
     per authored bound and nothing for a missing one.
     """
@@ -621,7 +592,7 @@ def continuous_joint_leaves(model) -> set[str]:
         if URI_KC_STAT_JNT_POSITION in get_node_types(graph, limit)
     }
 
-    return {local_name(joint) for joint in revolute - position_limited}
+    return revolute - position_limited
 
 
 class ErrorEvaluator:
@@ -688,16 +659,16 @@ class ErrorEvaluator:
             # An equality error on a continuous joint wraps to the shortest arc, unless the
             # controller driving it states the interval its error is read into.
             if operator.type_ == CSTR["EqualityConstraint"]:
-                authored = _authored_error_normalization(model, constraint_id)
+                authored = authored_error_normalization(model, constraint_id)
                 if authored is not None:
                     function["error_normalization"] = authored
                 else:
                     joint = (
                         graph.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
                     )
-                    if joint is not None and local_name(joint) in continuous_joint_leaves(model):
+                    if joint in continuous_joints(model):
                         function["angular_wrap"] = True
-            _fill_function_args(graph, function, model.id, operator, node, constraint_id)
+            fill_function_args(graph, function, model.id, operator, node, constraint_id)
 
             return function  # first matching constraint type wins
 
@@ -706,7 +677,7 @@ class ErrorEvaluator:
         stated = [
             local_name(type_)
             for type_ in get_node_types(graph, constraint_id)
-            if type_ != CSTR["Constraint"] and local_name(type_).endswith("Constraint")
+            if type_ != CSTR["Constraint"] and (type_ in CSTR or type_ in CSTR_EXT)
         ]
         raise ConstraintViolation(
             "constraint-handler",
@@ -717,12 +688,12 @@ class ErrorEvaluator:
 
     def operand_inputs(self, model, node):
         """Data-structure nodes feeding the matching constraint's inputs."""
-        constraint_types = _constraint_types(model.graph, node)
+        types = constraint_types(model.graph, node)
         return {
             data_in
             for op in self.cstr_op
-            if op.type_ in constraint_types
-            for data_in in _constraint_inputs(model.graph, node, op.input)
+            if op.type_ in types
+            for data_in in constraint_inputs(model.graph, node, op.input)
         }
 
     def scheduler_step(self, model, data_out):
@@ -733,10 +704,10 @@ class ErrorEvaluator:
         for op in self.cstr_op:
             for out in op.output:
                 for call in graph.subjects(out, data_out):
-                    if op.type_ not in _constraint_types(graph, call):
+                    if op.type_ not in constraint_types(graph, call):
                         continue
                     # A call with no input cannot be scheduled.
-                    inputs = _constraint_inputs(graph, call, op.input)
+                    inputs = constraint_inputs(graph, call, op.input)
                     if inputs:
                         data_structures |= inputs
                         schedule.append(call)
@@ -763,22 +734,22 @@ class AssignmentEvaluator:
         if self.cstr_op.type_ not in get_node_types(graph, constraint_id):
             return None
         function = {"id": model.id(node), "type": self.keyword, "constraint": self.cstr_op.keyword}
-        _fill_function_args(graph, function, model.id, self.cstr_op, node, constraint_id)
+        fill_function_args(graph, function, model.id, self.cstr_op, node, constraint_id)
 
         return function
 
     def operand_inputs(self, model, node):
         """Data-structure nodes feeding the assignment's inputs."""
-        if self.cstr_op.type_ not in _constraint_types(model.graph, node):
+        if self.cstr_op.type_ not in constraint_types(model.graph, node):
             return set()
-        return _constraint_inputs(model.graph, node, self.cstr_op.input)
+        return constraint_inputs(model.graph, node, self.cstr_op.input)
 
     def scheduler_step(self, model, data_out):
         """Nothing: an assignment writes the quantity it is given and declares no output."""
         return {"data_structures": (), "schedule": ()}
 
 
-def _output_predicates(op) -> set:
+def output_predicates(op) -> set:
     """Output predicates an operator's scheduler queries; empty when it can never match, so its
     scheduler step can be skipped.
     """
@@ -996,7 +967,7 @@ _EXTRA_FUNCTION_OUTPUTS = {
 }
 
 
-def _function_output_fields() -> dict[str, set[str]]:
+def function_output_fields() -> dict[str, set[str]]:
     """Per function type, the field names it writes: derived from the operator registries' own
     declared outputs (a Specification writes no function at all and is skipped), plus the kinds
     above that no operator fully accounts for.
@@ -1006,7 +977,7 @@ def _function_output_fields() -> dict[str, set[str]]:
         if isinstance(op, Specification):
             continue
         table.setdefault(op.keyword, set()).update(
-            identifier(local_name(pred)) for pred in _output_predicates(op)
+            identifier(local_name(pred)) for pred in output_predicates(op)
         )
     for key, extra in _EXTRA_FUNCTION_OUTPUTS.items():
         table.setdefault(key, set()).update(extra)
@@ -1014,7 +985,7 @@ def _function_output_fields() -> dict[str, set[str]]:
     return table
 
 
-_FUNCTION_OUTPUT_FIELDS = _function_output_fields()
+_FUNCTION_OUTPUT_FIELDS = function_output_fields()
 
 
 def function_output_ids(function: dict) -> set[str]:
@@ -1035,40 +1006,28 @@ def function_output_ids(function: dict) -> set[str]:
     return outputs
 
 
-def _path_fields(model, path_node) -> dict:
-    """The path's geometry, as fields of the evaluator call that traverses it: the shape decides
-    the maths, so the function takes the path's type and carries its parameters directly.
-    """
+def fold_path(model, node, function) -> None:
+    """The geometry decides the maths; each caller samples the same curve."""
+    path_node = model.graph.value(node, GEOM_OP_EXT.path)
     path_types = get_node_types(model.graph, path_node)
     spec = next((s for s in _OPS_PATH if s.type_ in path_types), None)
-    if spec is None:
-        return {}
-    fields = {"type": spec.keyword}
-    for input_ in spec.input:
-        fields[identifier(local_name(input_))] = _parse_argument(
-            model.graph, path_node, input_, model.id
-        )
-    for param in spec.parameters:
-        fields[identifier(local_name(param))] = _parse_argument(
-            model.graph, path_node, param, model.id
-        )
-
-    return fields
-
-
-def _fold_path(model, node, function) -> None:
-    """The geometry decides the maths; each caller samples the same curve."""
-    fields = _path_fields(model, model.graph.value(node, GEOM_OP_EXT.path))
+    fields = {}
+    if spec is not None:
+        fields["type"] = spec.keyword
+        for argument in [*spec.input, *spec.parameters]:
+            fields[identifier(local_name(argument))] = parse_argument(
+                model.graph, path_node, argument, model.id
+            )
     function["shape"] = fields.pop("type")
     function.update(fields)
 
 
-def _fold_path_evaluator(model, node, function) -> None:
+def fold_path_evaluator(model, node, function) -> None:
     """A path evaluator writes a setpoint as well as sampling the curve."""
     reference = model.graph.value(node, GEOM_OP.out)
     if reference is not None:
         function["setpoint"] = model.id(reference)
-    _fold_path(model, node, function)
+    fold_path(model, node, function)
 
 
 class _FilterBinding(NamedTuple):
@@ -1078,7 +1037,7 @@ class _FilterBinding(NamedTuple):
     controller: object
 
 
-def _filter_controller(model, node, function) -> _FilterBinding:
+def filter_controller(model, node, function) -> _FilterBinding:
     """The constraint a filter's output drives, and the controller that drives it."""
     graph = model.graph
     reference = graph.value(node, ALGO_EXT.out)
@@ -1100,30 +1059,29 @@ def _filter_controller(model, node, function) -> _FilterBinding:
     return _FilterBinding(constraint, controller)
 
 
-def _fold_admittance(model, node, function) -> None:
+def fold_admittance(model, node, function) -> None:
     """An admittance filter keeps state, so it names the controller that owns it."""
-    _constraint, controller = _filter_controller(model, node, function)
-    function["controller"] = model.id(controller)
+    function["controller"] = model.id(filter_controller(model, node, function).controller)
 
 
-def _fold_velocity_profile(model, node, function) -> None:
+def fold_velocity_profile(model, node, function) -> None:
     """A physical profile keeps state and starts from the constraint's measured quantity."""
-    constraint, controller = _filter_controller(model, node, function)
+    constraint, controller = filter_controller(model, node, function)
     function["controller"] = model.id(controller)
     function["measured"] = model.id(model.graph.value(constraint, CSTR.quantity))
     function["profile_target"] = function.pop("target")
     if function.get("path") is not None:
         function["profile_shape"] = function["shape"]
-        _fold_path(model, node, function)
+        fold_path(model, node, function)
 
 
 # Per operator type, the post-processing its function needs beyond its declared operands.
 _FUNCTION_HOOKS = {
-    GEOM_OP_EXT.PathProjection: _fold_path,
-    GEOM_OP_EXT.PathTangentFrame: _fold_path,
-    GEOM_OP_EXT.PathEvaluator: _fold_path_evaluator,
-    ALGO_EXT.VelocityProfile: _fold_velocity_profile,
-    ALGO_EXT.Admittance: _fold_admittance,
+    GEOM_OP_EXT.PathProjection: fold_path,
+    GEOM_OP_EXT.PathTangentFrame: fold_path,
+    GEOM_OP_EXT.PathEvaluator: fold_path_evaluator,
+    ALGO_EXT.VelocityProfile: fold_velocity_profile,
+    ALGO_EXT.Admittance: fold_admittance,
 }
 
 
@@ -1202,7 +1160,7 @@ class Schedule:
                     data_structures.add(data_in)
 
         # data_in --(in)--> call --(out)--> data_out, traversed backward.
-        by_predicates = [(_output_predicates(op), op) for op in operators]
+        by_predicates = [(output_predicates(op), op) for op in operators]
         while pending:
             data_out = pending.pop()
             preds_into = set(graph.predicates(None, data_out))
@@ -1238,13 +1196,8 @@ class Schedule:
 
         sched.reverse()
 
-        return self._ordered(sched, nodes_by_call, operators)
-
-    def _ordered(self, sched, nodes_by_call, operators) -> list[str]:
-        """Reorder scheduled calls so producers run before their consumers."""
         if len(sched) < 2:
             return sched
-        model = self._model
         call_inputs: dict[str, set] = {}
         producers_of: dict = {}
 
@@ -1405,7 +1358,7 @@ def path_projections_for_motion(schedule: list, functions: dict) -> list[dict]:
     ]
 
 
-def _is_pose(item) -> bool:
+def is_pose(item) -> bool:
     """True when a data structure is a Pose quantity, however its kind was stated."""
     if isinstance(item, Pose):
         return True
@@ -1415,7 +1368,7 @@ def _is_pose(item) -> bool:
         kinds = item.quantity_kind
     else:
         kinds = []
-    return any(kind.id == "Pose" for kind in kinds)
+    return any(kind.iri == str(GEOM_REL.Pose) for kind in kinds)
 
 
 def resolve_function_operands(functions: dict, indexes, data_structures: list) -> None:
@@ -1445,5 +1398,5 @@ def resolve_function_operands(functions: dict, indexes, data_structures: list) -
                 function["assign_goal"] = False
         elif shape == "Arc":
             end = function.get("end")
-            if not isinstance(end, str) or not _is_pose(data_by_id.get(end)):
+            if not isinstance(end, str) or not is_pose(data_by_id.get(end)):
                 raise ConstraintViolation("geometry", "Arc path end must be a Pose quantity.")

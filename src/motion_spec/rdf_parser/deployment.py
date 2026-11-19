@@ -18,11 +18,11 @@ from rdf_utils.models.common import get_node_types
 from rdf_utils.models.geom_rel import relation_neighbors
 from rdf_utils.models.prov import get_file_path
 from rdf_utils.models.vocab import URI_GEOM_TYPE_POSE
-from rdflib import Graph, URIRef
+from rdflib import URIRef
 from rdflib.namespace import PROV, RDF, SDO, SSN
 
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.agents import DRIVEN_DEVICES, device_of, model_mappings
+from motion_spec.rdf_parser.agents import DRIVEN_DEVICES, model_mappings
 from motion_spec.rdf_parser.model import local_name
 
 # What a quantity is ultimately stated on, and where a walk from a constraint stops.
@@ -90,34 +90,39 @@ def read_platform(model) -> dict:
     if not platform["simulated"]:
         real = URIRef(platform["uri"]) if platform["uri"] is not None else None
         reject_scene_objects_on_hardware(model, real)
-        _reject_undriven_devices(model, real)
-        _reject_unbound_sensors_on_hardware(model, real)
+        if real is not None:
+            # The grammar decides what a model may name; this decides what the backend can drive.
+            bound = {
+                str(model.graph.value(device, SDO.model) or "")
+                for device in model.graph.subjects(EXEC["realizes"], None)
+            }
+            undriven = [name for name in bound if name not in DRIVEN_DEVICES]
+            if undriven:
+                raise ConstraintViolation(
+                    "platform",
+                    f"no backend support for device(s): {', '.join(undriven)}. "
+                    f"Driven: {', '.join(DRIVEN_DEVICES)}. Remove the binding, or add "
+                    "the driver templates before binding it.",
+                )
+            # In simulation the simulator answers for every sensor; on hardware a reading comes
+            # from a device or from uninitialised memory.
+            unbound = [
+                local_name(sensor)
+                for sensor in set(model.graph.objects(None, SOSA.madeBySensor))
+                if (None, EXEC["realizes"], sensor) not in model.graph
+            ]
+            if unbound:
+                raise ConstraintViolation(
+                    "platform",
+                    "real-world execution reads sensor(s) with no device bound: "
+                    f"{', '.join(unbound)}. Bind one in the platform block, or stop reading the "
+                    "sensor.",
+                )
     elif platform["backend"] is None:
         raise ConstraintViolation(
             "platform", f"Unsupported simulation platform '{platform['name']}'."
         )
     return platform
-
-
-def _reject_undriven_devices(model, context) -> None:
-    """Reject a bound device the backend would silently ignore.
-
-    The grammar decides what a model may name; this decides what the backend can drive.
-    """
-    if context is None:
-        return
-    bound = {
-        str(model.graph.value(device, SDO.model) or "")
-        for device in model.graph.subjects(EXEC["realizes"], None)
-    }
-    undriven = [name for name in bound if name not in DRIVEN_DEVICES]
-    if undriven:
-        raise ConstraintViolation(
-            "platform",
-            f"no backend support for device(s): {', '.join(undriven)}. "
-            f"Driven: {', '.join(DRIVEN_DEVICES)}. Remove the binding, or add "
-            "the driver templates before binding it.",
-        )
 
 
 def reject_scene_objects_on_hardware(model, context) -> None:
@@ -131,15 +136,31 @@ def reject_scene_objects_on_hardware(model, context) -> None:
     if context is None:
         return
     graph = model.graph
-    constrained = _constrained_entities(model)
+    constrained = entities_from(
+        graph,
+        {
+            quantity
+            for constraint in graph.subjects(RDF.type, CSTR.Constraint)
+            for quantity in graph.objects(constraint, CSTR.quantity)
+        },
+    )
     # A subscriber names the world quantity it observes; the object stands behind that
     # quantity, so the observation is walked down to entities the same way constraints are.
-    observed = _entities_from(graph, set(graph.objects(None, SOSA.hasFeatureOfInterest)))
-    objects = [
-        local_name(modelled)
-        for modelled in graph.subjects(RDF.type, ENV.ModelledObject)
-        if (entities := _object_entities(model, modelled)) & constrained and not entities & observed
-    ]
+    observed = entities_from(graph, set(graph.objects(None, SOSA.hasFeatureOfInterest)))
+    objects = []
+    for modelled in graph.subjects(RDF.type, ENV.ModelledObject):
+        bodies = [
+            body
+            for asset in graph.objects(modelled, ENV["has-object-model"])
+            for body, _entity in model_mappings(model, asset, GEOM_ENT.RigidBody)
+        ]
+        entities = {
+            graph.value(modelled, ENV["of-object"]),
+            *bodies,
+            *(frame for body in bodies for frame in graph.objects(body, GEOM_ENT.simplices)),
+        }
+        if entities & constrained and not entities & observed:
+            objects.append(local_name(modelled))
     if objects:
         raise ConstraintViolation(
             "platform",
@@ -150,24 +171,7 @@ def reject_scene_objects_on_hardware(model, context) -> None:
         )
 
 
-def _constrained_entities(model) -> set:
-    """Every geometric entity a constraint is stated on.
-
-    A constraint names a quantity, and a quantity leads to its entities through the view,
-    coordinate and relation nodes that stand between them -- so the walk follows every link and
-    stops at the first entity, which is what keeps it out of the placement chain that puts that
-    entity in the scene.
-    """
-    graph = model.graph
-    starts = {
-        quantity
-        for constraint in graph.subjects(RDF.type, CSTR.Constraint)
-        for quantity in graph.objects(constraint, CSTR.quantity)
-    }
-    return _entities_from(graph, starts)
-
-
-def _entities_from(graph, starts: set) -> set:
+def entities_from(graph, starts: set) -> set:
     """The geometric entities reachable from the given nodes, first entity per branch."""
     queue = list(starts)
     seen, entities = set(), set()
@@ -188,53 +192,15 @@ def _entities_from(graph, starts: set) -> set:
     return entities
 
 
-def _object_entities(model, modelled) -> set:
-    """The nodes that stand for one scene object: the object, the bodies it maps, their frames."""
-    graph = model.graph
-    bodies = [
-        body
-        for asset in graph.objects(modelled, ENV["has-object-model"])
-        for body, _entity in model_mappings(model, asset, GEOM_ENT.RigidBody)
-    ]
-
-    return {
-        graph.value(modelled, ENV["of-object"]),
-        *bodies,
-        *(frame for body in bodies for frame in graph.objects(body, GEOM_ENT.simplices)),
-    }
-
-
-def _reject_unbound_sensors_on_hardware(model, context) -> None:
-    """Reject a sensor a model reads from but binds no device to.
-
-    In simulation the simulator answers for every sensor; on hardware a reading comes from a
-    device or from uninitialised memory.
-    """
-    if context is None:
-        return
-    unbound = [
-        local_name(sensor)
-        for sensor in set(model.graph.objects(None, SOSA.madeBySensor))
-        if device_of(model, sensor) is None
-    ]
-    if unbound:
-        raise ConstraintViolation(
-            "platform",
-            f"real-world execution reads sensor(s) with no device bound: {', '.join(unbound)}. "
-            "Bind one in the platform block, or stop reading the sensor.",
-        )
-
-
 def platform_config(platform: dict) -> dict:
     """The deployment config the exec-context declares, parsed once for every reader of it.
 
     Raises:
         RuntimeError: the declared config file does not exist.
     """
-    config_path = platform.get("config")
-    if not config_path:
+    if not platform.get("config"):
         return {}
-    resolved = Path(config_path)
+    resolved = Path(platform["config"])
     if not resolved.is_file():
         raise RuntimeError(f"{resolved} does not exist, but the exec-context declares it.")
 
@@ -306,12 +272,13 @@ def config_poses(model, config: dict) -> list[dict]:
     """
     entries = []
     # Anchored at the context's config: provenance in the same dataset derives files too.
-    configs = {
-        config
+    derived = {
+        node
         for context in model.graph.subjects(RDF.type, EXEC.ExecutionContext)
-        for config in model.graph.objects(context, PROV.wasDerivedFrom)
+        for config_file in model.graph.objects(context, PROV.wasDerivedFrom)
+        for node in model.graph.subjects(PROV.wasDerivedFrom, config_file)
     }
-    for node in {node for config in configs for node in model.graph.subjects(PROV.wasDerivedFrom, config)}:
+    for node in derived:
         if EXEC.ExecutionContext in get_node_types(model.graph, node):
             continue
         key = str(model.graph.value(node, SDO.identifier))
@@ -377,7 +344,7 @@ def ros_joint_states(platform: dict, config: dict, serial_chains) -> dict | None
                 }
             )
         # A joint the chain does not articulate -- a gripper's driver joint -- is measured
-        # elsewhere: under robif2b by the device `_split_gripper_outputs` moved it onto, under a
+        # elsewhere: under robif2b by the device `annotate_runtime` moved it onto, under a
         # simulated backend by the simulator answering for its name. Its name is already
         # runtime-scoped, and only its position is read on either route: neither the serial nor
         # the interconnect gripper reports a joint velocity or effort, and a zero there would
@@ -428,29 +395,6 @@ def ros_clock(platform: dict, config: dict) -> dict | None:
 ROS_TF_KEY = "ros.tf"
 
 
-def _observed_segments(camera, segment_by_iri: dict, graph: Graph) -> list[str]:
-    """The segment a camera the run observes stands at, and those of every frame the scene
-    poses against it -- its optical frame. Perception places the camera, so the tree publisher
-    leaves all of them out; the built tree hangs each frame off its body, so what is posed
-    against what is read off the scene, not the tree."""
-    frames = [URIRef(camera.frame_uri)]
-    for frame in frames:
-        for posed, _pose in relation_neighbors(frame, URI_GEOM_TYPE_POSE, graph, reverse=True):
-            if posed not in frames:
-                frames.append(posed)
-    segments: dict[str, None] = {}
-    for frame in frames:
-        segment = segment_by_iri.get(str(frame))
-        if segment is None:
-            raise ConstraintViolation(
-                "platform",
-                f"[{ROS_TF_KEY}]: camera '{camera.id}' is observed on '{camera.topic}' but "
-                f"'{frame}' is no segment of a built tree",
-            )
-        segments.setdefault(segment, None)
-    return list(segments)
-
-
 def ros_tf(
     model, platform: dict, config: dict, serial_chains, cameras, world_index: dict, ports: dict
 ) -> dict | None:
@@ -490,7 +434,24 @@ def ros_tf(
     observed: dict[str, None] = {}
     for camera in cameras:
         if camera.topic:
-            for segment in _observed_segments(camera, world_index, model.graph):
+            # Perception places the camera, so the tree publisher leaves out its segment and those
+            # of every frame the scene poses against it -- its optical frame. The built tree hangs
+            # each frame off its body, so what is posed against what is read off the scene.
+            frames = [URIRef(camera.frame_uri)]
+            for frame in frames:
+                for posed, _pose in relation_neighbors(
+                    frame, URI_GEOM_TYPE_POSE, model.graph, reverse=True
+                ):
+                    if posed not in frames:
+                        frames.append(posed)
+            for frame in frames:
+                segment = world_index.get(str(frame))
+                if segment is None:
+                    raise ConstraintViolation(
+                        "platform",
+                        f"[{ROS_TF_KEY}]: camera '{camera.id}' is observed on '{camera.topic}' but "
+                        f"'{frame}' is no segment of a built tree",
+                    )
                 observed.setdefault(segment, None)
     return {
         "config_key": ROS_TF_KEY,

@@ -500,7 +500,7 @@ device-update-Robotiq2F85(solver, device, active_motion) ::= <<
 
 device-update-RobotiqFT300s(solver, device, active_motion) ::= <<
             const auto ft_<device.drives>_msr = ft_<device.drives>_io.sample.read();
-            // The FT wrench is a world observation: _split_outputs puts it in world_output, so
+            // The FT wrench is a world observation: annotate_runtime puts it in world_output, so
             // world-state-block reads and tares it once per tick, in every state, whether or not
             // the active motion consumes ext_force. A thread that stops advancing therefore
             // freezes the tare and every consumer downstream of it, in any state -- so freshness
@@ -567,9 +567,8 @@ robot-shutdown-KinovaGen3(solver) ::= <<
 app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
 <if(has_serial_chain)>
 #include \<iostream\>
-#include "robot_config.hpp"
-<if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))>#include "device_io.hpp"
-<endif><endif>
+#include "robot_config.hpp"<if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))>
+#include "device_io.hpp"<endif><endif>
 >>
 
 app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<

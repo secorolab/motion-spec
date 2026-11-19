@@ -16,6 +16,7 @@ from motion_spec_dsl.rdf_parser.vocab import (
     ALGO_EXT,
     CSTR,
     CSTR_EXT,
+    CSTR_HDL,
     CSTR_HDL_EXT,
     ENV,
     EST,
@@ -129,7 +130,6 @@ from motion_spec.rdf_parser.model import (
     reader,
     seconds,
     si,
-    si_all,
     si_unit,
 )
 from motion_spec.rdf_parser.operations import recorded_coord_policy
@@ -253,34 +253,38 @@ POSE_AXES = (*LINEAR_AXES, *ANGULAR_AXES)
 
 def spatial_axes(
     *,
-    controller_type: str,
+    controller_type: URIRef | None,
     subspace: str | None,
     axis: str | None,
     command_type: str | None,
-    relation: str,
-    quantity_kind: str | None,
+    relation: URIRef | None,
+    target_type: URIRef | None,
 ) -> tuple[SpatialAxis, ...]:
     """The ordered Cartesian directions an authored command controls.
 
     Parameters:
-        controller_type: local name of the controller's RDF type
+        controller_type: the controller's RDF type the decision distinguishes, when it has one
         subspace: local name of the view's subspace predicate, when it has a view
         axis: local name of the view's axis predicate, when it selects one
         command_type: the authored `app:command-type`, when there is one
-        relation: local name of the constraint's relation type
-        quantity_kind: `Pose` or `JointPosition` when the target is one of those coordinates
+        relation: `cstr:EqualityConstraint` when the constraint is one
+        target_type: `PoseCoordinate` or `JointPositionCoordinate` when the target is one
 
     Returns:
         the directions, empty when nothing Cartesian is commanded
     """
     # An impedance on an angular subspace states Torque; only an unstated one defaults to Force.
-    if controller_type == "ImpedanceController" and command_type != "Torque":
+    if controller_type == CSTR_HDL.ImpedanceController and command_type != "Torque":
         command_type = "Force"
     if command_type == "Force" or subspace == "force":
         return ()
-    if command_type == "Torque" and quantity_kind == "JointPosition":
+    if command_type == "Torque" and target_type == KC_STAT.JointPositionCoordinate:
         return ()
-    if quantity_kind == "Pose" and subspace in {None, "pose"} and relation == "EqualityConstraint":
+    if (
+        target_type == GEOM_COORD.PoseCoordinate
+        and subspace in {None, "pose"}
+        and relation == CSTR.EqualityConstraint
+    ):
         return POSE_AXES
     if subspace in {"position", "linear-velocity"}:
         return (SpatialAxis(Subspace.Linear, axis),) if axis else LINEAR_AXES
@@ -347,7 +351,8 @@ def parse_xyz(model, node) -> list[float] | None:
     values = [graph.value(node, predicate) for predicate in _XYZ_PREDICATES]
     if any(value is None for value in values):
         return None
-    return si_all((value.value for value in values), graph.value(node, QUDT_SCHEMA["unit"]))
+    unit = graph.value(node, QUDT_SCHEMA["unit"])
+    return [si(float(value.value), unit) for value in values]
 
 
 @reader
@@ -362,12 +367,13 @@ def position(model, node) -> Position:
         if len(relation.coordinate_ids) != 1:
             raise ConstraintViolation("geometry", f"Position '{node}' needs exactly one coordinate")
         coordinate = PositionCoordModel(next(iter(relation.coordinate_ids)), graph, relation)
+    kind_node = graph.value(node, QUDT_SCHEMA["hasQuantityKind"])
 
     return Position(
         model.id(node),
         position_reference(model, relation.of_id),
         position_reference(model, relation.wrt_id),
-        QuantityKind(model.id(graph.value(node, QUDT_SCHEMA["hasQuantityKind"]))),
+        QuantityKind(model.id(kind_node), str(kind_node)),
         frame(model, coordinate.as_seen_by),
         Unit(model.id(si_unit(length_unit(coordinate)))),
         position_values(model, coordinate),
@@ -401,21 +407,38 @@ def orientation(model, node) -> Orientation:
         coordinate = OrientCoordModel(next(iter(relation.coordinate_ids)), graph, relation)
 
     axes = graph.value(coordinate.id, URI_GEOM_PRED_AXES_SEQ)
+    if orientation_composition(model, coordinate.id) is not None or (
+        coordinate.types & _RESOLVED_ROTATION
+    ):
+        unit = model.id(NS_MM_QUDT_UNIT.UNITLESS)
+    else:
+        angular = set(graph.objects(coordinate.id, QUDT_SCHEMA["unit"])) & {
+            URI_QUDT_UNIT_RAD,
+            URI_QUDT_UNIT_DEG,
+        }
+        if len(angular) != 1:
+            raise ConstraintViolation(
+                "geometry",
+                f"OrientationCoordinate '{coordinate.id}' needs exactly one angular unit, "
+                f"found {angular}",
+            )
+        unit = model.id(si_unit(next(iter(angular))))
+    kind_node = graph.value(node, QUDT_SCHEMA["hasQuantityKind"])
 
     return Orientation(
         model.id(node),
-        _optional_pose_reference(model, relation.of_id),
-        _optional_pose_reference(model, relation.wrt_id),
-        QuantityKind(model.id(graph.value(node, QUDT_SCHEMA["hasQuantityKind"]))),
+        optional_pose_reference(model, relation.of_id),
+        optional_pose_reference(model, relation.wrt_id),
+        QuantityKind(model.id(kind_node), str(kind_node)),
         frame(model, coordinate.as_seen_by.id),
-        Unit(_orientation_unit(model, coordinate)),
+        Unit(unit),
         str(axes) if axes is not None else "xyz",
         (node, ~MAP["subobject"], None) in graph,
-        provenance=quantity_provenance(model, node),
+        provenance=Provenance(authored=not is_snapshot(model, node) and is_authored(model, node)),
     )
 
 
-def _optional_pose_reference(model, node):
+def optional_pose_reference(model, node):
     """A pose endpoint that may be absent, an object or a frame."""
     if node is None:
         return None
@@ -433,25 +456,7 @@ _RESOLVED_ROTATION = {URI_GEOM_TYPE_QUATERNION, URI_GEOM_TYPE_DIRECTION_COSINE_X
 _LITERAL_ROTATION = _RESOLVED_ROTATION | {URI_GEOM_TYPE_ANGLES_ABG}
 
 
-def _orientation_unit(model, coordinate) -> str:
-    """A rotation is unitless unless it is authored as angles, which must be in exactly one."""
-    if _orientation_composition(model, coordinate.id) is not None or (
-        coordinate.types & _RESOLVED_ROTATION
-    ):
-        return model.id(NS_MM_QUDT_UNIT.UNITLESS)
-    units = set(model.graph.objects(coordinate.id, QUDT_SCHEMA["unit"]))
-    angular = units & {URI_QUDT_UNIT_RAD, URI_QUDT_UNIT_DEG}
-    if len(angular) != 1:
-        raise ConstraintViolation(
-            "geometry",
-            f"OrientationCoordinate '{coordinate.id}' needs exactly one angular unit, "
-            f"found {angular}",
-        )
-
-    return model.id(si_unit(next(iter(angular))))
-
-
-def _orientation_composition(model, node):
+def orientation_composition(model, node):
     """The `geom-op-ext:ComposeOrientation` operator writing into this orientation, if any."""
     if node is None:
         return None
@@ -472,7 +477,7 @@ def orientation_representation(model, node) -> str:
         return "quaternion"
     types = get_node_types(model.graph, node)
     if (
-        _orientation_composition(model, node) is not None
+        orientation_composition(model, node) is not None
         or model.graph.value(node, CSTR["reference-value"]) is not None
     ):
         return "relative"
@@ -493,14 +498,14 @@ def relative_orientation(model, node) -> list[dict]:
         pose = graph.value(reference, MAP.superobject)
         if (
             pose is None
-            or local_name(graph.value(reference, MAP.subspace)) != "orientation"
+            or graph.value(reference, MAP.subspace) != MAP_EXT.orientation
             or URI_GEOM_TYPE_POSE_COORD not in get_node_types(graph, pose)
         ):
             raise ConstraintViolation(
                 "geometry", f"Orientation '{node}' refers to '{reference}', no pose's orientation."
             )
         return [{"pose": model.id(pose)}]
-    composition = _orientation_composition(model, node)
+    composition = orientation_composition(model, node)
     if composition is None:
         raise ConstraintViolation(
             "geometry", f"Relative orientation '{node}' has no composition operator."
@@ -544,7 +549,7 @@ def relative_orientation(model, node) -> list[dict]:
 
 
 @reader
-def _pose_endpoint(model, node):
+def pose_endpoint(model, node):
     """A pose endpoint as the frame it names, an object standing for its root body's frame."""
     if node is None:
         return None
@@ -593,36 +598,6 @@ def derived_reference_frames(model, node) -> ReferenceFrames:
     )
 
 
-def _bare_pose(model, node) -> Pose:
-    """A geom-rel:Pose with no PoseCoordinate: a snapshot or reference pose filled at runtime.
-
-    Same IR shape as a coordinate pose, with frame endpoints but no authored values.
-    """
-    graph = model.graph
-    of_node = graph.value(node, GEOM_REL["of"])
-    wrt_node = graph.value(node, GEOM_REL["with-respect-to"])
-    seen_node = graph.value(node, GEOM_COORD["as-seen-by"])
-    if of_node is None or wrt_node is None or seen_node is None:
-        inherited_of, inherited_wrt, inherited_seen = derived_reference_frames(model, node)
-        of_node = of_node or inherited_of
-        wrt_node = wrt_node or inherited_wrt
-        seen_node = seen_node or inherited_seen
-
-    return Pose(
-        model.id(node),
-        _pose_endpoint(model, of_node),
-        _pose_endpoint(model, wrt_node),
-        [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
-        frame(model, seen_node) if seen_node is not None else None,
-        [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-        None,
-        None,
-        None,
-        None,
-        provenance=quantity_provenance(model, node),
-    )
-
-
 def pose(model, node) -> Pose:
     """A Pose quantity: its endpoints, its position and how its orientation arrives."""
     graph = model.graph
@@ -637,7 +612,7 @@ def pose(model, node) -> Pose:
     # its whole frame is read from the deployment config, not composed from a sequence.
     euler_axes_sequence = None
     euler_intrinsic = False
-    if representation == "euler" and not _is_config_pose(model, node):
+    if representation == "euler" and (node, PROV.wasDerivedFrom, None) not in graph:
         axes = graph.value(orientation_node, URI_GEOM_PRED_AXES_SEQ)
         euler_axes_sequence = str(axes) if axes is not None else None
         euler_intrinsic = URI_GEOM_TYPE_INTRINSIC in coordinate.orientation_coord.types
@@ -649,11 +624,29 @@ def pose(model, node) -> Pose:
             for unit in graph[component : QUDT_SCHEMA["unit"]]
         }
     )
+    # A config pose's value is read from the deployment config file, not authored in the model.
+    if is_snapshot(model, node) or (node, PROV.wasDerivedFrom, None) in graph:
+        authored = False
+    else:
+        components = (coordinate.position_coord, coordinate.orientation_coord)
+        literal_rotation = coordinate.orientation_coord.types & (
+            _RESOLVED_ROTATION | {URI_GEOM_TYPE_EULER_ANGLES}
+        )
+        composed_and_viewed = orientation_composition(
+            model, coordinate.orientation_coord.id
+        ) is not None and any(
+            (view, MAP["axis"], None) in graph for view in graph.subjects(MAP["superobject"], node)
+        )
+        authored = (
+            any(is_authored(model, component.id) for component in components)
+            or bool(literal_rotation)
+            or composed_and_viewed
+        )
 
     return Pose(
         model.id(node),
-        _pose_endpoint(model, relation.of_id),
-        _pose_endpoint(model, relation.wrt_id),
+        pose_endpoint(model, relation.of_id),
+        pose_endpoint(model, relation.wrt_id),
         [model.id(kind) for kind in graph[relation.id : QUDT_SCHEMA["hasQuantityKind"]]],
         frame(model, coordinate.as_seen_by.id),
         units,
@@ -664,33 +657,8 @@ def pose(model, node) -> Pose:
         orientation_operands=(
             relative_orientation(model, orientation_node) if representation == "relative" else None
         ),
-        provenance=_pose_provenance(model, node, coordinate),
+        provenance=Provenance(authored=authored),
     )
-
-
-def _pose_provenance(model, node, coordinate) -> Provenance:
-    """A pose is authored when either component carries values, or when its rotation is a literal
-    form, or when a composition writes it and a per-axis view reads it back.
-    """
-    if _is_snapshot(model, node) or _is_config_pose(model, node):
-        return Provenance(authored=False)
-    components = (coordinate.position_coord, coordinate.orientation_coord)
-    literal_rotation = coordinate.orientation_coord.types & (
-        _RESOLVED_ROTATION | {URI_GEOM_TYPE_EULER_ANGLES}
-    )
-    composed_and_viewed = _orientation_composition(
-        model, coordinate.orientation_coord.id
-    ) is not None and any(
-        (view, MAP["axis"], None) in model.graph
-        for view in model.graph.subjects(MAP["superobject"], node)
-    )
-    authored = (
-        any(_is_authored(model, component.id) for component in components)
-        or bool(literal_rotation)
-        or composed_and_viewed
-    )
-
-    return Provenance(authored=authored)
 
 
 @reader
@@ -707,7 +675,7 @@ def direction(model, node) -> Direction:
     )
 
 
-def _spatial_fields(model, node) -> dict:
+def spatial_fields(model, node) -> dict:
     """The `SpatialCoordinate` base fields, shared by the 6D coordinate quantities and read off
     one node the same way regardless of which one subclasses it.
     """
@@ -718,7 +686,9 @@ def _spatial_fields(model, node) -> dict:
         "reference_point": point(model, graph.value(node, GEOM_REL["reference-point"])),
         "as_seen_by": frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
         "unit": [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-        "provenance": quantity_provenance(model, node),
+        "provenance": Provenance(
+            authored=not is_snapshot(model, node) and is_authored(model, node)
+        ),
     }
 
 
@@ -730,20 +700,20 @@ def velocity_twist(model, node) -> VelocityTwist:
         with_respect_to=simplicial_complex(
             model, model.graph.value(node, GEOM_REL["with-respect-to"])
         ),
-        **_spatial_fields(model, node),
+        **spatial_fields(model, node),
     )
 
 
 @reader
 def acceleration_twist(model, node) -> AccelerationTwist:
     """An AccelerationTwist quantity."""
-    return AccelerationTwist(**_spatial_fields(model, node))
+    return AccelerationTwist(**spatial_fields(model, node))
 
 
 @reader
 def pose_difference(model, node) -> PoseDifference:
     """A PoseDifference quantity."""
-    return PoseDifference(**_spatial_fields(model, node))
+    return PoseDifference(**spatial_fields(model, node))
 
 
 @reader
@@ -790,7 +760,7 @@ def wrench(model, node) -> Wrench:
         reference_point=point(model, reference),
         as_seen_by=frame(model, seen_by),
         unit=[model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-        provenance=quantity_provenance(model, node),
+        provenance=Provenance(authored=not is_snapshot(model, node) and is_authored(model, node)),
         sensor_frame=frame(model, sensor_frame_node) if sensor_frame_node is not None else None,
         sensor_name=model.id(sensor) if sensor is not None else "",
         estimator=estimator,
@@ -811,7 +781,7 @@ def is_duration(model, node) -> bool:
     return (node, QUDT_SCHEMA.hasQuantityKind, NS_MM_QUDT_QTY["Time"]) in model.graph
 
 
-def _observed_at_id(model, pose_node) -> str | None:
+def observed_at_id(model, pose_node) -> str | None:
     """The slot holding when this pose was last observed, when an age constraint asked for it."""
     instant = model.graph.value(pose_node, SOSA.phenomenonTime)
     return model.id(instant) if instant is not None else None
@@ -872,12 +842,12 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                         "observed_wrt_iri": str(
                             graph.value(observed, GEOM_REL["with-respect-to"]) or ""
                         ),
-                        "target_of_iri": str(target_iri),
-                        "observed_at_id": _observed_at_id(model, target),
+                        "target_of_iri": target_iri,
+                        "observed_at_id": observed_at_id(model, target),
                     }
                 )
                 continue
-            located = _body_or_self(model, target)
+            located = body_or_self(model, target)
             matched = [
                 item for item in world_poses if item.of is not None and item.of.id == located
             ]
@@ -895,7 +865,7 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
                     # A scene object as an endpoint carries no frame IRI; the consumer that needs
                     # one to place the pose says so itself.
                     "frame_iri": item.with_respect_to.uri,
-                    "observed_at_id": _observed_at_id(model, model.node_by_id[item.id]),
+                    "observed_at_id": observed_at_id(model, model.node_by_id[item.id]),
                 }
                 for item in matched
             )
@@ -924,12 +894,12 @@ def goal_status_act(model, node):
 @reader
 def quantity(model, node):
     """The quantity at a node, dispatching on its RDF type."""
-    viewed = model.graph.value(node, MAP.subobject)
+    graph = model.graph
+    viewed = graph.value(node, MAP.subobject)
     if viewed is not None:
         # A constraint names the per-quantity view. The subobject is the pooled relation (or
         # scalar); when the relation carries several coordinates the view's superobject pins
         # which sampling is meant, so a component-typed superobject dispatches as coordinate.
-        graph = model.graph
         superobject = graph.value(node, MAP.superobject)
         subspace = graph.value(node, MAP.subspace)
         if (node, MAP.axis, None) in graph:
@@ -958,12 +928,36 @@ def quantity(model, node):
         return GoalStatus(model.id(node))
     if is_duration(model, node):
         return duration_quantity(model, node)
-    graph = model.graph
     types = get_node_types(graph, node)
     if URI_GEOM_TYPE_POSE_COORD in types:
         return pose(model, node)
     if URI_GEOM_TYPE_POSE in types:
-        return _bare_pose(model, node)
+        # A geom-rel:Pose with no PoseCoordinate: a snapshot or reference pose filled at runtime,
+        # with frame endpoints but no authored values.
+        of_node = graph.value(node, GEOM_REL["of"])
+        wrt_node = graph.value(node, GEOM_REL["with-respect-to"])
+        seen_node = graph.value(node, GEOM_COORD["as-seen-by"])
+        if of_node is None or wrt_node is None or seen_node is None:
+            inherited_of, inherited_wrt, inherited_seen = derived_reference_frames(model, node)
+            of_node = of_node or inherited_of
+            wrt_node = wrt_node or inherited_wrt
+            seen_node = seen_node or inherited_seen
+
+        return Pose(
+            model.id(node),
+            pose_endpoint(model, of_node),
+            pose_endpoint(model, wrt_node),
+            [model.id(kind) for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]],
+            frame(model, seen_node) if seen_node is not None else None,
+            [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
+            None,
+            None,
+            None,
+            None,
+            provenance=Provenance(
+                authored=not is_snapshot(model, node) and is_authored(model, node)
+            ),
+        )
     if URI_GEOM_TYPE_POSITION in types:
         return position(model, node)
     if URI_GEOM_TYPE_ORIENT in types:
@@ -978,13 +972,13 @@ def quantity(model, node):
     si_node = si_unit(unit_node)
     unit = Unit(model.id(si_node), str(si_node))
     has_view = (node, ~MAP["subobject"], None) in graph
-    provenance = quantity_provenance(model, node)
+    # Authored and snapshot are mutually exclusive: a snapshot wins, because its authored literal is
+    # only the value it holds before the first capture.
+    provenance = Provenance(authored=not is_snapshot(model, node) and is_authored(model, node))
 
     if CSTR_HDL_EXT["SetpointGenerator"] in types:
-        return SetpointQuantity(
-            model.id(node), kind, unit, has_view, provenance=provenance
-        )
-    if kind.id == "FreeVector" and GEOM_COORD["VectorXYZ"] in types:
+        return SetpointQuantity(model.id(node), kind, unit, has_view, provenance=provenance)
+    if kind_node == NS_MM_QUDT_QTY["FreeVector"] and GEOM_COORD["VectorXYZ"] in types:
         return FreeVector(
             model.id(node), kind, unit, parse_xyz(model, node), has_view, provenance=provenance
         )
@@ -1024,7 +1018,7 @@ def duration_quantity(model, node) -> Quantity:
         Unit("Second", str(NS_MM_QUDT_UNIT["SEC"])),
         value,
         False,
-        provenance=quantity_provenance(model, node),
+        provenance=Provenance(authored=not is_snapshot(model, node) and is_authored(model, node)),
         sampled=URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node),
     )
 
@@ -1049,11 +1043,11 @@ def joint_quantity(model, node) -> JointQuantity:
         model.label(joint),
         next(kind for rdf_type, kind in JOINT_QUANTITY_TYPES.items() if rdf_type in types),
         joint_uri=str(joint),
-        normalization=_normalization(model, node),
+        normalization=normalization(model, node),
     )
 
 
-def _normalization(model, node) -> dict | None:
+def normalization(model, node) -> dict | None:
     """The interval a measurement is read into, as its world block stated it."""
     graph = model.graph
     interval = graph.value(node, ALGO_EXT["normalization"])
@@ -1086,7 +1080,7 @@ _AUTHORED_VALUE_PREDICATES = (
 )
 
 
-def _is_authored(model, node) -> bool:
+def is_authored(model, node) -> bool:
     """True when a quantity's value was authored by the user rather than computed."""
     # A path parameter's value is only its starting point; the traversal drives it per tick.
     if (None, GEOM_OP_EXT["path-parameter"], node) in model.graph:
@@ -1094,7 +1088,7 @@ def _is_authored(model, node) -> bool:
     return any((node, predicate, None) in model.graph for predicate in _AUTHORED_VALUE_PREDICATES)
 
 
-def _is_snapshot(model, node) -> bool:
+def is_snapshot(model, node) -> bool:
     """Whether a node is itself a runtime sample-and-hold capture target. Its own graph fact
     -- not carried by `Provenance`, which only states whether a value was authored.
 
@@ -1104,24 +1098,14 @@ def _is_snapshot(model, node) -> bool:
     """
     graph = model.graph
     return (node, PROV.wasDerivedFrom, None) in graph and (
-        None,
-        URI_TIME_PRED_OF_CONSTRAINT,
-        node,
+        None, URI_TIME_PRED_OF_CONSTRAINT, node
     ) in graph
-
-
-def _is_config_pose(model, node) -> bool:
-    """Whether a pose's value is read from the deployment config file rather than authored in
-    the model. Its orientation is stamped Euler-typed by the DSL for lack of an authored
-    coordinate to inspect -- that stamp must not be read as a literal, decomposed pose.
-    """
-    return (node, PROV.wasDerivedFrom, None) in model.graph
 
 
 @reader
 def snapshot_target_ids(model) -> set:
     """Every id whose node is a snapshot target, for readers that hold a record id rather than a
-    graph node and so cannot call `_is_snapshot` directly.
+    graph node and so cannot call `is_snapshot` directly.
     """
     graph = model.graph
     return {
@@ -1131,32 +1115,19 @@ def snapshot_target_ids(model) -> set:
     }
 
 
-def quantity_provenance(model, node) -> Provenance:
-    """Where a quantity's value comes from. Authored and snapshot are mutually exclusive: a
-    snapshot wins, because its authored literal is only the value it holds before the first
-    capture.
-    """
-    return Provenance(authored=not _is_snapshot(model, node) and _is_authored(model, node))
-
-
 @reader
 def simplicial_complex(model, node) -> SimplicialComplex:
     """A rigid body, mapping a body-origin frame to the body itself."""
     types = get_node_types(model.graph, node)
     if not {GEOM_ENT.SimplicialComplex, GEOM_ENT.Frame} & types:
         raise ConstraintViolation("geometry", f"Expected a rigid body or frame, got: {node}")
-    return SimplicialComplex(_body_or_self(model, node), uri=str(node))
+    return SimplicialComplex(body_or_self(model, node), uri=str(node))
 
 
 @reader
 def frame(model, node) -> Frame:
     """A reference frame, mapping a scene-dsl body-origin frame to its runtime body."""
-    return Frame(_body_or_self(model, node), uri=str(node))
-
-
-def body_of(model, node):
-    """The rigid body a frame is a simplex of, or None when no body carries it."""
-    return ensure_one_typed_subject_uri(model.graph, node, GEOM_ENT.simplices, GEOM_ENT.RigidBody)
+    return Frame(body_or_self(model, node), uri=str(node))
 
 
 def placement_frame(model, node):
@@ -1166,13 +1137,13 @@ def placement_frame(model, node):
     return model.graph.value(node, NS_MM_KC_EXT["root"])
 
 
-def _body_or_self(model, node) -> str:
+def body_or_self(model, node) -> str:
     """The id of the body a frame is the root of, or the node's own id.
 
     The body states its root in the graph, so that relation answers this rather than the
     frame's name: a root named anything but `<body>_origin` stands for its body just as much.
     """
-    body = body_of(model, node)
+    body = ensure_one_typed_subject_uri(model.graph, node, GEOM_ENT.simplices, GEOM_ENT.RigidBody)
     if body is not None and placement_frame(model, body) == node:
         return model.id(body)
 
@@ -1237,7 +1208,7 @@ def placement_of(model, attachment, anchor):
     bolted to another model resolves against that model's own root frame, which is where its
     site is: composing to the anchor instead would count its host's placement twice.
     """
-    kind, _name, frame, parent = attachment
+    kind, _name, frame, parent, _host_frame = attachment
     if kind != "World":
         return frame_placement(model, frame, placement_frame(model, parent))
     # What the runtime places is the body, so its root frame -- not whichever of its frames a
@@ -1261,13 +1232,13 @@ def drawn_placement_of(model, attachment, anchor) -> DrawnPlacement | None:
     Only the pose placing the body's own root frame may be drawn; the frame it is drawn against
     must be placed by numbers, which `frame_placement` enforces.
     """
-    kind, _name, frame, _parent = attachment
+    kind, _name, frame, _parent, _host_frame = attachment
     if kind != "World":
         return None
     if GEOM_ENT.Frame in get_node_types(model.graph, frame):
         frame = body_of_frame(frame, model.graph)
     frame = placement_frame(model, frame)
-    graph = _placement_graph(model)
+    graph = placement_graph(model)
     placing = (find_pose_path(frame, anchor, graph) or [])[:1]
     for pose, coords in get_pose_coords(graph=graph, poses=placing):
         for coord in coords:
@@ -1281,7 +1252,7 @@ def drawn_placement_of(model, attachment, anchor) -> DrawnPlacement | None:
 
 
 @reader
-def _placement_graph(model):
+def placement_graph(model):
     """The poses that place something, which is not every pose the graph relates.
 
     A context quantity relates two frames the scene has already placed: a world pose the run
@@ -1290,8 +1261,7 @@ def _placement_graph(model):
     or with a coordinate that holds no value until the first cycle.
     """
     graph = Graph()
-    for triple in model.graph.triples((None, None, None)):
-        graph.add(triple)
+    graph += model.graph.triples((None, None, None))
     # A relation is pooled per frame pair, so a context quantity is a coordinate on a
     # relation the scene also samples: strip the quantity's own nodes, keep the relation --
     # unless nothing places it any more, in which case the relation goes too.
@@ -1310,25 +1280,6 @@ def _placement_graph(model):
     return graph
 
 
-def _reject_sampled_placement(model, frame, wrt) -> None:
-    """A placement is built into the world before the run draws anything.
-
-    Raises:
-        ConstraintViolation: a pose placing this frame is drawn at run time.
-    """
-    graph = _placement_graph(model)
-    for pose, coords in get_pose_coords(graph=graph, poses=find_pose_path(frame, wrt, graph) or []):
-        for coord in coords:
-            for node in (coord.id, coord.position_coord.id, coord.orientation_coord.id):
-                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node):
-                    raise ConstraintViolation(
-                        "geometry",
-                        f"'{pose.id}' places '{frame}' by the drawn coordinate '{node}': a "
-                        f"placement read as numbers cannot be drawn; only a free scene object's "
-                        f"position can, or a frame on the body",
-                    )
-
-
 def frame_placement(model, node, wrt):
     """Where a body or frame sits in `wrt`, in metres and [x, y, z, w].
 
@@ -1339,8 +1290,18 @@ def frame_placement(model, node, wrt):
     frame = placement_frame(model, node)
     if frame is None:
         return None, None
-    _reject_sampled_placement(model, frame, wrt)
-    graph = _placement_graph(model)
+    # A placement is built into the world before the run draws anything.
+    graph = placement_graph(model)
+    for pose, coords in get_pose_coords(graph=graph, poses=find_pose_path(frame, wrt, graph) or []):
+        for coord in coords:
+            for coord_node in (coord.id, coord.position_coord.id, coord.orientation_coord.id):
+                if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, coord_node):
+                    raise ConstraintViolation(
+                        "geometry",
+                        f"'{pose.id}' places '{frame}' by the drawn coordinate '{coord_node}': a "
+                        f"placement read as numbers cannot be drawn; only a free scene object's "
+                        f"position can, or a frame on the body",
+                    )
     transform = get_transform_between_frames(frame, wrt, graph)
     if transform is None:
         # A pose reads one way, but it relates both frames: a scene that places a body's root
@@ -1361,42 +1322,26 @@ def constraint(model, node) -> Constraint:
     A goal status is not measured against an operand of its own kind: the status it must reach
     rides on the evaluator, so the constraint states the slot and nothing else.
     """
-    quantity_node = model.graph.value(node, CSTR["quantity"])
+    graph = model.graph
+    quantity_node = graph.value(node, CSTR["quantity"])
     if goal_status_act(model, quantity_node) is not None:
         return Constraint(model.id(node), quantity(model, quantity_node), None)
-    types = get_node_types(model.graph, node)
+    types = get_node_types(graph, node)
     if CSTR["EqualityConstraint"] in types:
-        parameter = _equality_constraint(model, node)
+        parameter = EqualityConstraint(quantity(model, graph.value(node, CSTR["reference-value"])))
     elif CSTR["UnilateralConstraint"] in types:
-        parameter = _unilateral_constraint(model, node)
+        type_ = UnilateralConstraintType.LessThan
+        if CSTR["GreaterThanConstraint"] in types:
+            type_ = UnilateralConstraintType.GreaterThan
+        parameter = UnilateralConstraint(
+            type_, quantity(model, graph.value(node, CSTR["threshold"]))
+        )
     else:
-        parameter = _band_constraint(model, node)
+        outside = CSTR_EXT["OutsideConstraint"] in types
+        parameter = BandConstraint(
+            quantity(model, graph.value(node, CSTR["lower-threshold"])),
+            quantity(model, graph.value(node, CSTR["upper-threshold"])),
+            "OutsideConstraint" if outside else "BilateralConstraint",
+        )
 
     return Constraint(model.id(node), quantity(model, quantity_node), parameter)
-
-
-def _threshold(model, node, predicate) -> Quantity:
-    return quantity(model, model.graph.value(node, predicate))
-
-
-@reader
-def _equality_constraint(model, node) -> EqualityConstraint:
-    return EqualityConstraint(_threshold(model, node, CSTR["reference-value"]))
-
-
-@reader
-def _unilateral_constraint(model, node) -> UnilateralConstraint:
-    type_ = UnilateralConstraintType.LessThan
-    if CSTR["GreaterThanConstraint"] in get_node_types(model.graph, node):
-        type_ = UnilateralConstraintType.GreaterThan
-    return UnilateralConstraint(type_, _threshold(model, node, CSTR["threshold"]))
-
-
-@reader
-def _band_constraint(model, node) -> BandConstraint:
-    outside = CSTR_EXT["OutsideConstraint"] in get_node_types(model.graph, node)
-    return BandConstraint(
-        _threshold(model, node, CSTR["lower-threshold"]),
-        _threshold(model, node, CSTR["upper-threshold"]),
-        "OutsideConstraint" if outside else "BilateralConstraint",
-    )

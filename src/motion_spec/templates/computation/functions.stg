@@ -274,9 +274,9 @@ data.<component.error> = _pose_axis_error_<component.subspace>_<component.axis>;
 
 pose-axis-error-group(pose_group, views) ::= <<
     {
-<if(pose_group.is_pose)><pose-axis-error-group-pose(pose_group, views)><endif>
-<if(pose_group.is_twist)><pose-axis-error-group-twist(pose_group, views)><endif>
-<if(pose_group.is_wrench)><pose-axis-error-group-wrench(pose_group, views)><endif>
+<if(pose_group.is_pose)><pose-axis-error-group-pose(pose_group, views)><endif><\\>
+<if(pose_group.is_twist)><pose-axis-error-group-twist(pose_group, views)><endif><\\>
+<if(pose_group.is_wrench)><pose-axis-error-group-wrench(pose_group, views)><endif><\\>
 <pose_group.components:{component |         <pose-axis-error-component(component)>}; separator="\n">
     }
 >>

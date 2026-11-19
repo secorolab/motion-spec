@@ -33,19 +33,6 @@ def real_camera_recordings(cameras: list, requested: list[str] | None) -> list[C
     ]
 
 
-def frame_slot(stamp: float, origin: float, rate_hz: float) -> int:
-    """The constant-rate output slot a frame stamped `stamp` belongs to."""
-    return round((stamp - origin) * rate_hz)
-
-
-def image_stamp(message, receipt: float) -> float:
-    """The frame's capture time, falling back to receipt when the driver did not stamp it."""
-    stamp = message.header.stamp
-    if stamp.sec or stamp.nanosec:
-        return stamp.sec + stamp.nanosec * 1e-9
-    return receipt
-
-
 def rgb_rows(message) -> bytes:
     """The image as tightly packed rows, the only layout rawvideo accepts."""
     row_size = message.width * 3
@@ -58,7 +45,7 @@ def rgb_rows(message) -> bytes:
 
 
 class RosImageSubscription:
-    """A ROS image topic spun on a thread of its own, each message handed to `_absorb`.
+    """A ROS image topic spun on a thread of its own, each message handed to `absorb`.
 
     rclpy is imported inside the thread, so a process without a ROS environment still runs and
     reports the missing environment as its error.
@@ -68,11 +55,11 @@ class RosImageSubscription:
         self.topic = topic
         self.node_name = node_name
         self.error: str | None = None
-        self._stop = threading.Event()
+        self.stop = threading.Event()
         self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._spin, name=node_name, daemon=True)
+        self._thread = threading.Thread(target=self.spin, name=node_name, daemon=True)
 
-    def _spin(self) -> None:
+    def spin(self) -> None:
         try:
             import rclpy
             from rclpy.executors import SingleThreadedExecutor
@@ -88,11 +75,11 @@ class RosImageSubscription:
             rclpy.init(context=context)
             node = rclpy.create_node(self.node_name, context=context)
             # Sensor QoS: best-effort still matches a reliable publisher, the reverse does not.
-            node.create_subscription(Image, self.topic, self._absorb, qos_profile_sensor_data)
+            node.create_subscription(Image, self.topic, self.absorb, qos_profile_sensor_data)
             executor = SingleThreadedExecutor(context=context)
             executor.add_node(node)
             self._ready.set()
-            while not self._stop.is_set():
+            while not self.stop.is_set():
                 executor.spin_once(timeout_sec=0.1)
         except Exception as exc:  # noqa: BLE001 - ROS middleware exceptions are implementation-defined.
             self.error = str(exc)
@@ -122,7 +109,7 @@ class RosImageRecorder(RosImageSubscription):
         self._frames: queue.Queue = queue.Queue(maxsize=queue_depth)
         self._ffmpeg: subprocess.Popen[bytes] | None = None
         self._writer = threading.Thread(
-            target=self._write, name=f"motion-spec-video-{recording.id}-encode"
+            target=self.write, name=f"motion-spec-video-{recording.id}-encode"
         )
 
     def start(self) -> None:
@@ -133,7 +120,7 @@ class RosImageRecorder(RosImageSubscription):
 
     def close(self) -> None:
         """Stop the subscription and finalize the MP4 if it received frames."""
-        self._stop.set()
+        self.stop.set()
         self._thread.join(timeout=5.0)
         if self._thread.is_alive():
             self.error = self.error or "ROS image recorder did not stop"
@@ -147,44 +134,14 @@ class RosImageRecorder(RosImageSubscription):
         if self.dropped:
             self.error = self.error or f"dropped {self.dropped} frames (encoder fell behind)"
 
-    def _absorb(self, message) -> None:
+    def absorb(self, message) -> None:
         # The executor thread only hands the frame over; every copy and write happens off it.
         try:
             self._frames.put_nowait((time.time(), message))
         except queue.Full:
             self.dropped += 1
 
-    def _open_ffmpeg(self, message) -> None:
-        self.output.parent.mkdir(parents=True, exist_ok=True)
-        self._ffmpeg = subprocess.Popen(
-            [
-                "ffmpeg",
-                "-y",
-                "-loglevel",
-                "error",
-                "-f",
-                "rawvideo",
-                "-pixel_format",
-                "rgb24" if message.encoding == "rgb8" else "bgr24",
-                "-video_size",
-                f"{message.width}x{message.height}",
-                "-framerate",
-                str(self.recording.rate_hz),
-                "-i",
-                "pipe:0",
-                "-an",
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                str(self.output),
-            ],
-            stdin=subprocess.PIPE,
-            # Its own session: a terminal interrupt is for the controller, not for ffmpeg.
-            start_new_session=True,
-        )
-
-    def _write(self) -> None:
+    def write(self) -> None:
         origin: float | None = None
         last_slot = 0
         last_frame: bytes | None = None
@@ -201,14 +158,48 @@ class RosImageRecorder(RosImageSubscription):
                     self.error = "invalid RGB image dimensions"
                     continue
                 if self._ffmpeg is None:
-                    self._open_ffmpeg(message)
+                    self.output.parent.mkdir(parents=True, exist_ok=True)
+                    self._ffmpeg = subprocess.Popen(
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-loglevel",
+                            "error",
+                            "-f",
+                            "rawvideo",
+                            "-pixel_format",
+                            "rgb24" if message.encoding == "rgb8" else "bgr24",
+                            "-video_size",
+                            f"{message.width}x{message.height}",
+                            "-framerate",
+                            str(self.recording.rate_hz),
+                            "-i",
+                            "pipe:0",
+                            "-an",
+                            "-c:v",
+                            "libx264",
+                            "-pix_fmt",
+                            "yuv420p",
+                            str(self.output),
+                        ],
+                        stdin=subprocess.PIPE,
+                        # Its own session: a terminal interrupt is for the controller, not for
+                        # ffmpeg.
+                        start_new_session=True,
+                    )
                 assert self._ffmpeg is not None and self._ffmpeg.stdin is not None
-                stamp = image_stamp(message, receipt)
+                # The capture time, falling back to receipt when the driver did not stamp it.
+                header_stamp = message.header.stamp
+                stamp = (
+                    header_stamp.sec + header_stamp.nanosec * 1e-9
+                    if header_stamp.sec or header_stamp.nanosec
+                    else receipt
+                )
                 if origin is None:
                     origin = stamp
                     slot = 0
                 else:
-                    slot = frame_slot(stamp, origin, self.recording.rate_hz)
+                    slot = round((stamp - origin) * self.recording.rate_hz)
                     # A slot already holds a frame: the newcomer is a duplicate or arrived late.
                     if slot <= last_slot:
                         continue

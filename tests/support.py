@@ -11,9 +11,8 @@ from pathlib import Path
 import pytest
 from motion_spec_dsl.rdf_parser.vocab import EXEC
 from rdf_utils.models.prov import get_py_pkg_info
+from rdf_utils.namespace import URL_MM_PROV_EXT_JSON, URL_MM_PROV_JSON
 from rdflib.namespace import SDO, SSN
-
-from motion_spec.runs.provenance import PROV_CONTEXT
 
 # A model that publishes or subscribes to a ROS topic resolves its messages through rosidl.
 REQUIRES_ROS = pytest.mark.skipif(
@@ -162,7 +161,11 @@ MODEL_GRAPH = {
 # The DSL's bundle in miniature: one named graph holding one transformation.
 DSL_AGENT = get_py_pkg_info("motion_spec_dsl").purl
 PROVENANCE = {
-    "@context": PROV_CONTEXT,
+    "@context": [
+        "https://secorolab.github.io/metamodels/acceptance-criteria/bdd/agent.json",
+        URL_MM_PROV_JSON,
+        URL_MM_PROV_EXT_JSON,
+    ],
     "@graph": [
         {
             "@id": "urn:uuid:5b0f6a1e-6f36-4c43-9c1e-0d7f1f2a9e01",

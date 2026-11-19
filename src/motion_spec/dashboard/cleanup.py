@@ -6,15 +6,16 @@
 
 from __future__ import annotations
 
+import configparser
 import os
 import subprocess
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.jobs import generation_status
-from motion_spec.dashboard.metadata import annotations, baseline, generation_of
-from motion_spec.dashboard.roots import directory_size, relative_path
+from motion_spec.dashboard.metadata import annotations, generation_of, model_folder
+from motion_spec.dashboard.roots import directory_size, json_file, relative_path
 from motion_spec.dashboard.runs import GenerationInfo, RunInfo
 
 
@@ -28,7 +29,7 @@ def protection(path: Path) -> str | None:
         return "protected generation or run"
     if annotations(path)["pinned"] or any(annotations(run)["pinned"] for run in runs):
         return "pinned generation or run"
-    reference = baseline(path)
+    reference = json_file(model_folder(path) / "dashboard-model.json").get("baseline")
     if reference and (roots.GENERATIONS / reference) in [path, *runs]:
         return "model baseline"
     return None
@@ -38,11 +39,7 @@ def preview(paths: list[str]) -> dict:
     """Resolve and deduplicate the selection before counting or deleting anything."""
     if not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths):
         raise ValueError("select generation or run paths")
-    targets = []
-    for value in paths:
-        target = relative_path(roots.GENERATIONS, value)
-        if target not in targets:
-            targets.append(target)
+    targets = list(dict.fromkeys(relative_path(roots.GENERATIONS, value) for value in paths))
     for path in targets:
         try:
             generation_of(path)
@@ -84,23 +81,21 @@ def trash_entries() -> list[dict]:
                     "uri": uri,
                     "path": str(path.relative_to(roots.GENERATIONS.resolve())),
                     "exists": path.exists(),
+                    "deleted_at": deletion_date(uri),
                 }
             )
-    for entry in entries:
-        entry["deleted_at"] = deletion_date(entry["uri"])
     return entries
 
 
 def deletion_date(uri: str) -> str | None:
     """Read the freedesktop Trash timestamp without a GIO query per entry."""
     root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash" / "info"
-    info = (root / f"{unquote(uri.removeprefix('trash:///'))}.trashinfo").resolve()
+    info = (root / f"{Path(unquote(urlsplit(uri).path)).name}.trashinfo").resolve()
     if root.resolve() not in info.parents or not info.is_file():
         return None
-    for line in info.read_text(encoding="utf-8").splitlines():
-        if line.startswith("DeletionDate="):
-            return line.removeprefix("DeletionDate=")
-    return None
+    entry = configparser.ConfigParser(interpolation=None)
+    entry.read(info, encoding="utf-8")
+    return entry.get("Trash Info", "DeletionDate", fallback=None)
 
 
 def restore(uri: str) -> dict:

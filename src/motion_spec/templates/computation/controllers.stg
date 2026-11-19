@@ -13,7 +13,6 @@ controller_runtime_header(resources, configuration, computation) ::= <<
 #include "runtime.hpp"
 
 namespace motion_spec::runtime {
-
 <if(computation.uses.("Admittance"))>
 // Virtual mass-damper(-spring) admittance filter: turns a measured external-force
 // axis into a per-axis velocity setpoint. vel_/offset_ integrate across control
@@ -88,9 +87,8 @@ struct FeedForwardControl {
     void reset(bool = false) { adm_filter = AdmittanceFilter{}; }
 <else>    void reset(bool = false) {}
 <endif>    void clear_error_history() {}
-};
+};<if(computation.uses.("ProportionalIntegralDerivative"))>
 
-<if(computation.uses.("ProportionalIntegralDerivative"))>
 // The tuning a step applies, handed in per call like dt. Kept out of the controller so the
 // numbers stay algorithm data a run artifact can report rather than construction-time state.
 struct PIDGains {
@@ -178,10 +176,8 @@ class PIDControl {
     double err_integ = 0.0;
     double err_last = 0.0;
     bool first_sample = true;
-};
+};<endif><if(computation.uses.("ImpedanceController"))>
 
-<endif>
-<if(computation.uses.("ImpedanceController"))>
 // Spring-damper controller: maps a single scalar constraint error to a
 // force/torque output as F = ks*e + kd*(de/dt). The derivative is
 // approximated by finite difference on successive error samples, so
@@ -225,10 +221,7 @@ class ImpedanceControl {
     double err_last = 0.0;
     double err_int = 0.0;
     bool first_sample = true;
-};
-
-<endif>
-}  // namespace motion_spec::runtime
+};<endif><\n>}  // namespace motion_spec::runtime
 >>
 
 controller-member(controller) ::= <<

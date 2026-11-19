@@ -51,7 +51,7 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 "FSM, so nothing can end them; add an 'until' condition or coordinate the model "
                 "with an FSM",
             )
-        _resolve_occurrence_events(motions, fsm, namespace)
+        resolve_occurrence_events(motions, fsm, namespace)
 
         return meta
 
@@ -145,62 +145,82 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 if state and not motion.fsm_state:
                     motion.fsm_state = state
                 continue
-            fallback = _when_gate_fallback(motion, monitor, units_by_motion)
+            # The hold motion that runs while the WHEN-gated motion waits for its event.
+            if not monitor.fallback_motion:
+                raise ConstraintViolation(
+                    "coordination",
+                    f"WHEN monitor '{monitor.id}' on FSM-wired motion '{motion.id}' must declare a "
+                    "waiting hold motion (e.g. '... otherwise hold <hold-motion>'). A WHEN "
+                    "precondition without a fallback would leave the arm uncommanded while "
+                    "waiting.",
+                )
+            candidates = units_by_motion.get(monitor.fallback_motion, [])
+            if not candidates:
+                raise ConstraintViolation(
+                    "coordination",
+                    f"WHEN monitor '{monitor.id}' names unknown fallback motion "
+                    f"'{monitor.fallback_motion}'.",
+                )
+            if len(candidates) > 1:
+                raise ConstraintViolation(
+                    "coordination",
+                    f"WHEN monitor '{monitor.id}' on motion '{motion.id}' falls back to "
+                    f"'{monitor.fallback_motion}', which is realized by more than one constraint "
+                    f"handler ({', '.join(unit.id for unit in candidates)}), so nothing says "
+                    "which of them holds while the gated motion waits. Name the handler's own "
+                    "motion.",
+                )
+            fallback = candidates[0]
             if state is None:
-                _bind_in_state_gate(motion, monitor, fallback)
+                # An event that drives no transition gates the motion inside its own state.
+                if not motion.fsm_state:
+                    raise ConstraintViolation(
+                        "coordination",
+                        f"WHEN monitor '{monitor.id}' fires '{monitor.event_name}', which no "
+                        f"reaction consumes, so '{motion.id}' is gated inside its own state -- but "
+                        "it names no 'runs-in' state to hold in.",
+                    )
+                if motion.when_gate_hold and motion.when_gate_hold["id"] != fallback.id:
+                    raise ConstraintViolation(
+                        "coordination",
+                        f"'{motion.id}' is gated by two WHEN monitors naming different holds "
+                        f"('{motion.when_gate_hold['id']}', '{fallback.id}'); one motion holds "
+                        "while it waits.",
+                    )
+                monitor.opens_gate = True
+                motion.has_when_gate = True
+                motion.when_gate_hold = {"id": fallback.id}
+                fallback.is_when_gate_hold = True
                 continue
             if not fallback.fsm_state:
                 fallback.fsm_state = state
             if motion.id not in fallback.fsm_when_gate_motions:
                 fallback.fsm_when_gate_motions.append(motion.id)
 
-    _apply_reentry_events(motions, fsm)
-    _resolve_occurrence_events(motions, fsm, namespace)
-    _check_every_commanding_motion_runs(motions, fsm, meta)
+    # A self-transition's fired events re-enter the state's motion: the model opts in by
+    # authoring `fires` on the retry reaction, and the loop consumes the fired event and
+    # deactivates the motion, so entry runs again (snapshots re-capture, goals re-send).
+    self_state = {
+        row["id"]: row["from_state"]
+        for row in fsm.get("transitions_table", [])
+        if row["from_state"] == row["to_state"]
+    }
+    fired_by_state: dict = {}
+    for row in fsm.get("reactions_table", []):
+        state = self_state.get(row["do_transition"])
+        if state is not None:
+            fired_by_state.setdefault(state, set()).update(row["fires_events"])
+    for motion in motions:
+        motion.reentry_events = list(fired_by_state.get(motion.fsm_state, ()))
 
-    return meta
+    resolve_occurrence_events(motions, fsm, namespace)
 
-
-def _reachable_states(fsm) -> set:
-    """The states the FSM can reach from its start state.
-
-    A transition fires only when a reaction names it, so one no reaction refers to is not an
-    edge: following it would call a state reachable that the generated FSM can never enter.
-    """
-    transitions = {row["id"]: row for row in fsm["transitions_table"]}
-    outgoing: dict = {}
-    for reaction in fsm["reactions_table"]:
-        transition = transitions.get(reaction["do_transition"])
-        if transition is not None:
-            outgoing.setdefault(transition["from_state"], set()).add(transition["to_state"])
-
-    reached = {fsm["start_state"]}
-    pending = [fsm["start_state"]]
-    while pending:
-        for state in outgoing.get(pending.pop(), ()):
-            if state not in reached:
-                reached.add(state)
-                pending.append(state)
-
-    return reached
-
-
-def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
-    """Motions and the states that run them have to cover each other.
-
-    A motion reaches its state by firing the event that leaves it, so a motion that fires
-    nothing is bound to nothing: the dispatch gets no case, the motion never steps, and the
-    generated program runs its loop commanding whatever the drivers start at -- zero torque on
-    a torque-controlled arm, which is an arm that falls.
-
-    The same hole opens from the other side. A state the FSM can sit in with no motion bound to
-    it renders no `case` either, and the loop keeps calling the driver every tick with whatever
-    was staged last, so the arm is uncommanded for exactly as long as the FSM stays there. Only
-    two states are allowed to run nothing: the end state, which the loop breaks on before it
-    dispatches unless a motion is bound there -- then it stays until that motion's until has
-    fired -- and a state the heartbeat leaves, which the FSM does not dwell in.
-    """
-    namespace = meta["cpp_namespace"]
+    # Motions and the states that run them have to cover each other. A motion that fires no FSM
+    # event is bound to no state, so it never steps and the drivers run on whatever they start
+    # at -- zero torque on a torque-controlled arm, which is an arm that falls. A reachable state
+    # with no motion bound renders no `case`, so the arm is uncommanded while the FSM sits there.
+    # Only the end state (the loop breaks on it unless a motion is bound there) and a state the
+    # heartbeat leaves (the FSM does not dwell in it) may run nothing.
     orphaned = [
         motion.id
         for motion in motions
@@ -216,7 +236,21 @@ def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
 
     passed_through = {transition["from"] for transition in meta["step_transitions"]}
     bound = {motion.fsm_state for motion in motions} | passed_through | {fsm["end_state"]}
-    idle = [state for state in _reachable_states(fsm) if state not in bound]
+    # A transition fires only when a reaction names it, so one no reaction refers to is not an
+    # edge: following it would call a state reachable that the generated FSM can never enter.
+    outgoing: dict = {}
+    for reaction in fsm["reactions_table"]:
+        transition = transitions.get(reaction["do_transition"])
+        if transition is not None:
+            outgoing.setdefault(transition["from_state"], set()).add(transition["to_state"])
+    reached = {fsm["start_state"]}
+    pending = [fsm["start_state"]]
+    while pending:
+        for state in outgoing.get(pending.pop(), ()):
+            if state not in reached:
+                reached.add(state)
+                pending.append(state)
+    idle = [state for state in reached if state not in bound]
     if idle:
         raise ConstraintViolation(
             "coordination",
@@ -227,8 +261,10 @@ def _check_every_commanding_motion_runs(motions, fsm, meta) -> None:
             "the state a transition the heartbeat takes so the FSM passes straight through.",
         )
 
+    return meta
 
-def _resolve_occurrence_events(motions, fsm, namespace) -> None:
+
+def resolve_occurrence_events(motions, fsm, namespace) -> None:
     """Resolve each announced event to the enum token the generated FSM names it by.
 
     A monitor announces events it need not fire itself, so the tokens come from the FSM's own
@@ -258,86 +294,6 @@ def _resolve_occurrence_events(motions, fsm, namespace) -> None:
             ros.occurrence_namespace = namespace
 
 
-def _apply_reentry_events(motions, fsm) -> None:
-    """A self-transition's fired events re-enter the state's motion.
-
-    The model opts in by authoring `fires` on the retry reaction; the loop consumes the fired
-    event and deactivates the motion, so entry runs again (snapshots re-capture, goals re-send).
-    """
-    tables = fsm or {}
-    self_state = {
-        row["id"]: row["from_state"]
-        for row in tables.get("transitions_table", [])
-        if row["from_state"] == row["to_state"]
-    }
-    fired_by_state: dict = {}
-    for row in tables.get("reactions_table", []):
-        state = self_state.get(row["do_transition"])
-        if state is not None:
-            fired_by_state.setdefault(state, set()).update(row["fires_events"])
-    for motion in motions:
-        motion.reentry_events = list(fired_by_state.get(motion.fsm_state, ()))
-
-
-def _when_gate_fallback(motion, monitor, units_by_motion):
-    """The hold motion that runs while a WHEN-gated motion waits for its event.
-
-    Raises:
-        ConstraintViolation: the fallback names a motion two handlers realize, so nothing says
-            which of them holds while the gated motion waits.
-    """
-    if not monitor.fallback_motion:
-        raise ConstraintViolation(
-            "coordination",
-            f"WHEN monitor '{monitor.id}' on FSM-wired motion '{motion.id}' must declare a "
-            "waiting hold motion (e.g. '... otherwise hold <hold-motion>'). A WHEN precondition "
-            "without a fallback would leave the arm uncommanded while waiting.",
-        )
-    candidates = units_by_motion.get(monitor.fallback_motion, [])
-    if not candidates:
-        raise ConstraintViolation(
-            "coordination",
-            f"WHEN monitor '{monitor.id}' names unknown fallback motion "
-            f"'{monitor.fallback_motion}'.",
-        )
-    if len(candidates) > 1:
-        raise ConstraintViolation(
-            "coordination",
-            f"WHEN monitor '{monitor.id}' on motion '{motion.id}' falls back to "
-            f"'{monitor.fallback_motion}', which is realized by more than one constraint "
-            f"handler ({', '.join(unit.id for unit in candidates)}), so nothing says "
-            "which of them holds while the gated motion waits. Name the handler's own motion.",
-        )
-
-    return candidates[0]
-
-
-def _bind_in_state_gate(motion, monitor, fallback) -> None:
-    """A WHEN monitor whose event drives no transition gates the motion inside its own state.
-
-    Raises:
-        ConstraintViolation: the motion names no `runs-in` state, so there is no state to hold
-            in; or two of its monitors name different holds.
-    """
-    if not motion.fsm_state:
-        raise ConstraintViolation(
-            "coordination",
-            f"WHEN monitor '{monitor.id}' fires '{monitor.event_name}', which no reaction "
-            f"consumes, so '{motion.id}' is gated inside its own state -- but it names no "
-            "'runs-in' state to hold in.",
-        )
-    if motion.when_gate_hold and motion.when_gate_hold["id"] != fallback.id:
-        raise ConstraintViolation(
-            "coordination",
-            f"'{motion.id}' is gated by two WHEN monitors naming different holds "
-            f"('{motion.when_gate_hold['id']}', '{fallback.id}'); one motion holds while it waits.",
-        )
-    monitor.opens_gate = True
-    motion.has_when_gate = True
-    motion.when_gate_hold = {"id": fallback.id}
-    fallback.is_when_gate_hold = True
-
-
 def apply_fsm_gate_calls(motions, namespace) -> None:
     """Fold each hold motion's WHEN-evaluation gate calls.
 
@@ -356,16 +312,15 @@ def apply_fsm_gate_calls(motions, namespace) -> None:
                 "needs_events": hold.step_needs_events,
             }
     for fallback in motions:
-        if not fallback.fsm_when_gate_motions:
-            continue
         fallback.fsm_when_gate_calls = [
             {
-                "gid": gate_id,
-                "needs_state": by_id[gate_id].when_needs_state,
-                "needs_data": by_id[gate_id].when_needs_data,
-                "needs_robot": by_id[gate_id].when_needs_robot,
-                "needs_events": by_id[gate_id].when_needs_events,
+                "gid": gate.id,
+                "needs_state": gate.when_needs_state,
+                "needs_data": gate.when_needs_data,
+                "needs_robot": gate.when_needs_robot,
+                "needs_events": gate.when_needs_events,
             }
             for gate_id in fallback.fsm_when_gate_motions
             if gate_id in by_id
+            for gate in [by_id[gate_id]]
         ]

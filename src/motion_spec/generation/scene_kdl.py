@@ -6,50 +6,6 @@ from __future__ import annotations
 from rdf_utils.constraints import ConstraintViolation
 
 
-def _joint_segments(tree: dict, chain: dict) -> list[str]:
-    """The tree segment each chain joint moves, in chain-joint order.
-
-    The world model binds a measurement to a segment, not to a joint, so the chain's joint order
-    has to be carried over to the names the built tree knows. A joint with no segment would bind
-    the wrong state, and only after startup, so it is an error here.
-    """
-    segment_by_joint = {
-        segment["joint"]["name"]: segment["name"]
-        for segment in tree["segments"]
-        if segment["joint"] is not None
-    }
-    segments = []
-    for joint in chain["joints"]:
-        if joint["name"] not in segment_by_joint:
-            raise ConstraintViolation(
-                "kinematics",
-                f"chain '{chain['name']}' articulates joint '{joint['name']}', which no segment "
-                f"of tree '{tree['name']}' carries",
-            )
-        segments.append(segment_by_joint[joint["name"]])
-
-    return segments
-
-
-def _world_segments(tree: dict, chain: dict) -> dict[str, str]:
-    """Every scene element this chain reaches, by IRI, named as the built tree names it.
-
-    Every posed frame has its own KDL leaf, so a frame the chain slice can only reach
-    as "a parent plus a constant offset" is an exact segment of the tree. A body's own root frame
-    is where the body's segment already is, and carries no segment of its own -- it resolves
-    through the body the chain placement points at.
-    """
-    by_iri = {tree["root_iri"]: tree["root"]}
-    by_iri.update({segment["iri"]: segment["name"] for segment in tree["segments"]})
-    name_by_index = {0: chain["root"]}
-    name_by_index.update({index: by_iri[body] for body, index in chain["bodies"].items()})
-    for iri, placement in chain["frames"].items():
-        if iri not in by_iri and placement["index"] in name_by_index:
-            by_iri[iri] = name_by_index[placement["index"]]
-
-    return by_iri
-
-
 def segment_of_joint(trees: list[dict], joint_uri: str) -> str:
     """The tree segment the given scene joint moves, or "" when no tree carries it.
 
@@ -72,19 +28,51 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
     for tree in trees:
         for chain in tree["chains"]:
             if chain["iri"] == chain_iri:
+                # The world model binds a measurement to a segment, not to a joint, so the chain's
+                # joint order has to be carried over to the names the built tree knows. A joint
+                # with no segment would bind the wrong state, and only after startup.
+                segment_by_joint = {
+                    segment["joint"]["name"]: segment["name"]
+                    for segment in tree["segments"]
+                    if segment["joint"] is not None
+                }
+                joint_segments = []
+                for joint in chain["joints"]:
+                    if joint["name"] not in segment_by_joint:
+                        raise ConstraintViolation(
+                            "kinematics",
+                            f"chain '{chain['name']}' articulates joint '{joint['name']}', which "
+                            f"no segment of tree '{tree['name']}' carries",
+                        )
+                    joint_segments.append(segment_by_joint[joint["name"]])
+                # Every posed frame has its own KDL leaf, so a frame the chain slice can only reach
+                # as "a parent plus a constant offset" is an exact segment of the tree. A body's
+                # own root frame carries no segment of its own: it resolves through the body the
+                # chain placement points at.
+                world_segments = {
+                    tree["root_iri"]: tree["root"],
+                    **{segment["iri"]: segment["name"] for segment in tree["segments"]},
+                }
+                name_by_index = {
+                    0: chain["root"],
+                    **{index: world_segments[body] for body, index in chain["bodies"].items()},
+                }
+                for iri, placement in chain["frames"].items():
+                    if iri not in world_segments and placement["index"] in name_by_index:
+                        world_segments[iri] = name_by_index[placement["index"]]
                 return {
                     "name": chain["cpp_name"],
                     "tree": tree["cpp_name"],
                     "namespace": tree["namespace"],
                     "joints": [joint["local_name"] for joint in chain["joints"]],
-                    "joint_segments": _joint_segments(tree, chain),
+                    "joint_segments": joint_segments,
                     "frames": chain["frames"],
                     "bodies": chain["bodies"],
                     "tip_segment": chain["tip_index"],
                     "world_root": chain["root"],
                     "world_tip": chain["tip"],
                     "tree_root": tree["root"],
-                    "world_segments": _world_segments(tree, chain),
+                    "world_segments": world_segments,
                 }
     return {
         "name": "",

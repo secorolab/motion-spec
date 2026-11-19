@@ -11,51 +11,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import rdflib
+from rdf_utils.models.prov import get_file_path
+from rdflib.namespace import PROV
 
-from motion_spec.dashboard.catalog import classify_quads, graph_name, rdf_name, term_graphs
-from motion_spec.dashboard.graph import GraphService, load_document, model_document
+from motion_spec.dashboard.catalog import classify_quads, graph_name, term_graphs
+from motion_spec.dashboard.graph import GraphService, load_document
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
 from motion_spec.dashboard.roots import LAYOUT_REL, json_file
+from motion_spec.dashboard.runs import RunInfo
 from motion_spec.dashboard.sources import declaration_lines
-from motion_spec.runs.provenance import run_generation
+from motion_spec.runs.provenance import (
+    GENERATION_DOCUMENT,
+    kept_dsl_document,
+    read_generation_dataset,
+    run_generation,
+)
 from motion_spec.runs.replay import resolve_run
 from motion_spec.runs.verify import RecordError
-from motion_spec.telemetry import frame_log_pb
 
 # A picture of a hundred thousand triples is a locked browser, not an answer.
 GRAPH_MAX_TRIPLES = 20_000
 
 
 _GRAPHS: dict[tuple[str, int, bool], GraphService] = {}
-
-
-def generation_graph(generation_dir: Path) -> GraphService:
-    """A generation's model graph on its own."""
-    return GraphService(generation_dir)
-
-
-def run_graph(run_dir: Path) -> GraphService:
-    """One run's queryable model graph. Kept per log revision, as the run list is."""
-    _, log, _contract = resolve_run(run_dir)
-    key = (str(log), log.stat().st_size, True)
-    if key not in _GRAPHS:
-        generation = run_generation(run_dir)
-        if generation is None:
-            raise RecordError(run_dir, "the run's document names no generation's provenance")
-        _GRAPHS.clear()
-        _GRAPHS[key] = GraphService(generation)
-    return _GRAPHS[key]
-
-
-def query_graph(path: Path) -> GraphService:
-    """The dataset a query is asked of: a run's, or a generation's model on its own.
-
-    A generation with no run still has a model graph worth exploring, and the Explore page is
-    the only way left to look at one -- so a query aimed at a generation answers from it.
-    """
-    if (path / LAYOUT_REL).exists():
-        return generation_graph(path)
-    return run_graph(path)
 
 
 QUERIES_REL = "queries.json"
@@ -70,7 +48,7 @@ def saved_queries(run_dir: Path) -> list:
 
 def save_queries(run_dir: Path, queries: list) -> dict:
     """Keep a run's queries with the run, so they outlive the browser that wrote them."""
-    if not frame_log_pb.log_path(run_dir / "logs" / "frame_log.pb").exists():
+    if not RunInfo(run_dir).log_path.exists():
         raise ValueError("queries belong to a run")
     texts = [str(query) for query in queries][:200]
     (run_dir / QUERIES_REL).write_text(json.dumps({"queries": texts}, indent=1))
@@ -109,10 +87,7 @@ def save_notes(run_dir: Path, notes: list) -> dict:
         tags = note.get("tags") or []
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise ValueError("note tags must be a list of strings")
-        named = []
-        for tag in tags:
-            if tag.strip() and tag.strip() not in named:
-                named.append(tag.strip())
+        named = list(dict.fromkeys(tag.strip() for tag in tags if tag.strip()))
         kept.append(
             {
                 "id": str(note.get("id") or secrets.token_hex(6)),
@@ -141,10 +116,28 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     the same terms make. A table and a picture disagreeing would be two results, not two views.
     The table pages through the rows PAGE_SIZE at a time; the graph is always the whole answer.
     """
-    service = query_graph(run_dir)
+    # A generation with no run still has a model graph worth exploring, and the Explore page is
+    # the only way left to look at one -- so a query aimed at a generation answers from it.
+    if (run_dir / LAYOUT_REL).exists():
+        service = GraphService(run_dir)
+    else:
+        # Kept per log revision, as the run list is.
+        _, log, _contract = resolve_run(run_dir)
+        key = (str(log), log.stat().st_size, True)
+        if key not in _GRAPHS:
+            generation = run_generation(run_dir)
+            if generation is None:
+                raise RecordError(run_dir, "the run's document names no generation's provenance")
+            _GRAPHS.clear()
+            _GRAPHS[key] = GraphService(generation)
+        service = _GRAPHS[key]
     started = time.perf_counter()
     try:
-        kind, headers, rows = _query_rows(service, sparql)
+        kind, payload = service.query(sparql)
+        if kind in ("CONSTRUCT", "DESCRIBE"):
+            headers, rows = ["subject", "predicate", "object"], payload
+        else:
+            headers, rows = payload
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         if not len(service.dataset):
@@ -154,7 +147,7 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
                 "so only its recorded observations can be queried."
             )
         raise ValueError(detail) from exc
-    prefixes = service.namespaces()
+    prefixes = {prefix: str(ns) for prefix, ns in service.dataset.namespaces()}
     offset = max(0, min(int(offset), max(0, len(rows) - 1)))
     return {
         "type": kind,
@@ -172,15 +165,6 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     }
 
 
-def _query_rows(service: GraphService, sparql: str) -> tuple[str, list[str], list]:
-    """Answer any query shape as headers and rows; a graph comes back as its triples."""
-    kind, payload = service.query(sparql)
-    if kind in ("CONSTRUCT", "DESCRIBE"):
-        return kind, ["subject", "predicate", "object"], payload
-    headers, rows = payload
-    return kind, headers, rows
-
-
 def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
     """The result drawn as a graph, or None when there is nothing to draw.
 
@@ -190,11 +174,27 @@ def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
     Either way the picture answers the same query the table does.
     """
     if kind in ("CONSTRUCT", "DESCRIBE"):
-        quads = [(*triple, _home_graph(service, triple)) for triple in rows]
+        # A derived triple came from none of the named graphs.
+        quads = [
+            (
+                *triple,
+                next((graph_name(quad[3]) for quad in service.dataset.quads(triple)), "result"),
+            )
+            for triple in rows
+        ]
     elif kind == "SELECT":
-        drawn = _connected(
-            service, {t for row in rows for t in row if isinstance(t, rdflib.URIRef)}
-        )
+        bound = {t for row in rows for t in row if isinstance(t, rdflib.URIRef)}
+        # Plus every term that stands between two bound ones. One hop is as far as this goes: a
+        # term reached from a single answer is that answer's neighbourhood, which is what Expand
+        # is for, not part of the answer.
+        joins: dict = {}
+        for subject, predicate, obj, _context in service.dataset.quads((None, None, None, None)):
+            if predicate == rdflib.RDF.type or isinstance(obj, rdflib.Literal):
+                continue
+            for term, other in ((subject, obj), (obj, subject)):
+                if other in bound and term not in bound:
+                    joins.setdefault(term, set()).add(other)
+        drawn = bound | {term for term, reached in joins.items() if len(reached) > 1}
         quads = [
             (subject, predicate, obj, graph_name(context))
             for subject, predicate, obj, context in service.dataset.quads((None, None, None, None))
@@ -206,27 +206,6 @@ def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
     if not quads or len(quads) > GRAPH_MAX_TRIPLES:
         return None
     return classify_quads(quads, term_graphs(service.dataset))
-
-
-def _connected(service: GraphService, bound: set) -> set:
-    """The bound terms, plus every term that stands between two of them.
-
-    One hop is as far as this goes: a term reached from a single answer is that answer's
-    neighbourhood, which is what Expand is for, not part of the answer.
-    """
-    joins: dict = {}
-    for subject, predicate, obj, _context in service.dataset.quads((None, None, None, None)):
-        if predicate == rdflib.RDF.type or isinstance(obj, rdflib.Literal):
-            continue
-        for term, other in ((subject, obj), (obj, subject)):
-            if other in bound and term not in bound:
-                joins.setdefault(term, set()).add(other)
-    return bound | {term for term, reached in joins.items() if len(reached) > 1}
-
-
-def _home_graph(service: GraphService, triple) -> str:
-    """Which named graph a result triple came from; a derived one came from none of them."""
-    return next((graph_name(quad[3]) for quad in service.dataset.quads(triple)), "result")
 
 
 def curie(term, prefixes: dict) -> str | None:
@@ -268,12 +247,14 @@ def model_lint(generation_dir: Path) -> dict:
 
     Asked of the whole dataset: nothing but the design is loaded here, so the union is the design.
     """
-    document = model_document(generation_dir)
+    document = kept_dsl_document(Path(generation_dir) / "generated")
     if document is None:
         return {"items": []}
     dataset = rdflib.Dataset(default_union=True)
     load_document(document, dataset)
-    authored = next((generation_dir / "generated/source").glob("*.robmot"), None)
+    provenance = read_generation_dataset(Path(generation_dir) / "generated" / GENERATION_DOCUMENT)
+    kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
+    authored = next((path for path in kept if path.suffix == ".robmot"), None)
     lines = declaration_lines(authored.read_text()) if authored else {}
     items = [
         {
@@ -285,7 +266,7 @@ def model_lint(generation_dir: Path) -> dict:
             "why": f"declared as {value} and read by nothing in the model",
         }
         for term, value in dataset.query(UNUSED_DECLARATION)
-        if (name := rdf_name(term))
+        if (name := str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1])
     ]
     # In the order they are read in; what an imported graph declares has no line here, so it
     # sorts to the end rather than to the top.

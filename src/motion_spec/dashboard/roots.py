@@ -11,17 +11,15 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
 import time
-from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
-from motion_spec.runs.provenance import artifact_size
-from motion_spec.setup import ENVIRONMENT_FILES
+from motion_spec.runs.provenance import FRAME_LOG_PACKED, artifact_size
+from motion_spec.setup import ENVIRONMENT_FILES, generations_root
 
 
 def pidfile(port: int | str, role: str = "dashboard") -> Path:
@@ -30,18 +28,12 @@ def pidfile(port: int | str, role: str = "dashboard") -> Path:
     return runtime / f"motion-spec-{role}-{port}.pid"
 
 
-# Roots the dashboard browses, replaced at startup by `serve` and by /api/roots.
-def _default_generations() -> Path:
-    """The root the CLI writes to, or the working directory: importing must not fail."""
-    from motion_spec.setup import generations_root
-
-    try:
-        return generations_root()
-    except RuntimeError:
-        return Path.cwd()
-
-
-GENERATIONS = _default_generations()
+# Roots the dashboard browses, replaced at startup by `serve` and by /api/roots. The root the
+# CLI writes to, or the working directory: importing must not fail.
+try:
+    GENERATIONS = generations_root()
+except RuntimeError:
+    GENERATIONS = Path.cwd()
 
 
 WORKSPACE = GENERATIONS.parent
@@ -161,11 +153,11 @@ def json_file(path: Path) -> dict:
     if not path.exists():
         return {}
     stamp = path.stat()
-    return _parsed_json(path, stamp.st_mtime_ns, stamp.st_size)
+    return parsed_json(path, stamp.st_mtime_ns, stamp.st_size)
 
 
 @lru_cache(maxsize=64)
-def _parsed_json(path: Path, _mtime_ns: int, _size: int) -> dict:
+def parsed_json(path: Path, _mtime_ns: int, _size: int) -> dict:
     return json.loads(path.read_text())
 
 
@@ -183,17 +175,9 @@ def storage_info() -> dict:
         "logs_bytes": sum(
             path.stat().st_size
             for path in files
-            if path.name in ("frame_log.pb", "frame_log.pb.zst")
+            if path.name in ("frame_log.pb", FRAME_LOG_PACKED)
         ),
     }
-
-
-def stamp_iso(name: str) -> str | None:
-    """A run or generation stamp as ISO 8601 UTC, for the browser to show in local time."""
-    match = re.fullmatch(r"(\d{8}T\d{6}\d{6})Z", name)
-    if not match:
-        return None
-    return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC).isoformat()
 
 
 LAYOUT_REL = "generated/contract/frame_layout.json"

@@ -10,7 +10,7 @@ from pathlib import Path
 from rec import State, Verdict
 
 from motion_spec.dashboard.frames import FrameLayout
-from motion_spec.runs.provenance import rec_document, rec_run_lifecycle_from_file
+from motion_spec.runs.provenance import built_executable, rec_run
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
 
@@ -20,21 +20,21 @@ LOG_REL = Path("logs") / "frame_log.pb"
 ENDED = {State.COMPLETE, State.CANCELED}
 
 # The doc only changes when the runner appends a transition, so mtime+size gates a re-read.
-_LIFECYCLE_CACHE: dict[str, tuple[tuple, dict]] = {}
+_LIFECYCLE_CACHE: dict[Path, tuple[tuple, tuple[State, Verdict]]] = {}
 
 
-def _lifecycle(path: Path) -> dict:
+def lifecycle(run_dir: Path) -> tuple[State, Verdict]:
     try:
-        stat = path.stat()
+        stat = rec_run(run_dir).store.path(run_dir.name).stat()
     except OSError:
-        return {}
+        return State.NEW, Verdict.UNAVAILABLE
     key = (stat.st_mtime_ns, stat.st_size)
-    cached = _LIFECYCLE_CACHE.get(str(path))
+    cached = _LIFECYCLE_CACHE.get(run_dir)
     if cached is not None and cached[0] == key:
         return cached[1]
-    doc = rec_run_lifecycle_from_file(path)
-    _LIFECYCLE_CACHE[str(path)] = (key, doc)
-    return doc
+    lifecycle = rec_run(run_dir).lifecycle()
+    _LIFECYCLE_CACHE[run_dir] = (key, lifecycle)
+    return lifecycle
 
 
 @dataclass
@@ -52,14 +52,14 @@ class RunInfo:
         return frame_log_pb.log_path(self.dir / LOG_REL)
 
     @property
-    def state(self) -> State | None:
-        """Where the run is, as rec recorded it; None while nothing is recorded."""
-        return _lifecycle(rec_document(self.dir)).get("state")
+    def state(self) -> State:
+        """Where the run is, as rec recorded it; `new` while nothing is recorded."""
+        return lifecycle(self.dir)[0]
 
     @property
-    def verdict(self) -> Verdict | None:
+    def verdict(self) -> Verdict:
         """How the run turned out; `unavailable` until it is complete."""
-        return _lifecycle(rec_document(self.dir)).get("verdict")
+        return lifecycle(self.dir)[1]
 
     @property
     def health(self) -> dict | None:
@@ -94,17 +94,14 @@ class GenerationInfo:
         return parts[0] if len(parts) > 1 else self.dir.parent.name
 
     @property
-    def timestamp(self) -> str:
-        return self.dir.name
-
-    @property
     def built_at(self) -> float:
         """When this bundle was last written, which is what "latest" means to someone reading."""
         return self.dir.stat().st_mtime
 
     @property
     def built(self) -> bool:
-        return (self.dir / "build" / self.dir.parent.name).exists()
+        executable = built_executable(self.dir / "generated")
+        return executable is not None and executable.exists()
 
     @property
     def layout(self) -> FrameLayout:
@@ -139,6 +136,3 @@ class GenerationCatalog:
             built = generation.built_at
             newest[generation.model] = max(newest.get(generation.model, built), built)
         return sorted(generations, key=lambda gen: (newest[gen.model], gen.built_at), reverse=True)
-
-    def runs(self) -> list[tuple[GenerationInfo, RunInfo]]:
-        return [(gen, run) for gen in self.generations() for run in gen.runs]

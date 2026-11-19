@@ -13,31 +13,14 @@ from pathlib import Path
 
 import rdflib
 from motion_spec_dsl.rdf_parser.vocab import EXEC
-from rdflib.namespace import SDO
+from rdf_utils.models.prov import get_file_path
+from rdflib.namespace import PROV, SDO
 
-from motion_spec.runs.provenance import kept_dsl_document
-
-MODEL_REL = Path("generated") / "model"
-
-
-def model_document(generation_dir: Path | str) -> Path | None:
-    """The document the DSL generated, as the generation's provenance records it."""
-    return kept_dsl_document(Path(generation_dir) / "generated")
-
-
-def graph_sizes(dataset: rdflib.Dataset) -> dict[str, int]:
-    """Triples per named graph. A JSON-LD file that declares a graph of its own lands there,
-    not in the graph it was parsed into, so this is what a parse has to be measured against."""
-    return {str(graph.identifier): len(graph) for graph in dataset.graphs()}
-
-
-def graph_growth(before: dict[str, int], after: dict[str, int]) -> dict:
-    """What one parse added: the total, and which named graphs it went into."""
-    grew = {name: size - before.get(name, 0) for name, size in after.items()}
-    return {
-        "triples": sum(grew.values()),
-        "graphs": [name for name, count in grew.items() if count],
-    }
+from motion_spec.runs.provenance import (
+    GENERATION_DOCUMENT,
+    kept_dsl_document,
+    read_generation_dataset,
+)
 
 
 def load_document(path: Path | str, dataset: rdflib.Dataset) -> dict:
@@ -46,9 +29,18 @@ def load_document(path: Path | str, dataset: rdflib.Dataset) -> dict:
     Returns what it read: the file, and the triples it put in each named graph.
     """
     path = Path(path).resolve()
-    before = graph_sizes(dataset)
+    # Measured per named graph: a JSON-LD file that declares a graph of its own lands there, not
+    # in the graph it was parsed into.
+    before = {str(graph.identifier): len(graph) for graph in dataset.graphs()}
     dataset.graph(rdflib.URIRef(path.as_uri())).parse(path, format="json-ld")
-    return {"iri": path.as_uri(), "path": str(path), **graph_growth(before, graph_sizes(dataset))}
+    after = {str(graph.identifier): len(graph) for graph in dataset.graphs()}
+    grew = {name: size - before.get(name, 0) for name, size in after.items()}
+    return {
+        "iri": path.as_uri(),
+        "path": str(path),
+        "triples": sum(grew.values()),
+        "graphs": [name for name, count in grew.items() if count],
+    }
 
 
 @lru_cache(maxsize=64)
@@ -58,7 +50,7 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
     This is what a real platform is made of; a simulation carries a name of its own instead, so
     nothing here has to tell one platform kind from another.
     """
-    document = model_document(generation_dir)
+    document = kept_dsl_document(Path(generation_dir) / "generated")
     if document is None:
         return ()
     dataset = rdflib.Dataset(default_union=True)
@@ -86,14 +78,18 @@ class GraphService:
         self.dataset = rdflib.Dataset(default_union=True)
         # A run names its own model document; the generation is only where one is found without it.
         if not (document and document.is_file()):
-            document = model_document(self.generation_dir)
-        # The scene and FSM graphs the IR names nodes of, which the DSL's document holds none of.
+            document = kept_dsl_document(self.generation_dir / "generated")
+        # The scene and FSM graphs the IR names nodes of, which the DSL's document holds none of:
+        # the other model documents the provenance attributes.
         if graphs is None:
-            model_dir = self.generation_dir / MODEL_REL
+            provenance = read_generation_dataset(
+                self.generation_dir / "generated" / GENERATION_DOCUMENT
+            )
+            dsl = next(provenance.subjects(SDO.name, rdflib.Literal("motion_spec_dsl")), None)
             graphs = [
-                path
-                for pattern in ("*.scenex.ld.json", "*.fsm.ld.json")
-                for path in model_dir.glob(pattern)
+                get_file_path(provenance, entity)
+                for entity, agent in set(provenance.subject_objects(PROV.wasAttributedTo))
+                if agent != dsl and (entity, PROV.atLocation, None) in provenance
             ]
         documents = [document, *graphs] if document is not None else graphs
         self.sources = [load_document(path, self.dataset) for path in documents]
@@ -111,7 +107,3 @@ class GraphService:
             return result.type, (["answer"], [(result.askAnswer,)])
         headers = [str(var) for var in (result.vars or [])]
         return result.type, (headers, [tuple(row) for row in result])
-
-    def namespaces(self) -> dict[str, str]:
-        """Bound prefix -> IRI, for CURIE display and query autocompletion."""
-        return {prefix: str(ns) for prefix, ns in self.dataset.namespaces()}

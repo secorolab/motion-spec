@@ -130,7 +130,7 @@ def two_motions() -> tuple[dict, list, dict, list, list, dict]:
 def schema(two_motions) -> dict:
     """The generation schema of the two motions, built from the IR they publish."""
     introspection, algorithm_data, functions, motions, solvers, views = two_motions
-    data_access = build_data_access(algorithm_data, functions, motions, solvers, views)
+    data_access = build_data_access(algorithm_data, functions, motions, solvers, {}, views)
     analysis = analyse_data_access(data_access, algorithm_data, motions, functions, solvers, views)
     # What the run records taps the analysis: a logged slot carries the motions that write it.
     introspection["quantity_samples"] = [
@@ -164,12 +164,12 @@ def schema(two_motions) -> dict:
         "reactions_table": [],
         "transitions_table": [],
     }
-    return build_schema(ir, ir_path=Path("ir.json"), output_dir=Path("."), fsm_ir=fsm_ir)
+    return build_schema(ir, ir_path=Path("ir.json"), fsm_ir=fsm_ir)
 
 
 def test_every_member_has_a_writer_and_a_cadence_its_storage_follows(two_motions) -> None:
     _introspection, algorithm_data, functions, motions, solvers, views = two_motions
-    data_access = build_data_access(algorithm_data, functions, motions, solvers, views)
+    data_access = build_data_access(algorithm_data, functions, motions, solvers, {}, views)
     analysis = analyse_data_access(data_access, algorithm_data, motions, functions, solvers, views)
     assert analysis.keys() == data_access.keys()
     for member_id, entry in data_access.items():
@@ -186,7 +186,7 @@ def test_every_member_has_a_writer_and_a_cadence_its_storage_follows(two_motions
 def test_read_but_never_written_members_are_reported_not_dropped(two_motions) -> None:
     _introspection, algorithm_data, functions, motions, solvers, views = two_motions
     functions["mon_hold"] = {"id": "mon_hold", "type": "Comparison", "in1": "pose_ee_position_rel"}
-    data_access = build_data_access(algorithm_data, functions, motions, solvers, views)
+    data_access = build_data_access(algorithm_data, functions, motions, solvers, {}, views)
     with pytest.raises(RuntimeError, match="pose_ee_position_rel.*mon_hold"):
         analyse_data_access(data_access, algorithm_data, motions, functions, solvers, views)
 
@@ -241,7 +241,11 @@ def test_a_wrench_reading_is_written_only_by_the_solver_that_reads_or_estimates_
             )
         ],
     )
-    data_access = build_data_access(algorithm_data, functions, [arc], [solver], {})
+    tare_companions = {
+        "ext_force": ["ext_force_ft_bias"],
+        "ext_force_est": ["ext_force_est_est_payload"],
+    }
+    data_access = build_data_access(algorithm_data, functions, [arc], [solver], tare_companions, {})
     assert data_access["ext_force"]["write"] == {"kind": "sensor", "id": "arm_solver"}
     assert data_access["ext_force_ft_bias"]["write"]["kind"] == "sensor"
     assert data_access["ext_force_est"]["write"] == {"kind": "solver", "id": "arm_solver"}
@@ -259,7 +263,7 @@ def test_a_drawn_member_is_written_once_by_the_run_that_drew_it(two_motions) -> 
     drawn = Quantity("place_near_y", QuantityKind("Distance"), Unit("M"), None, False)
     drawn.sampled = True
     algorithm_data.append(drawn)
-    data_access = build_data_access(algorithm_data, functions, motions, solvers, views)
+    data_access = build_data_access(algorithm_data, functions, motions, solvers, {}, views)
     analysis = analyse_data_access(data_access, algorithm_data, motions, functions, solvers, views)
 
     assert data_access["place_near_y"] == {"write": {"kind": "sampled", "id": "place_near_y"}}

@@ -25,10 +25,7 @@ main_source(configuration, resources, composition, computation, coordination, co
 #include \<cstdint\>
 #include \<random\>
 <endif>
-
-<coordination.motions:{motion | <fsm-step-function(motion)>}; separator="\n\n">
-
-int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
+<\n><coordination.motions:{motion | <fsm-step-function(motion)>}; separator="">int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
     motion_spec::runtime::install_stop_handlers();
     motion_spec::runtime::tighten_timer_slack();
     robot_io robot{};
@@ -276,21 +273,12 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char **argv) {
 
 <app-chain-cleanup(resources.driven)>
 <endif>
-<if(resources.by_kind.serial_chain)>
-<resources.by_kind.serial_chain:{solver |
-<robot-shutdown(solver)>
-}; separator="\n">
-<endif>
-<if(resources.by_kind.mobile_base)>
-<app-main-base-stop()>
-<endif>
-    <coordination.fsm.cpp_namespace>::destroy_fsm(fsm);
+<resources.by_kind.serial_chain:{solver | <robot-shutdown(solver)>}; separator=""><if(resources.by_kind.mobile_base)><app-main-base-stop()><endif>    <coordination.fsm.cpp_namespace>::destroy_fsm(fsm);
 <if(communication.ros)>
 
 <ros-shutdown(communication.ros)>
 <endif>
-
-    if (motion_spec::runtime::overrun_count() > 0) {
+<\n>    if (motion_spec::runtime::overrun_count() > 0) {
         std::cerr \<\< "[run] " \<\< motion_spec::runtime::overrun_count() \<\< " of " \<\< _step
                   \<\< " cycles overran the control period" \<\< std::endl;
     \}
@@ -525,7 +513,6 @@ algorithm_data_header(configuration, resources, computation, coordination, commu
 <if(resources.by_kind.mobile_base)>
 <mobile-base-driver-include()>
 <endif>
-
 
 <if(resources.by_kind.mobile_base)>
 <mobile-base-robot-struct()>

@@ -95,11 +95,6 @@ def si(value: float, unit) -> float:
     return value * _SI_EQUIVALENT.get(unit, (unit, 1.0))[1]
 
 
-def si_all(values, unit) -> list[float]:
-    """Each of `values`, authored in `unit`, on SI."""
-    return [si(float(value), unit) for value in values]
-
-
 def seconds(value: float, unit) -> float:
     """A duration the model authored, in seconds.
 
@@ -172,7 +167,10 @@ class Model:
             default=None,
         )
         if base is None:
-            local = self._qname(node)
+            try:
+                local = identifier(self.graph.compute_qname(node)[2])
+            except (TypeError, ValueError):
+                local = None
             self._ids[node] = node if local is None else local
             return self._ids[node]
         id_ = identifier(iri[len(base) :])
@@ -192,13 +190,6 @@ class Model:
             return self.graph.compute_qname(node)[2]
         except (TypeError, ValueError):
             return str(node)
-
-    def _qname(self, node) -> str | None:
-        """The node's local name as a generated identifier, or None when it has no qname."""
-        try:
-            return identifier(self.graph.compute_qname(node)[2])
-        except (TypeError, ValueError):
-            return None
 
     # the id/IRI index
 
@@ -253,7 +244,7 @@ class Model:
         authored = self.node_by_id.get(id_)
         if authored is not None:
             return str(authored)
-        uri = str(self.child_node(parent_iri, kebab(suffix)))
+        uri = f"{str(parent_iri).rstrip('/')}/{kebab(suffix)}"
         existing = self._derived.get(id_)
         if existing is not None:
             if existing.uri != uri:
@@ -279,20 +270,7 @@ class Model:
         it becomes a graph subject and so an authored IRI in `uri_rows`. The pattern is
         behaviour: these IRIs surface in the telemetry artifact and in the run graph.
         """
-        return self._mint(f"{parent}.derived-{suffix}")
-
-    def component_node(self, parent, suffix: str) -> URIRef:
-        """The IRI of a part of a node just minted: a frame's origin, a pose's relation."""
-        return self._mint(f"{parent}-{suffix}")
-
-    def child_node(self, parent, segment: str) -> URIRef:
-        """The IRI one path segment below `parent`, which is how a namespace addresses its own."""
-        return self._mint(f"{str(parent).rstrip('/')}/{segment}")
-
-    @staticmethod
-    def _mint(text: str) -> URIRef:
-        """The one place an IRI becomes a node, so every minting rule reads the same."""
-        return URIRef(text)
+        return URIRef(f"{parent}.derived-{suffix}")
 
     def uri_rows(self) -> list[dict]:
         """``[{id, uri}]`` for every one of the model's own nodes, then every derived entity: one

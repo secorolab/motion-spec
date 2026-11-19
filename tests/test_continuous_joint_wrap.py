@@ -12,7 +12,7 @@ from rdf_utils.models.vocab import (
 from rdflib import Dataset, Namespace
 
 from motion_spec.rdf_parser.model import Model
-from motion_spec.rdf_parser.operations import ErrorEvaluator, continuous_joint_leaves
+from motion_spec.rdf_parser.operations import ErrorEvaluator, continuous_joints
 
 EX = Namespace("https://example.org/")
 
@@ -32,15 +32,15 @@ ex:limit a <{URI_KC_EXT_TYPE_JOINT_LIMIT}>, <{URI_KC_STAT_JNT_POSITION}> ;
 
 
 @pytest.mark.parametrize(
-    ("limit", "leaves", "wraps"),
-    [("", {"joint_1"}, True), (POSITION_LIMIT, set(), None)],
+    ("limit", "joints", "wraps"),
+    [("", {EX.joint_1}, True), (POSITION_LIMIT, set(), None)],
     ids=["continuous", "position-limited"],
 )
-def test_only_a_continuous_joint_equality_error_wraps(limit: str, leaves: set, wraps) -> None:
+def test_only_a_continuous_joint_equality_error_wraps(limit: str, joints: set, wraps) -> None:
     graph = Dataset(default_union=True)
     graph.default_graph.parse(data=JOINT_EQUALITY + limit, format="turtle")
     model = Model(graph=graph)
-    assert continuous_joint_leaves(model) == leaves
+    assert continuous_joints(model) == joints
     function = ErrorEvaluator().function_step(model, EX.eval)
     assert function is not None
     assert function.get("angular_wrap") is wraps

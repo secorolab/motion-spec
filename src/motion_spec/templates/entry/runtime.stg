@@ -43,9 +43,7 @@ runtime_header(resources, configuration, computation) ::= <<
 <if(resources.by_kind.mobile_base)>
 <mobile-base-runtime-includes()>
 <endif>
-
-namespace motion_spec::runtime {
-
+<\n>namespace motion_spec::runtime {
 // An interrupted run is still a run: the frame log is closed by a destructor, so letting a
 // signal terminate the process outright truncates it and loses the ticks already recorded. The
 // handler does the one thing that is async-signal-safe -- set a flag -- and the control loop
@@ -140,19 +138,9 @@ inline void sleep_until_next(timespec &next, long period_ns) {
     } while (timespec_less(now, next));
 }
 
-<backend-runtime(resources)>
-<if(resources.by_kind.serial_chain)>
-<solver-runtime(computation.uses)>
-<endif>
-<if(resources.world_trees)>
-<world-kinematics()>
+<backend-runtime(resources)><if(resources.by_kind.serial_chain)><solver-runtime(computation.uses)><endif><if(resources.world_trees)><world-kinematics()>
 
-<endif>
-<function-runtime(computation.uses)>
-<monitor-runtime(computation.uses)>
-<if(resources.by_kind.mobile_base)>
-<mobile-base-runtime(resources.by_kind.mobile_base)>
+<endif><function-runtime(computation.uses)><monitor-runtime(computation.uses)><if(resources.by_kind.mobile_base)>
 
-<endif>
-}  // namespace motion_spec::runtime
+<mobile-base-runtime(resources.by_kind.mobile_base)><endif><\n>}  // namespace motion_spec::runtime
 >>

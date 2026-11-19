@@ -47,7 +47,7 @@ def test_a_frame_the_tree_has_no_segment_for_is_rejected():
     """A detection composed against a frame the world model does not hold would land wherever the
     identity puts it."""
     with pytest.raises(ConstraintViolation, match="no segment standing for it"):
-        communication._segment_of({}, "https://example.test/camera", "object-poses")
+        communication.segment_of({}, "https://example.test/camera", "object-poses")
 
 
 @REQUIRES_ROS

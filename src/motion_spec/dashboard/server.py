@@ -31,6 +31,7 @@ from motion_spec.dashboard.catalog import (
     video_file,
 )
 from motion_spec.dashboard.cleanup import preview, restore, trash_entries
+from motion_spec.dashboard.graph import GraphService
 from motion_spec.dashboard.jobs import (
     console_log_for,
     console_slice,
@@ -49,14 +50,13 @@ from motion_spec.dashboard.live import live_state, run_control
 from motion_spec.dashboard.metadata import (
     LOCK,
     annotations,
-    baseline,
+    model_folder,
     save_annotations,
     set_baseline,
     set_protected,
 )
 from motion_spec.dashboard.notebook import jupyter_server, run_notebook, stop_jupyter
 from motion_spec.dashboard.queries import (
-    generation_graph,
     model_lint,
     run_notes,
     run_query,
@@ -71,12 +71,13 @@ from motion_spec.dashboard.roots import (
     current_roots,
     directory_size,
     expected_path,
+    json_file,
     pick_root,
     relative_path,
     set_root,
     storage_info,
 )
-from motion_spec.dashboard.runs import GenerationCatalog
+from motion_spec.dashboard.runs import GenerationCatalog, GenerationInfo
 from motion_spec.dashboard.sources import (
     authored_sources,
     git_checkout,
@@ -103,7 +104,7 @@ class LifecycleListener:
         self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         socket_path().unlink(missing_ok=True)
         self._socket.bind(str(socket_path()))
-        threading.Thread(target=self._listen, daemon=True).start()
+        threading.Thread(target=self.listen, daemon=True).start()
 
     def wait(self, revision: int, timeout: float) -> int:
         """Wait for a new REC transition or a stream keepalive timeout."""
@@ -111,7 +112,7 @@ class LifecycleListener:
             self._condition.wait_for(lambda: self._revision != revision, timeout=timeout)
             return self._revision
 
-    def _listen(self) -> None:
+    def listen(self) -> None:
         while True:
             self._socket.recv(4096)
             with self._condition:
@@ -130,52 +131,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
-    def send_video(self, path: Path) -> None:
-        """Serve one recording, honouring Range so the player can seek."""
-        size = path.stat().st_size
-        start, end = 0, size - 1
-        asked = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "") or "")
-        if asked and (asked.group(1) or asked.group(2)):
-            if asked.group(1):
-                start = min(int(asked.group(1)), size - 1)
-                end = int(asked.group(2)) if asked.group(2) else end
-            else:
-                start = max(0, size - int(asked.group(2)))
-            end = min(end, size - 1)
-        partial = asked is not None
-        self.send_response(HTTPStatus.PARTIAL_CONTENT if partial else HTTPStatus.OK)
-        self.send_header("Content-Type", "video/mp4")
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(end - start + 1))
-        if partial:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.end_headers()
-        with path.open("rb") as fh:
-            fh.seek(start)
-            remaining = end - start + 1
-            while remaining > 0 and (chunk := fh.read(min(1 << 16, remaining))):
-                self.wfile.write(chunk)
-                remaining -= len(chunk)
-
-    def stream_ros_camera(self, topic: str) -> None:
-        """Stream a ROS image topic as MJPEG: the live view a real platform records nothing of."""
-        source = ros_camera.source_for(topic)
-        if not source.alive():
-            return self.send_json(
-                {"error": source.error or "no ROS env"}, HTTPStatus.SERVICE_UNAVAILABLE
-            )
-        self.send_response(HTTPStatus.OK)
-        self.send_header(
-            "Content-Type", f"multipart/x-mixed-replace; boundary={ros_camera.BOUNDARY}"
-        )
-        self.end_headers()
-        try:
-            for part in ros_camera.mjpeg_stream(source, source.alive):
-                self.wfile.write(part)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            return
-
     def send_json(self, data: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(data, separators=(",", ":")).encode()
         self.send_response(status)
@@ -184,34 +139,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def stream_events(self) -> None:
-        """Keep one browser stream open for REC lifecycle changes."""
-        assert LIFECYCLE is not None
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.end_headers()
-        revision = LIFECYCLE.wait(-1, 0)
-        try:
-            while True:
-                changed = LIFECYCLE.wait(revision, 30)
-                if changed != revision:
-                    revision = changed
-                    self.wfile.write(b"event: lifecycle\ndata: changed\n\n")
-                else:
-                    self.wfile.write(b": keepalive\n\n")
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            return
-
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if not parsed.path.startswith("/api/"):
             return super().do_GET()
-        if not self._from_this_page():
+        # Reading is not harmless here: a GET opens a folder chooser, connects to the robot,
+        # starts a notebook server. Any page in any tab can ask for one of those as an image or a
+        # no-cors fetch, and never see the answer -- the side effect is the attack. Browsers
+        # stamp where a request came from, so that stamp is the gate. Nothing stamps it when the
+        # client is not a browser (curl, the CLI, a test), and those are left alone.
+        site = self.headers.get("Sec-Fetch-Site")
+        if not (site is None or site in ("same-origin", "none")):
             return self.send_json({"error": "cross-site request"}, HTTPStatus.FORBIDDEN)
         if parsed.path == "/api/events":
-            return self.stream_events()
+            assert LIFECYCLE is not None
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            revision = LIFECYCLE.wait(-1, 0)
+            try:
+                while True:
+                    changed = LIFECYCLE.wait(revision, 30)
+                    if changed != revision:
+                        revision = changed
+                        self.wfile.write(b"event: lifecycle\ndata: changed\n\n")
+                    else:
+                        self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
         try:
             query = parse_qs(parsed.query)
             value = query.get("path", [""])[0]
@@ -220,8 +177,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/annotations":
                 return self.send_json(annotations(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/baseline":
+                model = model_folder(relative_path(roots.GENERATIONS, value))
                 return self.send_json(
-                    {"baseline": baseline(relative_path(roots.GENERATIONS, value))}
+                    {"baseline": json_file(model / "dashboard-model.json").get("baseline")}
                 )
             if parsed.path == "/api/trash":
                 return self.send_json(trash_entries())
@@ -249,7 +207,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/generation-graph":
                 # The whole model graph, imports followed: the model has no file boundaries.
                 return self.send_json(
-                    provenance_graph(generation_graph(relative_path(roots.GENERATIONS, value)))
+                    provenance_graph(GraphService(relative_path(roots.GENERATIONS, value)))
                 )
             if parsed.path == "/api/generated":
                 return self.send_json(read_generated(relative_path(roots.GENERATIONS, value)))
@@ -266,8 +224,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         for run in g.runs
                     ]
                     return self.send_json(runs)
-                runs = sorted(path for path in generation.glob("runs/*") if path.is_dir())
-                return self.send_json([run_info(path) for path in reversed(runs)])
+                runs = GenerationInfo(generation).runs
+                return self.send_json([run_info(run.dir) for run in runs])
             if parsed.path == "/api/run":
                 # A generation answers for every run of it the dashboard started; a run for itself.
                 target = relative_path(roots.GENERATIONS, value)
@@ -300,9 +258,52 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(run_notes(expected_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/video":
                 run = relative_path(roots.GENERATIONS, value)
-                return self.send_video(video_file(run, query.get("camera", [""])[0]))
+                video = video_file(run, query.get("camera", [""])[0])
+                # Range is honoured so the player can seek.
+                size = video.stat().st_size
+                start, end = 0, size - 1
+                asked = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "") or "")
+                if asked and (asked.group(1) or asked.group(2)):
+                    if asked.group(1):
+                        start = min(int(asked.group(1)), size - 1)
+                        end = int(asked.group(2)) if asked.group(2) else end
+                    else:
+                        start = max(0, size - int(asked.group(2)))
+                    end = min(end, size - 1)
+                partial = asked is not None
+                self.send_response(HTTPStatus.PARTIAL_CONTENT if partial else HTTPStatus.OK)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(end - start + 1))
+                if partial:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                with video.open("rb") as fh:
+                    fh.seek(start)
+                    remaining = end - start + 1
+                    while remaining > 0 and (chunk := fh.read(min(1 << 16, remaining))):
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                return
             if parsed.path == "/api/ros-camera":
-                return self.stream_ros_camera(query.get("topic", [""])[0])
+                # The live view a real platform records nothing of.
+                source = ros_camera.source_for(query.get("topic", [""])[0])
+                if not source.alive():
+                    return self.send_json(
+                        {"error": source.error or "no ROS env"}, HTTPStatus.SERVICE_UNAVAILABLE
+                    )
+                self.send_response(HTTPStatus.OK)
+                self.send_header(
+                    "Content-Type", f"multipart/x-mixed-replace; boundary={ros_camera.BOUNDARY}"
+                )
+                self.end_headers()
+                try:
+                    for part in ros_camera.mjpeg_stream(source, source.alive):
+                        self.wfile.write(part)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                return
             if parsed.path == "/api/replay":
                 return self.send_json(replay_data(expected_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/plot":
@@ -327,11 +328,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         # A handler that dies instead closes the connection, leaving the page nothing to report.
         except Exception as exc:  # noqa: BLE001
-            self.send_json(self._failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.send_json(self.failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:
         """Update dashboard roots, open a source, or delete selected runs and generations."""
-        if not self._same_origin():
+        # Only the dashboard's own page may POST: these endpoints delete and spawn. Compared
+        # against the request's own Host, not a hardcoded loopback name, so this holds whether
+        # the page was loaded from 127.0.0.1 or from localhost.
+        origin = self.headers.get("Origin")
+        if self.headers.get_content_type() != "application/json" or (
+            origin is not None
+            and urlparse(origin).hostname != urlparse(f"//{self.headers.get('Host', '')}").hostname
+        ):
             return self.send_json({"error": "cross-origin request"}, HTTPStatus.FORBIDDEN)
         try:
             length = int(self.headers["Content-Length"])
@@ -379,7 +387,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(stop_run(relative_path(roots.GENERATIONS, body["path"])))
             if self.path == "/api/generate":
                 # source_path takes any authored file; only a .robmot is a whole run to make
-                if not body["path"].endswith(".robmot"):
+                if Path(body["path"]).suffix != ".robmot":
                     raise ValueError("only a .robmot generates")
                 return self.send_json(start_generate(source_path(body["path"])))
             if self.path == "/api/live":
@@ -456,23 +464,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001 -- any failure answers as an API error
-            self.send_json(self._failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
-
-    def _same_origin(self) -> bool:
-        """Only the dashboard's own page may POST: these endpoints delete and spawn.
-
-        Compared against the request's own Host, not a hardcoded loopback name, so this holds
-        whether the page was loaded from 127.0.0.1 or from localhost.
-        """
-        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
-            return False
-        origin = self.headers.get("Origin")
-        if origin is None:
-            return True
-        return urlparse(origin).hostname == self.headers.get("Host", "").split(":")[0]
+            self.send_json(self.failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
 
     @staticmethod
-    def _failed(exc: Exception) -> dict:
+    def failed(exc: Exception) -> dict:
         """A fault, not a bad request: the page is told, and the terminal gets the traceback.
 
         Anything that is not a ValueError here is the dashboard's own mistake. Answering those
@@ -480,18 +475,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """
         traceback.print_exc()
         return {"error": f"dashboard error: {type(exc).__name__}: {exc}"}
-
-    def _from_this_page(self) -> bool:
-        """Whether a browser says this request came from the dashboard itself.
-
-        Reading is not harmless here: a GET opens a folder chooser, connects to the robot,
-        starts a notebook server. Any page in any tab can ask for one of those as an image or a
-        no-cors fetch, and never see the answer -- the side effect is the attack. Browsers
-        stamp where a request came from, so that stamp is the gate. Nothing stamps it when the
-        client is not a browser (curl, the CLI, a test), and those are left alone.
-        """
-        site = self.headers.get("Sec-Fetch-Site")
-        return site is None or site in ("same-origin", "none")
 
 
 def serve(port: int = 8080, logs: Path | None = None, sources: Path | None = None) -> None:

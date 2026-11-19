@@ -20,7 +20,12 @@ import time
 from pathlib import Path
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.catalog import generation_cameras, is_simulated, run_ended, run_recorded
+from motion_spec.dashboard.catalog import (
+    generation_cameras,
+    generation_platform,
+    run_ended,
+    run_recorded,
+)
 from motion_spec.dashboard.roots import LAYOUT_REL, RUN_LOG, trace
 from motion_spec.setup import GENERATION_VARIABLE
 
@@ -30,18 +35,6 @@ RUNNING: dict[str, dict] = {}
 
 # Finished runs whose status a page may still ask for; older ones are the past.
 RUNS_KEPT = 20
-
-
-def _real_run_active() -> Path | None:
-    """The run directory of a real-hardware run still in progress, if any is.
-
-    Two runs can each believe they own the real robot, so this is the one place that looks
-    across all of them at once.
-    """
-    for key, started in RUNNING.items():
-        if started["process"].poll() is None and not is_simulated(Path(started["generation"])):
-            return Path(key)
-    return None
 
 
 def run_status(run_dir: Path) -> dict:
@@ -71,7 +64,11 @@ def run_status(run_dir: Path) -> dict:
         "log": str(Path(started["generation"]) / RUN_LOG) if started else None,
         # Whether the run keeps a frame log: from its provenance once it ended, before that from
         # the choice this dashboard started it with. False means the page must not wait for a log.
-        "recorded": _recorded(run_dir, started),
+        "recorded": (
+            started.get("recorded")
+            if (recorded := run_recorded(run_dir)) is None and started is not None
+            else recorded
+        ),
     }
 
 
@@ -85,13 +82,6 @@ def generation_status(generation_dir: Path) -> dict:
     return {"running": any(run["running"] for run in runs), "runs": runs}
 
 
-def _recorded(run_dir: Path | None, started: dict | None) -> bool | None:
-    recorded = run_recorded(run_dir)
-    if recorded is None and started is not None:
-        return started.get("recorded")
-    return recorded
-
-
 def start_run(generation_dir: Path, options: dict) -> dict:
     """Run a generation again, with the options `motion-spec run` takes for one.
 
@@ -100,12 +90,20 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     """
     if not (generation_dir / LAYOUT_REL).exists():
         raise ValueError("not a generation")
-    simulated = is_simulated(generation_dir)
+    simulated = bool(generation_platform(generation_dir).get("simulated"))
     # Simulations run side by side; the real robot runs one thing at a time, whichever
     # generation asks. Whether the hardware answers is not asked here: the devices panel
     # probes when the operator asks it to.
     if not simulated:
-        other = _real_run_active()
+        other = next(
+            (
+                Path(key)
+                for key, started in RUNNING.items()
+                if started["process"].poll() is None
+                and not generation_platform(Path(started["generation"])).get("simulated")
+            ),
+            None,
+        )
         if other is not None:
             raise ValueError(f"the real robot is already running {other.name}")
     from motion_spec.generation.pipeline import new_id
@@ -139,7 +137,12 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     recording = [camera for camera in options.get("cameras") or () if camera in recordable]
     for camera in recording:
         argv += ["--record", camera]
-    _reap_runs()
+    # Finished runs beyond the last few are forgotten: their status is on disk, in rec's record.
+    finished = sorted(
+        key for key, started in RUNNING.items() if started["process"].poll() is not None
+    )
+    for key in finished[:-RUNS_KEPT]:
+        RUNNING.pop(key)
     # Closed here: Popen dups the descriptor for the child, and a handle per run never
     # collected is a file descriptor leaked for the life of the server.
     with (generation_dir / RUN_LOG).open("wb") as sink:
@@ -159,15 +162,6 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         "recording": recording,
         "run": str(run_dir.relative_to(roots.GENERATIONS)),
     }
-
-
-def _reap_runs() -> None:
-    """Forget finished runs beyond the last few: their status is on disk, in rec's record."""
-    finished = sorted(
-        key for key, started in RUNNING.items() if started["process"].poll() is not None
-    )
-    for key in finished[:-RUNS_KEPT]:
-        RUNNING.pop(key)
 
 
 # How long a run gets to end on a TERM before it is killed outright.
@@ -244,17 +238,6 @@ def pick_environment() -> dict:
     return use_environment(roots.choose(start, directory=False))
 
 
-def environment_choices() -> list[str]:
-    """The environment files a workspace offers, for the page to choose between."""
-    from motion_spec.setup import ENVIRONMENT_FILES
-
-    return [
-        str(roots.WORKSPACE / name)
-        for name in ENVIRONMENT_FILES
-        if (roots.WORKSPACE / name).is_file()
-    ]
-
-
 def health_report(refresh: bool = False) -> dict:
     """The CLI's health checks, run once and remembered; refresh reruns them.
 
@@ -284,20 +267,10 @@ def health_report(refresh: bool = False) -> dict:
         HEALTH["thread"] = threading.Thread(target=collect, daemon=True)
         HEALTH["thread"].start()
         running = True
-    return {
-        "running": running,
-        "checks": HEALTH["checks"],
-        "stamp": HEALTH["stamp"],
-        "progress": HEALTH["progress"] if running else None,
-        "environment": _environment(),
-    }
-
-
-def _environment() -> dict:
-    """What this installation is, beside whether it works: versions, interpreter, roots."""
     from importlib import metadata
 
     from motion_spec.health import environment_values, ros_summary
+    from motion_spec.setup import ENVIRONMENT_FILES
 
     try:
         version = metadata.version("motion_spec")
@@ -305,14 +278,24 @@ def _environment() -> dict:
         version = None
     env = ENVIRONMENT["captured"]
     return {
-        "motion_spec": version,
-        "python": platform.python_version(),
-        "executable": sys.executable,
-        "ros": ros_summary(env),
-        "variables": environment_values(env),
-        "script": ENVIRONMENT["script"],
-        "choices": environment_choices(),
-        "generations": str(roots.GENERATIONS),
+        "running": running,
+        "checks": HEALTH["checks"],
+        "stamp": HEALTH["stamp"],
+        "progress": HEALTH["progress"] if running else None,
+        "environment": {
+            "motion_spec": version,
+            "python": platform.python_version(),
+            "executable": sys.executable,
+            "ros": ros_summary(env),
+            "variables": environment_values(env),
+            "script": ENVIRONMENT["script"],
+            "choices": [
+                str(roots.WORKSPACE / name)
+                for name in ENVIRONMENT_FILES
+                if (roots.WORKSPACE / name).is_file()
+            ],
+            "generations": str(roots.GENERATIONS),
+        },
     }
 
 
@@ -393,7 +376,30 @@ def start_generate(source: Path) -> dict:
         f' && printf "generation: %s\\n" "$g" && exec motion-spec build{env} "$g"'
     )
     argv = ["bash", "-c", chain]
-    _reap_jobs()
+    # A job is a process, a log and what it made; the page reads all three while it runs and for
+    # as long as it is looking at the console afterwards. Keeping the last few covers that. The
+    # rest are runs of the build from days ago, holding a Popen each and a file on disk.
+    finished = sorted(
+        job for job, started in GENERATING.items() if started["process"].poll() is not None
+    )
+    for finished_job in finished[:-GENERATE_LOGS_KEPT]:
+        GENERATING.pop(finished_job)
+    # Logs left by earlier dashboards go too: their jobs died with the process that started
+    # them. Another dashboard may be reaping the same ones, so a file that vanishes between
+    # the listing and the stat is not an error.
+    if log_dir.is_dir():
+        kept = {started["log"] for started in GENERATING.values()}
+
+        def mtime(path: Path) -> float:
+            try:
+                return os.path.getmtime(path)
+            except OSError:
+                return 0.0
+
+        written = sorted(log_dir.glob("gen-*.log"), key=mtime)
+        for stale in written[:-GENERATE_LOGS_KEPT]:
+            if stale not in kept:
+                stale.unlink(missing_ok=True)
     with log.open("wb") as sink:
         # The browsed root is where gen writes, and what the generation's locations are taken from.
         process = subprocess.Popen(
@@ -408,39 +414,7 @@ def start_generate(source: Path) -> dict:
     return {"job": job, **generate_status(job)}
 
 
-def _reap_jobs() -> None:
-    """Forget finished jobs and delete the logs nobody will ask for again.
-
-    A job is a process, a log and what it made; the page reads all three while it runs and for
-    as long as it is looking at the console afterwards. Keeping the last few covers that. The
-    rest are runs of the build from days ago, holding a Popen each and a file on disk.
-    """
-    finished = sorted(
-        job for job, started in GENERATING.items() if started["process"].poll() is not None
-    )
-    for job in finished[:-GENERATE_LOGS_KEPT]:
-        GENERATING.pop(job)
-    # Logs left by earlier dashboards go too: their jobs died with the process that started
-    # them. Another dashboard may be reaping the same ones, so a file that vanishes between
-    # the listing and the stat is not an error.
-    log_dir = roots.GENERATIONS / GENERATE_LOGS
-    if not log_dir.is_dir():
-        return
-    kept = {started["log"] for started in GENERATING.values()}
-
-    def mtime(path: Path) -> float:
-        try:
-            return os.path.getmtime(path)
-        except OSError:
-            return 0.0
-
-    written = sorted(log_dir.glob("gen-*.log"), key=mtime)
-    for log in written[:-GENERATE_LOGS_KEPT]:
-        if log not in kept:
-            log.unlink(missing_ok=True)
-
-
-def _generation_named_in(log: Path) -> str | None:
+def generation_named_in(log: Path) -> str | None:
     """The generation the runner announced, from the head of its log.
 
     The chain prints `generation: <path>` before it builds anything, so the answer is in the
@@ -467,7 +441,7 @@ def generate_status(job: str) -> dict:
     process = started["process"]
     busy = process.poll() is None
     if started["generation"] is None:
-        started["generation"] = _generation_named_in(started["log"])
+        started["generation"] = generation_named_in(started["log"])
     return {
         "busy": busy,
         "pid": process.pid if busy else None,

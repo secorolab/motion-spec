@@ -12,15 +12,15 @@ from rdf_utils.models.prov import get_file_path, get_py_pkg_info
 from rdf_utils.models.vocab import URI_PROV_EXT_TYPE_TRANSFORMATION
 from rdflib import Dataset
 from rdflib.namespace import DCTERMS, PROV, RDF
+from rec.provenance import RUN_BASE
 from support import EXAMPLES
 
 from motion_spec.generation.pipeline import generate_model
 from motion_spec.runs import replay
 from motion_spec.runs.provenance import (
     GENERATION_DOCUMENT,
-    RUN_IRI_BASE,
     read_generation_dataset,
-    rec_document,
+    rec_run,
 )
 from motion_spec.runs.replay import decode_frames, summarize, validate_header
 from motion_spec.runs.runner import record_outputs, start_rec_run
@@ -62,12 +62,12 @@ def test_verification_writes_nothing(run_dir: Path) -> None:
     ("old", "new"),
     [
         ('"prov-ext:Execution"', '"prov:Activity"'),
-        (f"{RUN_IRI_BASE}run-test", "https://secorolab.github.io/rec/run/run-test"),
+        (f"{RUN_BASE}run-test", "https://example.test/run/run-test"),
     ],
     ids=["not-an-execution", "another-run"],
 )
 def test_verify_requires_the_run_to_be_its_recorded_execution(run_dir: Path, old, new) -> None:
-    rec_path = rec_document(run_dir, "run-test")
+    rec_path = rec_run(run_dir).store.path("run-test")
     assert old in rec_path.read_text()
     rec_path.write_text(rec_path.read_text().replace(old, new))
 

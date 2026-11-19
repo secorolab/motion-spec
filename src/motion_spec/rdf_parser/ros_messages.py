@@ -39,7 +39,7 @@ _PAYLOAD_TYPES = {
 }
 
 
-def _element_type(field_type: str) -> tuple[str, bool]:
+def element_type(field_type: str) -> tuple[str, bool]:
     """The type one element carries, and whether the field holds many of them."""
     for pattern in _MANY:
         match = pattern.fullmatch(field_type)
@@ -48,7 +48,7 @@ def _element_type(field_type: str) -> tuple[str, bool]:
     return field_type, False
 
 
-def _message_class(type_name: str):
+def message_class(type_name: str):
     """The rosidl-generated Python class for `type_name`, or the error that names the fix."""
     try:
         from rosidl_runtime_py.utilities import get_message
@@ -80,22 +80,19 @@ def action_shape(type_name: str) -> dict:
         ConstraintViolation: the ROS distribution is not sourced, or the action package is not
             on AMENT_PREFIX_PATH.
     """
-    action = _action_class(type_name)
-    package, cpp_type, include = _cpp_names(action)
-
-    goal = _shape_of(action.Goal, f"{type_name} goal", package, include)
-    result = _shape_of(action.Result, f"{type_name} result", package, include)
+    action = action_class(type_name)
+    package, cpp_type, include = cpp_names(action)
 
     return {
         "package": package,
         "cpp_type": cpp_type,
         "include": include,
-        "goal": goal,
-        "result": result,
+        "goal": shape_of(action.Goal, f"{type_name} goal", package, include),
+        "result": shape_of(action.Result, f"{type_name} result", package, include),
     }
 
 
-def _cpp_names(message) -> tuple[str, str, str]:
+def cpp_names(message) -> tuple[str, str, str]:
     """`(package, cpp type, include path)` read off the class rosidl generated, so the header
     name matches the generator's own case conversion by construction.
     """
@@ -114,7 +111,7 @@ def _cpp_names(message) -> tuple[str, str, str]:
     )
 
 
-def _action_class(type_name: str):
+def action_class(type_name: str):
     """The rosidl-generated Python class for an action type, or the error that names the fix."""
     try:
         from rosidl_runtime_py.utilities import get_action
@@ -147,23 +144,25 @@ def detect_shape(type_name: str, pose_path: str) -> dict:
         ConstraintViolation: the action does not offer exactly one of what a detect act needs,
             or the fields the model named are not a repeated field and a pose within it.
     """
-    action = _action_class(type_name)
+    action = action_class(type_name)
     goal_targets = [
-        name for name, element, many in _fields(action.Goal) if many and element in _STRING_TYPES
+        name for name, element, many in fields(action.Goal) if many and element in _STRING_TYPES
     ]
-    detections_path, detection = _repeated_leaf(action.Result, f"{type_name} result")
-    headers = [name for name, element, _many in _fields(detection) if element == _HEADER_TYPE]
-    element_name = _type_name_of(detection)
+    detections_path, detection = sole(
+        repeated_leaves(action.Result), "repeated message fields", f"{type_name} result"
+    )
+    headers = [name for name, element, _many in fields(detection) if element == _HEADER_TYPE]
+    element_name = type_name_of(detection)
     ids = [
-        name for name, element, many in _fields(detection) if not many and element in _STRING_TYPES
+        name for name, element, many in fields(detection) if not many and element in _STRING_TYPES
     ]
 
     return {
-        "targets_path": _sole(goal_targets, "repeated string fields", f"{type_name} goal"),
+        "targets_path": sole(goal_targets, "repeated string fields", f"{type_name} goal"),
         "detections_path": detections_path,
-        "id_path": _sole(ids, "string fields", element_name),
-        "frame_path": f"{_sole(headers, f'{_HEADER_TYPE!r} fields', element_name)}.{_FRAME_FIELD}",
-        "pose_path": _detection_pose(detection, element_name, pose_path),
+        "id_path": sole(ids, "string fields", element_name),
+        "frame_path": f"{sole(headers, f'{_HEADER_TYPE!r} fields', element_name)}.{_FRAME_FIELD}",
+        "pose_path": detection_pose(detection, element_name, pose_path),
         # The repeated field the pose is read out of, so a detection carrying none is skipped
         # rather than indexed into.
         "pose_container": pose_path.partition(".")[0],
@@ -181,31 +180,33 @@ def observation_shape(type_name: str, pose_path: str) -> dict:
         ConstraintViolation: the message does not offer exactly one of what an observation needs,
             or the fields the model named are not a repeated field and a pose within it.
     """
-    root = _message_class(type_name)
-    package, cpp_type, include = _cpp_names(root)
-    detections_path, detection = _repeated_leaf(root, type_name)
-    headers = [name for name, element, _many in _fields(detection) if element == _HEADER_TYPE]
-    element_name = _type_name_of(detection)
+    root = message_class(type_name)
+    package, cpp_type, include = cpp_names(root)
+    detections_path, detection = sole(
+        repeated_leaves(root), "repeated message fields", type_name
+    )
+    headers = [name for name, element, _many in fields(detection) if element == _HEADER_TYPE]
+    element_name = type_name_of(detection)
     ids = [
-        name for name, element, many in _fields(detection) if not many and element in _STRING_TYPES
+        name for name, element, many in fields(detection) if not many and element in _STRING_TYPES
     ]
-    header = _sole(headers, f"'{_HEADER_TYPE}' fields", element_name)
+    header = sole(headers, f"'{_HEADER_TYPE}' fields", element_name)
 
     return {
         "package": package,
         "cpp_type": cpp_type,
         "include": include,
         "detections_path": detections_path,
-        "id_path": _sole(ids, "string fields", element_name),
+        "id_path": sole(ids, "string fields", element_name),
         "frame_path": f"{header}.{_FRAME_FIELD}",
-        "pose_path": _detection_pose(detection, element_name, pose_path),
+        "pose_path": detection_pose(detection, element_name, pose_path),
         # The repeated field the pose is read out of, so a detection carrying none is skipped
         # rather than indexed into.
         "pose_container": pose_path.partition(".")[0],
     }
 
 
-def _detection_pose(detection, element_name: str, pose_path: str) -> str:
+def detection_pose(detection, element_name: str, pose_path: str) -> str:
     """The accessor from one detection to the pose it reports, off the two fields the model named.
 
     Raises:
@@ -221,7 +222,7 @@ def _detection_pose(detection, element_name: str, pose_path: str) -> str:
         )
     entries = [
         element
-        for name, element, many in _fields(detection)
+        for name, element, many in fields(detection)
         if name == container and many and "/" in element
     ]
     if not entries:
@@ -229,21 +230,21 @@ def _detection_pose(detection, element_name: str, pose_path: str) -> str:
             "communication",
             f"'{element_name}' has no repeated message field '{container}' for a pose to come from",
         )
-    entry = _message_class(entries[0])
-    carried = [element for name, element, many in _fields(entry) if name == field and not many]
+    entry = message_class(entries[0])
+    carried = [element for name, element, many in fields(entry) if name == field and not many]
     if not carried or "/" not in carried[0]:
         raise ConstraintViolation(
             "communication",
-            f"'{_type_name_of(entry)}' has no message field '{field}' to read a pose from",
+            f"'{type_name_of(entry)}' has no message field '{field}' to read a pose from",
         )
     # The named field may carry the pose rather than be it -- a covariance wrapper does -- so the
     # last hop is derived, and it is only a hop when it is the one pose down there.
-    descent = _descend_to(_message_class(carried[0]), _POSE_TYPE, f"{container}.{field}")
+    descent = descend_to(message_class(carried[0]), _POSE_TYPE, f"{container}.{field}")
 
     return f"{container}[0].{field}{'.' + descent if descent else ''}"
 
 
-def _sole(candidates: list, what: str, where: str):
+def sole(candidates: list, what: str, where: str):
     """The one candidate, or the error naming what was offered instead."""
     if len(candidates) != 1:
         offered = ", ".join(str(c) for c in candidates) or "none"
@@ -253,15 +254,15 @@ def _sole(candidates: list, what: str, where: str):
     return candidates[0]
 
 
-def _fields(message) -> list[tuple[str, str, bool]]:
+def fields(message) -> list[tuple[str, str, bool]]:
     """`(name, element type, repeated)` per field the message declares."""
     return [
-        (name, *_element_type(field_type))
+        (name, *element_type(field_type))
         for name, field_type in message.get_fields_and_field_types().items()
     ]
 
 
-def _repeated_leaves(message) -> list[tuple[str, object]]:
+def repeated_leaves(message) -> list[tuple[str, object]]:
     """Every repeated field the message reaches, and the class one entry of each carries.
 
     Descends through nested messages so a result that wraps its list in an array message -- the
@@ -270,24 +271,19 @@ def _repeated_leaves(message) -> list[tuple[str, object]]:
     found = []
 
     def walk(node, prefix: str) -> None:
-        for name, element, many in _fields(node):
+        for name, element, many in fields(node):
             path = f"{prefix}{name}"
             if many and "/" in element:
-                found.append((path, _message_class(element)))
+                found.append((path, message_class(element)))
             elif not many and "/" in element and element != _HEADER_TYPE:
-                walk(_message_class(element), f"{path}.")
+                walk(message_class(element), f"{path}.")
 
     walk(message, "")
 
     return found
 
 
-def _repeated_leaf(message, type_name: str) -> tuple[str, object]:
-    """The one repeated field the message reaches, and the class one entry carries."""
-    return _sole(_repeated_leaves(message), "repeated message fields", type_name)
-
-
-def _paths_to(message, wanted: str) -> list[str]:
+def paths_to(message, wanted: str) -> list[str]:
     """Every path from `message` down to a field of type `wanted`.
 
     Repeated fields are not descended into: what one entry of an array holds is a question about
@@ -296,49 +292,36 @@ def _paths_to(message, wanted: str) -> list[str]:
     found = []
 
     def walk(node, prefix: str) -> None:
-        for name, element, many in _fields(node):
+        for name, element, many in fields(node):
             if many or "/" not in element:
                 continue
             path = f"{prefix}{name}"
             if element == wanted:
                 found.append(path)
             else:
-                walk(_message_class(element), f"{path}.")
+                walk(message_class(element), f"{path}.")
 
     walk(message, "")
 
     return found
 
 
-def _carried(root, carriers: tuple[str, ...]) -> str:
-    """The one of a quantity's ROS types the message reaches -- itself, by descent, or in one
-    entry of an array it holds -- or the first when it reaches none, so the descent names it."""
-    holders = [root, *(entry for _path, entry in _repeated_leaves(root))]
-    for carrier in carriers:
-        if any(
-            _type_name_of(holder) == carrier or _paths_to(holder, carrier) for holder in holders
-        ):
-            return carrier
-
-    return carriers[0]
-
-
-def _descend_to(message, wanted: str, where: str) -> str:
+def descend_to(message, wanted: str, where: str) -> str:
     """The path from `message` down to the one field of type `wanted`, empty if it is already it."""
-    if _type_name_of(message) == wanted:
+    if type_name_of(message) == wanted:
         return ""
 
-    return _sole(_paths_to(message, wanted), f"'{wanted}' fields", where)
+    return sole(paths_to(message, wanted), f"'{wanted}' fields", where)
 
 
-def _type_name_of(message) -> str:
+def type_name_of(message) -> str:
     """`pkg/Type` for a rosidl class, as a field type spells it."""
     package, _subfolder, _module = message.__module__.split(".")
 
     return f"{package}/{message.__name__}"
 
 
-def _shape_of(root, type_name: str, package: str, include: str) -> dict:
+def shape_of(root, type_name: str, package: str, include: str) -> dict:
     """What a message class offers a model: the leaf fields it may state, the owning message
     class of each (its constants live there), and the fields the node auto-fills.
     """
@@ -349,13 +332,13 @@ def _shape_of(root, type_name: str, package: str, include: str) -> dict:
     def walk(message, prefix: str) -> None:
         for name, field_type in message.get_fields_and_field_types().items():
             path = f"{prefix}{name}"
-            element, many = _element_type(field_type)
+            element, many = element_type(field_type)
             if not many and element == _AUTO_TIME_TYPE:
                 auto[path] = "time"
             elif not many and (name, element) == _AUTO_CONTEXT_ID:
                 auto[path] = "context_id"
             elif not many and "/" in element:
-                walk(_message_class(element), f"{path}.")
+                walk(message_class(element), f"{path}.")
             else:
                 leaves[path] = (element, message)
                 if many:
@@ -366,20 +349,12 @@ def _shape_of(root, type_name: str, package: str, include: str) -> dict:
     return {
         "type_name": type_name,
         "package": package,
-        "cpp_type": _cpp_names(root)[1],
+        "cpp_type": cpp_names(root)[1],
         "include": include,
         "leaves": leaves,
         "auto": auto,
         "repeated": repeated,
     }
-
-
-def _message_shape(type_name: str) -> dict:
-    """What a message type offers a publisher, walked from the type the model names."""
-    root = _message_class(type_name)
-    package, _cpp_type, include = _cpp_names(root)
-
-    return _shape_of(root, type_name, package, include)
 
 
 def standing_shape(type_name: str, quantity_type: str) -> dict:
@@ -402,76 +377,80 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
             f"a '{quantity_type}' has no ROS type that carries it whole; a standing publish "
             f"reports {', '.join(_PAYLOAD_TYPES)}",
         )
-    root = _message_class(type_name)
-    wanted = _carried(root, carriers)
-    package, _cpp_type, include = _cpp_names(root)
-    shape = _shape_of(root, type_name, package, include)
+    root = message_class(type_name)
+    # The one of the quantity's ROS types the message reaches -- itself, by descent, or in one
+    # entry of an array it holds -- or the first when it reaches none, so the descent names it.
+    holders = [root, *(entry for _path, entry in repeated_leaves(root))]
+    for carrier in carriers:
+        if any(
+            type_name_of(holder) == carrier or paths_to(holder, carrier) for holder in holders
+        ):
+            wanted = carrier
+            break
+    else:
+        wanted = carriers[0]
+    package, _cpp_type, include = cpp_names(root)
+    shape = shape_of(root, type_name, package, include)
     # A message reaching it nowhere and holding no array of anything reaches it nowhere: the
     # descent below says so about the quantity, which is what the model got wrong.
     carries_one = (
-        _type_name_of(root) == wanted or _paths_to(root, wanted) or not _repeated_leaves(root)
+        type_name_of(root) == wanted or paths_to(root, wanted) or not repeated_leaves(root)
     )
-    entry = None if carries_one else _entry_shape(root, wanted, type_name)
-    shape = {
+    entry = None
+    if not carries_one:
+        # One entry of the array, in the shape `observation_shape` reads an arriving detection,
+        # so a topic can be published in the shape another model already reads.
+        entry_path, entry_class = sole(
+            repeated_leaves(root), "repeated message fields", type_name
+        )
+        entry_name = type_name_of(entry_class)
+        entry_package, entry_cpp_type, entry_include = cpp_names(entry_class)
+        entry_fields = shape_of(entry_class, entry_name, entry_package, entry_include)
+        ids = [
+            name
+            for name, element, many in fields(entry_class)
+            if not many and element in _STRING_TYPES
+        ]
+        entry_descent = descend_to(entry_class, wanted, entry_name)
+        entry = {
+            "path": entry_path,
+            "type_name": entry_name,
+            "cpp_type": entry_cpp_type,
+            "payload_path": f"{entry_descent}." if entry_descent else "",
+            # What the entry says it is about. A run writes the model's own IRI here, which is
+            # what the read side compares against.
+            "id_path": sole(ids, "string fields", entry_name),
+            "frame_path": frame_path(entry_class),
+            "auto_time": [path for path, kind in entry_fields["auto"].items() if kind == "time"],
+        }
+    # Dotted prefix, empty when the message is the quantity and nothing else.
+    payload_path = ""
+    if not entry:
+        payload_descent = descend_to(root, wanted, type_name)
+        payload_path = f"{payload_descent}." if payload_descent else ""
+
+    return {
         **shape,
-        # Dotted prefix, empty when the message is the quantity and nothing else.
-        "payload_path": "" if entry else _prefix(_descend_to(root, wanted, type_name)),
+        "payload_path": payload_path,
         # The frame the quantity is stated against is the message's to carry, when it has a header.
-        "frame_path": _frame_path(root),
+        "frame_path": frame_path(root),
         "auto_time": [path for path, kind in shape["auto"].items() if kind == "time"],
         "auto_context_id": [path for path, kind in shape["auto"].items() if kind == "context_id"],
         "entry": entry,
-        "carrier": _message_class(wanted).__name__,
-    }
-
-    return shape
-
-
-def _entry_shape(root, wanted: str, type_name: str) -> dict:
-    """What one entry of the array a message carries offers: where its quantity goes, which
-    entity it says it is about, and the frame it says that in.
-
-    The same questions `observation_shape` asks of an arriving detection, asked of one the run
-    writes -- so a topic can be published in the shape another model already reads.
-
-    Raises:
-        ConstraintViolation: the message holds no single array of entries, or one entry offers
-            no single place for the quantity, or no single string to name what it is about.
-    """
-    entry_path, entry = _repeated_leaf(root, type_name)
-    entry_name = _type_name_of(entry)
-    package, cpp_type, include = _cpp_names(entry)
-    shape = _shape_of(entry, entry_name, package, include)
-    ids = [name for name, element, many in _fields(entry) if not many and element in _STRING_TYPES]
-
-    return {
-        "path": entry_path,
-        "type_name": entry_name,
-        "cpp_type": cpp_type,
-        "payload_path": _prefix(_descend_to(entry, wanted, entry_name)),
-        # What the entry says it is about. A run writes the model's own IRI here, which is what
-        # the read side compares against.
-        "id_path": _sole(ids, "string fields", entry_name),
-        "frame_path": _frame_path(entry),
-        "auto_time": [path for path, kind in shape["auto"].items() if kind == "time"],
+        "carrier": message_class(wanted).__name__,
     }
 
 
-def _prefix(path: str) -> str:
-    """A dotted path as a prefix to write fields under, empty when there is nothing to descend."""
-    return f"{path}." if path else ""
-
-
-def _frame_path(message) -> str | None:
+def frame_path(message) -> str | None:
     """Where the message states the frame it holds, when it carries a header at all."""
     headers = [
-        name for name, element, many in _fields(message) if not many and element == _HEADER_TYPE
+        name for name, element, many in fields(message) if not many and element == _HEADER_TYPE
     ]
 
     return f"{headers[0]}.{_FRAME_FIELD}" if headers else None
 
 
-def _sole_payload_path(shape: dict) -> str:
+def sole_payload_path(shape: dict) -> str:
     """The one field the sugar form means, once the auto-filled ones are set aside."""
     leaves = list(shape["leaves"])
     if len(leaves) != 1:
@@ -483,13 +462,13 @@ def _sole_payload_path(shape: dict) -> str:
     return leaves[0]
 
 
-def _cpp_value(shape: dict, path: str, text: str) -> str:
+def cpp_value(shape: dict, path: str, text: str) -> str:
     """The C++ the authored value renders to, against the field that owns it: a constant the
     message class defines, a quoted string, or a number the field's type accepts.
     """
     element, owner = shape["leaves"][path]
     if hasattr(owner, text) and text not in owner.get_fields_and_field_types():
-        _package, owner_cpp, _include = _cpp_names(owner)
+        _package, owner_cpp, _include = cpp_names(owner)
         return f"{owner_cpp}::{text}"
     if element in _STRING_TYPES:
         return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"'))
@@ -506,36 +485,14 @@ def _cpp_value(shape: dict, path: str, text: str) -> str:
 
 def publish_field(shape: dict, path: str, text: str) -> dict:
     """One authored assignment, resolved against the message type."""
-    path = path or _sole_payload_path(shape)
+    path = path or sole_payload_path(shape)
     if path not in shape["leaves"]:
         raise ConstraintViolation(
             "communication",
             f"'{path}' is not a payload field of '{shape['type_name']}'; it offers "
             f"{', '.join(shape['leaves']) or 'none'}",
         )
-    return {"path": path, "cpp_value": _cpp_value(shape, path, text)}
-
-
-def _occurrence_path(model, node, shape: dict) -> str:
-    """The payload field an announced event writes its IRI into.
-
-    Resolved the same way the sugar form resolves its field, so the message type decides what an
-    occurrence looks like rather than the generator assuming a field name.
-
-    Raises:
-        ConstraintViolation: the field the message offers cannot hold an IRI.
-    """
-    path = _sole_payload_path(shape)
-    element, _owner = shape["leaves"][path]
-    if element not in _STRING_TYPES:
-        raise ConstraintViolation(
-            "communication",
-            f"monitor '{model.id(node)}' publishes an occurrence on '{shape['type_name']}', "
-            f"whose field '{path}' is a '{element}'; an occurrence carries the event's IRI, so "
-            "the message must offer a string to hold it",
-        )
-
-    return path
+    return {"path": path, "cpp_value": cpp_value(shape, path, text)}
 
 
 def ros_publication(model, node) -> dict:
@@ -545,14 +502,61 @@ def ros_publication(model, node) -> dict:
     the constraint the monitor watches is satisfied; an unconditioned row is the otherwise.
     """
     graph = model.graph
-    answer = _ros_answer(model, node)
+    # The goal this monitor answers is a member of it rather than the monitor itself, so a
+    # monitor that publishes may answer too. Its own outcome member carries the status and, when
+    # the answering state is the satisfied one, the constraint that state holds under; every
+    # other member of it is one field of the result.
+    answer_node = next(
+        (
+            member
+            for member in graph.objects(node, RDFS.member)
+            if (member, RDF.type, NS_MM_ROS["Action"]) in graph
+        ),
+        None,
+    )
+    watched = set(graph.objects(node, CSTR_HDL["constraint"]))
+    answer = {}
+    if answer_node is not None:
+        result_shape = action_shape(
+            str(graph.value(answer_node, NS_MM_ROS["type-name"]) or "")
+        )["result"]
+        outcome, satisfied, result_fields = None, True, []
+        for member in graph.objects(answer_node, RDFS.member):
+            result_path = graph.value(member, NS_MM_ROS["field-path"])
+            if result_path is None:
+                outcome = str(graph.value(member, RDF.value))
+                satisfied = set(graph.objects(member, CSTR_EXT["has-constraint"])) == watched
+                continue
+            result_fields.append(
+                publish_field(result_shape, str(result_path), str(graph.value(member, RDF.value)))
+            )
+        if outcome not in _ANSWER_METHODS:
+            raise ConstraintViolation(
+                "communication",
+                f"monitor '{model.id(node)}' answers its goal '{outcome}'; a run answers "
+                f"{' or '.join(_ANSWER_METHODS)}",
+            )
+        answer = {
+            "answer": RosGoalAnswer(
+                outcome,
+                _ANSWER_METHODS[outcome],
+                result_shape["cpp_type"],
+                fields=result_fields,
+                satisfied=satisfied,
+                auto_time=[path for path, kind in result_shape["auto"].items() if kind == "time"],
+                auto_context_id=[
+                    path for path, kind in result_shape["auto"].items() if kind == "context_id"
+                ],
+            )
+        }
     channel = graph.value(node, NS_MM_ROS["channel-name"])
     if channel is None:
         return answer
     type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
-    shape = _message_shape(type_name)
+    root = message_class(type_name)
+    package, _cpp_type, include = cpp_names(root)
+    shape = shape_of(root, type_name, package, include)
     auto = shape["auto"]
-    watched = set(graph.objects(node, CSTR_HDL["constraint"]))
     on_satisfied: list[dict] = []
     on_violated: list[dict] = []
     occurrence_path = None
@@ -565,7 +569,18 @@ def ros_publication(model, node) -> dict:
         # A member with no authored value is not a field row: it is one event this monitor
         # announces, published as an occurrence.
         if graph.value(row, RDF.value) is None:
-            occurrence_path = _occurrence_path(model, node, shape)
+            # Resolved the way the sugar form resolves its field, so the message type decides
+            # what an occurrence looks like rather than the generator assuming a field name.
+            occurrence_path = sole_payload_path(shape)
+            element, _owner = shape["leaves"][occurrence_path]
+            if element not in _STRING_TYPES:
+                raise ConstraintViolation(
+                    "communication",
+                    f"monitor '{model.id(node)}' publishes an occurrence on "
+                    f"'{shape['type_name']}', whose field '{occurrence_path}' is a '{element}'; an "
+                    "occurrence carries the event's IRI, so the message must offer a string to "
+                    "hold it",
+                )
             occurrence_events.append(str(row))
             continue
         conditions = set(graph.objects(row, CSTR_EXT["has-constraint"]))
@@ -587,6 +602,18 @@ def ros_publication(model, node) -> dict:
             )
         )
 
+    # Unstated is every cycle.
+    rate_hz = None
+    rate_node = graph.value(node, SENSORS["update-rate"])
+    if rate_node is not None:
+        rate_hz = quantities.quantity(model, rate_node).value
+        if not rate_hz or rate_hz <= 0.0:
+            raise ConstraintViolation(
+                "communication",
+                f"monitor '{model.id(node)}' publishes at {rate_hz} Hz; a rate says how often, so "
+                "it is positive",
+            )
+
     return {
         **answer,
         "ros": RosPublication(
@@ -602,7 +629,7 @@ def ros_publication(model, node) -> dict:
             auto_context_id=[path for path, kind in auto.items() if kind == "context_id"],
             occurrence_path=occurrence_path,
             occurrence_events=occurrence_events,
-            rate_hz=_publish_rate(model, node),
+            rate_hz=rate_hz,
         ),
     }
 
@@ -610,77 +637,3 @@ def ros_publication(model, node) -> dict:
 # The status a run may answer its own goal with, and the goal-handle call that reports it. A
 # cancel is the client's to ask for, so the runtime reports it where it stops, never as an answer.
 _ANSWER_METHODS = {"STATUS_SUCCEEDED": "succeed", "STATUS_ABORTED": "abort"}
-
-
-def _ros_answer(model, node) -> dict:
-    """How this monitor answers the goal in flight: the status it reports, and the result fields
-    it fills, or nothing when it answers no goal.
-
-    The answer is a member of the monitor rather than the monitor itself, so a monitor that
-    publishes may answer too. Its own outcome member carries the status and, when the answering
-    state is the satisfied one, the constraint that state holds under; every other member of it
-    is one field of the result.
-
-    Raises:
-        ConstraintViolation: the monitor states a status a run cannot reach on its own, or none
-            at all.
-    """
-    graph = model.graph
-    answer = next(
-        (
-            member
-            for member in graph.objects(node, RDFS.member)
-            if (member, RDF.type, NS_MM_ROS["Action"]) in graph
-        ),
-        None,
-    )
-    if answer is None:
-        return {}
-    shape = action_shape(str(graph.value(answer, NS_MM_ROS["type-name"]) or ""))["result"]
-    watched = set(graph.objects(node, CSTR_HDL["constraint"]))
-    outcome, satisfied, fields = None, True, []
-    for member in graph.objects(answer, RDFS.member):
-        path = graph.value(member, NS_MM_ROS["field-path"])
-        if path is None:
-            outcome = str(graph.value(member, RDF.value))
-            satisfied = set(graph.objects(member, CSTR_EXT["has-constraint"])) == watched
-            continue
-        fields.append(publish_field(shape, str(path), str(graph.value(member, RDF.value))))
-    if outcome not in _ANSWER_METHODS:
-        raise ConstraintViolation(
-            "communication",
-            f"monitor '{model.id(node)}' answers its goal '{outcome}'; a run answers "
-            f"{' or '.join(_ANSWER_METHODS)}",
-        )
-
-    return {
-        "answer": RosGoalAnswer(
-            outcome,
-            _ANSWER_METHODS[outcome],
-            shape["cpp_type"],
-            fields=fields,
-            satisfied=satisfied,
-            auto_time=[path for path, kind in shape["auto"].items() if kind == "time"],
-            auto_context_id=[path for path, kind in shape["auto"].items() if kind == "context_id"],
-        )
-    }
-
-
-def _publish_rate(model, node) -> float | None:
-    """How often a monitor publishes, when the model says. Unstated is every cycle.
-
-    Raises:
-        ConstraintViolation: the rate does not say how often.
-    """
-    rate_node = model.graph.value(node, SENSORS["update-rate"])
-    if rate_node is None:
-        return None
-    rate_hz = quantities.quantity(model, rate_node).value
-    if not rate_hz or rate_hz <= 0.0:
-        raise ConstraintViolation(
-            "communication",
-            f"monitor '{model.id(node)}' publishes at {rate_hz} Hz; a rate says how often, so "
-            "it is positive",
-        )
-
-    return rate_hz

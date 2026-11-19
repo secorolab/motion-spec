@@ -26,30 +26,29 @@ struct motion_spec_event_buffer {
 >>
 
 fsm-step-function(motion) ::= <<
-<if(motion.fsm_state || motion.is_when_gate_hold)>
-static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, algorithm_data &data, robot_io &robot<if(motion.step_needs_events)>, motion_spec_event_buffer &events<endif>) {
+<if(motion.fsm_state || motion.is_when_gate_hold)>static void step_<motion.id>(<motion.id>_state &<motion.id>_state_instance, algorithm_data &data, robot_io &robot<if(motion.step_needs_events)>, motion_spec_event_buffer &events<endif>) {
     if (!<motion.id>_state_instance.active) {
         <motion.id>_state_instance.active = true;
         <motion.id>_state_instance.active_steps = 0;
 <if(motion.entry_snapshots)>        <motion.id>_state_instance.snapshot_taken = false;
 <endif><if(motion.active_elapsed_ids)>        <motion.id>_state_instance.motion_start_time = -1.0;
 <endif><if(motion.when_elapsed_ids)>        <motion.id>_state_instance.when_start_time = -1.0;
-<endif><motion.action_clients:{c | <ros-action-send(c)>}; separator="\n">
-<motion.when_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
-<motion.while_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
-<motion.until_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator="\n">
-<motion.perturbations:{p | <perturbation-rearm(motion.id, p)>}; separator="\n">
-<motion.controllers:{controller |         <controller-reset(motion.id, controller, motion.entry_snapshots)>}; separator="\n">
-<motion.serial_chain_solvers:{solver | <solver-enter(solver, resources.by_id.(solver.solver_id))>}; separator="">
+<endif><motion.action_clients:{c | <ros-action-send(c)><\n>}; separator=""><\\>
+<motion.when_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator=""><\\>
+<motion.while_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator=""><\\>
+<motion.until_monitors:{monitor | <monitor-rearm(motion.id, monitor)>}; separator=""><\\>
+<motion.perturbations:{p | <perturbation-rearm(motion.id, p)><\n>}; separator=""><\\>
+<motion.controllers:{controller | <if(controller.type)>        <controller-reset(motion.id, controller, motion.entry_snapshots)><\n><endif>}; separator=""><\\>
+<motion.serial_chain_solvers:{solver | <solver-enter(solver, resources.by_id.(solver.solver_id))>}; separator=""><\\>
 <motion.path_projections:{proj |         data.<proj.parameter> = 0.0;
-        data.<proj.along_speed> = 0.0;}; separator="\n">
-    }
+        data.<proj.along_speed> = 0.0;<\n>}; separator="">    }
     update_<motion.id>(<motion.id>_state_instance, data, robot);
     monitor_until_<motion.id>(<sig-args(motion.id, motion.until_needs_state, motion.until_needs_data, motion.until_needs_robot, motion.until_needs_events)>);
     control_<motion.id>(<motion.id>_state_instance, data, robot<if(motion.control_needs_events)>, events<endif>);
     apply_<motion.id>(<sig-args(motion.id, motion.apply_needs_state, motion.apply_needs_data, motion.apply_needs_robot)>);
     ++<motion.id>_state_instance.active_steps;
 \}
+
 <endif>
 >>
 
@@ -80,8 +79,7 @@ fsm-dispatch-case(motion, fsm) ::= <<
 fsm-active-motion(motions, fsm) ::= <<
     auto fsm_active_motion = [&](struct fsm_nbx *fsm) -> int {
         switch (fsm->currentStateIndex) {
-<motions:{motion | <fsm-active-motion-case(motion, fsm)>}; separator="\n">
-        default: return -1;
+<motions:{motion | <fsm-active-motion-case(motion, fsm)>}; separator="">        default: return -1;
         \}
     \};
 >>
@@ -101,8 +99,7 @@ fsm-dispatch(motions, fsm) ::= <<
     // fallback hold state additionally re-evaluates the gated motion's WHEN precondition each tick.
     auto fsm_dispatch = [&](struct fsm_nbx *fsm) {
         switch (fsm->currentStateIndex) {
-<motions:{motion | <fsm-dispatch-case(motion, fsm)>}; separator="\n">
-<fsm-dispatch-start(motions, fsm)>        default: break;
+<motions:{motion | <fsm-dispatch-case(motion, fsm)>}; separator=""><fsm-dispatch-start(motions, fsm)>        default: break;
         \}
     \};
 >>

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from rdf_utils import DatasetFormat
 from rdf_utils.models.prov import (
     add_agent,
     add_directory_location,
@@ -28,7 +29,7 @@ from motion_spec.generation.artifacts import (
     build_frame_log_header_record,
     field_names_and_format,
 )
-from motion_spec.runs.provenance import GENERATION_DOCUMENT, add_package, write_generation_graph
+from motion_spec.runs.provenance import GENERATION_DOCUMENT, add_package
 from motion_spec.telemetry import frame_log_pb
 
 
@@ -77,7 +78,8 @@ def source_tree(tmp_path: Path) -> Path:
     load_transformation_prov(bundle, [ir], sources, motion_spec, started=now, ended=now)
     executable = capture_file_prov(bundle, tmp_path / "main", roots=roots)
     load_transformation_prov(bundle, sources, [executable], motion_spec, started=now, ended=now)
-    write_generation_graph(path / GENERATION_DOCUMENT, bundle)
+    (path / GENERATION_DOCUMENT).parent.mkdir(parents=True, exist_ok=True)
+    (path / GENERATION_DOCUMENT).write_text(dataset.serialize(format=DatasetFormat.JSON_LD))
     flat = {name: 0 for name in field_names_and_format(SCHEMA["pools"])[1]} | FRAME
     # The writer closes its log with its own account of the frames it was handed.
     health = frame_log_pb.record_class()()

@@ -13,52 +13,53 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
+from coord_dsl.rdf.vocab import URI_FSM_PRED_DESCRIPTION
 from google.protobuf.message import DecodeError
-from rdflib import RDF, BNode, Literal
+from rdf_utils.models.prov import get_file_path
+from rdflib import RDF, BNode, Dataset, Literal, URIRef
+from rdflib.namespace import PROV, TIME
 from rec import Verdict
 
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import deployed_devices
-from motion_spec.dashboard.metadata import annotations, baseline
-from motion_spec.dashboard.roots import directory_size, json_file, stamp_iso, trace
+from motion_spec.dashboard.metadata import annotations, model_folder
+from motion_spec.dashboard.roots import directory_size, json_file, trace
 from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
 from motion_spec.rdf_parser.agents import agent_cameras
 from motion_spec.rdf_parser.deployment import platform_facts
-from motion_spec.runs.provenance import FRAME_LOG_PACKED, generation_model, run_outputs
+from motion_spec.runs.provenance import (
+    FRAME_LOG_PACKED,
+    GENERATION_DOCUMENT,
+    generation_model,
+    read_generation_dataset,
+    rec_run,
+    run_outputs,
+)
 from motion_spec.runs.replay import resolve_run
 from motion_spec.runs.verify import RecordError
-from motion_spec.telemetry import frame_log_pb
-from motion_spec.telemetry.frame_log_pb import read_health
-
-
-def _last_run(path: Path) -> dict | None:
-    """How the newest run ended, or that it is still going -- the sidebar's one-glance answer."""
-    runs = GenerationInfo(path).runs
-    if not runs:
-        return None
-    newest = runs[0]
-    return {
-        "id": newest.run_id,
-        "state": newest.state,
-        "verdict": newest.verdict,
-        "live": newest.is_live(),
-    }
 
 
 def generation_info(path: Path) -> dict:
     layout = json_file(path / "generated/contract/frame_layout.json")
+    # The generation is the activity every tool's step was delegated in.
+    provenance = read_generation_dataset(path / "generated" / GENERATION_DOCUMENT)
+    began = provenance.value(provenance.value(predicate=PROV.hadActivity), TIME.hasBeginning)
+    created = provenance.value(began, TIME.inXSDDateTimeStamp)
     platform = generation_platform(path)
-    source = next((item for item in (path / "generated/source").glob("*.robmot")), None)
+    kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
+    source = next((source for source in kept if source.suffix == ".robmot"), None)
+    generation = GenerationInfo(path, roots.GENERATIONS)
+    runs = generation.runs
     return {
         **annotations(path),
-        "note_tags": _run_notes(path),
-        "baseline": baseline(path),
+        "note_tags": run_notes(path),
+        "baseline": json_file(model_folder(path) / "dashboard-model.json").get("baseline"),
         "path": str(path.relative_to(roots.GENERATIONS)),
-        "name": GenerationInfo(path, roots.GENERATIONS).model,
-        "created": stamp_iso(GenerationInfo(path).timestamp),
+        "name": generation.model,
+        "created": str(created) if created is not None else None,
         "variant": (path.parent.name if path.parent.parent != roots.GENERATIONS else None),
-        "built_at": datetime.fromtimestamp(GenerationInfo(path).built_at, UTC).isoformat(),
+        "built_at": datetime.fromtimestamp(generation.built_at, UTC).isoformat(),
         "source": source.name if source else None,
         "backend": platform.get("backend"),
         "platform": platform.get("name"),
@@ -66,9 +67,18 @@ def generation_info(path: Path) -> dict:
         "schema_hash": layout.get("schema_hash"),
         "size_bytes": directory_size(path),
         "pools": layout.get("pools", {}),
-        "runs": len(GenerationInfo(path).runs),
+        "runs": len(runs),
         "cameras": generation_cameras(path),
-        "last_run": _last_run(path),
+        "last_run": (
+            {
+                "id": runs[0].run_id,
+                "state": runs[0].state,
+                "verdict": runs[0].verdict,
+                "live": runs[0].is_live(),
+            }
+            if runs
+            else None
+        ),
     }
 
 
@@ -101,17 +111,15 @@ def build_toolchain(generation_dir: Path) -> dict:
 
 
 def drift_summary(generation_dir: Path) -> dict:
-    """Every source this generation archived, and whether the working tree still matches it.
-
-    Provenance records where each file was archived, not where it came from, so the working
-    copy is found the way the model imported it -- by name, nearest the model first.
-    """
-    model_dir = generation_model_dir(generation_dir)
+    """Every source this generation archived, and whether the working tree still matches it."""
+    generated = generation_dir / "generated"
+    provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
     files = []
-    for archived in (generation_dir / "generated/source").glob("*"):
+    for copy in set(provenance.subjects(PROV.alternateOf)):
+        archived = get_file_path(provenance, copy)
         if not archived.is_file():
             continue
-        twin = workspace_twin(archived.name, model_dir)
+        twin = workspace_twin(generated, provenance, copy)
         if twin is None:
             status = "missing"
         else:
@@ -138,15 +146,21 @@ def source_drift(generation_dir: Path, name: str | None = None) -> dict:
     edited into. Comparing the two is the only honest answer to "would generating again give
     me this?". The sides are aligned by `aligned_rows`, so the page only draws rows.
     """
-    source_dir = generation_dir / "generated/source"
-    if name:
-        archived = source_dir / Path(name).name  # a name, never a path out of the archive
-        archived = archived if archived.is_file() else None
-    else:
-        archived = next(source_dir.glob("*.robmot"), None)
+    generated = generation_dir / "generated"
+    provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
+    kept = {get_file_path(provenance, copy): copy for copy in provenance.subjects(PROV.alternateOf)}
+    archived = next(
+        (
+            path
+            for path in kept
+            if path.is_file()
+            and (path.name == Path(name).name if name else path.suffix == ".robmot")
+        ),
+        None,
+    )
     if archived is None:
         raise ValueError("this generation archived no such source")
-    twin = workspace_twin(archived.name, generation_model_dir(generation_dir))
+    twin = workspace_twin(generated, provenance, kept[archived])
     if twin is None:
         return {
             "name": archived.name,
@@ -167,48 +181,36 @@ def source_drift(generation_dir: Path, name: str | None = None) -> dict:
     }
 
 
-def generation_model_dir(generation_dir: Path) -> str | None:
-    """The working directory this generation's model was authored in, if it is still there.
+def workspace_twin(generated: Path, provenance: Dataset, copy: URIRef) -> str | None:
+    """The working-tree file under the sources root that the kept source COPY is an alternate
+    of, or None if it is not there any more.
 
-    The model states its deployment config's path; its parent is the model's own directory,
-    which is where most of a generation's sources came from.
+    Each original is located by the bundle of the tool that used it: scene-dsl's and
+    coord-dsl's are in PROVENANCE, the generation's document; the DSL's is in the DSL's own
+    document, one of the model documents of GENERATED.
     """
-    config = generation_platform(generation_dir).get("config")
-    if not config:
-        return None
-    folder = Path(config).parent
-    try:
-        return str(folder.relative_to(roots.WORKSPACE)) if folder.is_dir() else None
-    except ValueError:
-        return None  # authored outside the sources root
-
-
-def workspace_twin(name: str, model_dir: str | None) -> str | None:
-    """The working-tree file a vendored source came from, or None if it is not there any more.
-
-    Nearest first, the way the model imported it: the file beside the model, then the folder
-    above it, as `../shared.ktree` does. A handful of `is_file()` checks -- searching the tree
-    by name would cost a walk per page and could only ever guess between two matches anyway.
-    """
-    if not model_dir:
-        return None
-    folder = Path(model_dir)
-    while True:
-        candidate = folder / name if str(folder) != "." else Path(name)
-        if (roots.WORKSPACE / candidate).is_file():
-            return str(candidate)
-        if folder.parent == folder or str(folder) == ".":
-            return None
-        folder = folder.parent
+    model = generation_model(generated).graph
+    for original in provenance.objects(copy, PROV.alternateOf):
+        for graph in (provenance, model):
+            path = get_file_path(graph, original)
+            if path is not None and path.is_file() and path.is_relative_to(roots.WORKSPACE):
+                return str(path.relative_to(roots.WORKSPACE))
+    return None
 
 
 def generation_details(path: Path) -> dict:
     """Add authored motion metadata without slowing the generation sidebar."""
     details = generation_info(path)
-    source_files = list((path / "generated/source").glob("*"))
-    robmot = next((source for source in source_files if source.suffix == ".robmot"), None)
-    fsm = next((source for source in source_files if source.suffix == ".fsm"), None)
-    description = re.search(r'description:\s*"([^"]+)"', fsm.read_text()) if fsm else None
+    generated = path / "generated"
+    provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
+    kept = {get_file_path(provenance, copy): copy for copy in provenance.subjects(PROV.alternateOf)}
+    robmot = next((source for source in kept if source.suffix == ".robmot"), None)
+    try:
+        description = generation_model(path / "generated").graph.value(
+            predicate=URI_FSM_PRED_DESCRIPTION
+        )
+    except ValueError:
+        description = None
     # A generation with no run yet has no log to read, so the count comes off the source.
     constraints = authored_lines(robmot.read_text()) if robmot else {}
     # A simulation is a platform with a name; hardware is the devices it deploys, which the
@@ -218,26 +220,25 @@ def generation_details(path: Path) -> dict:
     details["motions"] = len({motion for motion, _name in constraints})
     details["folder"] = str(path)
     details["spec_name"] = Path(details["source"] or path.name).stem
-    details["description"] = description.group(1) if description else None
+    details["description"] = str(description) if description is not None else None
     # A generation vendors a copy of what it was built from. Only the model carries the way
     # back to the working file, since that is what `gen` is pointed at again; the rest are its
     # imports, and where the tree no longer has one this says nothing.
-    model_dir = generation_model_dir(path)
     details["source_files"] = [
         {
             "name": source.name,
             "path": str(source),
             "model": source == robmot,
-            "workspace": workspace_twin(source.name, model_dir) if source == robmot else None,
+            "workspace": workspace_twin(generated, provenance, copy) if source == robmot else None,
         }
-        for source in source_files
+        for source, copy in kept.items()
         if source.is_file()
     ]
     details["toolchain"] = build_toolchain(path)
     details["generated_files"] = [
-        {"name": str(source.relative_to(path / "generated")), "path": str(source)}
-        for source in (path / "generated").rglob("*")
-        if source.is_file() and "source" not in source.relative_to(path / "generated").parts
+        {"name": str(source.relative_to(generated)), "path": str(source)}
+        for source in generated.rglob("*")
+        if source.is_file() and source.resolve() not in kept
     ]
     return details
 
@@ -250,25 +251,17 @@ GENERATED_MAX_BYTES = 2_000_000
 _TEXT_CONTROL = {9, 10, 13}
 
 
-def _is_binary(head: bytes) -> bool:
-    """Whether this looks like packed bytes rather than something to read.
-
-    The usual test -- a NUL in the first block -- passes a serialized frame log, whose wire
-    format is field tags and lengths in the low bytes with hardly a NUL among them. Counting
-    every control byte catches it, and leaves real source (which has none) far below the line.
-    """
-    if not head:
-        return False
-    control = sum(1 for byte in head if byte < 32 and byte not in _TEXT_CONTROL)
-    return b"\0" in head or control > len(head) * 0.02
-
-
 def read_generated(path: Path) -> dict:
     """One generated artifact as text, for reading in the dashboard's editor."""
     size = path.stat().st_size
     with path.open("rb") as handle:
         head = handle.read(GENERATED_MAX_BYTES)
-    if _is_binary(head[:8192]):
+    # A NUL in the first block alone passes a serialized frame log, whose wire format is field
+    # tags and lengths in the low bytes with hardly a NUL among them; counting every control
+    # byte catches it, and leaves real source (which has none) far below the line.
+    block = head[:8192]
+    control = sum(1 for byte in block if byte < 32 and byte not in _TEXT_CONTROL)
+    if b"\0" in block or control > len(block) * 0.02:
         return {"absolute": str(path), "size": size, "binary": True, "text": ""}
     return {
         "absolute": str(path),
@@ -280,28 +273,10 @@ def read_generated(path: Path) -> dict:
     }
 
 
-def rdf_name(term: object) -> str:
-    """Return the compact RDF name used in the dashboard."""
-    return str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
-
-
-PROV_NS = "http://www.w3.org/ns/prov#"
-
-
-def _is_prov(term) -> bool:
-    return str(term).startswith(PROV_NS)
-
-
-def _term_kind(term) -> str:
-    if isinstance(term, BNode):
-        return "blank"
-    return "provenance" if _is_prov(term) else "resource"
-
-
 def graph_name(context) -> str:
     """A quad's named graph, named as compactly as it can be."""
     identifier = str(context)
-    return rdf_name(identifier.rstrip("/")) or identifier
+    return identifier.rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1] or identifier
 
 
 def term_graphs(dataset) -> dict[str, list[str]]:
@@ -341,7 +316,9 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
     blank_ids: dict[str, str] = {}
     for subject, predicate, obj, _name in quads:
         if isinstance(obj, BNode) and not isinstance(subject, BNode):
-            blank_ids.setdefault(str(obj), f"{subject}#{rdf_name(predicate)}")
+            blank_ids.setdefault(
+                str(obj), f"{subject}#{str(predicate).rsplit('/', 1)[-1].rsplit('#', 1)[-1]}"
+            )
 
     for subject, predicate, obj, name in quads:
         ends = []
@@ -351,33 +328,43 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
             if term_id not in nodes:
                 nodes[term_id] = {
                     "id": term_id,
-                    "label": rdf_name(term),
+                    "label": str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1],
                     "value": str(term),
                     "types": [],
                     "attributes": {},
                     "degree": 0,
-                    "kind": _term_kind(term),
+                    "kind": (
+                        "blank"
+                        if isinstance(term, BNode)
+                        else "provenance"
+                        if term in PROV
+                        else "resource"
+                    ),
                     "graphs": list(graphs.get(str(term), [])),
                 }
             ends.append(nodes[term_id])
         source = ends[0]
         if predicate == RDF.type:
-            short = rdf_name(obj)
+            short = str(obj).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
             source["types"].append(short)
             types[short] += 1
             hidden["type_edges"] += 1
             continue
         if isinstance(obj, Literal):
-            source["attributes"].setdefault(rdf_name(predicate), []).append(str(obj))
+            source["attributes"].setdefault(
+                str(predicate).rsplit("/", 1)[-1].rsplit("#", 1)[-1], []
+            ).append(str(obj))
             hidden["literal_edges"] += 1
             continue
         target = ends[1]
-        kind = "provenance" if any(map(_is_prov, (subject, predicate, obj))) else "relation"
+        provenance = any(term in PROV for term in (subject, predicate, obj))
+        kind = "provenance" if provenance else "relation"
+        label = str(predicate).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
         links.append(
             {
                 "source": source["id"],
                 "target": target["id"],
-                "label": rdf_name(predicate),
+                "label": label,
                 "value": str(predicate),
                 "kind": kind,
                 "graph": name,
@@ -385,7 +372,7 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
         )
         source["degree"] += 1
         target["degree"] += 1
-        predicates[rdf_name(predicate)] += 1
+        predicates[label] += 1
         if kind == "provenance":
             hidden["provenance_edges"] += 1
     return {
@@ -406,47 +393,41 @@ def provenance_graph(service) -> dict:
     return classify_quads(quads, term_graphs(service.dataset))
 
 
-def _run_notes(path: Path) -> list[str]:
+def run_notes(path: Path) -> list[str]:
     """Read notes.json here rather than importing queries, which imports this module: every tag
     used by the run's notes."""
     stored = json_file(path / "notes.json")
     notes = stored.get("notes") if isinstance(stored, dict) else None
     notes = [note for note in notes if isinstance(note, dict)] if isinstance(notes, list) else []
-    tags = []
-    for note in notes:
-        for tag in note.get("tags") or []:
-            if str(tag) not in tags:
-                tags.append(str(tag))
-    return tags
+    return list(dict.fromkeys(str(tag) for note in notes for tag in note.get("tags") or []))
 
 
 def run_info(path: Path) -> dict:
-    log = frame_log_pb.log_path(path / "logs/frame_log.pb")
-    health = read_health(log) or {}
-    run_id = RunInfo(path).run_id
+    info = RunInfo(path)
+    health = info.health or {}
     # A run that has only just started has no readable log yet; it still belongs in the list.
     try:
         period_ns = resolve_run(path)[2].header.nominal_period_ns
     except (RecordError, DecodeError, OSError):
         period_ns = 0
-    match = re.fullmatch(r"run-(\d{8}T\d{6}\d{6}Z)", run_id)
-    tags = []
-    for tag in (*annotations(path)["tags"], *_run_notes(path)):
-        if tag not in tags:
-            tags.append(tag)
+    run = rec_run(path)
+    record = run.store.load(run.id) or Dataset()
+    record.default_union = True
+    started = record.value(record.value(run.node, TIME.hasBeginning), TIME.inXSDDateTimeStamp)
+    labels = annotations(path)
     return {
-        **annotations(path),
+        **labels,
         "path": str(path.relative_to(roots.GENERATIONS)),
-        "id": run_id,
-        "started": stamp_iso(match.group(1)) if match else None,
-        "complete": health.get("complete") or RunInfo(path).verdict is Verdict.PASSED,
-        "state": RunInfo(path).state,
-        "verdict": RunInfo(path).verdict,
-        "live": RunInfo(path).is_live(),
+        "id": info.run_id,
+        "started": str(started) if started is not None else None,
+        "complete": health.get("complete") or info.verdict is Verdict.PASSED,
+        "state": info.state,
+        "verdict": info.verdict,
+        "live": info.is_live(),
         "written_frames": health.get("written_frames"),
         "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
-        "tags": tags,
+        "tags": list(dict.fromkeys((*labels["tags"], *run_notes(path)))),
         "notes_text": "\n".join(
             note.get("text", "") for note in json_file(path / "notes.json").get("notes", [])
         ),
@@ -481,11 +462,6 @@ def generation_cameras(generation_dir: Path) -> list[dict]:
     ]
 
 
-def is_simulated(generation_dir: Path) -> bool:
-    """Whether this generation targets a simulator, which is what makes a display a choice."""
-    return bool(generation_platform(generation_dir).get("simulated"))
-
-
 def run_files(run_dir: Path) -> list[dict]:
     """Every file this run wrote, named relative to the run.
 
@@ -497,11 +473,6 @@ def run_files(run_dir: Path) -> list[dict]:
         for path in run_dir.rglob("*")
         if path.is_file()
     ]
-
-
-def run_videos(run_dir: Path) -> list[str]:
-    """The cameras this run recorded, named by their video beside the log."""
-    return [path.stem for path in (run_dir / "logs").glob("*.mp4")]
 
 
 def video_file(run_dir: Path, camera: str) -> Path:

@@ -122,47 +122,31 @@ alpha-frame(specification, solver_state, column, owner) ::= <<
 >>
 
 assign-spatial-direction(specification, solver_state, column, owner) ::= <<
-<if(specification.direction)>
-<if(specification.base_aligned)>
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = data.<specification.direction.id>.x();
+<if(specification.direction)><if(specification.base_aligned)>    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = data.<specification.direction.id>.x();
     robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = data.<specification.direction.id>.y();
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.direction.id>.z();
-<if(specification.moment_direction)>
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.direction.id>.z();<if(specification.moment_direction)>
     robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = data.<specification.moment_direction.id>.x();
     robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = data.<specification.moment_direction.id>.y();
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.moment_direction.id>.z();
-<endif>
-<else>
-    {
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.moment_direction.id>.z();<endif><else>    {
 <alpha-frame(specification, solver_state, column, owner)>
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * data.<specification.direction.id>;
         robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
         robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
-<if(specification.moment_direction)>
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];<if(specification.moment_direction)>
         const KDL::Vector alpha_moment_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * data.<specification.moment_direction.id>;
         robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_moment_<solver_state>_<column>[0];
         robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_moment_<solver_state>_<column>[1];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_moment_<solver_state>_<column>[2];
-<endif>
-    }
-<endif>
-<else>
-<if(specification.base_aligned)>
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::<specification.axis>), <column>) = 1.0;
-<else>
-    {
+        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_moment_<solver_state>_<column>[2];<endif>
+    }<endif><else><if(specification.base_aligned)>    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::<specification.axis>), <column>) = 1.0;<else>    {
 <alpha-frame(specification, solver_state, column, owner)>
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * KDL::Vector(<axis-to-vector.(specification.axis)>);
         robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
         robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
         robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
-    }
-<endif>
-<endif>
+    }<endif><endif>
 >>
 
 assign-acceleration-constraint(constraint, solver_state, column, owner) ::= <<
@@ -282,11 +266,11 @@ solver-enter-algorithm ::= [
 solver-enter-nothing(solver) ::= <<>>
 
 solver-enter-IVK(solver) ::= <<
-        robot.<solver.id>_state.q_cmd_seeded = false;
+        robot.<solver.id>_state.q_cmd_seeded = false;<\n>
 >>
 
 solver-enter-IPK(solver) ::= <<
-        robot.<solver.id>_state.q_des_seeded = false;
+        robot.<solver.id>_state.q_des_seeded = false;<\n>
 >>
 
 // An arm commanded in position stays where its last command put it.
@@ -326,20 +310,14 @@ solver-torque-hold(solver, chain_solver) ::= <<
 
 // Every end reads off the one world model, so the same rule answers on every platform.
 solver-output-Pose(solver, chain_solver, out) ::= <<
-<if(out.seen_by_root)>
-{
+<if(out.seen_by_root)>{
     // Measured from a frame that moves with the arm, but stated in the chain root's axes: the
     // translation is the base-frame gap between the two, so what the pose carries as its
     // orientation is the subject's own.
     const KDL::Frame _of_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.of.id>})>;
     const KDL::Frame _wrt_<out.id> = <world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.relative_to_frame.id>})>;
     data.<out.id> = KDL::Frame(_of_<out.id>.M, _of_<out.id>.p - _wrt_<out.id>.p);
-}
-<elseif(out.relative_to_frame)>
-<relative-world-pose(out)>
-<else>
-data.<out.id> = <world-pose(solver, {<if(out.of.id)>robot.world_<chain_solver.runtime.owner_id>_<out.of.id><else>robot.<solver.id>.world_tip<endif>})>;
-<endif>
+}<elseif(out.relative_to_frame)><relative-world-pose(out)><else>data.<out.id> = <world-pose(solver, {<if(out.of.id)>robot.world_<chain_solver.runtime.owner_id>_<out.of.id><else>robot.<solver.id>.world_tip<endif>})>;<endif>
 >>
 
 // One indexed read out of this cycle's world update, composed back onto the chain's own root --
@@ -356,28 +334,20 @@ data.<out.id> = (robot.world->pose(robot.world_<chain_solver.runtime.owner_id>_<
 // The outward pass carries the twist beside the pose, so the chain is not walked a second time;
 // what it holds is in the world's axes, and the chain root's rotation states it as the chain does.
 solver-output-VelocityTwist(solver, chain_solver, out) ::= <<
-<if(out.seen_by_root)>
-data.<out.id> = robot.<solver.id>.world_to_root.M * robot.world->twist(robot.world_<chain_solver.runtime.owner_id>_<out.of.id>, robot.control_cycle);
-<else>
-// Seen by a frame that moves with the arm: the same twist about the same point, turned into
+<if(out.seen_by_root)>data.<out.id> = robot.<solver.id>.world_to_root.M * robot.world->twist(robot.world_<chain_solver.runtime.owner_id>_<out.of.id>, robot.control_cycle);<else>// Seen by a frame that moves with the arm: the same twist about the same point, turned into
 // that frame's axes, so a rotation the arm carries along reads as a constant.
 data.<out.id> = (<world-pose(solver, {robot.world_<chain_solver.runtime.owner_id>_<out.as_seen_by.id>})>).M.Inverse()
-    * (robot.<solver.id>.world_to_root.M * robot.world->twist(robot.world_<chain_solver.runtime.owner_id>_<out.of.id>, robot.control_cycle));
-<endif>
+    * (robot.<solver.id>.world_to_root.M * robot.world->twist(robot.world_<chain_solver.runtime.owner_id>_<out.of.id>, robot.control_cycle));<endif>
 >>
 
 // A chain joint reads its runtime's own port row; one the chain does not articulate -- a gripper
 // mimic, an object hinge -- reads the world port whichever provider answers it wrote into.
 solver-output-JointPosition(solver, chain_solver, out) ::= <<
-<if(out.on_chain)>data.<out.id> = <normalized-joint-read({*robot.ports_<chain_solver.runtime.id>[<out.joint_index>].position}, out.normalization)>;  // <out.joint_name>
-<else>data.<out.id> = <normalized-joint-read({*robot.world_joint_<out.world_slot>}, out.normalization)>;  // <out.joint_name>
-<endif>
+<if(out.on_chain)>data.<out.id> = <normalized-joint-read({*robot.ports_<chain_solver.runtime.id>[<out.joint_index>].position}, out.normalization)>;  // <out.joint_name><else>data.<out.id> = <normalized-joint-read({*robot.world_joint_<out.world_slot>}, out.normalization)>;  // <out.joint_name><endif>
 >>
 
 solver-output-JointVelocity(solver, chain_solver, out) ::= <<
-<if(out.on_chain)>data.<out.id> = *robot.ports_<chain_solver.runtime.id>[<out.joint_index>].velocity;  // <out.joint_name>
-<else>data.<out.id> = *robot.world_joint_<out.world_slot>_velocity;  // <out.joint_name>
-<endif>
+<if(out.on_chain)>data.<out.id> = *robot.ports_<chain_solver.runtime.id>[<out.joint_index>].velocity;  // <out.joint_name><else>data.<out.id> = *robot.world_joint_<out.world_slot>_velocity;  // <out.joint_name><endif>
 >>
 
 // Only a chain joint reports its torque; the sign it is read with is the backend's.
@@ -563,8 +533,7 @@ solver-output(solver, chain_solver, out) ::= <<
 // A read-only solver serves state and FK only: no solve runs and the staged command is zero.
 // The q/qd mirrors still publish so the frame log records the observed arm.
 solver-run(solver, chain_solver, motion_driver) ::= <<
-<if(!solver.read_only)>
-    KDL::SetToZero(robot.<solver.id>_state.spatial_directions);
+<if(!solver.read_only)>    KDL::SetToZero(robot.<solver.id>_state.spatial_directions);
 <solver-assign-acceleration-input(solver, chain_solver, motion_driver)>
     KDL::SetToZero(robot.<solver.id>_state.tau_ff);
 <motion_driver.joint_force:{jf |     robot.<solver.id>_state.tau_ff(<jf.joint_index>) += data.<jf.force_id>;  // <jf.joint_name>}; separator="\n">
@@ -608,11 +577,9 @@ solver-clear-external-forces(solver, chain_solver, motion_driver) ::= <<
 >>
 
 solver-clear-external-forces-ACHD(solver, motion_driver) ::= <<
-<if(motion_driver.has_cartesian_force)>
-    for (int i = 0; i \< robot.<solver.id>_state.num_segments; ++i) {
+<if(motion_driver.has_cartesian_force)>    for (int i = 0; i \< robot.<solver.id>_state.num_segments; ++i) {
         KDL::SetToZero(robot.<solver.id>_state.f_ext[i]);
-    }
-<endif>
+    }<endif>
 >>
 
 solver-clear-external-forces-RNE(solver, motion_driver) ::= <<
@@ -631,18 +598,14 @@ solver-assign-acceleration-input(solver, chain_solver, motion_driver) ::= <<
 
 // The rows this motion leaves are zero, so the resolve decouples them and they add nothing.
 solver-assign-acceleration-input-RNE(solver, chain_solver, motion_driver) ::= <<
-    KDL::SetToZero(robot.<solver.id>_state.cartesian_acceleration);
-<if(motion_driver.cartesian_acceleration)>
-<motion_driver.cartesian_acceleration:{a | <assign-cartesian-acceleration(a, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n">
-<endif>
+    KDL::SetToZero(robot.<solver.id>_state.cartesian_acceleration);<if(motion_driver.cartesian_acceleration)>
+<motion_driver.cartesian_acceleration:{a | <assign-cartesian-acceleration(a, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n"><endif>
 >>
 
 // The rows this motion leaves are zero, so the resolve decouples them and they add nothing.
 solver-assign-acceleration-input-IVK(solver, chain_solver, motion_driver) ::= <<
-    KDL::SetToZero(robot.<solver.id>_state.cartesian_velocity);
-<if(motion_driver.cartesian_velocity)>
-<motion_driver.cartesian_velocity:{v | <assign-cartesian-velocity(v, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n">
-<endif>
+    KDL::SetToZero(robot.<solver.id>_state.cartesian_velocity);<if(motion_driver.cartesian_velocity)>
+<motion_driver.cartesian_velocity:{v | <assign-cartesian-velocity(v, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n"><endif>
 >>
 
 // The pose target is read where the solve runs.
@@ -650,10 +613,8 @@ solver-assign-acceleration-input-IPK(solver, chain_solver, motion_driver) ::= <<
 
 // The rows this motion leaves are zero, and Vereshchagin's truncated SVD drops a zero row.
 solver-assign-acceleration-input-ACHD(solver, chain_solver, motion_driver) ::= <<
-    KDL::SetToZero(robot.<solver.id>_state.acceleration_energy);
-<if(motion_driver.acceleration_constraint)>
-<motion_driver.acceleration_constraint:{c | <assign-acceleration-constraint(c, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n">
-<endif>
+    KDL::SetToZero(robot.<solver.id>_state.acceleration_energy);<if(motion_driver.acceleration_constraint)>
+<motion_driver.acceleration_constraint:{c | <assign-acceleration-constraint(c, solver.id, i0, chain_solver.runtime.owner_id)>}; separator="\n"><endif>
 >>
 
 solver-execute-algorithm-ACHD(solver, motion_driver) ::= <<

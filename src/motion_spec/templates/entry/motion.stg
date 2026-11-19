@@ -28,12 +28,11 @@ struct <motion.id>_state {
 <endif>
 <if(motion.entry_snapshots)>    bool snapshot_taken = false;
 <endif>
-<motion.controllers:{controller | <controller-member(controller)>}; separator="\n">
-<motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
-<motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
-<motion.until_monitors:{monitor | <monitor-member(monitor)>}; separator="\n">
-<motion.perturbations:{p | <perturbation-member(p)>}; separator="\n">
-};
+<motion.controllers:{controller | <controller-member(controller)><\n>}; separator=""><\\>
+<motion.when_monitors:{monitor | <monitor-member(monitor)>}; separator=""><\\>
+<motion.while_monitors:{monitor | <monitor-member(monitor)>}; separator=""><\\>
+<motion.until_monitors:{monitor | <monitor-member(monitor)>}; separator=""><\\>
+<motion.perturbations:{p | <perturbation-member(p)><\n>}; separator="">};
 
 inline void reset_<motion.id>(<motion.id>_state &state) {
     state = <motion.id>_state{};
@@ -60,9 +59,7 @@ inline void update_<motion.id>(
 <emit-snapshot(snap, functions, views)>
         data.<snap.captured_id> = true;
     \}}; separator="\n">
-<motion.snapshots:{snap | <emit-triggered-snapshot(snap, functions, views)>}; separator="">
-<motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
-}
+<motion.snapshots:{snap | <emit-triggered-snapshot(snap, functions, views)>}; separator=""><motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)><\n>}; separator="">}
 
 inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_state, motion.when_needs_data, motion.when_needs_robot, motion.when_needs_events)>) {
 <if(motion.when_elapsed_ids)>    if (state.when_start_time \< 0.0) {
@@ -74,6 +71,9 @@ inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_st
 }><motion.declared_pose_components:{pose | <materialize-pose-component(pose, views)>}; separator="\n">
 <schedule-block(motion.when_schedule, functions, views)>
 <if(motion.when_monitors)>
+<if(motion.when_schedule)>
+
+<endif>
 <monitor-block(motion.when_monitors)>
 <endif>
 }
@@ -81,6 +81,9 @@ inline void monitor_when_<motion.id>(<sig-params(motion.id, motion.when_needs_st
 inline void monitor_until_<motion.id>(<sig-params(motion.id, motion.until_needs_state, motion.until_needs_data, motion.until_needs_robot, motion.until_needs_events)>) {
 <schedule-block(motion.until_schedule, functions, views)>
 <if(motion.until_monitors)>
+<if(motion.until_schedule)>
+
+<endif>
 <monitor-block(motion.until_monitors)>
 <endif>
 }
@@ -109,16 +112,11 @@ inline void apply_<motion.id>(<sig-params(motion.id, motion.apply_needs_state, m
 <if(motion.serial_chain_solvers)>
 <chain-stage-block(motion.serial_chain_solvers, solvers)>
 <endif>
-<command-forwarding(motion)>
-<if(motion.perturbations)>
-<perturbation-apply-block(motion, views)>
-<endif>
-}
+<command-forwarding(motion)><if(motion.perturbations)><perturbation-apply-block(motion, views)><\n><endif>}
 <if(motion.serial_chain_solvers)>
 
 // Holds this motion's chains where they stand, for the coordinator states that select no motion.
 inline void hold_gravity_<motion.id>(robot_io &robot) {
 <chain-gravity-block(motion.serial_chain_solvers, solvers)>
-}
-<endif>
+}<endif>
 >>

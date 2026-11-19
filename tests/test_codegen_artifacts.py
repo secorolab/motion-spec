@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from rdf_utils import DatasetFormat
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.prov import (
     add_directory_location,
@@ -85,7 +86,10 @@ def test_the_generation_document_conforms_to_the_prov_shapes(tmp_path: Path) -> 
         bundle, ir_path, roots={tmp_path.resolve(): add_directory_location(bundle, tmp_path)}
     )
     provenance.record_code_generation(bundle, tmp_path, [ir], written, started=now, ended=now)
-    provenance.write_generation_document(generated / provenance.GENERATION_DOCUMENT, [bundle])
+    (generated / provenance.GENERATION_DOCUMENT).parent.mkdir(parents=True)
+    (generated / provenance.GENERATION_DOCUMENT).write_text(
+        dataset.serialize(format=DatasetFormat.JSON_LD)
+    )
     provenance.record_build(generated, controller, executable, started=now, ended=now)
     install_resolver(
         IriToFileResolver(

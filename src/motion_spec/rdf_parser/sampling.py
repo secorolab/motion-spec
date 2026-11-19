@@ -13,7 +13,7 @@ import numpy as np
 from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
-from rdf_utils.models.distribution import DistributionModel, distrib_from_sampled_quantity
+from rdf_utils.models.distribution import distrib_from_sampled_quantity
 from rdf_utils.models.vocab import (
     URI_DISTRIB_PRED_COV,
     URI_DISTRIB_PRED_LOWER,
@@ -68,7 +68,30 @@ def sampled_quantities(
     result = []
     for node in nodes:
         distribution = distrib_from_sampled_quantity(node, model.graph)
-        dist, components = _components(distribution)
+        if distribution.distrib_type == URI_DISTRIB_TYPE_UNIFORM:
+            lower = distribution.get_attr(URI_DISTRIB_PRED_LOWER)
+            upper = distribution.get_attr(URI_DISTRIB_PRED_UPPER)
+            dist = "uniform_real"
+            components = [{"a": float(a), "b": float(b)} for a, b in zip(lower, upper)]
+        elif distribution.distrib_type == URI_DISTRIB_TYPE_NORMAL:
+            mean = distribution.get_attr(URI_DISTRIB_PRED_MEAN)
+            if len(mean) == 1:
+                deviations = [float(distribution.get_attr(URI_DISTRIB_PRED_STD))]
+            else:
+                covariance = np.asarray(distribution.get_attr(URI_DISTRIB_PRED_COV), dtype=float)
+                if np.any(covariance != np.diag(np.diag(covariance))):
+                    raise ConstraintViolation(
+                        "sampling",
+                        f"'{distribution.id}' has a non-diagonal covariance; correlated components "
+                        "are not drawn",
+                    )
+                deviations = [math.sqrt(v) for v in np.diag(covariance)]
+            dist = "normal"
+            components = [{"a": float(m), "b": s} for m, s in zip(mean, deviations)]
+        else:
+            raise ConstraintViolation(
+                "sampling", f"'{distribution.id}': only uniform and normal distributions are drawn"
+            )
         unit = model.graph.value(node, QUDT_SCHEMA.unit)
         scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))
@@ -101,28 +124,3 @@ def sampled_quantities(
             )
         )
     return result
-
-
-def _components(distribution: DistributionModel) -> tuple[str, list[dict]]:
-    """The C++ distribution and its per-axis parameters: bounds, or mean and deviation."""
-    if distribution.distrib_type == URI_DISTRIB_TYPE_UNIFORM:
-        lower = distribution.get_attr(URI_DISTRIB_PRED_LOWER)
-        upper = distribution.get_attr(URI_DISTRIB_PRED_UPPER)
-        return "uniform_real", [{"a": float(a), "b": float(b)} for a, b in zip(lower, upper)]
-    if distribution.distrib_type == URI_DISTRIB_TYPE_NORMAL:
-        mean = distribution.get_attr(URI_DISTRIB_PRED_MEAN)
-        if len(mean) == 1:
-            deviations = [float(distribution.get_attr(URI_DISTRIB_PRED_STD))]
-        else:
-            covariance = np.asarray(distribution.get_attr(URI_DISTRIB_PRED_COV), dtype=float)
-            if np.any(covariance != np.diag(np.diag(covariance))):
-                raise ConstraintViolation(
-                    "sampling",
-                    f"'{distribution.id}' has a non-diagonal covariance; correlated components "
-                    "are not drawn",
-                )
-            deviations = [math.sqrt(v) for v in np.diag(covariance)]
-        return "normal", [{"a": float(m), "b": s} for m, s in zip(mean, deviations)]
-    raise ConstraintViolation(
-        "sampling", f"'{distribution.id}': only uniform and normal distributions are drawn"
-    )

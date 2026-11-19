@@ -18,68 +18,9 @@ from motion_spec_dsl.rdf_parser.vocab import AGN, GEOM_ENT
 from scene_dsl.langs import scenex_metamodel
 from scene_dsl.rdf.scenex import create_scenex_model_graph
 
-from motion_spec.classes.scene import MjcfSceneSpec
 from motion_spec.rdf_parser import agents
 from motion_spec.rdf_parser.model import Model
 from motion_spec.rdf_parser.scene import name_object_attachments, read_scene
-
-
-def scenex_model(scenex_path: Path) -> Model:
-    """The .scenex as the model the scene readers take, in the named graph scene-dsl built."""
-    graph = rdflib.Dataset(default_union=True)
-    graph.add_graph(create_scenex_model_graph(scenex_metamodel().model_from_file(str(scenex_path))))
-    return Model(graph=graph)
-
-
-def home_poses(model: Model, config_path: Path):
-    """Each driven chain's start pose from a robot config, as (root, tip, prefix, q).
-
-    The config's `[<agent>] home` is what a run's reset writes into the chain that agent
-    drives, so the viewer resolves the chains the same way the scene reader does.
-    """
-    with config_path.open("rb") as config_file:
-        config = tomllib.load(config_file)
-    bound_trees = agents.mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
-    attach_by_body, _root = agents.fixed_attachments(model, bound_trees)
-    name_object_attachments(model, attach_by_body)
-    poses = []
-    for assembly in agents.agent_assemblies(model, attach_by_body):
-        section = config
-        for key in assembly.config_key.split("."):
-            section = section.get(key, {}) if isinstance(section, dict) else {}
-        home = section.get("home") if isinstance(section, dict) else None
-        if home:
-            poses.append(
-                (assembly.chain_root, assembly.tip, assembly.prefix, [float(v) for v in home])
-            )
-    return poses
-
-
-def apply_home_poses(env: mjk.Env, poses) -> list:
-    """Put each chain at its home pose and hold it there in position mode; returns the robots,
-    which the env drives only while they live.
-
-    The prefix is tried and then dropped: where a scene names its bodies `left_arm/base_link`
-    the joints are already `left_arm_joint_1`, and prefixing again looks for a joint called
-    `left_arm_left_arm_joint_1` that no model has.
-    """
-    robots = []
-    for root, tip, prefix, home in poses:
-        for attempt in (prefix, ""):
-            try:
-                robot = env.create_robot(root, tip, attempt)
-                break
-            except RuntimeError:
-                robot = None
-        if robot is None:
-            print(f"  (no chain {root} -> {tip}; home pose not applied)")
-            continue
-        q = home[: robot.n_joints]
-        robot.set_joint_pos(q)
-        robot.set_control_mode(mjk.CtrlMode.POSITION)
-        robot.jnt_pos_cmd = q
-        robots.append(robot)
-    return robots
 
 
 def find_asset(path: str) -> str:
@@ -93,30 +34,54 @@ def find_asset(path: str) -> str:
     return path
 
 
-def _target(kind: str, name: str) -> mjk.AttachTarget:
-    return mjk.AttachTarget(getattr(mjk.AttachKind, kind), name)
+def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
+    """Compose SCENEX_PATH, describe it, and open the viewer unless HEADLESS."""
+    graph = rdflib.Dataset(default_union=True)
+    graph.add_graph(create_scenex_model_graph(scenex_metamodel().model_from_file(str(scenex_path))))
+    model = Model(graph=graph)
+    # Each driven chain's start pose, as (root, tip, prefix, q). The config's `[<agent>] home` is
+    # what a run's reset writes into the chain that agent drives, so the viewer resolves the
+    # chains the same way the scene reader does.
+    poses = []
+    if config:
+        robot_config = tomllib.loads(config.read_text())
+        bound_trees = agents.mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
+        attach_by_body, _root = agents.fixed_attachments(model, bound_trees)
+        name_object_attachments(model, attach_by_body)
+        for assembly in agents.agent_assemblies(model, attach_by_body):
+            section = robot_config
+            for key in assembly.config_key.split("."):
+                section = section.get(key, {}) if isinstance(section, dict) else {}
+            home = section.get("home") if isinstance(section, dict) else None
+            if home:
+                poses.append(
+                    (assembly.chain_root, assembly.tip, assembly.prefix, [float(v) for v in home])
+                )
+    _setups, _ordered, trees = agents.robot_setups(model)
+    scene = read_scene(model, trees)
 
-
-def build_spec(scene: MjcfSceneSpec) -> mjk.SceneSpec:
-    """The scene as a wrapper SceneSpec, with every asset file checked to be there."""
     spec = mjk.SceneSpec()
     spec.timestep = scene.timestep_s
     spec.add_skybox = True
     spec.add_floor = True
 
-    robots = []
+    robot_specs = []
     for robot in scene.robots:
         robot_spec = mjk.RobotSpec()
         robot_spec.path = find_asset(robot.path)
         robot_spec.prefix = robot.prefix
-        robot_spec.attach_to = _target(robot.attach_kind, robot.attach_name)
+        robot_spec.attach_to = mjk.AttachTarget(
+            getattr(mjk.AttachKind, robot.attach_kind), robot.attach_name
+        )
         robot_spec.pos = [robot.pos_x, robot.pos_y, robot.pos_z]
         robot_spec.quat = [robot.quat_x, robot.quat_y, robot.quat_z, robot.quat_w]
         attachments = []
         for attachment in robot.attachments:
             attachment_spec = mjk.AttachmentSpec()
             attachment_spec.mjcf_path = find_asset(attachment.path)
-            attachment_spec.attach_to = _target(attachment.attach_kind, attachment.attach_to)
+            attachment_spec.attach_to = mjk.AttachTarget(
+                getattr(mjk.AttachKind, attachment.attach_kind), attachment.attach_to
+            )
             attachment_spec.prefix = attachment.prefix
             attachment_spec.pos = [attachment.pos_x, attachment.pos_y, attachment.pos_z]
             attachment_spec.quat = [
@@ -127,8 +92,8 @@ def build_spec(scene: MjcfSceneSpec) -> mjk.SceneSpec:
             ]
             attachments.append(attachment_spec)
         robot_spec.attachments = attachments
-        robots.append(robot_spec)
-    spec.robots = robots
+        robot_specs.append(robot_spec)
+    spec.robots = robot_specs
 
     objects = []
     for obj in scene.objects:
@@ -136,7 +101,9 @@ def build_spec(scene: MjcfSceneSpec) -> mjk.SceneSpec:
         object_spec.name = obj.body
         # As backend/mj_kdl/robot.stg names it: the scene's mappings use the prefixed element names.
         object_spec.prefix = f"{obj.body}_"
-        object_spec.attach_to = _target(obj.attach_kind, obj.attach_name)
+        object_spec.attach_to = mjk.AttachTarget(
+            getattr(mjk.AttachKind, obj.attach_kind), obj.attach_name
+        )
         object_spec.pos = [obj.pos_x, obj.pos_y, obj.pos_z]
         object_spec.quat = [obj.quat_x, obj.quat_y, obj.quat_z, obj.quat_w]
         object_spec.fixed = obj.fixed
@@ -175,35 +142,47 @@ def build_spec(scene: MjcfSceneSpec) -> mjk.SceneSpec:
         cameras.append(camera_spec)
     spec.cameras = cameras
 
-    return spec
-
-
-def describe(spec: mjk.SceneSpec, env: mjk.Env) -> None:
-    print(f"timestep: {spec.timestep} s, floor at the anchor (z = {spec.floor_z} m)")
-    for robot in spec.robots:
-        print(f"robot: {robot.path} @ {robot.attach_to.kind} '{robot.attach_to.name}'")
-        print(f"       pos {list(robot.pos)} quat {list(robot.quat)}")
-        for attachment in robot.attachments:
-            print(
-                f"  attachment: {attachment.mjcf_path} @ "
-                f"{attachment.attach_to.kind} '{attachment.attach_to.name}'"
-            )
-            print(f"       pos {list(attachment.pos)} quat {list(attachment.quat)}")
-    for obj in spec.objects:
-        print(f"object: {obj.name} {obj.mjcf_path or obj.shape} at {list(obj.pos)}")
-    print(f"cameras: {[env.model.camera(i).name for i in range(env.model.ncam)]}")
-
-
-def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
-    """Compose SCENEX_PATH, describe it, and open the viewer unless HEADLESS."""
-    model = scenex_model(scenex_path)
-    poses = home_poses(model, config) if config else []
-    _setups, _ordered, trees = agents.robot_setups(model)
-    spec = build_spec(read_scene(model, trees))
     env = mjk.Env.build(spec)
     try:
-        _robots = apply_home_poses(env, poses)
-        describe(spec, env)
+        # Held to the end: the env drives a robot only while it lives.
+        robots = []
+        for root, tip, prefix, home in poses:
+            # The prefix is tried and then dropped: where a scene names its bodies
+            # `left_arm/base_link` the joints are already `left_arm_joint_1`, and prefixing again
+            # looks for a joint called `left_arm_left_arm_joint_1` that no model has.
+            for attempt in (prefix, ""):
+                try:
+                    robot = env.create_robot(root, tip, attempt)
+                    break
+                except RuntimeError:
+                    robot = None
+            if robot is None:
+                print(f"  (no chain {root} -> {tip}; home pose not applied)")
+                continue
+            q = home[: robot.n_joints]
+            robot.set_joint_pos(q)
+            robot.set_control_mode(mjk.CtrlMode.POSITION)
+            robot.jnt_pos_cmd = q
+            robots.append(robot)
+        print(f"timestep: {spec.timestep} s, floor at the anchor (z = {spec.floor_z} m)")
+        for robot_spec in spec.robots:
+            print(
+                f"robot: {robot_spec.path} @ "
+                f"{robot_spec.attach_to.kind} '{robot_spec.attach_to.name}'"
+            )
+            print(f"       pos {list(robot_spec.pos)} quat {list(robot_spec.quat)}")
+            for attachment_spec in robot_spec.attachments:
+                print(
+                    f"  attachment: {attachment_spec.mjcf_path} @ "
+                    f"{attachment_spec.attach_to.kind} '{attachment_spec.attach_to.name}'"
+                )
+                print(f"       pos {list(attachment_spec.pos)} quat {list(attachment_spec.quat)}")
+        for object_spec in spec.objects:
+            print(
+                f"object: {object_spec.name} {object_spec.mjcf_path or object_spec.shape} "
+                f"at {list(object_spec.pos)}"
+            )
+        print(f"cameras: {[env.model.camera(i).name for i in range(env.model.ncam)]}")
         if headless:
             return
         env.open_viewer(scenex_path.name)

@@ -95,9 +95,8 @@ bool <var.id> = false;
 
 monitor-member(monitor) ::= <<
 <if(monitor.is_edge_triggered)>    bool <monitor.id>_previous = false;
-    bool <monitor.id>_event_triggered = false;
-<if(monitor.debounce_id)>    double <monitor.id>_hold_s = 0.0;
-<endif><elseif(monitor.flag)>    bool <monitor.flag> = false;<endif>
+    bool <monitor.id>_event_triggered = false;<\n><\\>
+<if(monitor.debounce_id)>    double <monitor.id>_hold_s = 0.0;<\n><endif><elseif(monitor.flag)>    bool <monitor.flag> = false;<\n><endif>
 >>
 
 // One shot per activation: `fired` says the window has already had its turn, `open` whether it
@@ -120,8 +119,8 @@ perturbation-rearm(motion_id, perturbation) ::= <<
 // re-trigger. A flag monitor needs none -- it is recomputed every tick.
 monitor-rearm(motion_id, monitor) ::= <<
 <if(monitor.is_edge_triggered)>        <motion_id>_state_instance.<monitor.id>_previous = false;
-        <motion_id>_state_instance.<monitor.id>_event_triggered = false;
-<if(monitor.debounce_id)>        <motion_id>_state_instance.<monitor.id>_hold_s = 0.0;<endif><endif>
+        <motion_id>_state_instance.<monitor.id>_event_triggered = false;<\n><\\>
+<if(monitor.debounce_id)>        <motion_id>_state_instance.<monitor.id>_hold_s = 0.0;<\n><endif><endif>
 >>
 
 access-expr(id, views) ::= <<
@@ -183,7 +182,7 @@ view-access-expr-Wrench-Linear(view) ::= <<
 >>
 
 // Frame-log sample expression, dispatched on the descriptor kind emitted by
-// ir_gen (add_quantity_samples). Renders the scalar C++ expression sampled per tick.
+// ir_gen (communication.build_telemetry). Renders the scalar C++ expression sampled per tick.
 sample-expr(desc, views) ::= <<
 <({sample-expr-<desc.kind>})(desc, views)>
 >>

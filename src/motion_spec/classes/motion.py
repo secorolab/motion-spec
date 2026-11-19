@@ -151,19 +151,15 @@ class MotionUnit:
     # Authored description split into lines: the doc comment it renders into is a per-line
     # construct, so the split belongs to the IR rather than to an escape in the renderer.
     description: list[str]
-
-    # Evaluators
     when_evaluators: list[ConstraintEvaluator] = field(metadata=INTERNAL)
     while_evaluators: list[ConstraintEvaluator] = field(metadata=INTERNAL)
     until_evaluators: list[ConstraintEvaluator] = field(metadata=INTERNAL)
-
-    # Controllers and Monitors
     controllers: list[Controller]
     when_monitors: list[Monitor]
     while_monitors: list[Monitor]
     until_monitors: list[Monitor]
-    # Schedules: when_schedule runs in monitor_when (own Parser). while_/until_schedule are slices of
-    # one shared active graph, so they share a Parser -- common steps emit once and dedup correctly.
+    # when_schedule runs in monitor_when (own Schedule). while_/until_schedule are slices of one
+    # shared active graph, so they share a Schedule -- common steps emit once.
     when_schedule: list[str]
     while_schedule: list[str]
     until_schedule: list[str]
@@ -216,8 +212,6 @@ class MotionUnit:
     when_gate_hold: dict | None = None
     # Steps as another motion's hold, so it gets a step function whether or not a state binds it.
     is_when_gate_hold: bool = False
-
-    # Solver Integration
     serial_chain_solvers: list[MotionSolverSlice] = field(default_factory=list)
 
     # Initial sample-and-hold captures.

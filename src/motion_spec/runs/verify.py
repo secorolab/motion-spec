@@ -15,9 +15,7 @@ from rdflib.namespace import DCTERMS, PROV, RDF
 
 from motion_spec.runs.provenance import (
     GENERATION_DOCUMENT,
-    execution_node,
     kept_dsl_document,
-    rec_document,
     rec_run,
     run_generation,
 )
@@ -66,23 +64,24 @@ def verify_run(run_dir: Path | str) -> None:
         raise RecordError(run_dir, "the run's document names no generation's provenance")
     generated = generation / "generated"
     provenance_path = generated / GENERATION_DOCUMENT
-    rec_path = rec_document(run_dir)
+    recorded_run = rec_run(run_dir)
+    rec_path = recorded_run.store.path(recorded_run.id)
     required = (generated / "contract" / "frame_log.proto", provenance_path, rec_path)
     errors = [f"{path}: missing" for path in required if not path.is_file()]
     if errors:
         raise RecordError(run_dir, *errors)
 
     install_metamodel_resolver()
-    provenance = _parse_rdf(rdflib.Dataset(default_union=True), provenance_path)
+    provenance = parse_rdf(rdflib.Dataset(default_union=True), provenance_path)
     model_document = kept_dsl_document(generated)
     if model_document is not None and model_document.is_file():
-        model = _parse_rdf(rdflib.Dataset(), model_document)
+        model = parse_rdf(rdflib.Dataset(), model_document)
         # The generation's record names the DSL's nodes, which only the DSL's own bundle describes.
         for bundle in model.graphs():
             if (None, RDF.type, PROV.Bundle) in bundle:
                 provenance.add_graph(bundle)
     # rec's bundle and motion-spec's, on the one run node.
-    rec = _parse_rdf(rdflib.Dataset(default_union=True), rec_path)
+    rec = parse_rdf(rdflib.Dataset(default_union=True), rec_path)
 
     # Each bundle is read alone, so a file is checked at the place that bundle states, against
     # the hash it recorded; rdf-utils hashes it again into a copy without them.
@@ -104,10 +103,10 @@ def verify_run(run_dir: Path | str) -> None:
     if errors:
         raise RecordError(run_dir, *errors)
 
-    run = execution_node(rec)
+    run = next(iter(rec.subjects(RDF.type, URI_PROV_EXT_TYPE_EXECUTION)), None)
     if run is None:
         raise RecordError(rec_path, "records no prov-ext:Execution")
-    if run != rec_run(run_dir).node:
+    if run != recorded_run.node:
         raise RecordError(rec_path, f"records the run {run}, not the one in {run_dir}")
     checks = [
         *((provenance_path.name, provenance, (None, RDF.type, kind)) for kind in PROV_TYPES),
@@ -140,7 +139,7 @@ def verify_run(run_dir: Path | str) -> None:
             raise RecordError(run_dir, f"{label}: {exc}") from exc
 
 
-def _parse_rdf(dataset: rdflib.Dataset, path: Path) -> rdflib.Dataset:
+def parse_rdf(dataset: rdflib.Dataset, path: Path) -> rdflib.Dataset:
     """Parse the document at PATH into DATASET and return it; its named graphs keep their names,
     its default graph goes into a graph named by the file's IRI.
 

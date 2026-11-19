@@ -17,7 +17,6 @@ from motion_spec.telemetry.frame_log_pb import (
     MONITOR_KEYS,
     SPATIAL_CATEGORIES,
     TRIGGER_KEYS,
-    shm_name_for,
     shm_path,
 )
 
@@ -91,11 +90,9 @@ class FrameLayout:
                 f"frame_layout.json is layout version {version}; this motion-spec reads "
                 f"version {FRAME_LAYOUT_VERSION}"
             )
-        self.layout = layout
         self.fields = layout["fields"]
         self.pools = layout["pools"]
         self.schema_hash = layout["schema_hash"]
-        self.platform = layout.get("platform") or {}
         self.names = [field["name"] for field in self.fields]
         self.struct = struct.Struct("<" + "".join(field["fmt"] for field in self.fields))
         if self.struct.size != layout["frame_size_bytes"]:
@@ -107,14 +104,6 @@ class FrameLayout:
     @classmethod
     def load(cls, path: Path | str) -> FrameLayout:
         return cls(json.loads(Path(path).read_text()))
-
-    @classmethod
-    def for_generation(cls, generation_dir: Path | str) -> FrameLayout:
-        return cls.load(Path(generation_dir) / "generated" / "contract" / "frame_layout.json")
-
-    @property
-    def shm_name(self) -> str:
-        return shm_name_for(self.schema_hash)
 
 
 class ShmFrameReader:
@@ -170,10 +159,8 @@ class ShmFrameReader:
         raw = self.latest_raw(retries)
         if raw is None:
             return None
-        return self.shape(dict(zip(self.layout.names, self.layout.struct.unpack(raw))))
-
-    def shape(self, flat: dict) -> dict:
-        """A flat struct read as the record shape frame_log_pb.frame_records yields."""
+        # The flat struct read as the record shape frame_log_pb.frame_records yields.
+        flat = dict(zip(self.layout.names, self.layout.struct.unpack(raw)))
         pools, contract = self.layout.pools, self.contract
         record = {key: flat[key] for key in _CORE_KEYS}
         record["timing"] = {key: flat[key] for key in _TIMING_KEYS}
@@ -235,7 +222,7 @@ class ShmFrameReader:
 class SignalFields:
     """Signal names resolved to their (offset, struct) in a raw frame, plus the motion gate.
 
-    server.signal_reader reads the same names off a protobuf frame; the gates and the units here
+    replay.signal_reader reads the same names off a protobuf frame; the gates and the units here
     are that reader's, so a live point means what the same point means in history. A flat layout
     name is positional (c0.error, m0.value, q0, wrench0.fx) while the contract names the same
     slot semantically -- the slot index is what joins the two.
@@ -267,60 +254,56 @@ class SignalFields:
         self._slots = slot_signals(contract)
         self._resolved: dict[str, tuple] = {}
 
-    def core(self, raw: bytes) -> dict:
-        """The words a sampler steers by, straight out of the frame."""
-        return {key: _read(self.offsets[key], raw) for key in CORE_SIGNALS}
-
     def extract(self, raw: bytes, active_motion: int, names) -> list:
         """Each name's value in this frame; None where the active motion does not write it."""
         values = []
         for name in names:
-            where, divisor, gate = self._resolve(name)
-            if gate is not None and not self._written(gate, active_motion):
-                values.append(None)
-                continue
-            value = _read(where, raw)
+            if name not in self._resolved:
+                self._resolved[name] = self.locate(name)
+            where, divisor, gate = self._resolved[name]
+            if gate is not None:
+                # signal_reader's gate, same source.
+                kind, index = gate
+                written = (
+                    active_motion == index
+                    if kind == "owner"
+                    else (
+                        (table := self.contract.gate.get(kind)) is None
+                        or index in table.get(active_motion, ())
+                    )
+                )
+                if not written:
+                    values.append(None)
+                    continue
+            value = read(where, raw)
             values.append(value / divisor if divisor else value)
         return values
 
-    def _written(self, gate: tuple, motion: int) -> bool:
-        """Whether the active motion writes this slot -- signal_reader's gate, same source."""
-        kind, index = gate
-        if kind == "owner":
-            return motion == index
-        table = self.contract.gate.get(kind)
-        return table is None or index in table.get(motion, ())
-
-    def _resolve(self, name: str) -> tuple:
-        if name not in self._resolved:
-            self._resolved[name] = self._locate(name)
-        return self._resolved[name]
-
-    def _locate(self, name: str) -> tuple:
+    def locate(self, name: str) -> tuple:
         if name in _TIMING_MS:
             flat, divisor = _TIMING_MS[name]
-            return self._field(name, flat), divisor, None
+            return self.field_of(name, flat), divisor, None
         if name in self._quantities:
             index = self._quantities[name]
-            return self._field(name, f"q{index}"), None, ("quantities", index)
+            return self.field_of(name, f"q{index}"), None, ("quantities", index)
         if name in self._slots:
             kind, field, attribute = self._slots[name]
             flat = f"{_SPATIAL_PREFIX[kind]}{field['index']}.{attribute}"
-            return self._field(name, flat), None, (kind, field["index"])
+            return self.field_of(name, flat), None, (kind, field["index"])
         prefix, _, key = name.rpartition(".")
         if prefix in self._constraints:
-            return self._field(name, f"c{self._constraints[prefix]}.{key}"), None, None
+            return self.field_of(name, f"c{self._constraints[prefix]}.{key}"), None, None
         if prefix in self._monitors:
             index, owner = self._monitors[prefix]
-            return self._field(name, f"m{index}.{key}"), None, ("owner", owner)
+            return self.field_of(name, f"m{index}.{key}"), None, ("owner", owner)
         raise ValueError(f"unknown signal: {name}")
 
-    def _field(self, name: str, flat: str) -> tuple:
+    def field_of(self, name: str, flat: str) -> tuple:
         if flat not in self.offsets:
             raise ValueError(f"signal {name} wants frame field {flat}, which this layout has not")
         return self.offsets[flat]
 
 
-def _read(where: tuple, raw: bytes):
+def read(where: tuple, raw: bytes):
     offset, item = where
     return item.unpack_from(raw, offset)[0]

@@ -58,87 +58,6 @@ class DriveUnit:
     type: str = field(default="DriveUnit")
 
 
-def _revolute(segment) -> bool:
-    return bool(segment.get("joint")) and segment["joint"].get("axis") is not None
-
-
-def drive_units(tree: dict, root: str) -> list[DriveUnit]:
-    """Every castor drive unit hanging off `root` in `tree`, in the tree's own order.
-
-    A drive unit is a body the platform holds by one revolute joint that itself carries exactly
-    two revolute-jointed bodies. That is a structural statement, not a naming heuristic: nothing
-    else in a castor platform has that shape.
-
-    Raises:
-        ConstraintViolation: a unit whose two axles are coincident, which leaves hddc2b's
-            differential drive undefined.
-    """
-    children: dict[str, list[dict]] = {}
-    for segment in tree.get("segments", ()):
-        if _revolute(segment):
-            children.setdefault(segment["parent"], []).append(segment)
-
-    units = []
-    for pivot in children.get(root, ()):
-        wheels = children.get(pivot["name"], ())
-        if len(wheels) != 2:
-            continue
-
-        origin = np.asarray(pivot["joint"]["origin"], dtype=float)
-        axis = np.asarray(pivot["joint"]["axis"], dtype=float)
-
-        first, second = (np.asarray(w["joint"]["origin"], dtype=float) for w in wheels)
-        separation = float(np.linalg.norm(first - second))
-        if separation == 0.0:
-            raise ConstraintViolation(
-                "kinematics",
-                f"drive unit '{pivot['joint']['name']}' has its two wheel joints at one point, "
-                "so it has no differential drive",
-            )
-
-        pivot_axis = axis / np.linalg.norm(axis)
-        # The axle sits off the pivot axis by the castor offset, and a castor trails: the drive
-        # rolls along the direction that carries the pivot away from its own axle. That fixes the
-        # drive frame, and with it both the pivot angle and which wheel is which.
-        midpoint = 0.5 * (first + second)
-        trail = midpoint - (midpoint @ pivot_axis) * pivot_axis
-        castor_offset = float(np.linalg.norm(trail))
-        if castor_offset == 0.0:
-            raise ConstraintViolation(
-                "kinematics",
-                f"drive unit '{pivot['joint']['name']}' puts its axle on the pivot axis, so it "
-                "has no castor to trail and no rolling direction to steer",
-            )
-        longitudinal = -trail / castor_offset
-        transverse = np.cross(pivot_axis, longitudinal)
-
-        # hddc2b's right channel is the wheel at -y of that frame; getting this backwards leaves
-        # the drive term intact and reverses the steering term.
-        right, left = sorted(
-            wheels, key=lambda w: float(np.asarray(w["joint"]["origin"], dtype=float) @ transverse)
-        )
-
-        # hddc2b's channels counter-rotate; the model's spin axis may run either way against the
-        # drive frame, and on a unit mounted half a turn round it runs the other way.
-        hub_signs = [
-            mirrored * float(np.sign(np.asarray(w["joint"]["axis"], dtype=float) @ transverse))
-            for mirrored, w in ((-1.0, right), (1.0, left))
-        ]
-
-        units.append(
-            DriveUnit(
-                pivot_joint=local_name(pivot["joint"]["iri"]),
-                wheels=[local_name(right["joint"]["iri"]), local_name(left["joint"]["iri"])],
-                attachment=[float(origin[0]), float(origin[1])],
-                wheel_distance=separation / 2.0,
-                castor_offset=castor_offset,
-                pivot_offset=float(np.arctan2(longitudinal[1], longitudinal[0])),
-                hub_signs=hub_signs,
-            )
-        )
-    return units
-
-
 def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
     """The drive units of the one platform in the scene.
 
@@ -149,9 +68,78 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
         ConstraintViolation: no tree in the scene has castor drive units.
     """
     for tree in world_trees:
-        bodies = [tree["root"], *(segment["name"] for segment in tree.get("segments", ()))]
-        for body in bodies:
-            units = drive_units(tree, body)
+        # A drive unit is a body the platform holds by one revolute joint that itself carries
+        # exactly two revolute-jointed bodies: a structural statement, not a naming heuristic.
+        children: dict[str, list[dict]] = {}
+        for segment in tree["segments"]:
+            if segment["joint"] and segment["joint"]["axis"] is not None:
+                children.setdefault(segment["parent"], []).append(segment)
+        for body in [tree["root"], *(segment["name"] for segment in tree["segments"])]:
+            units = []
+            for pivot in children.get(body, ()):
+                wheels = children.get(pivot["name"], ())
+                if len(wheels) != 2:
+                    continue
+
+                origin = np.asarray(pivot["joint"]["origin"], dtype=float)
+                axis = np.asarray(pivot["joint"]["axis"], dtype=float)
+
+                first, second = (np.asarray(w["joint"]["origin"], dtype=float) for w in wheels)
+                separation = float(np.linalg.norm(first - second))
+                if separation == 0.0:
+                    raise ConstraintViolation(
+                        "kinematics",
+                        f"drive unit '{pivot['joint']['name']}' has its two wheel joints at one "
+                        "point, so it has no differential drive",
+                    )
+
+                pivot_axis = axis / np.linalg.norm(axis)
+                # The axle sits off the pivot axis by the castor offset, and a castor trails: the
+                # drive rolls along the direction that carries the pivot away from its own axle.
+                # That fixes the drive frame, and with it both the pivot angle and which wheel is
+                # which.
+                midpoint = 0.5 * (first + second)
+                trail = midpoint - (midpoint @ pivot_axis) * pivot_axis
+                castor_offset = float(np.linalg.norm(trail))
+                if castor_offset == 0.0:
+                    raise ConstraintViolation(
+                        "kinematics",
+                        f"drive unit '{pivot['joint']['name']}' puts its axle on the pivot axis, "
+                        "so it has no castor to trail and no rolling direction to steer",
+                    )
+                longitudinal = -trail / castor_offset
+                transverse = np.cross(pivot_axis, longitudinal)
+
+                # hddc2b's right channel is the wheel at -y of that frame; getting this backwards
+                # leaves the drive term intact and reverses the steering term.
+                right, left = sorted(
+                    wheels,
+                    key=lambda w: float(np.asarray(w["joint"]["origin"], dtype=float) @ transverse),
+                )
+
+                # hddc2b's channels counter-rotate; the model's spin axis may run either way
+                # against the drive frame, and on a unit mounted half a turn round it runs the
+                # other way.
+                hub_signs = [
+                    mirrored
+                    * float(np.sign(np.asarray(w["joint"]["axis"], dtype=float) @ transverse))
+                    for mirrored, w in ((-1.0, right), (1.0, left))
+                ]
+
+                units.append(
+                    DriveUnit(
+                        pivot_joint=local_name(pivot["joint"]["iri"]),
+                        wheels=[
+                            local_name(right["joint"]["iri"]),
+                            local_name(left["joint"]["iri"]),
+                        ],
+                        attachment=[float(origin[0]), float(origin[1])],
+                        wheel_distance=separation / 2.0,
+                        castor_offset=castor_offset,
+                        pivot_offset=float(np.arctan2(longitudinal[1], longitudinal[0])),
+                        hub_signs=hub_signs,
+                    )
+                )
             if units:
                 return units
     raise ConstraintViolation(
@@ -256,11 +244,5 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
             terms.append({"signal": signal, "coordinate": coordinate})
         if terms:
             rotations = list({term["local"]: term for term in terms if term.get("local")}.values())
-            rows.append(
-                {
-                    "index": motion.index,
-                    "terms": terms,
-                    "rotations": rotations,
-                }
-            )
+            rows.append({"index": motion.index, "terms": terms, "rotations": rotations})
     return rows

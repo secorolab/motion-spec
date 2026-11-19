@@ -14,9 +14,7 @@ schedule-step(step, functions, views) ::= <<
 >>
 
 schedule-block(steps, functions, views) ::= <<
-<if(steps)>
-<steps:{step | <schedule-step(step, functions, views)>}; separator="\n">
-<endif>
+<if(steps)><steps:{step | <schedule-step(step, functions, views)>}; separator="\n"><endif>
 >>
 
 // Boolean-condition rendering: fold a list of structured terms into a C++ expression.
@@ -55,9 +53,7 @@ chain-prepare-block(serial_chain_solvers, solvers) ::= <<
 <serial_chain_solvers:{solver |
     <solver-sync-input(solver, solvers.(solver.solver_id))>}; separator="\n">
 <serial_chain_solvers:{solver |
-    <solvers.(solver.solver_id).state_output:{out | <solver-output(solver, solvers.(solver.solver_id), out)>}; separator="\n\n">
-<solver.gripper_joint_outputs:{out |     <({<gripper-joint-output.(out.type)>})(out)>}; separator="\n">
-}; separator="\n\n">
+    <solvers.(solver.solver_id).state_output:{out | <solver-output(solver, solvers.(solver.solver_id), out)>}; separator="\n\n"><solver.gripper_joint_outputs:{out | <\n>    <({<gripper-joint-output.(out.type)>})(out)>}; separator="">}; separator="\n\n">
 >>
 
 // One pass per tick, before the FSM is dispatched: every provider is read, the one world model is
@@ -66,10 +62,10 @@ chain-prepare-block(serial_chain_solvers, solvers) ::= <<
 world-state-block(observations, serial_chain_solvers, solvers) ::= <<
 <app-chain-provider-update(serial_chain_solvers)>
         robot.world->update(robot.control_cycle);
-<serial_chain_solvers:{solver | <world-to-root(solver)>}; separator="">
+<serial_chain_solvers:{solver | <world-to-root(solver)>}; separator="\n"><if(observations)>
+
 <observations:{obs |
-        <solver-output(solvers.(obs.solver_id), solvers.(obs.solver_id), obs.out)>
-}; separator="\n">
+        <solver-output(solvers.(obs.solver_id), solvers.(obs.solver_id), obs.out)>}; separator="\n\n"><endif>
 >>
 
 // The chain root inverted once per runtime: every record on it stands on the same root, so the
@@ -77,9 +73,7 @@ world-state-block(observations, serial_chain_solvers, solvers) ::= <<
 world-to-root(solver) ::= <<
 <if(solver.runtime.owner)>        // This chain's root is not the tree's, so every pose it reports is relative to that root.
         robot.<solver.id>.world_to_root =
-            robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();
-<else>        robot.<solver.id>.world_to_root = robot.<solver.runtime.owner_id>.world_to_root;
-<endif>
+            robot.world->pose(robot.<solver.id>.world_root, robot.control_cycle).Inverse();<else>        robot.<solver.id>.world_to_root = robot.<solver.runtime.owner_id>.world_to_root;<endif>
 >>
 
 chain-run-block(serial_chain_solvers, solvers) ::= <<
@@ -97,8 +91,7 @@ chain-gravity-block(serial_chain_solvers, solvers) ::= <<
 // A forwarded command exists only where a gripper joint is commanded, and generation rejects
 // that without an actuator bound -- so the port is wired by the time this runs.
 command-forwarding(motion) ::= <<
-<motion.forwarded_commands:{cmd | <if(cmd.target)>    *robot.aux_cmd_<cmd.world_slot> = data.<cmd.control_signal.id>;
-<endif>}; separator="">
+<motion.forwarded_commands:{cmd | <if(cmd.target)>    *robot.aux_cmd_<cmd.world_slot> = data.<cmd.control_signal.id>;<\n><endif>}; separator="">
 >>
 
 // The window: it opens the first time the gate holds while the state is active, stays open for
@@ -157,10 +150,7 @@ emit-snapshot(snap, functions, views) ::= <<
 // tick that is this motion's first after entry.
 
 emit-triggered-snapshot(snap, functions, views) ::= <<
-<if(snap.trigger_event)>
-
-    if (robot.fsm_events && consume_event(robot.fsm_events, <snap.fsm_namespace>::<snap.trigger_event>)) {
+<if(snap.trigger_event)><\n>    if (robot.fsm_events && consume_event(robot.fsm_events, <snap.fsm_namespace>::<snap.trigger_event>)) {
     <emit-snapshot(snap, functions, views)>
-    \}
-<endif>
+    \}<\n><endif>
 >>

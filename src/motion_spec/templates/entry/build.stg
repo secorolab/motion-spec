@@ -99,7 +99,6 @@ robot_config_header(resources, configuration, composition) ::= <<
 <endif>
 
 namespace motion_spec::config {
-
 // The declared path only. Nothing may redirect it at launch: the CLI validates the file the
 // model declares, and a redirected run would connect against a file nothing checked.
 inline toml::table load(const std::string &path) {
@@ -120,26 +119,43 @@ inline const toml::table &section(const toml::table &config, const std::string &
     \}
     return *node->as_table();
 \}
+<if(resources.device_kinds.("KinovaGen3") || resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))>
 
-<if(resources.device_kinds.("KinovaGen3") || resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))><config-required()>
+<config-required()>
+<endif>
+<if(resources.device_kinds.("KinovaGen3") || resources.device_kinds.("KinovaGen3-2F85"))>
 
-<endif><if(resources.device_kinds.("KinovaGen3") || resources.device_kinds.("KinovaGen3-2F85"))><config-device()>
+<config-device()>
+<endif>
+<if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))>
 
-<endif><if(resources.device_kinds.("Robotiq2F85") || resources.device_kinds.("RobotiqFT300s"))><config-serial()>
+<config-serial()>
+<endif>
+<if(resources.device_kinds.("RobotiqFT300s") || resources.device_kinds.("ForceTorque"))>
 
-<endif><if(resources.device_kinds.("RobotiqFT300s") || resources.device_kinds.("ForceTorque"))><config-bias-samples()><config-bias-max-drift()>
+<config-bias-samples()><config-bias-max-drift()>
+<endif>
+<if(resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85"))>
 
-<endif><if(resources.device_kinds.("KinovaGen3-2F85") || resources.device_kinds.("Robotiq2F85"))><config-gripper-pct()>
+<config-gripper-pct()>
+<endif>
+<if(resources.device_kinds.("Robotiq2F85"))>
 
-<endif><if(resources.device_kinds.("Robotiq2F85"))><config-gripper-pct-byte()>
+<config-gripper-pct-byte()>
+<endif>
+<if(resources.by_kind.mobile_base)>
 
-<endif><if(resources.by_kind.mobile_base)><config-platform()>
+<config-platform()>
+<endif>
+<if(configuration.config_poses)>
 
-<endif><if(configuration.config_poses)><config-pose()>
+<config-pose()>
+<endif>
+<if(composition.sampling)>
 
-<endif><if(composition.sampling)><config-sampling-seed()>
-
-<endif>\} // namespace motion_spec::config
+<config-sampling-seed()>
+<endif>
+\} // namespace motion_spec::config
 >>
 
 config-required() ::= <<

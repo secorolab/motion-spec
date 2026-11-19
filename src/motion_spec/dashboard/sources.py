@@ -121,7 +121,8 @@ def check_syntax(path: Path) -> dict | None:
             "ok": False,
             "line": problem.line or None,
             "column": problem.col or None,
-            "message": _tidy(problem, path),
+            # Without the absolute path and position the complaint already reports.
+            "message": re.sub(rf"^{re.escape(str(path))}:\d+:\d+:\s*", "", str(problem)).strip(),
         }
     except RecursionError:
         return {"ok": False, "message": "too deeply nested to parse"}
@@ -132,11 +133,6 @@ def check_syntax(path: Path) -> dict | None:
     return {"ok": True, "message": "syntax OK"}
 
 
-def _tidy(problem: Exception, path: Path) -> str:
-    """The parser's complaint without the absolute path and position it already reports."""
-    return re.sub(rf"^{re.escape(str(path))}:\d+:\d+:\s*", "", str(problem)).strip()
-
-
 def read_source(value: str) -> dict:
     path = source_path(value)
     return {
@@ -145,7 +141,7 @@ def read_source(value: str) -> dict:
         "absolute": str(path),
         "text": path.read_text(),
         "git_head": git_baseline(path),
-        "editors": list(editors()),
+        "editors": list(dict(editors())),
         "terminal": (terminal() or (None,))[0],
     }
 
@@ -179,7 +175,7 @@ def aligned_rows(was: list[str], now: list[str]) -> dict:
     return {"same": not changed, "rows": rows}
 
 
-def _git_root(path: Path) -> Path | None:
+def git_root(path: Path) -> Path | None:
     """The git repository this file lives in, or None when there is not one."""
     try:
         repo = subprocess.run(
@@ -200,7 +196,7 @@ def git_baseline(path: Path) -> str | None:
     commit yet -- the reader sees plain text with no diff marks rather than every line marked
     as new.
     """
-    root = _git_root(path)
+    root = git_root(path)
     if root is None:
         return None
     try:
@@ -222,7 +218,7 @@ def git_diff(value: str) -> dict:
     built from vs the working tree, and what was committed vs the working tree.
     """
     path = source_path(value)
-    root = _git_root(path)
+    root = git_root(path)
     committed = git_baseline(path)
     if root is None or committed is None:
         return {
@@ -250,7 +246,7 @@ def git_checkout(value: str) -> dict:
     could discard something the reader never looked at here.
     """
     path = source_path(value)
-    root = _git_root(path)
+    root = git_root(path)
     if root is None:
         raise ValueError("not inside a git repository")
     result = subprocess.run(
@@ -304,7 +300,7 @@ def terminal() -> tuple[str, list[str]] | None:
 
 
 @lru_cache(maxsize=1)
-def _editors() -> dict[str, list[str]]:
+def editors() -> dict[str, list[str]]:
     host = terminal()
     found = {}
     if host:
@@ -315,16 +311,6 @@ def _editors() -> dict[str, list[str]]:
         argv = shlex.split(override)
         found[Path(argv[0]).name] = argv
     return found or {"xdg-open": ["xdg-open"]}
-
-
-def editors() -> dict[str, list[str]]:
-    """Every editor that can open a source file here, as name -> argv prefix.
-
-    MS_DASHBOARD_EDITOR is always offered; terminal editors only when a terminal exists to
-    host them, since the server has none of its own. Copied out of the cache, so a caller
-    that edits what it gets back cannot change what the next one sees.
-    """
-    return dict(_editors())
 
 
 def open_terminal(value: str) -> dict:
@@ -343,7 +329,8 @@ def open_terminal(value: str) -> dict:
 def open_source(value: str, name: str | None = None) -> dict:
     """Open one authored DSL file in the chosen editor."""
     path = source_path(value)
-    available = editors()
+    # Copied out of the cache, so editing what comes back cannot change what the next caller sees.
+    available = dict(editors())
     name = name or next(iter(available))
     if name not in available:
         raise ValueError(f"unknown editor: {name}")

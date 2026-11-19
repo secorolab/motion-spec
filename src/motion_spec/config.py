@@ -109,11 +109,20 @@ def setting(name: str, flag: object = None, start: Path | None = None) -> Settin
     return Setting(value, "file") if value is not None else Setting(None, "default")
 
 
-def sample(root: Path | None = None, ros: bool = False) -> str:
-    """Every key this file understands, at the value the run that wrote it used."""
+def write_sample(root: Path, declared: bool = False, ros: bool = False) -> Path | None:
+    """Write the sample at ROOT, unless a config is already there.
+
+    DECLARED records ROOT in the file, for a workspace named on the command line rather than
+    found by the file's own location.
+    """
+    path = root / CONFIG_FILE
+    if path.exists():
+        return None
     from motion_spec.formats import FORMATS
     from motion_spec.health import ros_distro
 
+    # Every key this file understands, at the value the run that wrote it used.
+    declared_root = root if declared else None
     newline = "\n"
     version = FORMATS["config"].current
     found = ros_distro()
@@ -122,12 +131,12 @@ def sample(root: Path | None = None, ros: bool = False) -> str:
     workspace_keys = newline.join(
         f"{code:<42} # {note}"
         for code, note in (
-            (f'root = "{root}"' if root else '# root = "."', "$MOTION_SPEC_WS"),
+            (f'root = "{declared_root}"' if declared_root else '# root = "."', "$MOTION_SPEC_WS"),
             ('generations = "generations"', "$MOTION_SPEC_GEN"),
             (f'environment = "setup-motion-spec.{shell()}"', "$MOTION_SPEC_ENV"),
         )
     )
-    return f"""\
+    path.write_text(f"""\
 # motion-spec workspace settings.
 #
 # This file makes the directory it sits in a workspace: `setup` installs into it, generations
@@ -143,17 +152,5 @@ version = {version}
 [ros]
 {ros_key:<42} # true: CMake packages build with colcon
 {distro_key:<42} # which /opt/ros to build against; $ROS_DISTRO overrides
-"""
-
-
-def write_sample(root: Path, declared: bool = False, ros: bool = False) -> Path | None:
-    """Write the sample at ROOT, unless a config is already there.
-
-    DECLARED records ROOT in the file, for a workspace named on the command line rather than
-    found by the file's own location.
-    """
-    path = root / CONFIG_FILE
-    if path.exists():
-        return None
-    path.write_text(sample(root if declared else None, ros))
+""")
     return path

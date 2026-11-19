@@ -32,13 +32,14 @@ from motion_spec.setup import (
 from motion_spec.utils import (
     LEVEL_LABELS,
     LOG_DATEFMT,
+    LOG_DIRECTORY,
+    RESET,
+    SGR,
     STAMP_COLOUR,
     command_log,
-    generation_log,
     log_header,
     machine_facts,
     mirrored_stderr,
-    paint,
     show_warning,
 )
 
@@ -48,19 +49,11 @@ class _Reported(click.ClickException):
 
     def show(self, file=None) -> None:
         for line in str(self.message).splitlines():
-            _stamp("error")
+            stamp("error")
             click.echo(line, err=True)
 
 
-def _editable_here(root: Path) -> bool:
-    """Whether this motion-spec is running from a checkout in ROOT's source tree."""
-    import motion_spec
-
-    running = Path(motion_spec.__file__).resolve()
-    return (root / "src").resolve() in running.parents
-
-
-def _internal_failure(what: str, exc: Exception) -> click.ClickException:
+def internal_failure(what: str, exc: Exception) -> click.ClickException:
     """Report a failure that is ours, not the model's, with the stack that produced it.
 
     Anything reaching here is a defect in the generator or the environment, and the one thing
@@ -73,18 +66,20 @@ def _internal_failure(what: str, exc: Exception) -> click.ClickException:
 
 # Every line the CLI says about its own progress, so one command reads like the next. Results
 # -- a generation path, an executable, a launcher -- stay bare on stdout for a caller to read.
-def _stamp(level: str, err: bool = True) -> None:
+def stamp(level: str, err: bool = True) -> None:
     """The prefix every line carries, for one assembled in pieces."""
-    click.echo(paint(time.strftime(LOG_DATEFMT), STAMP_COLOUR) + "  ", nl=False, err=err)
+    click.echo(
+        f"{SGR}{STAMP_COLOUR}m{time.strftime(LOG_DATEFMT)}{RESET}  ", nl=False, err=err
+    )
     click.echo(LEVEL_LABELS[level] + " ", nl=False, err=err)
 
 
-def _say(level: str, message: str = "", err: bool = True) -> None:
+def say(level: str, message: str = "", err: bool = True) -> None:
     """One log line: when, how loud, and what.
 
     Progress goes to stderr; a report is the command's result and goes to stdout.
     """
-    _stamp(level, err)
+    stamp(level, err)
     click.echo(message, err=err)
 
 
@@ -95,7 +90,7 @@ _COMMAND_COLOUR = 180
 LATEST_LINK = "latest"
 
 
-def _new_generation(model: Path, name: str | None = None) -> Path:
+def new_generation(model: Path, name: str | None = None) -> Path:
     """Create this run's generation directory, and say where it is before anything fills it.
 
     Announced up front rather than only on success: the DSL and the compiler write pages of
@@ -105,23 +100,11 @@ def _new_generation(model: Path, name: str | None = None) -> Path:
     """
     from motion_spec.generation.pipeline import create_generation_dir
 
-    generation = create_generation_dir(model, _generation_root(), name)
-    _say("info", f"generation {generation}")
-    _point_latest(generation)
-
-    return generation
-
-
-def _point_latest(generation: Path) -> None:
-    """Point the one `latest` at the generation just made.
-
-    A generation's directory is a timestamp nobody types twice, so the tree carries a name that
-    does not change -- the way a colcon workspace has `log/latest`. One link, under the root
-    `rerun` reads, because a link per output directory is a link nobody asked for. The target is
-    relative, so moving the tree keeps it pointing at what it names, and it is replaced in one
-    step, so a reader never finds it missing.
-    """
-    base = _generation_root()
+    generation = create_generation_dir(model, generation_root(), name)
+    say("info", f"generation {generation}")
+    # One `latest`, under the root `rerun` reads, like colcon's `log/latest`. Relative, so moving
+    # the tree keeps it pointing at what it names; replaced in one step, so it is never missing.
+    base = generation_root()
     link = base / LATEST_LINK
     try:
         target = os.path.relpath(generation, base)
@@ -135,8 +118,10 @@ def _point_latest(generation: Path) -> None:
         # do when it finds no link.
         link.with_name(f".{LATEST_LINK}.new").unlink(missing_ok=True)
 
+    return generation
 
-def _generation_root() -> Path:
+
+def generation_root() -> Path:
     """Where generations live: $MOTION_SPEC_GEN."""
     from motion_spec.setup import generations_root
 
@@ -146,31 +131,7 @@ def _generation_root() -> Path:
         raise click.UsageError(str(exc)) from exc
 
 
-def _latest_generation() -> Path:
-    """The generation `latest` points at under the configured generation root.
-
-    Raises:
-        ClickException: nothing has been generated there, or what was is not built.
-    """
-    base = _generation_root()
-    link = base / LATEST_LINK
-    if not link.is_dir():
-        raise click.ClickException(
-            f"{link}: nothing generated here to rerun. `gen` and `run` point it at what they "
-            f"make, so generate once, or name a generation directory. Generations go under "
-            f"${GENERATION_VARIABLE} when it is set, else ${{{WORKSPACE_VARIABLE}}}/generations."
-        )
-    generation = link.resolve()
-    if not (generation / "build" / generation.parent.name).is_file():
-        raise click.ClickException(
-            f"{generation}: the latest generation is not built. Build it with `motion-spec "
-            "build`, or name a generation directory."
-        )
-
-    return generation
-
-
-def _model_rejected(exc: Exception) -> click.ClickException:
+def model_rejected(exc: Exception) -> click.ClickException:
     """Report a model the checks refused, with the check that refused it.
 
     The message says what is wrong with the model and is the last line read. The stack says
@@ -183,7 +144,7 @@ def _model_rejected(exc: Exception) -> click.ClickException:
 
 
 @contextmanager
-def _manual_section(formatter: click.HelpFormatter, title: str):
+def manual_section(formatter: click.HelpFormatter, title: str):
     formatter.write(f"{click.style(title, bold=True)}\n")
     formatter.indent()
     yield
@@ -195,18 +156,18 @@ class MotionSpecGroup(click.Group):
     """Render the top-level help as a Unix manual page."""
 
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
-        with _manual_section(formatter, "NAME"):
+        with manual_section(formatter, "NAME"):
             formatter.write_text(
                 "motion-spec - validate, compile, run, and inspect motion specifications"
             )
-        with _manual_section(formatter, "SYNOPSIS"):
+        with manual_section(formatter, "SYNOPSIS"):
             formatter.write_text("motion-spec [OPTIONS] COMMAND [ARGS]...")
-        with _manual_section(formatter, "DESCRIPTION"):
+        with manual_section(formatter, "DESCRIPTION"):
             formatter.write_text(
                 "motion-spec lowers motion-model JSON-LD to an intermediate representation, "
                 "generates a C++ controller, and records or inspects controller executions."
             )
-        with _manual_section(formatter, "WORKFLOW"):
+        with manual_section(formatter, "WORKFLOW"):
             formatter.write_dl(
                 [
                     (
@@ -225,7 +186,7 @@ class MotionSpecGroup(click.Group):
                     ("view", "Compose a .scenex in MuJoCo and view it."),
                 ]
             )
-        with _manual_section(formatter, "ARTIFACTS"):
+        with manual_section(formatter, "ARTIFACTS"):
             formatter.write_dl(
                 [
                     ("generated/source/", "Authored DSL inputs."),
@@ -238,7 +199,7 @@ class MotionSpecGroup(click.Group):
                     ("latest", f"Symlink to the newest generation, under ${GENERATION_VARIABLE}."),
                 ]
             )
-        with _manual_section(formatter, "ENVIRONMENT"):
+        with manual_section(formatter, "ENVIRONMENT"):
             formatter.write_dl(
                 [
                     (
@@ -255,16 +216,16 @@ class MotionSpecGroup(click.Group):
             record for param in self.get_params(ctx) if (record := param.get_help_record(ctx))
         ]
         if option_records:
-            with _manual_section(formatter, "OPTIONS"):
+            with manual_section(formatter, "OPTIONS"):
                 formatter.write_dl(option_records)
         command_records = []
         for name in self.list_commands(ctx):
             command = self.get_command(ctx, name)
             if command is not None and not command.hidden:
                 command_records.append((name, command.help or command.get_short_help_str()))
-        with _manual_section(formatter, "COMMANDS"):
+        with manual_section(formatter, "COMMANDS"):
             formatter.write_dl(command_records)
-        with _manual_section(formatter, "EXAMPLES"):
+        with manual_section(formatter, "EXAMPLES"):
             examples = (
                 (
                     "Generate and build a model",
@@ -291,48 +252,32 @@ class MotionSpecGroup(click.Group):
                         formatter.write(f"{indent}{prompt}{line}\n")
                 if example_index < len(examples) - 1:
                     formatter.write_paragraph()
-        with _manual_section(formatter, "SEE ALSO"):
+        with manual_section(formatter, "SEE ALSO"):
             formatter.write_text("motion-spec COMMAND --help")
-
-
-def _install_features() -> tuple[str, ...]:
-    return tuple(distribution("motion_spec").metadata.get_all("Provides-Extra") or [])
 
 
 # What arrives some other way than as a manifest entry of its own.
 _INSTALLS = {"textx": "motion-spec setup motion-spec-dsl", "pyshacl": "pip install motion_spec"}
 
 
-def _requirement_box(dependency: str) -> click.ClickException | None:
-    """The dependency's box, when both its details and its install command are known."""
-    from motion_spec.health import DETAILS, SETUP_PROVIDES, remedy
-
-    spec = DETAILS.get(dependency)
-    install = remedy(dependency) if dependency in SETUP_PROVIDES else _INSTALLS.get(dependency)
-    if spec is None or install is None:
-        return None
-    return _missing(dependency, spec["why"], spec["source"], install)
-
-
-def _missing(name: str, why: str, source: str, install: str) -> click.ClickException:
-    """A dependency that is not there, reported as a box: what, why, where from, how to get it."""
-    rows = [("why", why), ("source", source), ("install", install)]
-    body = [f"│ {key:<8} {value}" for key, value in rows]
-    width = max(len(name) + 14, *(len(line) for line in body)) + 1
-    top = f"┌─ {name} not found " + "─" * (width - len(name) - 14)
-    return click.ClickException("\n".join(["", top, *body, "└" + "─" * width]))
-
-
 @contextmanager
-def _requirements_reported():
+def requirements_reported():
     """Turn a missing optional dependency into its box instead of a raw traceback."""
     try:
         yield
     except ImportError as exc:
-        box = _requirement_box((exc.name or "").partition(".")[0])
-        if box is None:
+        from motion_spec.health import DETAILS, SETUP_PROVIDES, remedy
+
+        dependency = (exc.name or "").partition(".")[0]
+        spec = DETAILS.get(dependency)
+        install = remedy(dependency) if dependency in SETUP_PROVIDES else _INSTALLS.get(dependency)
+        if spec is None or install is None:
             raise
-        raise box from exc
+        rows = [("why", spec["why"]), ("source", spec["source"]), ("install", install)]
+        body = [f"│ {key:<8} {value}" for key, value in rows]
+        width = max(len(dependency) + 14, *(len(line) for line in body)) + 1
+        top = f"┌─ {dependency} not found " + "─" * (width - len(dependency) - 14)
+        raise click.ClickException("\n".join(["", top, *body, "└" + "─" * width])) from exc
 
 
 @click.group(cls=MotionSpecGroup, no_args_is_help=True)
@@ -345,7 +290,14 @@ def main(ctx: click.Context) -> None:
         from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
 
         install_metamodel_resolver()
-    _route_tool_logging()
+    handler = _SayHandler()
+    for name in _TOOL_LOGGERS:
+        logger = logging.getLogger(name)
+        if any(isinstance(existing, _SayHandler) for existing in logger.handlers):
+            continue
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
     warnings.showwarning = show_warning
 
 
@@ -359,31 +311,10 @@ class _SayHandler(logging.Handler):
     _LEVELS: ClassVar = {logging.WARNING: "warn", logging.ERROR: "error", logging.CRITICAL: "error"}
 
     def emit(self, record: logging.LogRecord) -> None:
-        _say(self._LEVELS.get(record.levelno, "info"), record.getMessage())
+        say(self._LEVELS.get(record.levelno, "info"), record.getMessage())
 
 
-def _route_tool_logging() -> None:
-    handler = _SayHandler()
-    for name in _TOOL_LOGGERS:
-        logger = logging.getLogger(name)
-        if any(isinstance(existing, _SayHandler) for existing in logger.handlers):
-            continue
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-        logger.propagate = False
-
-
-def _clean(root: Path) -> None:
-    """`setup --clean`: trash the workspace's builds, installs, logs and environment files."""
-    from motion_spec.setup import clean_workspace
-
-    trashed = clean_workspace(root)
-    for path, where in trashed:
-        _say("done", f"trashed {path}" + (f" → {where}" if where else ""))
-    _say("info", "sources and generations left in place" if trashed else "nothing to clean")
-
-
-def _environment_options(command):
+def environment_options(command):
     """``--env`` and ``--no-env``, for every command that shells out to a build or a run."""
     command = click.option(
         "--no-env",
@@ -401,7 +332,7 @@ def _environment_options(command):
     )(command)
 
 
-def _run_options(command):
+def run_options(command):
     """What one run of a built controller takes, for `run` and `rerun` alike."""
     for option in reversed(
         (
@@ -428,7 +359,7 @@ def _run_options(command):
     return command
 
 
-def _environment(
+def environment(
     env_script: Path | None, no_env: bool, start: Path | None = None
 ) -> tuple[dict[str, str] | None, Path | None]:
     """The environment to run under, and the file it was sourced from, which a run keeps."""
@@ -444,7 +375,7 @@ def _environment(
     except (OSError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
     # A build under a different toolchain than the terminal should not have to be deduced.
-    _say("info", f"environment {script}")
+    say("info", f"environment {script}")
     return captured, script
 
 
@@ -472,7 +403,7 @@ def _environment(
     type=click.Path(dir_okay=False, path_type=Path),
     help="Where --background writes output. Default: dashboard.log in the logs root.",
 )
-@_environment_options
+@environment_options
 def dashboard(
     port: int,
     logs: Path | None,
@@ -494,17 +425,17 @@ def dashboard(
         is not click.core.ParameterSource.DEFAULT
     )
     if kill:
-        return _stop_dashboards(port if named_port else None)
+        return stop_dashboards(port if named_port else None)
     if restart:
         # Stopping frees the port asynchronously; serving before it does would only report the
         # port as taken, so wait for the socket to actually let go.
-        _stop_dashboards(port if named_port else None)
+        stop_dashboards(port if named_port else None)
         for _ in range(50):
-            if not _port_taken(port):
+            if not port_taken(port):
                 break
             time.sleep(0.1)
-    logs = (logs or _generation_root()).expanduser()
-    if _port_taken(port):
+    logs = (logs or generation_root()).expanduser()
+    if port_taken(port):
         raise click.ClickException(
             f"port {port} is already serving. Stop it, or pass --port for a second dashboard."
         )
@@ -512,7 +443,7 @@ def dashboard(
     if not background:
         if script:
             use_environment(str(script))
-            _say("info", f"environment {script}")
+            say("info", f"environment {script}")
         return serve(port, logs, sources)
 
     destination = (log_file or logs / "dashboard.log").expanduser()
@@ -523,13 +454,13 @@ def dashboard(
     argv += ["--env", str(script)] if script else ["--no-env"]
     with destination.open("ab") as sink:
         child = subprocess.Popen(argv, stdout=sink, stderr=sink, start_new_session=True)
-    _say("info", f"pid {child.pid}, logging to {destination}")
-    _say("info", f"stop it with: kill {child.pid}")
-    _say("done", f"dashboard http://127.0.0.1:{port}")
+    say("info", f"pid {child.pid}, logging to {destination}")
+    say("info", f"stop it with: kill {child.pid}")
+    say("done", f"dashboard http://127.0.0.1:{port}")
     click.echo(f"http://127.0.0.1:{port}")
 
 
-def _stop_dashboards(port: int | None) -> None:
+def stop_dashboards(port: int | None) -> None:
     """Stop the dashboards serving, on PORT or all, and the labs they started.
 
     Each records its pid on start, and its lab's; a lab whose dashboard had to be killed
@@ -537,31 +468,27 @@ def _stop_dashboards(port: int | None) -> None:
     """
     from motion_spec.dashboard.roots import pidfile
 
-    every = pidfile("*")
-    ports = (
-        [port] if port else [path.stem.rpartition("-")[2] for path in every.parent.glob(every.name)]
-    )
+    records = [
+        path
+        for pattern in (pidfile(port or "*"), pidfile(port or "*", "lab"))
+        for path in pattern.parent.glob(pattern.name)
+    ]
     stopped = []
-    for each in ports:
-        for path in (pidfile(each), pidfile(each, "lab")):
-            pid = _recorded_pid(path)
-            if pid is not None and _stop(pid):
-                stopped.append(pid)
-            path.unlink(missing_ok=True)
+    for path in records:
+        try:
+            pid = int(path.read_text().strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid is not None and stop(pid):
+            stopped.append(pid)
+        path.unlink(missing_ok=True)
     if not stopped:
         where = f" on port {port}" if port else ""
         raise click.ClickException(f"no dashboard is serving{where}.")
-    _say("done", f"stopped {', '.join(map(str, stopped))}")
+    say("done", f"stopped {', '.join(map(str, stopped))}")
 
 
-def _recorded_pid(path: Path) -> int | None:
-    try:
-        return int(path.read_text().strip())
-    except (OSError, ValueError):
-        return None
-
-
-def _stop(pid: int) -> bool:
+def stop(pid: int) -> bool:
     """SIGTERM, then SIGKILL after 5 s; False when PID was already gone."""
     try:
         os.kill(pid, signal.SIGTERM)
@@ -579,7 +506,7 @@ def _stop(pid: int) -> bool:
     return True
 
 
-def _port_taken(port: int) -> bool:
+def port_taken(port: int) -> bool:
     """Whether something already answers on the loopback port."""
     with socket.socket() as probe:
         probe.settimeout(0.2)
@@ -664,19 +591,18 @@ def setup(
         raise click.UsageError("--clean takes the whole workspace's outputs; it takes no names")
     from motion_spec.config import setting
     from motion_spec.setup import (
+        INSTALL_DIRECTORY,
+        SOURCE_DIRECTORY,
         STST_REPOSITORY,
         build_jobs,
         discover_packages,
         ignore_thirdparty,
         install_package,
-        install_prefix,
         install_stst,
         manifest_files,
         manifest_in_force,
         missing_prerequisites,
         package_installed,
-        source_directory,
-        source_root,
         source_state,
         stst_installed,
         target_environment,
@@ -691,7 +617,12 @@ def setup(
     except (RuntimeError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
     if clean:
-        _clean(root)
+        from motion_spec.setup import clean_workspace
+
+        trashed = clean_workspace(root)
+        for path, where in trashed:
+            say("done", f"trashed {path}" + (f" → {where}" if where else ""))
+        say("info", "sources and generations left in place" if trashed else "nothing to clean")
         return
     files = manifest_files(real)
     try:
@@ -706,7 +637,7 @@ def setup(
         )
     selected = [r for r in listed if not repositories or {r.path, r.name} & set(repositories)]
     jobs = build_jobs(jobs)
-    prefix = install_prefix(root)
+    prefix = root / INSTALL_DIRECTORY
     log = command_log(root, "setup")
     # Held to the end of the command, so the failure that ends it is in the log too.
     click.get_current_context().with_resource(mirrored_stderr(log))
@@ -724,71 +655,72 @@ def setup(
             **machine_facts(),
         },
     )
-    _say("info", f"workspace {root}")
-    _say("info", f"installing into {prefix}")
-    _say("info", f"manifests {', '.join(str(path) for path in files)}")
-    _say("info", f"console log {log}")
-    _say("info", f"building with {jobs} job{'s' if jobs != 1 else ''}")
-    # setup cannot check itself out: it is the code running. So it says so instead.
-    if dev and not _editable_here(root):
-        import motion_spec
+    say("info", f"workspace {root}")
+    say("info", f"installing into {prefix}")
+    say("info", f"manifests {', '.join(str(path) for path in files)}")
+    say("info", f"console log {log}")
+    say("info", f"building with {jobs} job{'s' if jobs != 1 else ''}")
+    import motion_spec
 
-        _say(
+    # setup cannot check itself out: it is the code running. So it says so instead.
+    sources = root / SOURCE_DIRECTORY
+    if dev and sources.resolve() not in Path(motion_spec.__file__).resolve().parents:
+        say(
             "warn",
             f"--dev leaves motion-spec itself installed from {Path(motion_spec.__file__).parent}; "
-            f"clone it under {root / 'src'} and reinstall it with `pip install -e` "
+            f"clone it under {sources} and reinstall it with `pip install -e` "
             "to edit it too",
         )
     # Before the first build: a prerequisite setup cannot install itself is a failure the
     # operator has to act on, and finding it after a build helps nobody.
-    _say("info", "checking prerequisites")
+    say("info", "checking prerequisites")
     packages, others = missing_prerequisites(selected, ros)
     if packages or others:
         for requirement in others:
-            _say("error", requirement)
+            say("error", requirement)
         if packages:
-            _say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
+            say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
         raise _Reported("setup needs these before it can start; nothing was built.")
-    if not any((source_directory(root, r.path) / ".git").is_dir() for r in selected):
+    if not any((sources / r.path / ".git").is_dir() for r in selected):
         raise _Reported(
-            f"nothing imported under {source_root(root)}: run "
-            f"`vcs import {source_root(root)} < {files[0]}` first; nothing was built."
+            f"nothing imported under {sources}: run "
+            f"`vcs import {sources} < {files[0]}` first; nothing was built."
         )
     skipped: list[str] = []
     try:
         python = target_environment(root, ros, dev, log)
-        _say("info", f"python packages into {python}")
+        say("info", f"python packages into {python}")
         if ros:
             ignore_thirdparty(root)
         for repository in selected:
             state = source_state(repository, root)
             if not state.usable:
-                _say("warn", f"skipped {repository.name}: {state.path} {state.reason}")
+                say("warn", f"skipped {repository.name}: {state.path} {state.reason}")
                 skipped.append(repository.name)
                 continue
             if state.drift:
-                _say("warn", f"{repository.name}: {state.path} {state.drift}")
+                say("warn", f"{repository.name}: {state.path} {state.drift}")
             if repository.path == STST_REPOSITORY:
                 already = not force and stst_installed(root)
                 if not already:
-                    _say("step", "stst")
+                    say("step", "stst")
                 launcher = install_stst(root, state, force=force, log=log)
-                _say(
+                say(
                     "info" if already else "done",
                     f"stst {'already installed' if already else 'installed'}, launcher {launcher}",
                 )
                 continue
             packages = discover_packages(state.path)
             if not packages:
-                _say("warn", f"skipped {repository.name}: {state.path} holds no package to build")
+                say("warn", f"skipped {repository.name}: {state.path} holds no package to build")
                 skipped.append(repository.name)
                 continue
             for package in packages:
                 if not force and package_installed(package.name, prefix, state.path):
-                    _say("info", f"{package.name} already installed, source {state.path}")
+                    say("info", f"{package.name} already installed, source {state.path}")
                     continue
                 # Announced before the build, so its console output has a heading.
-                _say("step", package.name)
+                say("step", package.name)
                 install_package(
                     package,
                     state,
@@ -801,27 +733,31 @@ def setup(
                     jobs=jobs,
                     dev=dev,
                 )
-                _say("done", f"{package.name} installed, source {state.path}")
+                say("done", f"{package.name} installed, source {state.path}")
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise _internal_failure("setup failed", exc) from exc
+        raise internal_failure("setup failed", exc) from exc
     from motion_spec.config import write_sample
 
     sample = write_sample(root, declared=workspace_argument is not None, ros=ros)
     if sample:
-        _say("info", f"settings written to {sample}")
+        say("info", f"settings written to {sample}")
     try:
         written = write_environment(root, ros, python)
     except RuntimeError as exc:
         raise click.UsageError(str(exc)) from exc
-    _say("done", f"source {written} before generating, building or running")
+    say("done", f"source {written} before generating, building or running")
     if skipped:
         # Each said why above; a caller that asked for them did not get them.
-        _say("error", f"not built: {', '.join(skipped)}")
+        say("error", f"not built: {', '.join(skipped)}")
         raise click.exceptions.Exit(1)
 
 
 @main.command()
-@click.argument("features", nargs=-1, type=click.Choice(_install_features()))
+@click.argument(
+    "features",
+    nargs=-1,
+    type=click.Choice(tuple(distribution("motion_spec").metadata.get_all("Provides-Extra") or [])),
+)
 def install(features: tuple[str, ...]) -> None:
     """Install optional FEATURES of motion-spec."""
     if not features:
@@ -842,19 +778,36 @@ def install(features: tuple[str, ...]) -> None:
 EXAMPLES_DIRECTORY = "ms-examples"
 
 
-def _packaged_models() -> Path | None:
-    """The example models shipped inside motion-spec-dsl, wherever pip put the package."""
+@main.command()
+@click.option(
+    "--into",
+    type=click.Path(file_okay=False, path_type=Path),
+    help=f"Where to copy them; defaults to WORKSPACE/src/{EXAMPLES_DIRECTORY}.",
+)
+def examples(into: Path | None) -> None:
+    """Copy the example models that ship with motion-spec-dsl into the workspace.
+
+    A file already at the destination is never touched: the copy is yours to edit.
+    """
     from importlib.resources import files
 
+    from motion_spec.setup import SOURCE_DIRECTORY, workspace
+
     try:
-        models = Path(str(files("motion_spec_dsl") / "models"))
+        source = Path(str(files("motion_spec_dsl") / "models"))
     except (ImportError, ModuleNotFoundError):
-        return None
-    return models if models.is_dir() else None
-
-
-def _copy_examples(source: Path, destination: Path) -> tuple[list[str], list[str]]:
-    """Copy what is not there yet, and report what was left alone."""
+        source = None
+    if source is None or not source.is_dir():
+        raise click.ClickException(
+            "no example models in this motion_spec_dsl: it predates the ones that ship with "
+            "the package; reinstall it with `motion-spec setup --force motion-spec-dsl`"
+        )
+    if into is None:
+        try:
+            into = workspace() / SOURCE_DIRECTORY / EXAMPLES_DIRECTORY
+        except RuntimeError as exc:
+            raise click.UsageError(str(exc)) from exc
+    destination = into.expanduser()
     copied, kept = [], []
     for path in source.rglob("*"):
         if not path.is_file() or "__pycache__" in path.parts:
@@ -867,38 +820,10 @@ def _copy_examples(source: Path, destination: Path) -> tuple[list[str], list[str
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
         copied.append(str(relative))
-    return copied, kept
-
-
-@main.command()
-@click.option(
-    "--into",
-    type=click.Path(file_okay=False, path_type=Path),
-    help=f"Where to copy them; defaults to WORKSPACE/src/{EXAMPLES_DIRECTORY}.",
-)
-def examples(into: Path | None) -> None:
-    """Copy the example models that ship with motion-spec-dsl into the workspace.
-
-    A file already at the destination is never touched: the copy is yours to edit.
-    """
-    from motion_spec.setup import SOURCE_DIRECTORY, workspace
-
-    source = _packaged_models()
-    if source is None:
-        raise click.ClickException(
-            "no example models in this motion_spec_dsl: it predates the ones that ship with "
-            "the package; reinstall it with `motion-spec setup --force motion-spec-dsl`"
-        )
-    if into is None:
-        try:
-            into = workspace() / SOURCE_DIRECTORY / EXAMPLES_DIRECTORY
-        except RuntimeError as exc:
-            raise click.UsageError(str(exc)) from exc
-    copied, kept = _copy_examples(source, into.expanduser())
     if kept:
         shown = ", ".join(kept[:3]) + (f", and {len(kept) - 3} more" if len(kept) > 3 else "")
-        _say("info", f"kept {len(kept)} file{'' if len(kept) == 1 else 's'} already there: {shown}")
-    _say("done", f"{len(copied)} model file{'' if len(copied) == 1 else 's'} copied to {into}")
+        say("info", f"kept {len(kept)} file{'' if len(kept) == 1 else 's'} already there: {shown}")
+    say("done", f"{len(copied)} model file{'' if len(copied) == 1 else 's'} copied to {into}")
 
 
 @main.command()
@@ -918,7 +843,7 @@ def examples(into: Path | None) -> None:
     default=("mujoco", "robif2b"),
     show_default=True,
 )
-@_environment_options
+@environment_options
 def health(
     profiles: tuple[str, ...], targets: tuple[str, ...], env_script: Path | None, no_env: bool
 ) -> None:
@@ -934,7 +859,7 @@ def health(
     )
 
     # The environment a build and a run would be given, not this shell's.
-    env, _ = _environment(env_script, no_env)
+    env, _ = environment(env_script, no_env)
 
     interactive = sys.stderr.isatty()
 
@@ -959,13 +884,13 @@ def health(
         "build[robif2b]": "required to build the robif2b target",
         "runtime[robif2b]": "required to run the robif2b target",
     }
-    _say("info", click.style("motion-spec health", bold=True, fg="magenta"), err=False)
+    say("info", click.style("motion-spec health", bold=True, fg="magenta"), err=False)
     values = environment_values(env)
-    _say("info", click.style("ENVIRONMENT — what motion-spec reads", bold=True, fg="blue"), False)
+    say("info", click.style("ENVIRONMENT — what motion-spec reads", bold=True, fg="blue"), False)
     name_width = max(len(name) for name in values)
     for name, value in values.items():
         fallback = ENVIRONMENT_DEFAULTS.get(name)
-        _stamp("info" if value or fallback else "warn", err=False)
+        stamp("info" if value or fallback else "warn", err=False)
         click.secho(f"{name:<{name_width}}  ", fg="cyan", nl=False)
         if value:
             click.secho(value)
@@ -981,13 +906,13 @@ def health(
             current_profile = check.profile
             click.echo()
             heading = f"{current_profile.upper()} — {requirements[current_profile]}"
-            _say("info", click.style(heading, bold=True, fg="blue"), err=False)
+            say("info", click.style(heading, bold=True, fg="blue"), err=False)
             # ABSENT means one thing with no distribution installed, another with two unsourced.
             if current_profile == "ros":
-                _say("warn", ros_summary(env), err=False)
+                say("warn", ros_summary(env), err=False)
         status = "OK" if check.ok else "ABSENT" if check.optional else "MISSING"
         colour = "green" if check.ok else "yellow" if check.optional else "red"
-        _stamp("info" if check.ok or check.optional else "error", err=False)
+        stamp("info" if check.ok or check.optional else "error", err=False)
         click.secho(f"{status:<7}  ", fg=colour, bold=not check.ok, nl=False)
         click.secho(f"{check.dependency:<{dependency_width}}", fg="cyan", nl=False)
         click.echo(f"  {check.what:<{what_width}}  {check.path or '—'}")
@@ -1003,14 +928,14 @@ def health(
             ):
                 if not value:
                     continue
-                _stamp("error", err=False)
+                stamp("error", err=False)
                 click.echo(" " * (_STATUS_WIDTH + 4), nl=False)
                 click.secho(f"{label:<6} ", fg="yellow", dim=True, nl=False)
                 click.secho(value, fg=colour)
     missing = sum(not check.ok and not check.optional for check in checks)
     absent = sum(not check.ok and check.optional for check in checks)
     click.echo()
-    _stamp("error" if missing else "done", err=False)
+    stamp("error" if missing else "done", err=False)
     click.secho(f"{sum(check.ok for check in checks)} good", fg="green", nl=False)
     click.secho(f", {missing} missing", fg="red" if missing else None, nl=False)
     # An absent optional is a fact about this workspace, not a fault: say it, do not fail on it.
@@ -1020,7 +945,7 @@ def health(
         # By package: three missing robif2b targets are one thing to install, not three.
         owners = list({dependency.split("::")[0].split()[0] for dependency in blocking})
         named = ", ".join(owners[:3]) + (f" +{len(owners) - 3}" if len(owners) > 3 else "")
-        _stamp("error" if blocking else "done", err=False)
+        stamp("error" if blocking else "done", err=False)
         click.secho(
             f"{target} NOT ready ({named})" if blocking else f"{target} ready",
             fg="red" if blocking else "green",
@@ -1028,8 +953,8 @@ def health(
     packages = apt_packages(checks)
     if packages:
         click.echo()
-        _say("info", click.style("Install what apt provides, in one line:", fg="blue"), False)
-        _stamp("info", err=False)
+        say("info", click.style("Install what apt provides, in one line:", fg="blue"), False)
+        stamp("info", err=False)
         click.secho(f"sudo apt-get install -y {' '.join(packages)}", fg=_COMMAND_COLOUR)
     if missing:
         raise click.exceptions.Exit(1)
@@ -1048,7 +973,7 @@ def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
     from rdf_utils.constraints import ConstraintViolation
 
-    with _requirements_reported():
+    with requirements_reported():
         from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import generate_model
 
@@ -1066,16 +991,16 @@ def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
     if model.suffix != ".robmot":
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
     try:
-        generation = _new_generation(model, name)
-        with mirrored_stderr(generation_log(generation)):
+        generation = new_generation(model, name)
+        with mirrored_stderr(generation / LOG_DIRECTORY / "console.log"):
             generate_model(model, generation, stage=stage)
     except ConstraintViolation as exc:
-        raise _model_rejected(exc) from exc
+        raise model_rejected(exc) from exc
     except MissingAssets as exc:
         raise _Reported(str(exc)) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise _internal_failure("generation failed", exc) from exc
-    _say("done", f"generated {generation}")
+        raise internal_failure("generation failed", exc) from exc
+    say("done", f"generated {generation}")
     click.echo(generation)
 
 
@@ -1089,7 +1014,7 @@ def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
     help="Additional CMake package prefix; repeat as needed.",
 )
 @click.option("-j", "--jobs", type=click.IntRange(min=1))
-@_environment_options
+@environment_options
 def build(
     generation: Path,
     prefixes: tuple[Path, ...],
@@ -1101,13 +1026,13 @@ def build(
     from motion_spec.generation.pipeline import build_generation
 
     generation = generation.resolve()
-    env, _ = _environment(env_script, no_env, generation)
+    env, _ = environment(env_script, no_env, generation)
     try:
-        with mirrored_stderr(generation_log(generation)):
+        with mirrored_stderr(generation / LOG_DIRECTORY / "console.log"):
             executable = build_generation(generation, prefixes=prefixes, jobs=jobs, env=env)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise _internal_failure("build failed", exc) from exc
-    _say("done", f"built {executable}")
+        raise internal_failure("build failed", exc) from exc
+    say("done", f"built {executable}")
     click.echo(executable)
 
 
@@ -1118,7 +1043,7 @@ def build(
 )
 def check(manifest: Path, meta_shacl: bool) -> None:
     """Validate MANIFEST against its SHACL constraints."""
-    with _requirements_reported():
+    with requirements_reported():
         from motion_spec_dsl.rdf_parser.check import validate_manifest
 
     conforms, report = validate_manifest(manifest, meta_shacl=meta_shacl)
@@ -1147,10 +1072,10 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
             raise click.UsageError(str(exc)) from exc
         written = write_sample(root, declared=workspace_argument is not None)
         if written:
-            _say("done", f"settings written to {written}")
+            say("done", f"settings written to {written}")
             click.echo(written)
         else:
-            _say("info", f"{root / CONFIG_FILE} already exists, left as it is")
+            say("info", f"{root / CONFIG_FILE} already exists, left as it is")
         return
 
     path = find_config()
@@ -1190,7 +1115,7 @@ def replay(log: Path, jsonl: bool, verify: bool) -> None:
 
     try:
         if verify:
-            _say("done", f"run OK, {verify_recording(log)} frames")
+            say("done", f"run OK, {verify_recording(log)} frames")
         elif jsonl:
             for record in decode_frames(log):
                 click.echo(json.dumps(record, separators=(",", ":")))
@@ -1212,13 +1137,13 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
     """Compose a .scenex in MuJoCo and view it, without generating or building anything."""
     from rdf_utils.constraints import ConstraintViolation
 
-    with _requirements_reported():
+    with requirements_reported():
         from motion_spec.view import view as view_scene
 
     try:
         view_scene(scenex, config, headless)
     except ConstraintViolation as exc:
-        raise _model_rejected(exc) from exc
+        raise model_rejected(exc) from exc
     except FileNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -1239,8 +1164,8 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
     help="Name the generation tree under $MOTION_SPEC_GEN; defaults to the model's stem. "
     "Requires a .robmot INPUT.",
 )
-@_run_options
-@_environment_options
+@run_options
+@environment_options
 def run(
     input: Path,
     prefixes: tuple[Path, ...],
@@ -1260,28 +1185,29 @@ def run(
     """
     from rdf_utils.constraints import ConstraintViolation
 
-    with _requirements_reported():
+    with requirements_reported():
         from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import build_generation, generate_model, new_id
+        from motion_spec.runs.provenance import built_executable
         from motion_spec.runs.runner import RunnerError, run_cataloged
         from motion_spec.runs.verify import RecordError
 
     if input.suffix == ".robmot":
         try:
-            generation = _new_generation(input, name)
-            env, environment_script = _environment(env_script, no_env, generation)
-            with mirrored_stderr(generation_log(generation)):
-                _say("step", "generating")
+            generation = new_generation(input, name)
+            env, environment_script = environment(env_script, no_env, generation)
+            with mirrored_stderr(generation / LOG_DIRECTORY / "console.log"):
+                say("step", "generating")
                 generate_model(input, generation, stage="code", env=env)
-                _say("step", "building")
+                say("step", "building")
                 executable = build_generation(generation, prefixes=prefixes, jobs=jobs, env=env)
-                _say("done", f"built {executable}")
+                say("done", f"built {executable}")
         except ConstraintViolation as exc:
-            raise _model_rejected(exc) from exc
+            raise model_rejected(exc) from exc
         except MissingAssets as exc:
             raise _Reported(str(exc)) from exc
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-            raise _internal_failure("pipeline failed", exc) from exc
+            raise internal_failure("pipeline failed", exc) from exc
     else:
         if not input.is_dir():
             raise click.BadParameter(
@@ -1290,18 +1216,23 @@ def run(
         if prefixes or jobs is not None or name:
             raise click.UsageError("generation and build options require a .robmot INPUT")
         generation = input.resolve()
-        env, environment_script = _environment(env_script, no_env, generation)
+        executable = built_executable(generation / "generated")
+        if executable is None:
+            raise click.ClickException(
+                f"{generation}: no build is recorded. Build it with `motion-spec build`."
+            )
+        env, environment_script = environment(env_script, no_env, generation)
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
-    _say("step", f"running {generation.name}")
-    _say("info", f"run directory {run_dir}")
+    say("step", f"running {generation.name}")
+    say("info", f"run directory {run_dir}")
     # The dashboard stops a run with SIGTERM: end it as Ctrl-C does, so rec records the end.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         returncode = run_cataloged(
             run_dir,
             source_dir=generation / "generated",
-            executable=generation / "build" / generation.parent.name,
+            executable=executable,
             run_id=run_id,
             cwd=cwd,
             record=list(record),
@@ -1314,17 +1245,17 @@ def run(
     # Said before the exit: an interrupt leaves a complete record, and that is when the
     # caller most needs the path.
     if returncode:
-        _say("error", f"run failed ({returncode}) {run_dir}")
+        say("error", f"run failed ({returncode}) {run_dir}")
         raise click.exceptions.Exit(returncode)
-    _say("done", f"run {run_dir}")
+    say("done", f"run {run_dir}")
 
 
 @main.command()
 @click.argument(
     "generation", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
-@_run_options
-@_environment_options
+@run_options
+@environment_options
 @click.pass_context
 def rerun(ctx: click.Context, generation: Path | None, **options) -> None:
     """Run a generation again, in a run of its own.
@@ -1332,8 +1263,25 @@ def rerun(ctx: click.Context, generation: Path | None, **options) -> None:
     `run` for the generation `latest` points at, so the timestamped path a `gen` just made need
     not be pasted back. Name a GENERATION to take that one instead. Generates and builds nothing.
     """
-    generation = (generation or _latest_generation()).resolve()
-    _say("info", f"generation {generation}")
+    if generation is None:
+        link = generation_root() / LATEST_LINK
+        if not link.is_dir():
+            raise click.ClickException(
+                f"{link}: nothing generated here to rerun. `gen` and `run` point it at what they "
+                f"make, so generate once, or name a generation directory. Generations go under "
+                f"${GENERATION_VARIABLE} when it is set, else ${{{WORKSPACE_VARIABLE}}}/generations."
+            )
+        from motion_spec.runs.provenance import built_executable
+
+        generation = link.resolve()
+        executable = built_executable(generation / "generated")
+        if executable is None or not executable.is_file():
+            raise click.ClickException(
+                f"{generation}: the latest generation is not built. Build it with `motion-spec "
+                "build`, or name a generation directory."
+            )
+    generation = generation.resolve()
+    say("info", f"generation {generation}")
     ctx.invoke(run, input=generation, prefixes=(), jobs=None, name=None, **options)
 
 
@@ -1351,7 +1299,7 @@ def cancel(run_dir: Path) -> None:
         rec_run(run_dir).cancel()
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
-    _say("done", f"asked {run_dir.name} to stop")
+    say("done", f"asked {run_dir.name} to stop")
 
 
 @main.command()
@@ -1375,7 +1323,7 @@ def control(run_dir: Path, action: str, value: float | None) -> None:
         raise click.ClickException(
             f"{run_dir.name} has no control block: it is not a simulated run in progress"
         )
-    _say(
+    say(
         "done" if status["alive"] else "warn",
         f"{run_dir.name}: {'paused' if status['paused'] else 'running'} at {status['speed']:g}x"
         + ("" if status["alive"] else ", and the loop did not acknowledge"),

@@ -252,7 +252,7 @@ robot-assign(solver) ::= <<
 >>
 
 mj-sensor-io-assign(solver) ::= <<
-<if(solver.runtime.owner)><solver.sensors:{s | <({mj-sensor-config-<s.type>})(solver, s)>}; separator=""><endif>
+<if(solver.runtime.owner)><solver.sensors:{s | <\n><({mj-sensor-config-<s.type>})(solver, s)>}; separator=""><endif>
 >>
 
 mj-sensor-config-ForceTorque(solver, sensor) ::= <<
@@ -277,11 +277,8 @@ app-chain-includes(has_serial_chain, resources, ros, cameras) ::= <<
 #include \<iostream\>
 #include \<string\>
 #include \<vector\>
-#include "robot_config.hpp"
-<if(ros && first(cameras).id)>
-#include \<mj_kdl_wrapper/camera_ros.hpp\>
-<endif>
-<endif>
+#include "robot_config.hpp"<if(ros && first(cameras).id)>
+#include \<mj_kdl_wrapper/camera_ros.hpp\><endif><endif>
 >>
 
 app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= <<
@@ -444,7 +441,6 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
         mj_scene.cameras.push_back(camera_spec);
     \}
 }; separator="\n">
-
     if (const auto _s = mj_kdl::init_env(&mj_env, &mj_scene); !_s) {
         std::cerr \<\< "mj_kdl::init_env() failed: " \<\< _s.error \<\< "\\n";
         return 1;
@@ -463,8 +459,7 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
 <serial_chain_solvers:{solver |<robot-state-init(solver)>
 <robot-init(solver)>
 <robot-chain(solver)>
-<robot-assign(solver)>
-<mj-sensor-io-assign(solver)>}; separator="\n">
+<robot-assign(solver)><mj-sensor-io-assign(solver)>}; separator="\n">
 
     if (_headless_rtf > 0.0) mj_env.viewer.realtime_factor = _headless_rtf;
     if (!headless) {
@@ -590,9 +585,7 @@ app-chain-setup(serial_chain_solvers, scene, config_path, ros, world_ports) ::= 
                 \}
             \}
         \}
-    \}
-}; separator="\n">
-<endif>
+    \}}; separator="\n\n"><endif>
 >>
 
 app-chain-post-setup(serial_chain_solvers, motions, agent_homes) ::= <<

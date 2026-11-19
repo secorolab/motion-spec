@@ -7,11 +7,14 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
+from rdf_utils.models.prov import get_file_path
+from rdflib import Dataset
+from rdflib.namespace import PROV
+
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.catalog import rdf_name, run_videos
 from motion_spec.dashboard.frames import slot_signals
 from motion_spec.dashboard.sources import authored_lines
-from motion_spec.runs.provenance import run_generation
+from motion_spec.runs.provenance import GENERATION_DOCUMENT, read_generation_dataset, run_generation
 from motion_spec.runs.replay import resolve_run, validate_header
 from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
@@ -26,15 +29,7 @@ GAIN_LABELS = {
 }
 
 
-def run_source_text(run_dir: Path) -> str:
-    """The authored `.robmot` this run was generated from, kept in its generation."""
-    generation = run_generation(run_dir)
-    generated = (generation / "generated/source").glob("*.robmot") if generation else ()
-    source = next((path for path in generated if path.is_file()), None)
-    return source.read_text() if source else ""
-
-
-def _slot_ids(slots: list, field: str) -> list[str]:
+def slot_ids(slots: list, field: str) -> list[str]:
     """The ids these slots name in one role, in order, without repeats or blanks."""
     ids = []
     for slot in slots:
@@ -42,18 +37,6 @@ def _slot_ids(slots: list, field: str) -> list[str]:
         if value and value not in ids:
             ids.append(value)
     return ids
-
-
-def _by_constraint(slots) -> dict:
-    """Slots grouped by the constraint they serve -- the axis controllers of one share it.
-
-    An aggregate monitor watches several constraints and names none of them singly, so it
-    groups under its own id and stays one row.
-    """
-    groups: dict[str, list] = {}
-    for slot in slots:
-        groups.setdefault(slot.constraint_iri or slot.id, []).append(slot)
-    return groups
 
 
 def authored_key(slot, motion, name: str) -> tuple[str, str]:
@@ -73,76 +56,6 @@ def authored_key(slot, motion, name: str) -> tuple[str, str]:
     return ((motion.id or "").replace("-", "_"), (name or "").replace("-", "_"))
 
 
-def _constraint_row(motion, kind: str, group: list, constants: dict, authored: dict) -> dict:
-    """One constraint's row: its identity and signals from the header, its line from the source."""
-    spelled = {(name or "").replace("-", "_"): name for _, _, name in authored.values()}
-    first = group[0]
-    name = first.constraint_id or rdf_name(first.constraint_iri) or first.id
-    key = authored_key(first, motion, name)
-    line, expression, authored_motion = authored.get(key, (None, None, None))
-    # The header names the pair the evaluator compares; measured/setpoint only where it does not.
-    operands = []
-    for slot in group:
-        for value in slot.operand_ids:
-            if value not in operands:
-                operands.append(value)
-    compared = operands or (
-        [*_slot_ids(group, "measured_id"), *_slot_ids(group, "setpoint_id")]
-        if kind == "controlled"
-        else []
-    )
-    evaluator = next(iter(_slot_ids(group, "evaluator_id")), None)
-    return {
-        # As the source spells it, so a generated row lands in the motion's own block
-        "motion": authored_motion or spelled.get(key[0]) or key[0] or motion.id,
-        "handler": motion.id,
-        "line": line,
-        "name": name,
-        "expression": expression,
-        "kind": kind,
-        # The function the header names, or the slot computing the error where it names none.
-        "evaluator": evaluator or first.iri or first.id or None,
-        "between": compared,
-        "tracking": [value for value in compared if value not in constants],
-        # A velocity and a distance share no axis, so each member gets a plot of its own.
-        "members": list(
-            {
-                member.id: {
-                    "id": member.id,
-                    "iri": member.iri,
-                    "error": member.error_id,
-                    "tolerance": constants.get(member.tolerance_id),
-                }
-                for slot in group
-                for member in slot.watched
-                if member.error_id
-            }.values()
-        )
-        if kind == "monitored"
-        else [],
-        "error": _slot_ids(group, "error_id"),
-        "control": _slot_ids(group, "output_id") if kind == "controlled" else [],
-        "monitors": [slot.id for slot in group] if kind == "monitored" else [],
-        "setpoints": [
-            {"label": value, "value": constants[value]}
-            for value in _slot_ids(group, "setpoint_id")
-            if value in constants
-        ]
-        if kind == "controlled"
-        else [],
-        "gains": {
-            GAIN_LABELS.get(gain.role, gain.role): gain.value
-            for slot in group
-            for gain in slot.gains
-        }
-        if kind == "controlled"
-        else {},
-        "tolerance": next(
-            (constants[slot.tolerance_id] for slot in group if slot.tolerance_id in constants), None
-        ),
-    }
-
-
 def source_constraints(run_dir: Path, contract) -> list[dict]:
     """Return one row per constraint this run recorded, read off the log's own header.
 
@@ -154,19 +67,111 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
     The row shape is a contract with the frontend: motion, handler, line, name, expression,
     kind, evaluator, between, tracking, error, control, monitors, setpoints, gains, tolerance.
     """
-    authored = authored_lines(run_source_text(run_dir))
+    generation = run_generation(run_dir)
+    provenance = (
+        read_generation_dataset(generation / "generated" / GENERATION_DOCUMENT)
+        if generation
+        else Dataset()
+    )
+    kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
+    source = next((path for path in kept if path.suffix == ".robmot" and path.is_file()), None)
+    authored = authored_lines(source.read_text() if source else "")
     constants = {
         key: row.value
         for row in contract.header.constants
         for key in (row.id, row.source_id)
         if key
     }
-    return [
-        _constraint_row(motion, kind, group, constants, authored)
-        for motion in contract.header.motions
-        for kind, slots in (("controlled", motion.controllers), ("monitored", motion.monitors))
-        for group in _by_constraint(slots).values()
-    ]
+    spelled = {(name or "").replace("-", "_"): name for _, _, name in authored.values()}
+    rows = []
+    for motion in contract.header.motions:
+        for kind, slots in (("controlled", motion.controllers), ("monitored", motion.monitors)):
+            # Grouped by the constraint they serve -- the axis controllers of one share it. An
+            # aggregate monitor watches several constraints and names none of them singly, so
+            # it groups under its own id and stays one row.
+            groups: dict[str, list] = {}
+            for slot in slots:
+                groups.setdefault(slot.constraint_iri or slot.id, []).append(slot)
+            for group in groups.values():
+                first = group[0]
+                name = (
+                    first.constraint_id
+                    or str(first.constraint_iri).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+                    or first.id
+                )
+                key = authored_key(first, motion, name)
+                line, expression, authored_motion = authored.get(key, (None, None, None))
+                # The header names the pair the evaluator compares; measured/setpoint only where
+                # it does not.
+                operands = list(
+                    dict.fromkeys(value for slot in group for value in slot.operand_ids)
+                )
+                compared = operands or (
+                    [*slot_ids(group, "measured_id"), *slot_ids(group, "setpoint_id")]
+                    if kind == "controlled"
+                    else []
+                )
+                evaluator = next(iter(slot_ids(group, "evaluator_id")), None)
+                rows.append(
+                    {
+                        # As the source spells it, so a generated row lands in the motion's own
+                        # block
+                        "motion": authored_motion or spelled.get(key[0]) or key[0] or motion.id,
+                        "handler": motion.id,
+                        "line": line,
+                        "name": name,
+                        "expression": expression,
+                        "kind": kind,
+                        # The function the header names, or the slot computing the error where
+                        # it names none.
+                        "evaluator": evaluator or first.iri or first.id or None,
+                        "between": compared,
+                        "tracking": [value for value in compared if value not in constants],
+                        # A velocity and a distance share no axis, so each member gets a plot of
+                        # its own.
+                        "members": list(
+                            {
+                                member.id: {
+                                    "id": member.id,
+                                    "iri": member.iri,
+                                    "error": member.error_id,
+                                    "tolerance": constants.get(member.tolerance_id),
+                                }
+                                for slot in group
+                                for member in slot.watched
+                                if member.error_id
+                            }.values()
+                        )
+                        if kind == "monitored"
+                        else [],
+                        "error": slot_ids(group, "error_id"),
+                        "control": slot_ids(group, "output_id") if kind == "controlled" else [],
+                        "monitors": [slot.id for slot in group] if kind == "monitored" else [],
+                        "setpoints": [
+                            {"label": value, "value": constants[value]}
+                            for value in slot_ids(group, "setpoint_id")
+                            if value in constants
+                        ]
+                        if kind == "controlled"
+                        else [],
+                        "gains": {
+                            GAIN_LABELS.get(gain.role, gain.role): gain.value
+                            for slot in group
+                            for gain in slot.gains
+                        }
+                        if kind == "controlled"
+                        else {},
+                        "tolerance": next(
+                            (
+                                constants[slot.tolerance_id]
+                                for slot in group
+                                if slot.tolerance_id in constants
+                            ),
+                            None,
+                        ),
+                    }
+                )
+    return rows
 
 
 SLOT_ROLES = {
@@ -179,62 +184,6 @@ SLOT_ROLES = {
     ),
     "monitors": (("error_id", "error"), ("tolerance_id", "tolerance")),
 }
-
-
-def signal_index(contract) -> dict:
-    """signal id -> what it is: the motion and constraint it belongs to, and its role there.
-
-    A picker offering `constraint_0.error` beside `eacc_ctrl_home_x` asks the reader to know
-    the schema. The header says which constraint each slot serves, so say that instead.
-    """
-    index: dict[str, dict] = {}
-    for motion in contract.header.motions:
-        # a controller writes a constraint slot; a monitor writes a monitor slot
-        for pool, slots, keys in (
-            (
-                "constraints",
-                motion.controllers,
-                ("error", "output", "measured", "setpoint", "satisfied"),
-            ),
-            ("monitors", motion.monitors, ("value", "satisfied")),
-        ):
-            for slot in slots:
-                owner = slot.constraint_id or rdf_name(slot.constraint_iri) or slot.id
-                fields = contract.fields.get(pool) or ()
-                field = fields[slot.number]["id"] if slot.number < len(fields) else None
-                named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
-                for key in keys:
-                    where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
-                    # The pooled slot mirrors a signal the header already names: offering both
-                    # is the same series twice, under a name nobody can read.
-                    if field and key not in named:
-                        index[f"{field}.{key}"] = where
-                    if pool == "monitors":
-                        index[f"{slot.id}.{key}"] = where
-                for attribute, role in SLOT_ROLES[pool]:
-                    signal = getattr(slot, attribute)
-                    if signal:
-                        index.setdefault(
-                            signal,
-                            {
-                                "motion": motion.id,
-                                "constraint": owner,
-                                "role": role,
-                                "slot": slot.id,
-                            },
-                        )
-                for member in slot.watched if pool == "monitors" else ():
-                    if member.error_id:
-                        index.setdefault(
-                            member.error_id,
-                            {
-                                "motion": motion.id,
-                                "constraint": member.id,
-                                "role": "error",
-                                "slot": slot.id,
-                            },
-                        )
-    return index
 
 
 def replay_data(run_dir: Path) -> dict:
@@ -278,7 +227,7 @@ def replay_data(run_dir: Path) -> dict:
     signals.extend(slot_signals(contract))
     indices = {motion.id: motion.index for motion in contract.header.motions}
     spelling: dict[str, str] = {}  # gate id -> the motion name the source uses
-    windows = log_events(log, contract)["windows"]
+    scanned = log_events(log, contract)
     logged = set(signals) | {field["id"] for field in contract.fields["quantities"]}
     parts = {}
     for name in logged:
@@ -296,17 +245,67 @@ def replay_data(run_dir: Path) -> dict:
             ]
         handler = constraint.pop("handler")
         spelling.setdefault(handler, constraint["motion"])
-        constraint["window"] = windows.get(indices.get(handler))
+        constraint["window"] = scanned["windows"].get(indices.get(handler))
     signals.extend(
         signal
         for constraint in constraints
         for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
     )
     # A constraint's own signals are pooled ones already listed: each is offered once.
-    offered = []
-    for signal in signals:
-        if signal not in offered:
-            offered.append(signal)
+    offered = list(dict.fromkeys(signals))
+    # signal id -> the motion and constraint it belongs to, and its role there: a picker
+    # offering `constraint_0.error` beside `eacc_ctrl_home_x` asks the reader to know the schema.
+    index: dict[str, dict] = {}
+    for motion in contract.header.motions:
+        # a controller writes a constraint slot; a monitor writes a monitor slot
+        for pool, slots, keys in (
+            (
+                "constraints",
+                motion.controllers,
+                ("error", "output", "measured", "setpoint", "satisfied"),
+            ),
+            ("monitors", motion.monitors, ("value", "satisfied")),
+        ):
+            for slot in slots:
+                owner = (
+                    slot.constraint_id
+                    or str(slot.constraint_iri).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+                    or slot.id
+                )
+                fields = contract.fields.get(pool) or ()
+                field = fields[slot.number]["id"] if slot.number < len(fields) else None
+                named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
+                for key in keys:
+                    where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
+                    # The pooled slot mirrors a signal the header already names: offering both
+                    # is the same series twice, under a name nobody can read.
+                    if field and key not in named:
+                        index[f"{field}.{key}"] = where
+                    if pool == "monitors":
+                        index[f"{slot.id}.{key}"] = where
+                for attribute, role in SLOT_ROLES[pool]:
+                    signal = getattr(slot, attribute)
+                    if signal:
+                        index.setdefault(
+                            signal,
+                            {
+                                "motion": motion.id,
+                                "constraint": owner,
+                                "role": role,
+                                "slot": slot.id,
+                            },
+                        )
+                for member in slot.watched if pool == "monitors" else ():
+                    if member.error_id:
+                        index.setdefault(
+                            member.error_id,
+                            {
+                                "motion": motion.id,
+                                "constraint": member.id,
+                                "role": "error",
+                                "slot": slot.id,
+                            },
+                        )
     # A generation outside the browsed root has no page to go back to; the log says the rest.
     generation = run_generation(run_dir)
     return {
@@ -318,11 +317,11 @@ def replay_data(run_dir: Path) -> dict:
         "frames": frame_count,
         "duration": frame_count * contract.header.nominal_period_ns / 1e9,
         "states": [state.id for state in contract.header.fsm_states],
-        "events": log_events(log, contract)["events"],
+        "events": scanned["events"],
         "signals": offered,
         "signal_index": {
             name: {**where, "motion": spelling.get(where["motion"], where["motion"])}
-            for name, where in signal_index(contract).items()
+            for name, where in index.items()
         },
         "constraints": constraints,
         # The live poll names the motion by its gate; the panel is headed by the authored name.
@@ -334,7 +333,7 @@ def replay_data(run_dir: Path) -> dict:
             for motion in contract.header.motions
             for slot in motion.monitors
         },
-        "videos": run_videos(run_dir),
+        "videos": [path.stem for path in (run_dir / "logs").glob("*.mp4")],
         "header": validate_header(log, contract),
         "health": health,
         "pending": pending,
@@ -383,14 +382,9 @@ def log_events(log: Path, contract) -> dict:
             "msat_was": None,
             "result": {"events": [], "windows": {}, "tally": {}, "exits": {}},
         }
-    if size > scan["size"]:
-        scan["size"] = size
-        _extend_events(log, contract, scan)
-    return scan["result"]
-
-
-def _extend_events(log: Path, contract, scan: dict) -> None:
-    """Append the markers of the frames written since the scan's offset, advancing it."""
+    if size <= scan["size"]:
+        return scan["result"]
+    scan["size"] = size
     states, fired = scan["states"], scan["fired"]
     constraint_pool = len(contract.fields["constraints"])
     monitor_pool = len(contract.fields["monitors"])
@@ -505,6 +499,7 @@ def _extend_events(log: Path, contract, scan: dict) -> None:
     scan["index"] = index
     scan["state_was"], scan["event_was"], scan["motion_was"] = state_was, event_was, motion_was
     scan["csat_was"], scan["msat_was"] = csat_was, msat_was
+    return scan["result"]
 
 
 def run_verdict(run_dir: Path) -> dict:

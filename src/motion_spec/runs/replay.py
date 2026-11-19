@@ -11,22 +11,6 @@ from motion_spec.runs.verify import FRAME_LOG, RecordError, verify_run
 from motion_spec.telemetry import frame_log_pb
 
 
-def run_dir_for(log_path: Path) -> Path:
-    """The run directory a run directory or its frame log belongs to: a log sits in `logs/`.
-
-    Raises:
-        RecordError: LOG_PATH, under either log name, does not exist.
-    """
-    # Callers name the log the way it is written, and a recorded one has since been packed;
-    # resolve before asking whether it is there, or the conventional name reads as missing.
-    log_path = frame_log_pb.log_path(log_path)
-    if not log_path.exists():
-        raise RecordError(log_path, "does not exist")
-    if log_path.is_dir():
-        return log_path
-    return log_path.parent.parent if log_path.parent.name == "logs" else log_path.parent
-
-
 def resolve_run(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContract]:
     """A run directory or frame log PATH as (run directory, frame log, the log's contract).
 
@@ -35,7 +19,16 @@ def resolve_run(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContract]
             files it generated and the log is not among them.
     """
     input_path = Path(path)
-    run_dir = run_dir_for(input_path)
+    # Callers name the log the way it is written, and a recorded one has since been packed;
+    # resolve before asking whether it is there, or the conventional name reads as missing.
+    named = frame_log_pb.log_path(input_path)
+    if not named.exists():
+        raise RecordError(named, "does not exist")
+    if named.is_dir():
+        run_dir = named
+    else:
+        # A log sits in the run directory's `logs/`.
+        run_dir = named.parent.parent if named.parent.name == "logs" else named.parent
     # Either name: a run still being written has the plain log, a recorded one the packed.
     log_path = frame_log_pb.log_path(run_dir / FRAME_LOG if input_path.is_dir() else input_path)
     if not log_path.exists():
@@ -100,11 +93,10 @@ def summarize(log_path: Path | str) -> str:
     run_dir, log_path, contract = resolve_run(log_path)
     meta = validate_header(log_path, contract)
     count = 0
-    first = last = None
+    last = None
     periods = []
     computes = []
     for record in frame_log_pb.frame_records(log_path, contract):
-        first = first or record
         last = record
         count += 1
         if record["step"] > 0:
@@ -112,8 +104,6 @@ def summarize(log_path: Path | str) -> str:
         computes.append(record["timing"]["compute_ns"])
     if last is None:
         return f"log         {log_path}\nframes      0"
-    periods.sort()
-    computes.sort()
     states = contract.header.fsm_states
     final_state = last["fsm_state"]
     final_name = states[final_state].id if 0 <= final_state < len(states) else str(final_state)
@@ -136,10 +126,9 @@ def summarize(log_path: Path | str) -> str:
         )
     if periods:
         lines.append(
-            f"period[ms]  mean {sum(periods) / len(periods) / 1e6:.3f} max {periods[-1] / 1e6:.3f}"
+            f"period[ms]  mean {sum(periods) / len(periods) / 1e6:.3f} max {max(periods) / 1e6:.3f}"
         )
-    if computes:
-        lines.append(
-            f"compute[us] mean {sum(computes) / len(computes) / 1e3:.1f} max {computes[-1] / 1e3:.1f}"
-        )
+    lines.append(
+        f"compute[us] mean {sum(computes) / len(computes) / 1e3:.1f} max {max(computes) / 1e3:.1f}"
+    )
     return "\n".join(lines)

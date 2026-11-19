@@ -21,7 +21,7 @@ from rdf_utils.models.prov import (
     capture_file_prov,
     load_transformation_prov,
 )
-from rdflib import Graph, Literal, URIRef
+from rdflib import Literal, URIRef
 from rdflib.namespace import PROV
 from rec import State, Verdict
 
@@ -33,9 +33,7 @@ from motion_spec.runs.provenance import (
     GENERATION_DOCUMENT,
     add_package,
     generation_model,
-    rec_document,
     rec_run,
-    rec_run_lifecycle_from_file,
     record_draw,
     record_execution,
     record_files,
@@ -82,7 +80,18 @@ def run_cataloged(
     run_id = run_id or run_dir.name
     frame_log = run_dir / "logs" / "frame_log.pb"
 
-    _validate_new_run(run_dir, source_dir, executable, run_id, Path(cwd).resolve() if cwd else None)
+    if not source_dir.exists():
+        raise RunnerError(f"{source_dir}: source directory does not exist")
+    for path in (source_dir / "contract" / "frame_log.proto", source_dir / GENERATION_DOCUMENT):
+        if not path.exists():
+            raise RunnerError(f"{path}: required generated artifact is missing")
+    if not executable.exists():
+        raise RunnerError(f"{executable}: executable does not exist")
+    validate_robot_config(source_dir, Path(cwd).resolve() if cwd else None)
+    if rec_run(run_dir, run_id).store.load(run_id) is not None:
+        raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
+    if frame_log.exists():
+        raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
     # frame_layout.json, not the log: the run's blocks are named before the log exists.
     schema_hash = json.loads((source_dir / "contract" / "frame_layout.json").read_text())[
         "schema_hash"
@@ -103,13 +112,27 @@ def run_cataloged(
     )
 
     try:
+        # The topics the deployment config asks the run to bag, and whether it stamps them in
+        # simulation time: [ros.clock] means the run publishes /clock and every stamp reads from it.
+        topics, use_sim_time = [], False
+        if config is not None and config.exists():
+            import tomllib
+
+            try:
+                deployment = tomllib.loads(config.read_text())
+            except tomllib.TOMLDecodeError as error:
+                raise RunnerError(f"{config}: {error}") from error
+            topics = (deployment.get("rosbag") or {}).get("topics") or []
+            if not isinstance(topics, list) or any(not isinstance(topic, str) for topic in topics):
+                raise RunnerError(f"{config}: [rosbag] `topics` must be a list of topic names")
+            use_sim_time = "clock" in (deployment.get("ros") or {})
         with (
-            _rosbag_recorder(run_dir, *_rosbag_settings(config)),
-            _real_camera_recorders(
+            rosbag_recorder(run_dir, topics, use_sim_time),
+            real_camera_recorders(
                 [] if platform["simulated"] else agent_cameras(model), record, frame_log.parent
             ),
         ):
-            returncode = _run_executable(
+            returncode = run_executable(
                 executable,
                 cwd=Path(cwd).resolve() if cwd else None,
                 frame_log=frame_log,
@@ -121,11 +144,16 @@ def run_cataloged(
                 schema_hash=schema_hash,
             )
     except Exception:
-        _finish_rec_run(run_dir, run, Verdict.FAILED)
+        finish_rec_run(run_dir, run, Verdict.FAILED)
         raise
     sampling = read_sampling(frame_log) if record_log and frame_log.exists() else None
     if sampling:
-        _record_sampling(run_dir, run_id, bundle_id, sampling)
+        drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
+        with run_bundle(run_dir, run_id, bundle_id) as bundle:
+            # The process the run started draws the values: the one agent that acted for another.
+            process = next(bundle.subjects(PROV.qualifiedDelegation), None)
+            for quantity, values in sampling["draws"].items():
+                record_draw(bundle, process, quantity, values, drawn_at)
     # 130 is the program leaving its loop on SIGINT/SIGTERM, which it reports rather than
     # dying from: the run stopped early but its artifacts are complete, so it is not a
     # failure. Reached when the signal went to the child alone and never raised here.
@@ -136,7 +164,7 @@ def run_cataloged(
     # A log-less run has no such signal -- catalogue it anyway, or an interrupted --no-log run
     # would leave nothing saying it ran.
     if returncode != 0 and record_log and not frame_log.exists():
-        _finish_rec_run(run_dir, run, verdict)
+        finish_rec_run(run_dir, run, verdict)
         return returncode
 
     # rec's end is the record's mark: ended once the run's outputs are recorded, and checked.
@@ -145,9 +173,9 @@ def run_cataloged(
         if returncode == 0:
             verify_run(run_dir)
     except Exception:
-        _finish_rec_run(run_dir, run, Verdict.FAILED if returncode == 0 else verdict)
+        finish_rec_run(run_dir, run, Verdict.FAILED if returncode == 0 else verdict)
         raise
-    _finish_rec_run(run_dir, run, verdict)
+    finish_rec_run(run_dir, run, verdict)
     return returncode
 
 
@@ -166,24 +194,6 @@ def validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
     )
     if done.returncode:
         raise RunnerError(done.stderr.strip())
-
-
-def _validate_new_run(
-    run_dir: Path, source_dir: Path, executable: Path, run_id: str, cwd: Path | None = None
-) -> None:
-    if not source_dir.exists():
-        raise RunnerError(f"{source_dir}: source directory does not exist")
-    for path in (source_dir / "contract" / "frame_log.proto", source_dir / GENERATION_DOCUMENT):
-        if not path.exists():
-            raise RunnerError(f"{path}: required generated artifact is missing")
-    if not executable.exists():
-        raise RunnerError(f"{executable}: executable does not exist")
-    validate_robot_config(source_dir, cwd)
-    if run_dir.exists() and rec_document(run_dir, run_id).exists():
-        raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
-    frame_log = run_dir / "logs" / "frame_log.pb"
-    if frame_log.exists():
-        raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
 
 
 def start_rec_run(
@@ -207,62 +217,26 @@ def start_rec_run(
     run = rec_run(run_dir, run_id)
     run.start()
     with run_bundle(run_dir, run_id) as bundle:
-        _record_execution_inputs(bundle, run.node, run_dir, config, environment_script)
-        record_execution(
-            bundle,
-            run.node,
-            source_dir / GENERATION_DOCUMENT,
-            executable,
-            platform,
-        )
-    _publish(run_dir, run_id)
+        # A simulation's config is as much what it ran with: its [run] section sets how.
+        inputs = [config] if config is not None else []
+        script = Path(environment_script or "")
+        if script.is_file():
+            # Kept with the run: the workspace's file can change or go, and its path is the
+            # machine's.
+            kept = run_dir / "files" / f"environment{script.suffix}"
+            kept.parent.mkdir(exist_ok=True)
+            shutil.copy2(script, kept)
+            inputs.append(kept)
+        for path in inputs:
+            if path.exists():
+                record_run_file(bundle, run.node, run_dir.parents[1], path, generated=False)
+        record_execution(bundle, run.node, source_dir, executable, platform)
+    publish_lifecycle(run_dir, run_id, *run.lifecycle())
     return run, bundle.identifier
 
 
-def _record_execution_inputs(
-    bundle: Graph,
-    run: URIRef,
-    run_dir: Path,
-    config: Path | None,
-    environment_script: Path | None,
-) -> None:
-    """What the execution ran under: its deployment CONFIG and the ENVIRONMENT_SCRIPT it was
-    given. The executable is the generation's node, which `record_execution` states the run
-    used."""
-    # A simulation's config is as much what it ran with: its [run] section sets how.
-    inputs = [config] if config is not None else []
-    script = Path(environment_script or "")
-    if script.is_file():
-        # Kept with the run: the workspace's file can change or go, and its path is the machine's.
-        kept = run_dir / "files" / f"environment{script.suffix}"
-        kept.parent.mkdir(exist_ok=True)
-        shutil.copy2(script, kept)
-        inputs.append(kept)
-    for path in inputs:
-        if path.exists():
-            record_run_file(bundle, run, run_dir.parents[1], path, generated=False)
-
-
-def _rosbag_settings(config_path: Path | None) -> tuple[list[str], bool]:
-    """The topics the deployment config at CONFIG_PATH asks the run to bag, and whether it stamps
-    them in simulation time: [ros.clock] means the run publishes /clock and every stamp reads
-    from it."""
-    import tomllib
-
-    if config_path is None or not config_path.exists():
-        return [], False
-    try:
-        config = tomllib.loads(config_path.read_text())
-    except tomllib.TOMLDecodeError as error:
-        raise RunnerError(f"{config_path}: {error}") from error
-    topics = (config.get("rosbag") or {}).get("topics") or []
-    if not isinstance(topics, list) or any(not isinstance(topic, str) for topic in topics):
-        raise RunnerError(f"{config_path}: [rosbag] `topics` must be a list of topic names")
-    return topics, "clock" in (config.get("ros") or {})
-
-
 @contextmanager
-def _rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False):
+def rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False):
     """Bag the named topics for as long as the run lasts."""
     if not topics:
         yield
@@ -296,7 +270,18 @@ def _rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = Fals
     spinner = threading.Thread(target=recorder.record, daemon=True)
     spinner.start()
     try:
-        _await_rosbag_ready(bag_dir, spinner)
+        # The run must not start without the bag open.
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if bag_dir.exists():
+                break
+            if not spinner.is_alive():
+                raise RunnerError(
+                    f"{bag_dir}: the rosbag2 recorder stopped before it opened the bag"
+                )
+            time.sleep(0.01)
+        else:
+            raise RunnerError(f"{bag_dir}: the rosbag2 recorder did not open the bag in 30s")
         # record() subscribes; without the spin the bag lists every topic and holds no message.
         recorder.start_spin()
         yield
@@ -309,20 +294,8 @@ def _rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = Fals
             print(f"rosbag: {bag_dir} has no metadata.yaml; the bag is unreadable", file=sys.stderr)
 
 
-def _await_rosbag_ready(bag_dir: Path, spinner: threading.Thread, timeout_s: float = 30.0) -> None:
-    """Block until the recorder has opened the bag, so the run does not start without it."""
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if bag_dir.exists():
-            return
-        if not spinner.is_alive():
-            raise RunnerError(f"{bag_dir}: the rosbag2 recorder stopped before it opened the bag")
-        time.sleep(0.01)
-    raise RunnerError(f"{bag_dir}: the rosbag2 recorder did not open the bag in {timeout_s:g}s")
-
-
 @contextmanager
-def _real_camera_recorders(cameras: list, record: list[str] | None, output_dir: Path):
+def real_camera_recorders(cameras: list, record: list[str] | None, output_dir: Path):
     """Record selected real RGB camera topics while the generated controller runs."""
     recorders = [
         RosImageRecorder(camera, output_dir / f"{camera.id}.mp4")
@@ -344,7 +317,7 @@ def _real_camera_recorders(cameras: list, record: list[str] | None, output_dir: 
                 )
 
 
-def _run_executable(
+def run_executable(
     executable: Path,
     *,
     cwd: Path | None,
@@ -392,7 +365,7 @@ def _run_executable(
     except OSError as exc:
         console.close()
         raise RunnerError(f"{executable}: failed to launch: {exc}") from exc
-    pump = threading.Thread(target=_tee, args=(process.stdout, console), daemon=True)
+    pump = threading.Thread(target=tee, args=(process.stdout, console), daemon=True)
     pump.start()
     canceled_at = None
     try:
@@ -428,7 +401,7 @@ def _run_executable(
         console.close()
 
 
-def _tee(stream, sink) -> None:
+def tee(stream, sink) -> None:
     """Mirror the child's merged output to the operator's terminal and the run's console log."""
     try:
         for line in stream:
@@ -475,7 +448,7 @@ def record_outputs(run_dir: Path, run, bundle_id: URIRef, *, recorded: bool = Tr
         record_files(bundle, run.node, run_dir)
 
 
-def _finish_rec_run(run_dir: Path, run, verdict: Verdict) -> None:
+def finish_rec_run(run_dir: Path, run, verdict: Verdict) -> None:
     """End RUN with VERDICT: passed, or error for a run stopped early, else failed.
 
     A run that has already ended keeps its first end: rec refuses to end a run twice. A run
@@ -485,19 +458,4 @@ def _finish_rec_run(run_dir: Path, run, verdict: Verdict) -> None:
     if state not in (State.IN_PROGRESS, State.CANCELING):
         return
     run.end(Verdict.PASSED if state is State.CANCELING and verdict is Verdict.ERROR else verdict)
-    _publish(run_dir, run.id)
-
-
-def _record_sampling(run_dir: Path, run_id: str, bundle_id: URIRef, sampling: dict) -> None:
-    """Each drawn value, recorded in motion-spec's bundle of the run."""
-    drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
-    with run_bundle(run_dir, run_id, bundle_id) as bundle:
-        # The process the run started draws the values: the one agent that acted for another.
-        process = next(bundle.subjects(PROV.qualifiedDelegation), None)
-        for quantity, values in sampling["draws"].items():
-            record_draw(bundle, process, quantity, values, drawn_at)
-
-
-def _publish(run_dir: Path, run_id: str) -> None:
-    lifecycle = rec_run_lifecycle_from_file(rec_document(run_dir, run_id))
-    publish_lifecycle(run_dir, run_id, lifecycle["state"], lifecycle["verdict"])
+    publish_lifecycle(run_dir, run.id, *run.lifecycle())

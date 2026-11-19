@@ -32,15 +32,11 @@ LEVEL_COLOURS = {"info": "", "step": "1;34", "warn": "1;33", "error": "1;31", "d
 LEVEL_WIDTH = 6
 
 
-def paint(text: str, colour: str) -> str:
-    """TEXT in COLOUR, or unchanged when the colour is the terminal's own."""
-    return f"{SGR}{colour}m{text}{RESET}" if colour else text
-
-
 # Painted and padded here, so a tool is handed the finished word rather than the means to
 # build it: padding counts an escape the reader cannot see, and one place should get that right.
 LEVEL_LABELS = {
-    level: paint(f"{level:<{LEVEL_WIDTH}}", colour) for level, colour in LEVEL_COLOURS.items()
+    level: f"{SGR}{colour}m{level:<{LEVEL_WIDTH}}{RESET}" if colour else f"{level:<{LEVEL_WIDTH}}"
+    for level, colour in LEVEL_COLOURS.items()
 }
 
 LOG_DATEFMT = "%H:%M:%S"
@@ -52,14 +48,6 @@ def command_log(root: Path, command: str) -> Path:
     return root / STATE_DIRECTORY / LOG_DIRECTORY / f"{stamp}Z-{command}.log"
 
 
-def generation_log(generation: Path) -> Path:
-    """One console per generation: everything done to it, in the order it happened.
-
-    A file per command would split what the operator watched as a single stream -- generating
-    and building are one sitting, and the build's first line answers the generation's last.
-    """
-    return generation / LOG_DIRECTORY / "console.log"
-
 
 class _Mirror:
     """Everything written to a stream, written to a file as well."""
@@ -67,7 +55,7 @@ class _Mirror:
     def __init__(self, stream, sink):
         self._stream = stream
         self._sink = sink
-        self._readable = _for_the_file()
+        self._readable = for_the_file()
 
     def write(self, text: str) -> int:
         self._sink.write(self._readable(text.encode("utf-8", "replace")))
@@ -88,7 +76,7 @@ INDENT = "  "
 STAMPED = re.compile(rb"^(\x1b\[[0-9;]*m)?\d\d:\d\d:\d\d[\s\x1b]")
 
 
-def _indenter():
+def indenter():
     """Indent every line of a byte stream arriving in arbitrary chunks.
 
     A carriage return redraws the line it is already on -- a progress bar -- so only a newline
@@ -112,7 +100,7 @@ def _indenter():
 ANSI = re.compile(rb"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
-def _for_the_file():
+def for_the_file():
     """Strip colour and progress-bar redraws from a copy bound for the log, not the screen."""
     pending = bytearray()
     pad = INDENT.encode()
@@ -134,22 +122,6 @@ def _for_the_file():
         return bytes(out)
 
     return readable
-
-
-def _stamp() -> str:
-    return datetime.now(UTC).strftime("%H:%M:%S")
-
-
-def _outcome(returncode: int, started: float) -> str:
-    """How a tool ended. The signal is named, since SIGKILL is what identifies an OOM kill."""
-    elapsed = time.monotonic() - started
-    if returncode < 0:
-        name = next(
-            (member.name for member in signal.Signals if member.value == -returncode),
-            f"signal {-returncode}",
-        )
-        return f"# killed by {name} after {elapsed:.1f}s"
-    return f"# exit {returncode} after {elapsed:.1f}s"
 
 
 def log_header(log: Path | None, command: str, facts: dict[str, object]) -> None:
@@ -241,12 +213,14 @@ def tee(
 
     log.parent.mkdir(parents=True, exist_ok=True)
     controller, worker = pty.openpty()
-    indent = _indenter()
-    readable = _for_the_file()
+    indent = indenter()
+    readable = for_the_file()
     started = time.monotonic()
     try:
         with log.open("ab") as sink:
-            sink.write(f"\n[{_stamp()}] $ {shlex.join(argv)}\n".encode())
+            sink.write(
+                f"\n[{datetime.now(UTC).strftime('%H:%M:%S')}] $ {shlex.join(argv)}\n".encode()
+            )
             sink.flush()
             process = subprocess.Popen(
                 argv,
@@ -277,7 +251,18 @@ def tee(
                 sink.flush()
             returncode = process.wait()
             sink.write(readable(last=True))
-            sink.write(f"[{_stamp()}] {_outcome(returncode, started)}\n".encode())
+            stamp = datetime.now(UTC).strftime("%H:%M:%S")
+            elapsed = time.monotonic() - started
+            # The signal is named, since SIGKILL is what identifies an OOM kill.
+            if returncode < 0:
+                name = next(
+                    (member.name for member in signal.Signals if member.value == -returncode),
+                    f"signal {-returncode}",
+                )
+                outcome = f"# killed by {name} after {elapsed:.1f}s"
+            else:
+                outcome = f"# exit {returncode} after {elapsed:.1f}s"
+            sink.write(f"[{stamp}] {outcome}\n".encode())
             sink.flush()
     finally:
         os.close(controller)
@@ -300,24 +285,21 @@ def trash(path: Path) -> Path | None:
         raise ValueError(f"cannot remove {path.name}: gio is not installed") from error
     if result.returncode:
         raise ValueError(f"could not move {path.name} to trash: {result.stderr.strip()}")
-    return trashed_location(original)
+    from configparser import ConfigParser, Error
+    from urllib.parse import unquote
 
-
-def trashed_location(original: Path) -> Path | None:
-    """Where the home trash keeps ORIGINAL: the newest entry whose .trashinfo names it.
-
-    None when it went to another filesystem's trash, which the home trash does not record.
-    """
-    from urllib.parse import quote
-
+    # The newest entry whose .trashinfo names it; none when it went to another filesystem's
+    # trash, which the home trash does not record.
     home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash"
-    wanted = f"Path={quote(str(original))}"
-    records = [
-        info
-        for info in (home / "info").glob("*.trashinfo")
-        if wanted in info.read_text(encoding="utf-8", errors="replace").splitlines()
-    ]
+    records = []
+    for info in (home / "info").glob("*.trashinfo"):
+        entry = ConfigParser(interpolation=None)
+        try:
+            entry.read_string(info.read_text(encoding="utf-8", errors="replace"))
+        except Error:
+            continue
+        if unquote(entry.get("Trash Info", "Path", fallback="")) == str(original):
+            records.append(info)
     if not records:
         return None
-    newest = max(records, key=lambda info: info.stat().st_mtime)
-    return home / "files" / newest.name.removesuffix(".trashinfo")
+    return home / "files" / max(records, key=lambda info: info.stat().st_mtime).stem

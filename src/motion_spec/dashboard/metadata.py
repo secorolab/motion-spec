@@ -68,11 +68,7 @@ def save_annotations(path: Path, changes: dict) -> dict:
     with LOCK:
         result = {**annotations(path), **changes}
         result["label"] = result["label"].strip()
-        tags = []
-        for tag in result["tags"]:
-            if tag.strip() and tag.strip() not in tags:
-                tags.append(tag.strip())
-        result["tags"] = tags
+        result["tags"] = list(dict.fromkeys(tag.strip() for tag in result["tags"] if tag.strip()))
         write_document(path / "dashboard.json", result)
         return result
 
@@ -90,19 +86,15 @@ def set_protected(path: Path, enabled: bool, confirm: str = "") -> dict:
         return result
 
 
-def baseline(path: Path) -> str | None:
-    """One reference run per model, shared across its generations."""
-    return json_file(model_folder(path) / "dashboard-model.json").get("baseline")
-
-
 def set_baseline(path: Path, enabled: bool) -> dict:
     """A baseline must name an existing run and remains protected until cleared."""
     generation_of(path)
     if path.parent.name != "runs" or type(enabled) is not bool:
         raise ValueError("baseline must name a run and enabled must be boolean")
     relative = str(path.relative_to(roots.GENERATIONS))
+    document = model_folder(path) / "dashboard-model.json"
     with LOCK:
-        current = baseline(path)
+        current = json_file(document).get("baseline")
         value = relative if enabled else (None if current == relative else current)
-        write_document(model_folder(path) / "dashboard-model.json", {"baseline": value})
+        write_document(document, {"baseline": value})
     return {"baseline": value}

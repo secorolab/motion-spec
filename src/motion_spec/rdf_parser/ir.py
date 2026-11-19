@@ -131,9 +131,10 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         standing_publishes,
     )
     algorithm_data = filter_algorithm_data(data_structures, data_users)
-    algorithm_data += runtime.runtime_data(
+    runtime_members, tare_companions = runtime.runtime_data(
         model, robots.serial_chains, control_period_ns, platform.get("uri")
     )
+    algorithm_data += runtime_members
     # A snapshot the shared context declares is captured once for the run, so its guard belongs
     # to the run and not to whichever motion happened to reach it first.
     latches = {s.target_id: s.captured_id for motion in motions for s in motion.task_snapshots}
@@ -174,7 +175,19 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     constraint_handler.add_control_parameters(model, functions, algorithm_data, motions)
     runtime.add_joint_space_mirrors(model, robots, motions, algorithm_data, backend)
     communication.add_goal_status_values(model, algorithm_data, action_clients)
-    perturbation_bodies = _perturbations_by_body(run_perturbations)
+    # One body's applied-wrench slots hold the sum of everything pushing it. Written per
+    # perturbation instead, whichever ran last would be the only one the simulator ever saw --
+    # and a closed window writes zero, so an idle perturbation would erase a live one.
+    perturbation_groups: dict[str, dict] = {}
+    for perturbation in run_perturbations:
+        group = perturbation_groups.setdefault(
+            perturbation.body,
+            # Every solver on one simulation shares its model and data, so any member's
+            # runtime resolves the body.
+            {"body": perturbation.body, "robot_id": perturbation.robot_id, "members": []},
+        )
+        group["members"].append(perturbation)
+    perturbation_bodies = list(perturbation_groups.values())
     ports = runtime.world_ports(
         model,
         world_trees,
@@ -195,6 +208,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         functions,
         motions,
         robots.serial_chains,
+        tare_companions,
         views,
         subscriptions,
         config_poses,
@@ -221,66 +235,17 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
             "config_poses": config_poses,
             "trace": deployment.TRACE_DISABLED,
         },
-        "resources": _resources_section(
-            robots, world_trees, world_frames, sampling, ports, motions, views
-        ),
-        "composition": {"scene": scene, "sampling": sampling},
-        "computation": _computation_section(
-            functions,
-            views,
-            algorithm_data,
-            data_access,
-            motions,
-            computation.indexes.pose_components,
-        ),
-        "coordination": _coordination_section(
-            motions, fsm, fsm_meta, run_perturbations, perturbation_bodies
-        ),
-        "communication": _communication_section(
-            telemetry,
-            motions,
-            deployment.ros_joint_states(platform, platform_config, robots.serial_chains),
-            deployment.ros_clock(platform, platform_config),
-            deployment.ros_tf(
-                model,
-                platform,
-                platform_config,
-                robots.serial_chains,
-                scene.cameras,
-                world_index,
-                ports,
-            ),
-            action_clients,
-            communication.action_server(model, fsm),
-            subscriptions,
-            standing_publishes,
-        ),
     }
-    # Last: every section above may mint a derived id, and each must be stated here.
-    ir["provenance"] = _provenance_section(model, functions, algorithm_data, data_access, telemetry)
-    return ir
 
-
-def _resources_section(
-    robots, world_trees, world_frames, sampling, ports, motions=(), views=None
-) -> dict:
-    """Every actuated resource the program commands, plus the by-kind cuts of it.
-
-    An arm and a wheeled base are both actuated resources with kinematics, solvers and devices, so
-    they ride in one kind-tagged collection; the views are filtered here because ST4 cannot
-    filter, and each is absent rather than empty when the model has none of that kind.
-
-    `world_trees` is every distinct scene tree, once -- several robots may share one -- and
-    `world_frames` every pose the one world model is asked for.
-    """
-    every = [*robots.serial_chains, *robots.platform_velocity, *robots.platform_force]
-    by_kind = {}
-    serial_chains = [robot for robot in every if robot.kind == "serial_chain"]
-    if serial_chains:
-        by_kind["serial_chain"] = serial_chains
-    if any(robot.kind == "mobile_base" for robot in every):
+    # An arm and a wheeled base are both actuated resources with kinematics, solvers and devices,
+    # so they ride in one kind-tagged collection; the by-kind cuts are made here because ST4
+    # cannot filter, and each is absent rather than empty when the model has none of that kind.
+    robots_by_kind = {}
+    if robots.serial_chains:
+        robots_by_kind["serial_chain"] = robots.serial_chains
+    if robots.platform_velocity or robots.platform_force:
         drives = mobile_base.platform_drives(world_trees)
-        by_kind["mobile_base"] = {
+        robots_by_kind["mobile_base"] = {
             "velocity_solvers": robots.platform_velocity,
             "force_solvers": robots.platform_force,
             # The platform's geometry as the scene tree states it, so the deployment config
@@ -288,7 +253,7 @@ def _resources_section(
             "drives": drives,
             "num_drives": len(drives),
             "wrench_by_motion": mobile_base.wrench_terms_by_motion(
-                motions, views or {}, robots.platform_velocity, robots.platform_force
+                motions, views, robots.platform_velocity, robots.platform_force
             ),
         }
 
@@ -299,14 +264,16 @@ def _resources_section(
     }
 
     # `by_id` is how a per-motion solver slice resolves everything the solver owns.
-    section = {
-        "robots": every,
-        "by_kind": by_kind,
+    resources = {
+        "robots": [*robots.serial_chains, *robots.platform_velocity, *robots.platform_force],
+        "by_kind": robots_by_kind,
         # Whether the program drives anything at all, and whether a platform is the only thing it
         # drives. ST4 can only test one attribute, so the two questions the loop asks -- "is
         # there a scene to build" and "who steps it" -- are answered here rather than there.
-        "driven": bool(by_kind) or None,
-        "base_owns_runtime": ("mobile_base" in by_kind and not serial_chains) or None,
+        "driven": bool(robots_by_kind) or None,
+        "base_owns_runtime": (
+            "mobile_base" in robots_by_kind and not robots.serial_chains
+        ) or None,
         "by_id": robots.by_id,
         "device_kinds": {kind: True for kind in device_kinds},
         # One entry per shared observation, not per solver that could answer it: several
@@ -316,7 +283,7 @@ def _resources_section(
     }
     if world_trees:
         # A drawn frame joins its tree after the draw, under the segment its pose is stated against.
-        section["world_trees"] = [
+        resources["world_trees"] = [
             {
                 "name": tree["name"],
                 "cpp_name": tree["cpp_name"],
@@ -331,21 +298,84 @@ def _resources_section(
             for tree in world_trees
         ]
     if world_frames:
-        section["world_frames"] = world_frames
+        resources["world_frames"] = world_frames
     # Split by kind here, not in the templates: a template may iterate but not filter.
-    section["world_ports"] = {kind: rows for kind, rows in ports.items() if rows}
+    resources["world_ports"] = {kind: rows for kind, rows in ports.items() if rows}
+    ir["resources"] = resources
 
-    return section
+    ir["composition"] = {"scene": scene, "sampling": sampling}
 
+    ir["computation"] = {
+        "data": algorithm_data,
+        "functions": functions,
+        "data_access": data_access,
+        "views": views_for_access(
+            views, algorithm_data, motions, functions, computation.indexes.pose_components
+        ),
+    }
+    # Elapsed constraints compare seconds from the runtime clock; naming the clock says what it
+    # is, where a flag would only have asserted that one is wanted.
+    if any(motion.has_elapsed for motion in motions):
+        ir["computation"]["clock"] = {"id": "clock", "time_id": "clock_time_s"}
 
-def _provenance_section(model, functions, algorithm_data, data_access, telemetry) -> dict:
-    """Where every published id comes from: its IRI, and for each derived value what it is and
-    what it is computed from -- what its writer reads, or the value it is a view of.
+    ir["coordination"] = {"motions": motions}
+    # Every perturbation in the run, not only the active motion's: the simulator holds an applied
+    # wrench until something clears it, so the clearing pass has to reach the ones whose state
+    # just exited, which by then selects no motion at all.
+    if run_perturbations:
+        ir["coordination"]["perturbations"] = run_perturbations
+        ir["coordination"]["perturbation_bodies"] = perturbation_bodies
+    if fsm:
+        ir["coordination"]["fsm"] = fsm_meta
 
-    Raises:
-        RuntimeError: a published id has no IRI -- a derived entity was minted without registering
-            the node it came from.
-    """
+    joint_states = deployment.ros_joint_states(platform, platform_config, robots.serial_chains)
+    clock = deployment.ros_clock(platform, platform_config)
+    tf = deployment.ros_tf(
+        model, platform, platform_config, robots.serial_chains, scene.cameras, world_index, ports
+    )
+    server = communication.action_server(model, fsm)
+    ir["communication"] = {"telemetry": telemetry}
+    publishers = communication.ros_publishers(motions, standing_publishes)
+    if (
+        publishers
+        or joint_states is not None
+        or clock is not None
+        or tf is not None
+        or action_clients
+        or server is not None
+        or subscriptions
+    ):
+        packages = {publisher["pkg"] for publisher in publishers}
+        ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
+        # A run belongs to a scenario where a message carries one, and always where a goal names it.
+        if any(publisher["auto_context_id"] for publisher in publishers) or server is not None:
+            ros["scenario_context_id"] = True
+        if server is not None:
+            ros["action_server"] = server
+            packages.add(server["pkg"])
+        if joint_states is not None:
+            ros["joint_states"] = joint_states
+            packages.add("sensor_msgs")
+        if clock is not None:
+            ros["clock"] = clock
+            packages.add("rosgraph_msgs")
+        if tf is not None:
+            ros["tf"] = tf
+            packages.update({"tf2_msgs", "geometry_msgs"})
+        if action_clients:
+            ros["action_clients"] = action_clients
+            packages.update(client["pkg"] for client in action_clients)
+        if subscriptions:
+            ros["subscriptions"] = subscriptions
+            packages.update(sub["pkg"] for sub in subscriptions)
+        if standing_publishes:
+            ros["standing"] = standing_publishes
+            packages.update(publish["pkg"] for publish in standing_publishes)
+        ros["packages"] = list(packages)
+        ir["communication"]["ros"] = ros
+
+    # Last: every section above may mint a derived id, and each must be stated here -- an id with
+    # no IRI means a derived entity was minted without registering the node it came from.
     uris = model.uri_rows()
     uri_by_id = {row["id"]: row["uri"] for row in uris if row.get("uri")}
     published = [(value_id, "data_access") for value_id in data_access]
@@ -386,116 +416,6 @@ def _provenance_section(model, functions, algorithm_data, data_access, telemetry
         sources = [uri_by_id[read] for read in written_from if read in uri_by_id]
         if sources:
             row["sources"] = sources
+    ir["provenance"] = {"uris": uris, "derivations": derivations}
 
-    return {"uris": uris, "derivations": derivations}
-
-
-def _computation_section(
-    functions, views, algorithm_data, data_access, motions, pose_components
-) -> dict:
-    """The algorithm: its F-blocks, the D-blocks they read and write, and the data access
-    constraints that connect the two."""
-    section = {
-        "data": algorithm_data,
-        "functions": functions,
-        "data_access": data_access,
-        "views": views_for_access(views, algorithm_data, motions, functions, pose_components),
-    }
-    # Elapsed constraints compare seconds from the runtime clock; naming the clock says what it
-    # is, where a flag would only have asserted that one is wanted.
-    if any(motion.has_elapsed for motion in motions):
-        section["clock"] = {"id": "clock", "time_id": "clock_time_s"}
-
-    return section
-
-
-def _perturbations_by_body(perturbations) -> list[dict]:
-    """The perturbations pushing each body, grouped.
-
-    One body's applied-wrench slots hold the sum of everything pushing it. Written per
-    perturbation instead, whichever ran last would be the only one the simulator ever saw --
-    and a closed window writes zero, so an idle perturbation would erase a live one.
-    """
-    groups: dict[str, dict] = {}
-    for perturbation in perturbations:
-        group = groups.setdefault(
-            perturbation.body,
-            # Every solver on one simulation shares its model and data, so any member's
-            # runtime resolves the body.
-            {"body": perturbation.body, "robot_id": perturbation.robot_id, "members": []},
-        )
-        group["members"].append(perturbation)
-
-    return list(groups.values())
-
-
-def _coordination_section(motions, fsm, fsm_meta, perturbations=(), perturbation_bodies=()) -> dict:
-    """What runs when: the motions, and the FSM sequencing them when the model imports one."""
-    section = {"motions": motions}
-    # Every perturbation in the run, not only the active motion's: the simulator holds an applied
-    # wrench until something clears it, so the clearing pass has to reach the ones whose state
-    # just exited, which by then selects no motion at all.
-    if perturbations:
-        section["perturbations"] = perturbations
-        section["perturbation_bodies"] = perturbation_bodies
-    if fsm:
-        section["fsm"] = fsm_meta
-
-    return section
-
-
-def _communication_section(
-    telemetry,
-    motions,
-    joint_states,
-    clock=None,
-    tf=None,
-    action_clients=(),
-    server=None,
-    subscriptions=(),
-    standing_publishes=(),
-) -> dict:
-    """What crosses the activity's boundary: the logging stream, and the ROS topics, goals and
-    results the model asks for."""
-    section = {"telemetry": telemetry}
-    publishers = communication.ros_publishers(motions, standing_publishes)
-    if (
-        not publishers
-        and joint_states is None
-        and clock is None
-        and tf is None
-        and not action_clients
-        and server is None
-        and not subscriptions
-    ):
-        return section
-    packages = {publisher["pkg"] for publisher in publishers}
-    ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
-    # A run belongs to a scenario where a message carries one, and always where a goal names it.
-    if any(publisher["auto_context_id"] for publisher in publishers) or server is not None:
-        ros["scenario_context_id"] = True
-    if server is not None:
-        ros["action_server"] = server
-        packages.add(server["pkg"])
-    if joint_states is not None:
-        ros["joint_states"] = joint_states
-        packages.add("sensor_msgs")
-    if clock is not None:
-        ros["clock"] = clock
-        packages.add("rosgraph_msgs")
-    if tf is not None:
-        ros["tf"] = tf
-        packages.update({"tf2_msgs", "geometry_msgs"})
-    if action_clients:
-        ros["action_clients"] = action_clients
-        packages.update(client["pkg"] for client in action_clients)
-    if subscriptions:
-        ros["subscriptions"] = subscriptions
-        packages.update(sub["pkg"] for sub in subscriptions)
-    if standing_publishes:
-        ros["standing"] = standing_publishes
-        packages.update(publish["pkg"] for publish in standing_publishes)
-    ros["packages"] = list(packages)
-    section["ros"] = ros
-
-    return section
+    return ir

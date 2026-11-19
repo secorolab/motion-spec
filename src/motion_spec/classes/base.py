@@ -15,18 +15,18 @@ from dataclasses import fields, is_dataclass
 INTERNAL = {"ir_internal": True}
 
 
-def _published(o):
+def published(o):
     """asdict() minus every field marked INTERNAL, at any nesting depth."""
     if is_dataclass(o) and not isinstance(o, type):
         return {
-            f.name: _published(getattr(o, f.name))
+            f.name: published(getattr(o, f.name))
             for f in fields(o)
             if not f.metadata.get("ir_internal")
         }
     if isinstance(o, (list, tuple)):
-        return [_published(v) for v in o]
+        return [published(v) for v in o]
     if isinstance(o, dict):
-        return {k: _published(v) for k, v in o.items()}
+        return {k: published(v) for k, v in o.items()}
     return o
 
 
@@ -35,7 +35,7 @@ class DataclassJSONEncoder(json.JSONEncoder):
 
     def default(self, o):
         if is_dataclass(o) and not isinstance(o, type):
-            return _published(o)
+            return published(o)
         return super().default(o)
 
 

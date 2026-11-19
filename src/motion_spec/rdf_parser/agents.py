@@ -45,6 +45,7 @@ from rdf_utils.models.vocab import (
     URI_KC_TYPE_SERIAL,
     URI_QUDT_PRED_UNIT,
     URI_QUDT_PRED_VALUE,
+    URI_QUDT_UNIT_RAD,
 )
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY
 from rdf_utils.uri import iri_is_descendant, iri_parent
@@ -135,16 +136,7 @@ def mapped_targets(model, model_type, target_type) -> set:
     }
 
 
-def device_of(model, element):
-    """The deployed system realizing an element, or None.
-
-    Read backwards from the device, which the execution context owns, because the element it
-    stands for belongs to the scene.
-    """
-    return next(iter(model.graph.subjects(EXEC["realizes"], element)), None)
-
-
-def _config_key(model, element, agent, drives: str) -> str:
+def config_key(model, element, agent, drives: str) -> str:
     """What `robot.toml` calls the device on an element.
 
     A hosted sensor is named by its owning agent's leaf plus its own, since `runtime_prefix`
@@ -161,35 +153,6 @@ def _config_key(model, element, agent, drives: str) -> str:
     if owner is None:
         raise ConstraintViolation("scene", f"Agent '{element}' belongs to no declared agent set.")
     return f"{local_name(owner)}.{local_name(element)}"
-
-
-def _bound_devices(model, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree) -> list:
-    """The hardware bound on one chain: what each device is, where it is configured, what it drives.
-
-    The kind is the authored name passed through untouched -- only the backend's templates
-    interpret it. `drives` names the sensor a sensor device reads, and is empty for a joint mover.
-    """
-
-    owners = [agent]
-    for binding in chain_bindings:
-        owner = agent_by_tree.get(binding["tree"])
-        # A tree may be bound by several models; the agent behind it is named once.
-        if owner is not None and owner not in owners:
-            owners.append(owner)
-    bound = [(owner, "") for owner in owners]
-    bound += [(sensor, f"{runtime_prefix}{local_name(sensor)}") for sensor in hosted]
-    devices = []
-    for node, drives in bound:
-        device = device_of(model, node)
-        if device is not None:
-            devices.append(
-                DeviceBinding(
-                    kind=str(model.graph.value(device, SDO.model) or ""),
-                    config_key=_config_key(model, node, agent, drives),
-                    drives=drives,
-                )
-            )
-    return devices
 
 
 @dataclass(frozen=True)
@@ -222,57 +185,12 @@ class AgentAssembly:
     attachments: list
 
 
-def kinematic_adjacency(model):
-    """Per body, the `(neighbour, own frame, neighbour frame, joint)` edges the scene's joints
-    induce."""
-    graph = model.graph
-    adjacency = collections.defaultdict(list)
-    for joint in graph.subjects(RDF.type, KC.Joint):
-        frames = list(graph.objects(joint, KC["between-attachments"]))
-        if len(frames) != 2:
-            continue
-        body_a, body_b = (body_of_frame(frame, graph) for frame in frames)
-        if body_a == body_b:
-            continue
-        adjacency[body_a].append((body_b, frames[0], frames[1], joint))
-        adjacency[body_b].append((body_a, frames[1], frames[0], joint))
-
-    return adjacency
-
-
-def body_path(adjacency, start, end) -> list:
-    """The oriented body/frame edges on the shortest kinematic path from `start` to `end`.
-
-    Returns:
-        `(parent body, child body, parent frame, child frame, joint)` per step, empty when the
-        two bodies are not connected
-    """
-    parents = {start: None}
-    queue = collections.deque([start])
-    while queue and end not in parents:
-        node = queue.popleft()
-        for neighbor, frame, neighbor_frame, joint in adjacency[node]:
-            if neighbor not in parents:
-                parents[neighbor] = (node, frame, neighbor_frame, joint)
-                queue.append(neighbor)
-    if end not in parents:
-        return []
-    path = []
-    node = end
-    while parents[node] is not None:
-        parent, parent_frame, child_frame, joint = parents[node]
-        path.append((parent, node, parent_frame, child_frame, joint))
-        node = parent
-
-    return list(reversed(path))
-
-
 def fixed_attachments(model, bound_trees):
     """Where the scene bolts one model to another, oriented as scene-dsl's tree walk directs it.
 
     Returns:
-        `(attachments, root)`: per attached body, the `(kind, name, frame, parent body)` the
-        scene mounts it by, and the body the world is rooted at
+        `(attachments, root)`: per attached body, the `(kind, name, frame, parent body, host
+        frame)` the scene mounts it by, and the body the world is rooted at
     """
     graph = model.graph
     # (parent frame, child frame) per joint with no motion of its own.
@@ -318,20 +236,26 @@ def fixed_attachments(model, bound_trees):
         # Nothing above it is backed either: the body places itself, and the placement composed
         # against the anchor already accounts for whatever said where it sits.
         if host is None:
-            attachments[child_body] = ("World", "", child_frame, parent_body)
+            attachments[child_body] = ("World", "", child_frame, parent_body, None)
         elif child_body in modelled_bodies or owner[host] != owner[child_body]:
-            attachments[child_body] = ("Site", local_name(host_frame), child_frame, host)
+            attachments[child_body] = (
+                "Site",
+                local_name(host_frame),
+                child_frame,
+                host,
+                host_frame,
+            )
 
     return attachments, root
 
 
-def _sensor_kind(model, sensor) -> str:
+def sensor_kind(model, sensor) -> str:
     """The sensor's kind as the IR names it; empty for a kind codegen does not model."""
     types = get_node_types(model.graph, sensor)
     return next((name for uri, name in SENSOR_KINDS.items() if uri in types), "")
 
 
-def _cameras(model, hosted, runtime_prefix) -> list:
+def cameras(model, hosted, runtime_prefix) -> list:
     """The cameras among an agent's hosted sensors, as the runtime renders them.
 
     Only rgb lowers: nothing downstream renders a depth image, so a depth camera is reported and
@@ -347,7 +271,30 @@ def _cameras(model, hosted, runtime_prefix) -> list:
                 f"camera '{local_name(sensor)}' is not an rgb camera; not lowered", file=sys.stderr
             )
             continue
-        topic, message = _camera_provider(graph, sensor)
+        # A camera nothing subscribes to has no provider: a viewer that cannot say where the
+        # images come from shows none, rather than guessing a channel from the camera's name.
+        channels = [
+            node
+            for node in graph.subjects(SOSA.hasFeatureOfInterest, sensor)
+            if NS_MM_ROS["Topic"] in get_node_types(graph, node)
+        ]
+        if len(channels) > 1:
+            raise ConstraintViolation(
+                "communication",
+                f"camera '{local_name(sensor)}' is carried by {len(channels)} channels; a camera "
+                "has one provider",
+            )
+        topic, message = None, None
+        if channels:
+            topic = str(graph.value(channels[0], NS_MM_ROS["channel-name"]) or "") or None
+            message = str(graph.value(channels[0], NS_MM_ROS["type-name"]) or "") or None
+        fov = graph.value(sensor, URI_SENS_PRED_FIELD_OF_VIEW)
+        fov_value = graph.value(fov, URI_QUDT_PRED_VALUE) if fov is not None else None
+        fovy_deg = 45.0
+        if fov_value is not None:
+            fovy_deg = float(fov_value.toPython())
+            if graph.value(fov, URI_QUDT_PRED_UNIT) == URI_QUDT_UNIT_RAD:
+                fovy_deg = math.degrees(fovy_deg)
         cameras.append(
             CameraBinding(
                 id=f"{runtime_prefix}{local_name(sensor)}",
@@ -360,120 +307,24 @@ def _cameras(model, hosted, runtime_prefix) -> list:
                 topic=topic,
                 message=message,
                 frame_uri=str(graph.value(sensor, URI_SENS_PRED_FRAME) or ""),
-                fovy_deg=_camera_fovy_deg(graph, sensor),
+                fovy_deg=fovy_deg,
             )
         )
     return cameras
 
 
-def _camera_fovy_deg(graph, sensor) -> float:
-    """The camera's field of view in degrees, whatever unit the model authored it in."""
-    fov = graph.value(sensor, URI_SENS_PRED_FIELD_OF_VIEW)
-    value = graph.value(fov, URI_QUDT_PRED_VALUE) if fov is not None else None
-    if value is None:
-        return 45.0
-    degrees = float(value.toPython())
-    unit = graph.value(fov, URI_QUDT_PRED_UNIT) if fov is not None else None
-    if unit is not None and str(unit).endswith("RAD"):
-        degrees = math.degrees(degrees)
-    return degrees
-
-
-def _camera_provider(graph, sensor) -> tuple[str | None, str | None]:
-    """The channel this camera is read off, from the subscription that states it carries it.
-
-    A camera nothing subscribes to has no provider: a viewer that cannot say where the images
-    come from shows none, rather than guessing a channel from the camera's name.
-    """
-    channels = [
-        node
-        for node in graph.subjects(SOSA.hasFeatureOfInterest, sensor)
-        if NS_MM_ROS["Topic"] in get_node_types(graph, node)
-    ]
-    if not channels:
-        return None, None
-    if len(channels) > 1:
-        raise ConstraintViolation(
-            "communication",
-            f"camera '{local_name(sensor)}' is carried by {len(channels)} channels; a camera "
-            "has one provider",
-        )
-    topic = channels[0]
-    return (
-        str(graph.value(topic, NS_MM_ROS["channel-name"]) or "") or None,
-        str(graph.value(topic, NS_MM_ROS["type-name"]) or "") or None,
-    )
-
-
-def _agent_bindings(model):
-    """Per modelled agent, the `(model, tree, path, entity)` rows its assets bind, and the agent
-    each bound tree ultimately belongs to.
-    """
-    graph = model.graph
-    bindings_by_modelled = {}
-    for modelled in graph.subjects(RDF.type, AGN.ModelledAgent):
-        rows = []
-        for asset in graph.objects(modelled, AGN["has-agent-model"]):
-            # A model with no location is metadata rather than a runtime asset, and the
-            # assembly around it still reads.
-            source = graph.value(asset, DCTERMS.source)
-            path = get_file_path(graph, source) if source is not None else None
-            if path is None:
-                continue
-            path = str(path)
-            for tree, entity in model_mappings(model, asset, GEOM_ENT.KinematicTree):
-                rows.append({"model": asset, "tree": tree, "path": path, "entity": entity})
-        bindings_by_modelled[modelled] = rows
-    agent_by_tree = {
-        row["tree"]: graph.value(modelled, AGN["of-agent"])
-        for modelled, rows in bindings_by_modelled.items()
-        for row in rows
-    }
-
-    return bindings_by_modelled, agent_by_tree
-
-
-def _chain_attachments(model, path, root_binding, chain_bindings) -> list:
-    """What the scene mounts partway along a chain, and where each boundary sits."""
-    attachments = []
-    for binding in chain_bindings:
-        if binding is root_binding or binding["path"] == root_binding["path"]:
-            continue
-        boundary = next(
-            (
-                (index, edge)
-                for index, edge in enumerate(path)
-                if iri_is_descendant(binding["tree"], edge[1])
-                and not iri_is_descendant(binding["tree"], edge[0])
-            ),
-            None,
-        )
-        if boundary is None:
-            continue
-        index, boundary = boundary
-        _parent_body, child_body, parent_frame, _child_frame, _joint = boundary
-        entity = binding["entity"]
-        child_name = local_name(child_body)
-        prefix = child_name[: -len(entity)] if entity and child_name.endswith(entity) else ""
-        attachments.append(
-            (
-                index,
-                MjcfSceneAttachment(
-                    id=local_name(binding["tree"]),
-                    path=binding["path"],
-                    attach_to=local_name(parent_frame),
-                    attach_kind="Site",
-                    prefix=prefix,
-                ),
-            )
-        )
-
-    return [attachment for _, attachment in sorted(attachments, key=lambda item: item[0])]
-
-
 def agent_assemblies(model, attach_by_body) -> list:
     graph = model.graph
-    adjacency = kinematic_adjacency(model)
+    adjacency = collections.defaultdict(list)
+    for joint in graph.subjects(RDF.type, KC.Joint):
+        frames = list(graph.objects(joint, KC["between-attachments"]))
+        if len(frames) != 2:
+            continue
+        body_a, body_b = (body_of_frame(frame, graph) for frame in frames)
+        if body_a == body_b:
+            continue
+        adjacency[body_a].append((body_b, frames[0], frames[1], joint))
+        adjacency[body_b].append((body_a, frames[1], frames[0], joint))
     bound_model_trees = mapped_targets(model, AGN["AgentModel"], GEOM_ENT.KinematicTree)
     body_names_by_tree = {
         tree: {
@@ -487,7 +338,25 @@ def agent_assemblies(model, attach_by_body) -> list:
         (tree, graph.value(tree, NS_MM_KC_EXT["root"]), graph.value(tree, NS_MM_KC_EXT["tip"]))
         for tree in graph.subjects(RDF.type, URI_KC_TYPE_SERIAL)
     ]
-    bindings_by_modelled, agent_by_tree = _agent_bindings(model)
+    bindings_by_modelled = {}
+    for modelled in graph.subjects(RDF.type, AGN.ModelledAgent):
+        rows = []
+        for asset in graph.objects(modelled, AGN["has-agent-model"]):
+            # A model with no location is metadata rather than a runtime asset, and the
+            # assembly around it still reads.
+            source = graph.value(asset, DCTERMS.source)
+            asset_path = get_file_path(graph, source) if source is not None else None
+            if asset_path is None:
+                continue
+            asset_path = str(asset_path)
+            for tree, entity in model_mappings(model, asset, GEOM_ENT.KinematicTree):
+                rows.append({"model": asset, "tree": tree, "path": asset_path, "entity": entity})
+        bindings_by_modelled[modelled] = rows
+    agent_by_tree = {
+        row["tree"]: graph.value(modelled, AGN["of-agent"])
+        for modelled, rows in bindings_by_modelled.items()
+        for row in rows
+    }
     bindings = [row for rows in bindings_by_modelled.values() for row in rows]
 
     result = []
@@ -505,11 +374,9 @@ def agent_assemblies(model, attach_by_body) -> list:
                 for tree, root, tip in serials
                 if root is not None
                 and tip is not None
-                and (
-                    any(
-                        binding["tree"] == tree or iri_is_descendant(binding["tree"], root)
-                        for binding in own
-                    )
+                and any(
+                    binding["tree"] == tree or iri_is_descendant(binding["tree"], root)
+                    for binding in own
                 )
             ),
             None,
@@ -524,8 +391,8 @@ def agent_assemblies(model, attach_by_body) -> list:
             if root_frame is None:
                 continue
             root_body = body_of_frame(root_frame, graph)
-            attachment = attach_by_body.get(root_body, ("World", "", root_frame, None))
-            attach_kind, attach_name, _frame, _parent = attachment
+            attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
+            attach_kind, attach_name, _frame, _parent, _host_frame = attachment
             position, orientation = quantities.placement_of(
                 model, attachment, quantities.anchor_frame(model)
             )
@@ -535,9 +402,9 @@ def agent_assemblies(model, attach_by_body) -> list:
                 AgentAssembly(
                     agent=agent,
                     device="",
-                    config_key=_config_key(model, agent, agent, ""),
+                    config_key=config_key(model, agent, agent, ""),
                     sensors=[],
-                    cameras=_cameras(model, hosted, ""),
+                    cameras=cameras(model, hosted, ""),
                     devices=[],
                     urdf=root_binding["path"],
                     prefix="",
@@ -569,7 +436,22 @@ def agent_assemblies(model, attach_by_body) -> list:
             sum(local_name(root_body) in names for names in body_names_by_tree.values()) > 1
         )
         runtime_prefix = f"{local_name(root_binding['tree'])}_" if duplicate_root else ""
-        path = body_path(adjacency, root_body, tip_body)
+        parents = {root_body: None}
+        queue = collections.deque([root_body])
+        while queue and tip_body not in parents:
+            node = queue.popleft()
+            for neighbor, frame, neighbor_frame, joint in adjacency[node]:
+                if neighbor not in parents:
+                    parents[neighbor] = (node, frame, neighbor_frame, joint)
+                    queue.append(neighbor)
+        path = []
+        if tip_body in parents:
+            node = tip_body
+            while parents[node] is not None:
+                parent, parent_frame, child_frame, joint = parents[node]
+                path.append((parent, node, parent_frame, child_frame, joint))
+                node = parent
+            path.reverse()
         # Scoped to this chain's path: two arms must not claim each other's models.
         chain_bodies = [root_body, tip_body, *(body for edge in path for body in edge[:2])]
         chain_bindings = [
@@ -577,22 +459,87 @@ def agent_assemblies(model, attach_by_body) -> list:
             for binding in bindings
             if any(iri_is_descendant(binding["tree"], body) for body in chain_bodies)
         ]
-        chain_tip_body = _chain_tip_body(root_binding, serial_tree, path, tip_body, root_body)
+        # Where this agent's own asset ends along the chain, which may be short of the chain's tip.
+        if root_binding["tree"] == serial_tree:
+            chain_tip_body = tip_body
+        else:
+            chain_tip_body = root_body
+            for parent_body, child_body, *_ in path:
+                if iri_is_descendant(root_binding["tree"], child_body):
+                    chain_tip_body = child_body
+                elif iri_is_descendant(root_binding["tree"], parent_body):
+                    chain_tip_body = parent_body
+                    break
 
         hosted = list(graph.objects(modelled, SOSA.hosts))
-        attachment = attach_by_body.get(root_body, ("World", "", root_frame, None))
-        attach_kind, attach_name, _frame, _parent = attachment
+        attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
+        attach_kind, attach_name, _frame, _parent, _host_frame = attachment
         position, orientation = quantities.placement_of(
             model, attachment, quantities.anchor_frame(model)
         )
-        agent_device = device_of(model, agent)
+        agent_device = next(iter(graph.subjects(EXEC["realizes"], agent)), None)
+        # An agent is named by the scenex alias it was referred to through, bound or not: a
+        # simulated deployment addresses it the same way.
+        agent_key = config_key(model, agent, agent, "")
+        hosted_cameras = cameras(model, hosted, runtime_prefix)
+        owners = [agent]
+        for binding in chain_bindings:
+            owner = agent_by_tree.get(binding["tree"])
+            # A tree may be bound by several models; the agent behind it is named once.
+            if owner is not None and owner not in owners:
+                owners.append(owner)
+        bound = [(owner, "") for owner in owners]
+        bound += [(sensor, f"{runtime_prefix}{local_name(sensor)}") for sensor in hosted]
+        devices = []
+        for bound_node, drives in bound:
+            device = next(iter(graph.subjects(EXEC["realizes"], bound_node)), None)
+            if device is not None:
+                devices.append(
+                    DeviceBinding(
+                        # The authored name passed through untouched: only the backend's
+                        # templates interpret it.
+                        kind=str(graph.value(device, SDO.model) or ""),
+                        config_key=config_key(model, bound_node, agent, drives),
+                        drives=drives,
+                    )
+                )
+        chain_attachments = []
+        for binding in chain_bindings:
+            if binding is root_binding or binding["path"] == root_binding["path"]:
+                continue
+            boundary = next(
+                (
+                    (index, edge)
+                    for index, edge in enumerate(path)
+                    if iri_is_descendant(binding["tree"], edge[1])
+                    and not iri_is_descendant(binding["tree"], edge[0])
+                ),
+                None,
+            )
+            if boundary is None:
+                continue
+            index, boundary = boundary
+            _parent_body, child_body, parent_frame, _child_frame, _joint = boundary
+            entity = binding["entity"]
+            child_name = local_name(child_body)
+            prefix = child_name[: -len(entity)] if entity and child_name.endswith(entity) else ""
+            chain_attachments.append(
+                (
+                    index,
+                    MjcfSceneAttachment(
+                        id=local_name(binding["tree"]),
+                        path=binding["path"],
+                        attach_to=local_name(parent_frame),
+                        attach_kind="Site",
+                        prefix=prefix,
+                    ),
+                )
+            )
         result.append(
             AgentAssembly(
                 agent=agent,
                 device=str(graph.value(agent_device, SDO.model) or "") if agent_device else "",
-                # An agent is named by the scenex alias it was referred to through, bound or not:
-                # a simulated deployment addresses it the same way.
-                config_key=_config_key(model, agent, agent, ""),
+                config_key=agent_key,
                 sensors=[
                     SensorBinding(
                         id=f"{runtime_prefix}{local_name(sensor)}",
@@ -600,7 +547,7 @@ def agent_assemblies(model, attach_by_body) -> list:
                         frame=f"{runtime_prefix}{local_name(frame)}",
                         local_id=local_name(sensor),
                         local_frame=local_name(frame),
-                        config_key=_config_key(
+                        config_key=config_key(
                             model, sensor, agent, f"{runtime_prefix}{local_name(sensor)}"
                         ),
                         observes=[
@@ -609,13 +556,11 @@ def agent_assemblies(model, attach_by_body) -> list:
                         ],
                     )
                     for sensor in hosted
-                    if (kind := _sensor_kind(model, sensor))
+                    if (kind := sensor_kind(model, sensor))
                     and (frame := model.graph.value(sensor, SENSORS.frame)) is not None
                 ],
-                cameras=_cameras(model, hosted, runtime_prefix),
-                devices=_bound_devices(
-                    model, agent, runtime_prefix, hosted, chain_bindings, agent_by_tree
-                ),
+                cameras=hosted_cameras,
+                devices=devices,
                 urdf=root_binding["path"],
                 prefix=runtime_prefix,
                 owned_trees=[binding["tree"] for binding in chain_bindings],
@@ -637,7 +582,10 @@ def agent_assemblies(model, attach_by_body) -> list:
                 attach_name=attach_name,
                 pos=position,
                 quat=orientation,
-                attachments=_chain_attachments(model, path, root_binding, chain_bindings),
+                attachments=[
+                    attachment
+                    for _, attachment in sorted(chain_attachments, key=lambda item: item[0])
+                ],
             )
         )
 
@@ -656,7 +604,7 @@ def agent_assemblies(model, attach_by_body) -> list:
 
     def hosts(assembly) -> int:
         """How many assemblies this one is mounted on, through the sites the runtime resolves."""
-        parent = attach_by_body.get(assembly.root_body, (None, None, None, None))[3]
+        parent = attach_by_body.get(assembly.root_body, (None, None, None, None, None))[3]
         host = next(
             (
                 other
@@ -671,21 +619,6 @@ def agent_assemblies(model, attach_by_body) -> list:
 
     # The runtime resolves a parent site as it spawns, so a mounted agent follows its host.
     return sorted(kept, key=hosts)
-
-
-def _chain_tip_body(root_binding, serial_tree, path, tip_body, root_body):
-    """Where this agent's own asset ends along the chain, which may be short of the chain's tip."""
-    if root_binding["tree"] == serial_tree:
-        return tip_body
-    chain_tip_body = root_body
-    for parent_body, child_body, *_ in path:
-        if iri_is_descendant(root_binding["tree"], child_body):
-            chain_tip_body = child_body
-        elif iri_is_descendant(root_binding["tree"], parent_body):
-            chain_tip_body = parent_body
-            break
-
-    return chain_tip_body
 
 
 class _ChainSetup(NamedTuple):
@@ -865,7 +798,7 @@ def tree_segments(model, setups, trees=()) -> dict:
     return {**placed, **exact}
 
 
-def _placed_on_chain(carrier) -> tuple[tuple[object, bool], ...]:
+def placed_on_chain(carrier) -> tuple[tuple[object, bool], ...]:
     """What of one carrier the generated code asks forward kinematics for, and which authority
     answers: the one world model, or this chain's own numbering.
 
@@ -937,14 +870,14 @@ def place_on_chain(chain, item, owner: str, world_fk: bool, world_index: dict) -
             f"forward kinematics reaches it. It has to be a frame or body the chain from "
             f"'{chain.root}' to '{chain.tip}' passes through.",
         )
-    if not world_fk and placement["offset"] is not None:
+    if placement["offset"] is not None:
         raise ConstraintViolation(
             "geometry",
             f"'{item.id}' sits at a pose on its body that no segment of '{chain.name}' stands "
             f"for. Composing that offset onto the forward kinematics is not implemented; give "
             f"the frame a segment of its own, by making it a chain endpoint or its body's root.",
         )
-    if item.segment is None and placement["offset"] is None:
+    if item.segment is None:
         item.segment = placement["index"]
     return None
 
@@ -971,7 +904,7 @@ def place_solver_on_chain(solver, world_index: dict, root_by_segment: dict) -> l
         ),
         *(force for driver in solver.motion_drivers for force in driver.cartesian_force),
     ]
-    reads = [read for carrier in carriers for read in _placed_on_chain(carrier)]
+    reads = [read for carrier in carriers for read in placed_on_chain(carrier)]
     # A commanded wrench is moved onto its segment from its own frame and point.
     reads += [
         read
@@ -1010,14 +943,14 @@ def place_solver_on_chain(solver, world_index: dict, root_by_segment: dict) -> l
     ]
 
 
-def _runtime_frame(model, frame_node, runtime_prefix, owned_trees):
+def runtime_frame(model, frame_node, runtime_prefix, owned_trees):
     """A scene frame as the runtime names it, prefixed when this solver owns the tree it is in."""
     frame = quantities.frame(model, frame_node)
     tree = iri_parent(body_of_frame(frame_node, model.graph))
     return replace(frame, id=f"{runtime_prefix}{frame.id}" if tree in owned_trees else frame.id)
 
 
-# The world-scoped coordinates a solver may observe, and the reader each is read with.
+# The coordinates a solver may output or observe, and the reader each is read with.
 _WORLD_OUTPUTS = (
     (GEOM_COORD.PoseCoordinate, quantities.pose),
     (GEOM_COORD.VelocityTwistCoordinate, quantities.velocity_twist),
@@ -1026,9 +959,7 @@ _WORLD_OUTPUTS = (
 )
 
 
-def _observes_in_frame(
-    model, node, type_, chain, runtime_prefix, owned_trees, backend: str, agent=None
-):
+def observes_in_frame(model, node, type_, chain, runtime_prefix, owned_trees, agent=None):
     """Whether an observation is stated in this solver's reference frame, and in which frame node."""
     graph = model.graph
     if type_ in quantities.JOINT_QUANTITY_TYPES:
@@ -1091,58 +1022,27 @@ def _observes_in_frame(
     return True, frame_node
 
 
-def _world_solver_outputs(model, setup: _ChainSetup, backend: str) -> list:
-    """The runtime observations stated in this solver's reference frame."""
-    graph = model.graph
-    outputs = []
-    for type_, read in _WORLD_OUTPUTS:
-        for node in graph.subjects(RDF.type, type_):
-            if (node, RDF.type, SOSA.ObservableProperty) not in graph:
-                continue
-            in_frame, frame_node = _observes_in_frame(
-                model,
-                node,
-                type_,
-                setup.chain,
-                setup.runtime.prefix,
-                setup.runtime.owned_trees,
-                backend,
-                agent=setup.agent,
-            )
-            if not in_frame:
-                continue
-            output = _runtime_output(model, read(model, node), type_, node, frame_node, setup)
-            frame = output.as_seen_by if isinstance(output, (Pose, SpatialCoordinate)) else None
-            if frame_node is None and frame is not None and frame.id != setup.chain.root:
-                continue
-            outputs.append(output)
-
-    return unique_by_id(outputs)
-
-
-def _pose_wrt_node(model, node):
-    """The frame a pose coordinate is stated with respect to, or None."""
-    relation = model.graph.value(node, URI_GEOM_PRED_OF_POSE)
-
-    return None if relation is None else model.graph.value(relation, URI_GEOM_PRED_WRT)
-
-
-def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
+def runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     """One observation with its frames and names rewritten the way the runtime knows them."""
     if type_ in quantities.JOINT_QUANTITY_TYPES:
         return replace(output, joint_name=f"{setup.runtime.prefix}{output.joint_name}")
     if type_ == GEOM_COORD.VelocityTwistCoordinate:
-        seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
+        seen_by = runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
         return replace(output, as_seen_by=seen_by, seen_by_root=seen_by.id == setup.chain.root)
     if type_ == GEOM_COORD.PoseCoordinate and frame_node is not None:
-        seen_by = _runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
+        seen_by = runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
         if seen_by.id == setup.chain.root:
             # Measured from a frame that moves, but stated in the chain root's axes: the
             # orientation is the subject's own and the translation is the gap between the two.
-            wrt_node = _pose_wrt_node(model, node)
+            pose_relation = model.graph.value(node, URI_GEOM_PRED_OF_POSE)
+            wrt_node = (
+                None
+                if pose_relation is None
+                else model.graph.value(pose_relation, URI_GEOM_PRED_WRT)
+            )
             if wrt_node is None:
                 return output
-            wrt = _runtime_frame(model, wrt_node, setup.runtime.prefix, setup.runtime.owned_trees)
+            wrt = runtime_frame(model, wrt_node, setup.runtime.prefix, setup.runtime.owned_trees)
             if wrt.id == setup.chain.root:
                 return output
             return replace(output, relative_to_frame=wrt, seen_by_root=True)
@@ -1166,9 +1066,9 @@ def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
                 output.estimator, agent=f"{setup.runtime.prefix}{output.estimator.agent}"
             ),
             reference_point=replace(
-                output.reference_point, id=_runtime_frame(model, reference_node, *runtime).id
+                output.reference_point, id=runtime_frame(model, reference_node, *runtime).id
             ),
-            as_seen_by=_runtime_frame(model, frame_node, *runtime),
+            as_seen_by=runtime_frame(model, frame_node, *runtime),
         )
     observation = ensure_one_typed_subject_uri(graph, node, SOSA.observedProperty, SOSA.Observation)
     sensor_frame_node = graph.value(graph.value(observation, SOSA.madeBySensor), SENSORS.frame)
@@ -1176,15 +1076,15 @@ def _runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     return replace(
         output,
         sensor_name=f"{setup.runtime.prefix}{output.sensor_name}",
-        sensor_frame=_runtime_frame(model, sensor_frame_node, *runtime),
+        sensor_frame=runtime_frame(model, sensor_frame_node, *runtime),
         reference_point=replace(
-            output.reference_point, id=_runtime_frame(model, reference_node, *runtime).id
+            output.reference_point, id=runtime_frame(model, reference_node, *runtime).id
         ),
-        as_seen_by=_runtime_frame(model, frame_node, *runtime),
+        as_seen_by=runtime_frame(model, frame_node, *runtime),
     )
 
 
-def _body_name(name: str | None) -> str | None:
+def body_name(name: str | None) -> str | None:
     """A frame or link name stripped to the bare body name the backend knows."""
     if name is None:
         return None
@@ -1252,15 +1152,101 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
         steps.extend(schedule.of([node], OPS_GENERIC + OPS_SOLVER))
 
     serial_chains = []
-    for node in _solver_nodes(model, derivation):
+    solver_nodes = []
+    for handler in sorted(
+        graph.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]),
+        key=lambda node: int(graph.value(node, APP.order, default=Literal(0)).value),
+    ):
+        driven = [plan.solver for plan in derivation.controllers_by_handler.get(handler, ())]
+        run = set(graph.objects(handler, CSTR_HDL_EXT["runs-solver"])) - set(driven)
+        for solver in [*driven, *run]:
+            if solver not in solver_nodes and SLV.SolverWithInputAndOutput in get_node_types(
+                graph, solver
+            ):
+                solver_nodes.append(solver)
+    unhandled = set(graph.subjects(RDF.type, SLV.SolverWithInputAndOutput)) - set(solver_nodes)
+    if unhandled:
+        raise ConstraintViolation(
+            "solver",
+            f"solvers {', '.join(map(str, unhandled))} are run by no constraint handler, so "
+            "nothing says when they run",
+        )
+    for node in solver_nodes:
         setup = setups.get(graph.value(node, AGN["of-agent"]), default_setup)
-        solver = _solver_with_input_and_output(model, node, setup)
+        outputs = []
+        for output_node in graph[node : SLV["output"]]:
+            types = get_node_types(graph, output_node)
+            read = next((func for type_, func in _WORLD_OUTPUTS if type_ in types), None)
+            if read is not None:
+                outputs.append(read(model, output_node))
+        family = constraint_handler.solver_algorithm(model, node)
+        torque_limit = next(
+            (
+                limit
+                for limit in graph.objects(node, ALGO_EXT.limits)
+                if NS_MM_QUDT_QTY.Torque
+                in graph[graph.value(limit, ALGO_EXT["in"]) : QUDT_SCHEMA.hasQuantityKind]
+            ),
+            None,
+        )
+        # The Vereshchagin root acceleration, passed to ACHD as-is; RNE's opposite-sign gravity is
+        # derived in `annotate_runtime`.
+        gravity_node = graph.value(node, SLV.gravity)
+        # `replace()` gives each solver its own copies, since several solver nodes may share one
+        # agent's `setup`.
+        solver = SolverWithInputAndOutput(
+            id=model.id(node),
+            motion_drivers=[
+                constraint_handler.authored_motion_drivers(model, driver)
+                for driver in graph[node : SLV["motion-drivers"]]
+            ],
+            output=outputs,
+            chain=replace(setup.chain),
+            hardware=replace(setup.hardware),
+            runtime=replace(setup.runtime),
+            sensors=setup.sensors,
+            devices=setup.devices,
+            algorithm=family,
+            algorithm_name=family.name,
+            derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
+            if gravity_node
+            else None,
+            gravity_source=model.id(gravity_node) if gravity_node else None,
+            torque_saturation=(
+                constraint_handler.saturation(model, torque_limit)
+                if torque_limit is not None
+                else None
+            ),
+        )
         solver.motion_drivers = constraint_handler.motion_drivers(
             model, derivation, node, solver.chain
         )
         # An observation the solver also states as an output is that same output, named the way
         # the runtime knows it.
-        observed = _world_solver_outputs(model, setup, backend)
+        observations = []
+        for type_, read in _WORLD_OUTPUTS:
+            for observed_node in graph.subjects(RDF.type, type_):
+                if (observed_node, RDF.type, SOSA.ObservableProperty) not in graph:
+                    continue
+                in_frame, frame_node = observes_in_frame(
+                    model,
+                    observed_node,
+                    type_,
+                    setup.chain,
+                    setup.runtime.prefix,
+                    setup.runtime.owned_trees,
+                    agent=setup.agent,
+                )
+                if not in_frame:
+                    continue
+                output = runtime_output(
+                    model, read(model, observed_node), type_, observed_node, frame_node, setup
+                )
+                frame = output.as_seen_by if isinstance(output, (Pose, SpatialCoordinate)) else None
+                if frame_node is None and frame is not None and frame.id != setup.chain.root:
+                    continue
+                observations.append(output)
+        observed = unique_by_id(observations)
         observed_ids = {out.id for out in observed}
         solver.output = [
             out
@@ -1270,7 +1256,7 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
         # A driven direction is base-aligned when its axis frame is the chain root. Every
         # solver family asks: the row is a direction in the solver's frame either way, and one
         # taken in a frame that moves with the arm has to be turned into the root's axes.
-        root_body = _body_name(solver.chain.root)
+        root_body = body_name(solver.chain.root)
         for driver in solver.motion_drivers:
             for constraint in (
                 *driver.acceleration_constraint,
@@ -1279,7 +1265,7 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
             ):
                 constraint.base_aligned = (
                     constraint.as_seen_by is None
-                    or _body_name(constraint.as_seen_by.id) == root_body
+                    or body_name(constraint.as_seen_by.id) == root_body
                 )
         solver.constraint_rows = max(
             (
@@ -1325,113 +1311,17 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
                 "motion-spec code generator does not implement yet. Use velocity-composition or "
                 "force-distribution instead.",
             )
-    _validate_solvers(serial_chains, backend)
+    if backend == "robif2b":
+        unsupported = {
+            solver.hardware.model or "(unrecognised)"
+            for solver in serial_chains
+            if solver.hardware.model not in SUPPORTED_ROBOT_MODELS
+        }
+        if unsupported:
+            raise ConstraintViolation(
+                "solver",
+                f"Unsupported robot model(s) for robif2b: {', '.join(unsupported)}. "
+                f"Supported: {', '.join(SUPPORTED_ROBOT_MODELS)}",
+            )
 
     return Robots(serial_chains, platform_velocity, platform_force, steps)
-
-
-def _solver_nodes(model, derivation) -> list:
-    """Every chain solver, in the order the handlers running it are declared: within a handler,
-    the solvers its controllers drive first, then the ones it only runs."""
-    graph = model.graph
-    ordered = []
-    for handler in sorted(
-        graph.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]),
-        key=lambda node: int(graph.value(node, APP.order, default=Literal(0)).value),
-    ):
-        driven = [plan.solver for plan in derivation.controllers_by_handler.get(handler, ())]
-        run = set(graph.objects(handler, CSTR_HDL_EXT["runs-solver"])) - set(driven)
-        for solver in [*driven, *run]:
-            if solver not in ordered and SLV.SolverWithInputAndOutput in get_node_types(
-                graph, solver
-            ):
-                ordered.append(solver)
-    unhandled = set(graph.subjects(RDF.type, SLV.SolverWithInputAndOutput)) - set(ordered)
-    if unhandled:
-        raise ConstraintViolation(
-            "solver",
-            f"solvers {', '.join(map(str, unhandled))} are run by no constraint handler, so nothing "
-            "says when they run",
-        )
-
-    return ordered
-
-
-# The observation readers a chain solver's authored outputs dispatch over.
-_SOLVER_OUTPUTS = (
-    (GEOM_COORD["PoseCoordinate"], quantities.pose),
-    (GEOM_COORD["VelocityTwistCoordinate"], quantities.velocity_twist),
-    *((rdf_type, quantities.joint_quantity) for rdf_type in quantities.JOINT_QUANTITY_TYPES),
-    (RBDYN_COORD["WrenchCoordinate"], quantities.wrench),
-)
-
-
-def _solver_with_input_and_output(model, node, setup: _ChainSetup) -> SolverWithInputAndOutput:
-    """A chain solver as authored: its algorithm, its drivers, its outputs and its torque limit.
-
-    `chain`/`hardware`/`runtime` have no default, so the bindings are constructor
-    arguments rather than assigned after the fact; `replace()` gives each solver its own copies,
-    since several solver nodes may share one agent's `setup`.
-    """
-    graph = model.graph
-    outputs = []
-    for output_node in graph[node : SLV["output"]]:
-        types = get_node_types(graph, output_node)
-        read = next((func for type_, func in _SOLVER_OUTPUTS if type_ in types), None)
-        if read is not None:
-            outputs.append(read(model, output_node))
-
-    family = constraint_handler.solver_algorithm(model, node)
-    torque_limit = next(
-        (
-            limit
-            for limit in graph.objects(node, ALGO_EXT.limits)
-            if NS_MM_QUDT_QTY.Torque
-            in graph[graph.value(limit, ALGO_EXT["in"]) : QUDT_SCHEMA.hasQuantityKind]
-        ),
-        None,
-    )
-    # The Vereshchagin root acceleration, passed to ACHD as-is; RNE's opposite-sign gravity is
-    # derived in `annotate_runtime`.
-    gravity_node = graph.value(node, SLV.gravity)
-
-    solver = SolverWithInputAndOutput(
-        id=model.id(node),
-        motion_drivers=[
-            constraint_handler.authored_motion_drivers(model, driver)
-            for driver in graph[node : SLV["motion-drivers"]]
-        ],
-        output=outputs,
-        chain=replace(setup.chain),
-        hardware=replace(setup.hardware),
-        runtime=replace(setup.runtime),
-        sensors=setup.sensors,
-        devices=setup.devices,
-        algorithm=family,
-        algorithm_name=family.name,
-        derived_root_acceleration=quantities.parse_xyz(model, gravity_node)
-        if gravity_node
-        else None,
-        gravity_source=model.id(gravity_node) if gravity_node else None,
-        torque_saturation=(
-            constraint_handler.saturation(model, torque_limit) if torque_limit is not None else None
-        ),
-    )
-    return solver
-
-
-def _validate_solvers(serial_chain_solvers, backend: str) -> None:
-    """Reject robot models the hardware backend has no driver for."""
-    if backend != "robif2b":
-        return
-    unsupported = {
-        solver.hardware.model or "(unrecognised)"
-        for solver in serial_chain_solvers
-        if solver.hardware.model not in SUPPORTED_ROBOT_MODELS
-    }
-    if unsupported:
-        raise ConstraintViolation(
-            "solver",
-            f"Unsupported robot model(s) for robif2b: {', '.join(unsupported)}. "
-            f"Supported: {', '.join(SUPPORTED_ROBOT_MODELS)}",
-        )

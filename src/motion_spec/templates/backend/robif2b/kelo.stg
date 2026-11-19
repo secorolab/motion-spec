@@ -14,7 +14,7 @@ app-main-base-start() ::= <<
 app-main-base-stop() ::= <<
     robif2b_kelo_drive_actuator_stop(robot.mobile_base.wheel_actuator);
     robif2b_ethercat_stop(robot.mobile_base.ethercat);
-    robif2b_ethercat_shutdown(robot.mobile_base.ethercat);
+    robif2b_ethercat_shutdown(robot.mobile_base.ethercat);<\n>
 >>
 
 // The hubs read back the way hddc2b writes them: a unit runs its two channels against each

@@ -89,14 +89,6 @@ def slot(frame, category: str, index: int):
     return items[index] if index < len(items) else None
 
 
-def quantities(frame, size: int) -> list[float]:
-    """Every quantity slot's value; one the frame leaves out is zero."""
-    values = [0.0] * size
-    for index, value in zip(frame.quantity_slots, frame.quantities):
-        values[index] = value
-    return values
-
-
 def run_protoc(*arguments: str) -> None:
     """Run protoc over the shipped frame_log.proto."""
     try:
@@ -125,7 +117,7 @@ def descriptor_set() -> bytes:
     return _CLASS_CACHE["descriptor_set"]
 
 
-def _record_class_of(serialized_set: bytes):
+def record_class_of(serialized_set: bytes):
     pool = descriptor_pool.DescriptorPool()
     for file_proto in descriptor_pb2.FileDescriptorSet.FromString(serialized_set).file:
         pool.Add(file_proto)
@@ -137,26 +129,23 @@ def _record_class_of(serialized_set: bytes):
 def record_class():
     """The FrameLogRecord class of the shipped frame_log.proto, built once."""
     if "record" not in _CLASS_CACHE:
-        _CLASS_CACHE["record"] = _record_class_of(descriptor_set())
+        _CLASS_CACHE["record"] = record_class_of(descriptor_set())
     return _CLASS_CACHE["record"]
 
 
 # --- length-delimited framing (a varint size prefix per protobuf record) ---
-def _varint(value: int) -> bytes:
-    out = bytearray()
-    while value >= 0x80:
-        out.append((value & 0x7F) | 0x80)
-        value >>= 7
-    out.append(value)
-    return bytes(out)
-
-
 def write_delimited(fh, message: bytes) -> None:
-    fh.write(_varint(len(message)))
+    prefix = bytearray()
+    size = len(message)
+    while size >= 0x80:
+        prefix.append((size & 0x7F) | 0x80)
+        size >>= 7
+    prefix.append(size)
+    fh.write(bytes(prefix))
     fh.write(message)
 
 
-def _varint_at(data: bytes, offset: int) -> tuple[int, int]:
+def varint_at(data: bytes, offset: int) -> tuple[int, int]:
     value = shift = 0
     while True:
         if offset >= len(data) or shift > 63:
@@ -168,19 +157,19 @@ def _varint_at(data: bytes, offset: int) -> tuple[int, int]:
             return value, offset
 
 
-def _length_delimited(data: bytes, number: int) -> bytes | None:
+def length_delimited(data: bytes, number: int) -> bytes | None:
     """Field `number` of a serialized message, read off the wire without its schema."""
     offset = 0
     while offset < len(data):
-        key, offset = _varint_at(data, offset)
+        key, offset = varint_at(data, offset)
         wire = key & 7
         if wire == 2:
-            size, offset = _varint_at(data, offset)
+            size, offset = varint_at(data, offset)
             if key >> 3 == number:
                 return data[offset : offset + size]
             offset += size
         elif wire == 0:
-            _, offset = _varint_at(data, offset)
+            _, offset = varint_at(data, offset)
         elif wire in (1, 5):
             offset += 8 if wire == 1 else 4
         else:
@@ -188,7 +177,7 @@ def _length_delimited(data: bytes, number: int) -> bytes | None:
     return None
 
 
-def _read_delimited_at(fh, offset: int) -> tuple[bytes | None, int]:
+def read_delimited_at(fh, offset: int) -> tuple[bytes | None, int]:
     """One message starting at `offset`, plus the offset past it.
 
     A record still being appended to (short prefix or short payload) reads as (None, offset) --
@@ -205,16 +194,14 @@ def _read_delimited_at(fh, offset: int) -> tuple[bytes | None, int]:
             break
         if len(prefix) > 10:
             raise RecordError(getattr(fh, "name", None), "frame log length prefix is not a varint")
-    size = 0
-    for shift, b in enumerate(prefix):
-        size |= (b & 0x7F) << (7 * shift)
+    size, _ = varint_at(prefix, 0)
     data = fh.read(size)
     if len(data) != size:
         return None, offset
     return data, offset + len(prefix) + size
 
 
-def _read_delimited(fh, *, partial_ok: bool = False) -> bytes | None:
+def read_delimited(fh, *, partial_ok: bool = False) -> bytes | None:
     """One message, or None at the end of the stream.
 
     A complete file ends on a record boundary. A run killed mid-write leaves a short final
@@ -223,7 +210,7 @@ def _read_delimited(fh, *, partial_ok: bool = False) -> bytes | None:
     half-written describes nothing.
     """
     start = fh.tell()
-    data, end = _read_delimited_at(fh, start)
+    data, end = read_delimited_at(fh, start)
     if data is None:
         if partial_ok or fh.seek(0, 2) == start:
             return None
@@ -237,7 +224,7 @@ def tail_is_partial(path: Path | str) -> bool:
     with open_log(path) as fh:
         offset = 0
         while True:
-            data, next_offset = _read_delimited_at(fh, offset)
+            data, next_offset = read_delimited_at(fh, offset)
             if data is None:
                 return fh.seek(0, 2) != offset
             offset = next_offset
@@ -249,19 +236,12 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     rec = record_class()()
     m = rec.frame
     m.SetInParent()
-    m.t = flat["t"]
-    m.step = flat["step"]
-    m.fsm_state = flat["fsm_state"]
-    m.active_motion = flat["active_motion"]
-    m.last_event = flat["last_event"]
-    m.state_since_t = flat["state_since_t"]
-    m.state_since_wall_ns = flat["state_since_wall_ns"]
-    m.event_t = flat["event_t"]
-    m.event_wall_ns = flat["event_wall_ns"]
-    m.wall_ns = flat["wall_ns"]
-    m.period_ns = flat["period_ns"]
-    m.compute_ns = flat["compute_ns"]
-    m.trigger_count = flat["trigger_count"]
+    for key in (
+        "t", "step", "fsm_state", "active_motion", "last_event", "state_since_t",
+        "state_since_wall_ns", "event_t", "event_wall_ns", "wall_ns", "period_ns", "compute_ns",
+        "trigger_count",
+    ):
+        setattr(m, key, flat[key])
     for i in range(pools["constraints"]):
         if flat[f"c{i}.active"]:
             s = m.constraints.add()
@@ -314,73 +294,42 @@ class LogContract:
         self.record_cls = record_cls
         self.fields = fields
         self.trigger_pool = header.trigger_pool
-        self.gate = _slot_gate(header, fields)
+        # Per category, motion index to the slot indices that motion writes (absent when none
+        # gated). Proto3 elides a genuine 0.0 exactly as it elides "never written", so absence on
+        # the wire cannot tell an inactive slot from a zero one. The frame carries active_motion
+        # and the header says which slots that motion writes; activity is resolved from that,
+        # never from a missing field. Keyed on the motion rather than the coordinator's state, so
+        # the same decoder reads a log produced under an FSM, a behaviour tree or a plain
+        # sequencer.
+        self.gate = {}
+        for category in ("quantities", *(name for name, _ in SPATIAL_CATEGORIES)):
+            claimed = {index for motion in header.motions for index in getattr(motion, category)}
+            if not claimed:
+                continue
+            # A slot no motion claims is written unconditionally, so it stays visible everywhere.
+            unclaimed = {entry["index"] for entry in fields[category]} - claimed
+            self.gate[category] = {
+                motion.index: unclaimed | set(getattr(motion, category))
+                for motion in header.motions
+            }
         self.counts = {
             motion.index: {"controllers": len(motion.controllers), "monitors": len(motion.monitors)}
             for motion in header.motions
         }
         self.quantity_ids = [entry["id"] for entry in fields["quantities"]]
 
-    def summary(self) -> dict:
-        """The run facts the archive and provenance record, read off the log's own header."""
-        return {
-            "schema_hash": self.header.schema_hash,
-            "platform": {"name": self.header.platform_name, "simulated": self.header.simulated},
-        }
-
-
-def _fields_from_header(header) -> dict:
-    """Per-category slot list: pooled slots by index, model slots as the header names them."""
-    pools = {
-        "constraints": max((len(motion.controllers) for motion in header.motions), default=0),
-        "monitors": max((len(motion.monitors) for motion in header.motions), default=0),
-        "triggers": header.trigger_pool,
-    }
-    fields = {
-        category: [{"index": i, "id": f"{category[:-1]}_{i}", "iri": ""} for i in range(size)]
-        for category, size in pools.items()
-    }
-    for category in _HEADER_SLOTS:
-        fields[category] = [
-            {"index": slot.number, "id": slot.id, "iri": slot.iri}
-            for slot in getattr(header, category)
-        ]
-    return fields
-
-
-def _slot_gate(header, fields: dict) -> dict:
-    """Per category, motion index to the slot indices that motion writes (absent when none gated).
-
-    Proto3 elides a genuine 0.0 exactly as it elides "never written", so absence on the wire
-    cannot tell an inactive slot from a zero one. The frame carries active_motion and the header
-    says which slots that motion writes; activity is resolved from that, never from a missing
-    field. Keyed on the motion rather than the coordinator's state, so the same decoder reads a
-    log produced under an FSM, a behaviour tree or a plain sequencer.
-    """
-    gate = {}
-    for category in ("quantities", *(name for name, _ in SPATIAL_CATEGORIES)):
-        claimed = {index for motion in header.motions for index in getattr(motion, category)}
-        if not claimed:
-            continue
-        # A slot no motion claims is written unconditionally, so it stays visible everywhere.
-        unclaimed = {entry["index"] for entry in fields[category]} - claimed
-        gate[category] = {
-            motion.index: unclaimed | set(getattr(motion, category)) for motion in header.motions
-        }
-    return gate
-
 
 def read_contract(path: Path | str) -> LogContract:
     """Read a log's header record and build its decode contract from that alone."""
     with open_log(path) as fh:
-        data = _read_delimited(fh)
+        data = read_delimited(fh)
     if data is None:
         raise RecordError(path, "empty frame log")
-    header = _length_delimited(data, 1)
-    embedded = _length_delimited(header, 4) if header is not None else None
+    header = length_delimited(data, 1)
+    embedded = length_delimited(header, 4) if header is not None else None
     if not embedded:
         raise RecordError(path, "first record is not a frame-log header carrying its schema")
-    record_cls = _record_class_of(embedded)
+    record_cls = record_class_of(embedded)
     record = record_cls.FromString(data)
     # The schema is the log's own: one written before the field existed has no version to read.
     version = (
@@ -392,10 +341,26 @@ def read_contract(path: Path | str) -> LogContract:
         raise RecordError(
             path, f"frame-log format {version}; this motion-spec reads format {FORMAT_VERSION}"
         )
-    return LogContract(record.header, record_cls, _fields_from_header(record.header))
+    # Per-category slot list: pooled slots by index, model slots as the header names them.
+    motions = record.header.motions
+    pools = {
+        "constraints": max((len(motion.controllers) for motion in motions), default=0),
+        "monitors": max((len(motion.monitors) for motion in motions), default=0),
+        "triggers": record.header.trigger_pool,
+    }
+    fields = {
+        category: [{"index": i, "id": f"{category[:-1]}_{i}", "iri": ""} for i in range(size)]
+        for category, size in pools.items()
+    }
+    for category in _HEADER_SLOTS:
+        fields[category] = [
+            {"index": slot.number, "id": slot.id, "iri": slot.iri}
+            for slot in getattr(record.header, category)
+        ]
+    return LogContract(record.header, record_cls, fields)
 
 
-def _parse_frame(msg, contract: LogContract) -> dict:
+def parse_frame(msg, contract: LogContract) -> dict:
     fields = contract.fields
     record = {
         "t": msg.t,
@@ -430,7 +395,10 @@ def _parse_frame(msg, contract: LogContract) -> dict:
             for i in range(len(fields[category]))
         ]
     qids = contract.quantity_ids
-    values = quantities(msg, len(qids))
+    # A quantity slot the frame leaves out is zero.
+    values = [0.0] * len(qids)
+    for index, value in zip(msg.quantity_slots, msg.quantities):
+        values[index] = value
     triggers = [{k: getattr(entry, k) for k in TRIGGER_KEYS} for entry in msg.triggers]
     # A gated category is written only by the motions its gate names.
     gate = contract.gate.get("quantities")
@@ -472,7 +440,7 @@ def raw_frames(fh, contract: LogContract, offset: int = 0) -> Iterator[tuple[obj
     complete frame and a growing one resumes from the last offset yielded.
     """
     while True:
-        data, offset = _read_delimited_at(fh, offset)
+        data, offset = read_delimited_at(fh, offset)
         if data is None:
             return
         record = contract.record_cls.FromString(data)
@@ -484,8 +452,8 @@ def read_sampling(path: Path | str) -> dict | None:
     """The run's draw, written right after the header; None for a run that sampled nothing."""
     contract = read_contract(path)
     with open_log(path) as fh:
-        _read_delimited(fh)
-        data = _read_delimited(fh, partial_ok=True)
+        read_delimited(fh)
+        data = read_delimited(fh, partial_ok=True)
     if data is None:
         return None
     record = contract.record_cls()
@@ -509,7 +477,7 @@ def read_health(path: Path | str) -> dict | None:
     last = None
     with open_log(path) as fh:
         offset = 0
-        while (found := _read_delimited_at(fh, offset))[0] is not None:
+        while (found := read_delimited_at(fh, offset))[0] is not None:
             last, offset = found
     record = contract.record_cls.FromString(last)
     if record.WhichOneof("record") != "health":
@@ -524,7 +492,7 @@ def frame_records(path: Path | str, contract: LogContract | None = None) -> Iter
         contract = read_contract(path)
     with open_log(path) as fh:
         for frame, _ in raw_frames(fh, contract):
-            yield _parse_frame(frame, contract)
+            yield parse_frame(frame, contract)
 
 
 def stream_records(
@@ -549,5 +517,5 @@ def stream_records(
         moved = frame.fsm_state != state or frame.last_event != event
         state, event = frame.fsm_state, frame.last_event
         if moved or frame.step % stride == 0:
-            records.append(_parse_frame(frame, contract))
+            records.append(parse_frame(frame, contract))
     return records, resume

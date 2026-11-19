@@ -12,6 +12,7 @@ from __future__ import annotations
 from motion_spec_dsl.rdf_parser.vocab import (
     CSTR_EXT,
     CSTR_HDL,
+    GEOM_ENT,
     GEOM_OP,
     RBDYN_COORD,
     RBDYN_OP,
@@ -22,9 +23,9 @@ from motion_spec_dsl.rdf_parser.vocab import (
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdflib.namespace import PROV, RDF
+from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
 
 from motion_spec.classes.handlers import Perturbation
-from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import local_name
 
 
@@ -54,32 +55,7 @@ def compose_ops(model, node) -> set:
     """
     graph = model.graph
     wrench = wrench_node(model, node)
-    return set(graph.subjects(RBDYN_OP["wrench"], wrench)) | set(
-        graph.subjects(RBDYN_OP["out"], wrench)
-    )
-
-
-def _target_pose(model, node):
-    """The pose the force direction is normalized from, or None.
-
-    A direction computed between two frames is that pose's translation made unit, so the pose
-    still carries how far away the target is -- which is what a line drawn to it needs. An
-    authored direction is normalized from nothing and aims at no particular point.
-    """
-    graph = model.graph
-    poses = {
-        graph.value(source, GEOM_OP["pose"])
-        for op in graph.subjects(RBDYN_OP["wrench"], wrench_node(model, node))
-        for direction in graph.objects(op, RBDYN_OP["direction"])
-        for source in graph.subjects(GEOM_OP["direction"], direction)
-        if GEOM_OP["PoseToDirection"] in get_node_types(graph, source)
-    }
-    if len(poses) > 1:
-        raise ConstraintViolation(
-            "perturbation",
-            f"perturbation '{model.id(node)}' aims at {len(poses)} poses -- a force has one target",
-        )
-    return next(iter(poses), None)
+    return {*graph.subjects(RBDYN_OP["wrench"], wrench), *graph.subjects(RBDYN_OP["out"], wrench)}
 
 
 def gate_constraints(model, node) -> tuple[list, bool]:
@@ -100,50 +76,12 @@ def gate_constraints(model, node) -> tuple[list, bool]:
 def evaluator_nodes(model, node) -> list:
     """The handler evaluators computing this perturbation's gate conditions."""
     graph = model.graph
-    constraints, _gate_any = gate_constraints(model, node)
     return [
         evaluator
-        for constraint in constraints
+        for constraint in gate_constraints(model, node)[0]
         for evaluator in graph.subjects(CSTR_HDL["constraint"], constraint)
         if CSTR_HDL["ConstraintEvaluator"] in get_node_types(graph, evaluator)
     ]
-
-
-def _body_name(body, chains) -> str:
-    """The simulator's name for a scene body: its local name under the runtime prefix the chain
-    carrying it was merged in with.
-    """
-    for _slice_id, solver in chains:
-        if str(body) in (solver.chain.world_segments or {}):
-            return f"{solver.runtime.prefix}{local_name(body)}"
-    raise ConstraintViolation(
-        "perturbation",
-        f"perturbation body '{local_name(body)}' is not part of the scene this run plays in, "
-        "so the simulator has no body to apply the wrench to",
-    )
-
-
-def _rotating_chain(model, wrench, chains) -> str:
-    """The chain whose root frame the wrench is stated in.
-
-    The simulator reads applied wrenches in the world frame; that chain already tracks its own
-    world-to-root pose every cycle, so rotating through it needs no second kinematics read.
-    """
-    frame = model.graph.value(wrench, RBDYN_COORD["as-seen-by"])
-    if frame is None:
-        raise ConstraintViolation(
-            "perturbation", f"perturbation wrench '{model.id(wrench)}' states no frame"
-        )
-    body = quantities.body_of(model, frame)
-    for slice_id, solver in chains:
-        if solver.chain.root == f"{solver.runtime.prefix}{local_name(body)}":
-            return slice_id
-    raise ConstraintViolation(
-        "perturbation",
-        f"a perturbation's direction is seen by '{local_name(body)}', which is not the root of "
-        "any chain this motion runs; state it in the frame the arm is based in, so the applied "
-        "wrench can be rotated into the world frame the simulator reads it in",
-    )
 
 
 def read(model, node, chains) -> Perturbation:
@@ -162,12 +100,57 @@ def read(model, node, chains) -> Perturbation:
         )
     duration = graph.value(node, TIME["hasDuration"])
     constraints, gate_any = gate_constraints(model, node)
-    target_pose = _target_pose(model, node)
+    # A direction computed between two frames is that pose's translation made unit, so the pose
+    # still carries how far away the target is -- which is what a line drawn to it needs.
+    poses = {
+        graph.value(source, GEOM_OP["pose"])
+        for op in graph.subjects(RBDYN_OP["wrench"], wrench)
+        for direction in graph.objects(op, RBDYN_OP["direction"])
+        for source in graph.subjects(GEOM_OP["direction"], direction)
+        if GEOM_OP["PoseToDirection"] in get_node_types(graph, source)
+    }
+    if len(poses) > 1:
+        raise ConstraintViolation(
+            "perturbation",
+            f"perturbation '{identifier}' aims at {len(poses)} poses -- a force has one target",
+        )
+    target_pose = next(iter(poses), None)
+
+    for _slice_id, solver in chains:
+        if str(body) in (solver.chain.world_segments or {}):
+            body_name = f"{solver.runtime.prefix}{local_name(body)}"
+            break
+    else:
+        raise ConstraintViolation(
+            "perturbation",
+            f"perturbation body '{local_name(body)}' is not part of the scene this run plays in, "
+            "so the simulator has no body to apply the wrench to",
+        )
+
+    # The simulator reads applied wrenches in the world frame; the chain rooted where the wrench
+    # is stated already tracks its own world-to-root pose every cycle.
+    frame = graph.value(wrench, RBDYN_COORD["as-seen-by"])
+    if frame is None:
+        raise ConstraintViolation(
+            "perturbation", f"perturbation wrench '{model.id(wrench)}' states no frame"
+        )
+    frame_body = ensure_one_typed_subject_uri(graph, frame, GEOM_ENT.simplices, GEOM_ENT.RigidBody)
+    for slice_id, solver in chains:
+        if solver.chain.root == f"{solver.runtime.prefix}{local_name(frame_body)}":
+            robot_id = slice_id
+            break
+    else:
+        raise ConstraintViolation(
+            "perturbation",
+            f"a perturbation's direction is seen by '{local_name(frame_body)}', which is not the "
+            "root of any chain this motion runs; state it in the frame the arm is based in, so the "
+            "applied wrench can be rotated into the world frame the simulator reads it in",
+        )
 
     return Perturbation(
         id=identifier,
-        body=_body_name(body, chains),
-        robot_id=_rotating_chain(model, wrench, chains),
+        body=body_name,
+        robot_id=robot_id,
         wrench_id=model.id(wrench),
         applied_id=f"{identifier}_applied",
         active_id=f"{identifier}_active",

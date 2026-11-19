@@ -61,8 +61,7 @@ monitor-satisfied-expr(monitor) ::= <<
 >>
 
 update-monitor(monitor) ::= <<
-<if(monitor.is_edge_triggered)>
-    {
+<if(monitor.is_edge_triggered)>    {
         const bool active = <monitor-satisfied-expr(monitor)>;
         const bool detected = <if(monitor.debounce_id)>motion_spec::runtime::sustained_edge(
             state.<monitor.id>_hold_s,
@@ -85,10 +84,7 @@ update-monitor(monitor) ::= <<
             motion_spec::runtime::warn_produce_event_not_implemented("<monitor.event>");
         \}
 <endif>
-    }
-<elseif(monitor.flag)>
-    motion_spec::runtime::set_flag(state.<monitor.flag>, <monitor-satisfied-expr(monitor)>);
-<endif>
+    }<elseif(monitor.flag)>    motion_spec::runtime::set_flag(state.<monitor.flag>, <monitor-satisfied-expr(monitor)>);<endif>
 >>
 
 monitor-block(monitors) ::= <<
@@ -103,9 +99,8 @@ monitor-runtime(uses) ::= <<
 // that states none is tested against the boundary itself, which its evaluator returns 0.0 on.
 inline bool constraint_satisfied(double error, double tolerance) {
     return std::fabs(error) \<= tolerance;
-}
+}<if(uses.("CompositeError"))>
 
-<if(uses.("CompositeError"))>
 inline double constraint_error_value(const KDL::Twist &error) {
     return std::max(error.vel.Norm(), error.rot.Norm());
 }
@@ -122,18 +117,14 @@ inline bool constraint_satisfied(const KDL::Twist &error, double tolerance) {
 
 inline bool constraint_satisfied(const KDL::Frame &error, double tolerance) {
     return constraint_error_value(error) \<= tolerance;
-}
+}<endif><if(uses.("RisingEdge"))>
 
-<endif>
-<if(uses.("RisingEdge"))>
 inline bool rising_edge(bool &previous, bool active) {
     const bool detected = active && !previous;
     previous = active;
     return detected;
-}
+}<endif><if(uses.("SustainedEdge"))>
 
-<endif>
-<if(uses.("SustainedEdge"))>
 // Fire once after `active` has held true for `hold_s` of measured time; re-arms when `active`
 // drops. The model authors a duration, so the debounce accumulates the time the cycles actually
 // took: counting cycles is that duration only on a loop that never misses its deadline. The dt
@@ -143,19 +134,13 @@ inline bool sustained_edge(double &held_s, bool active, double dt_s, double hold
     const double before = held_s;
     held_s += dt_s;
     return before \< hold_s && held_s >= hold_s;
-}
+}<endif><if(uses.("Flag"))>
 
-<endif>
-<if(uses.("Flag"))>
 inline void set_flag(bool &flag, bool active) {
     flag = active;
-}
+}<endif><if(uses.("ProduceEvent"))>
 
-<endif>
-<if(uses.("ProduceEvent"))>
 inline void warn_produce_event_not_implemented(std::string_view event_id) {
     std::cerr \<\< "produce_event(" \<\< event_id \<\< ") not implemented yet\\n";
-}
-
-<endif>
+}<endif>
 >>

@@ -97,7 +97,7 @@ def test_an_expression_runs_along_the_gradient_its_operator_names(subspace, half
         format="turtle",
     )
     model = Model(graph=graph)
-    directions = constraint_handler._authored_controller_axes(model)[URIRef(f"{NS}ctrl-hold")]
+    directions = constraint_handler.authored_controller_axes(model)[URIRef(f"{NS}ctrl-hold")]
     (axis,) = directions.axes
     assert axis.subspace == half
     assert axis.direction == URIRef(f"{NS}expr-gradient")
@@ -115,7 +115,7 @@ def test_a_controlled_expression_naming_no_gradient_is_refused() -> None:
         format="turtle",
     )
     with pytest.raises(ConstraintViolation, match="names no gradient"):
-        constraint_handler._authored_controller_axes(Model(graph=graph))
+        constraint_handler.authored_controller_axes(Model(graph=graph))
 
 
 def test_a_monitor_on_a_mixed_op_expression_schedules_every_interior_op() -> None:

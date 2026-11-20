@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 // Author: Vamsi Kalagaturu
 
-import { $, snack, state } from "./core.js";
+import { $, $$, snack, state } from "./core.js";
 import { addPlot } from "./plots.js";
 import { seek } from "./run.js";
 
@@ -20,7 +20,7 @@ function snapshot() {
     frame: state.frame,
     camera: state.camera,
     panel: $(".replay-tabs .active")?.dataset.panel,
-    plots: [...document.querySelectorAll("#plots .plot-card")]
+    plots: $$("#plots .plot-card")
       .map((card) => card.inspection?.())
       .filter(Boolean),
   };
@@ -64,14 +64,12 @@ function applyView(view, preset = false) {
     }
     if (!preset) {
       if (Number.isInteger(view.frame)) seek(view.frame);
-      const camera = [...document.querySelectorAll(".video-pick")].find(
-        (pick) => pick.dataset.camera === view.camera,
-      );
-      camera?.click();
-      const panel = [...document.querySelectorAll(".replay-tabs button")].find(
-        (button) => button.dataset.panel === view.panel,
-      );
-      panel?.click();
+      $$(".video-pick")
+        .find((pick) => pick.dataset.camera === view.camera)
+        ?.click();
+      $$(".replay-tabs button")
+        .find((button) => button.dataset.panel === view.panel)
+        ?.click();
     }
     if (missing.size) snack(`Unavailable signals skipped: ${[...missing].join(", ")}`);
   } finally {
@@ -87,7 +85,7 @@ export function restoreInspection(path) {
   applyView(view);
   if (frame !== null && /^\d+$/.test(frame)) seek(Number(frame));
   if (url.has("panel")) {
-    [...document.querySelectorAll(".replay-tabs button")]
+    $$(".replay-tabs button")
       .find((button) => button.dataset.panel === url.get("panel"))
       ?.click();
   }

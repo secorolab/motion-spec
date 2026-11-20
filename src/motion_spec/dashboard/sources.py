@@ -30,9 +30,9 @@ def browsable(path: Path) -> bool:
     `.robmot` for that second rule to sweep in everything else living there, which at the top
     of a workspace is the whole repository. The environment file is named, not matched.
     """
-    if path.name in AUTHORED_NAMES:
-        return True
-    return path.suffix in AUTHORED and path.name not in NOT_AUTHORED
+    return path.name in AUTHORED_NAMES or (
+        path.suffix in AUTHORED and path.name not in NOT_AUTHORED
+    )
 
 
 def authored_sources() -> list[str]:
@@ -135,14 +135,15 @@ def check_syntax(path: Path) -> dict | None:
 
 def read_source(value: str) -> dict:
     path = source_path(value)
+    host = terminal()
     return {
         "path": value,
         # The page shows where the file is; it should not have to join a root onto a name.
         "absolute": str(path),
         "text": path.read_text(),
-        "git_head": git_baseline(path),
-        "editors": list(dict(editors())),
-        "terminal": (terminal() or (None,))[0],
+        "git_head": git_baseline(path, git_root(path)),
+        "editors": list(editors()),
+        "terminal": host[0] if host else None,
     }
 
 
@@ -153,26 +154,22 @@ def aligned_rows(was: list[str], now: list[str]) -> dict:
     working tree, and git HEAD against the working tree, are the same comparison drawn the
     same way.
     """
-    rows, changed = [], False
+    rows = []
     for kind, left_from, left_to, right_from, right_to in difflib.SequenceMatcher(
         None, was, now, autojunk=False
     ).get_opcodes():
-        left = list(range(left_from, left_to))
-        right = list(range(right_from, right_to))
-        changed = changed or kind != "equal"
         # A replaced block pairs line for line, and the shorter side runs out into blanks
         # rather than shifting everything below it out of step with the other column.
-        for index in range(max(len(left), len(right))):
-            here = left[index] if index < len(left) else None
-            there = right[index] if index < len(right) else None
+        for index in range(max(left_to - left_from, right_to - right_from)):
+            here, there = left_from + index, right_from + index
             rows.append(
                 {
                     "kind": kind,
-                    "left": None if here is None else {"n": here + 1, "text": was[here]},
-                    "right": None if there is None else {"n": there + 1, "text": now[there]},
+                    "left": {"n": here + 1, "text": was[here]} if here < left_to else None,
+                    "right": {"n": there + 1, "text": now[there]} if there < right_to else None,
                 }
             )
-    return {"same": not changed, "rows": rows}
+    return {"same": all(row["kind"] == "equal" for row in rows), "rows": rows}
 
 
 def git_root(path: Path) -> Path | None:
@@ -189,14 +186,14 @@ def git_root(path: Path) -> Path | None:
     return Path(repo.stdout.strip()) if repo.returncode == 0 else None
 
 
-def git_baseline(path: Path) -> str | None:
-    """The file's content at HEAD, so the editor can mark what changed since the last commit.
+def git_baseline(path: Path, root: Path | None) -> str | None:
+    """The file's content at HEAD of ROOT, its `git_root`, so the editor can mark what changed
+    since the last commit.
 
     None when the tree is not a git repository, git is not installed, or the file has no
     commit yet -- the reader sees plain text with no diff marks rather than every line marked
     as new.
     """
-    root = git_root(path)
     if root is None:
         return None
     try:
@@ -219,21 +216,18 @@ def git_diff(value: str) -> dict:
     """
     path = source_path(value)
     root = git_root(path)
-    committed = git_baseline(path)
-    if root is None or committed is None:
+    committed = git_baseline(path, root)
+    working = {"name": path.name, "workspace": value, "workspace_path": str(path)}
+    if committed is None:
         return {
-            "name": path.name,
-            "workspace": value,
-            "workspace_path": str(path),
+            **working,
             "archived": None,
             "same": False,
             "rows": [],
             "error": "not a committed file in a git repository",
         }
     return {
-        "name": path.name,
-        "workspace": value,
-        "workspace_path": str(path),
+        **working,
         "archived": f"HEAD:{path.relative_to(root).as_posix()}",
         **aligned_rows(committed.splitlines(), path.read_text().splitlines()),
     }
@@ -329,8 +323,7 @@ def open_terminal(value: str) -> dict:
 def open_source(value: str, name: str | None = None) -> dict:
     """Open one authored DSL file in the chosen editor."""
     path = source_path(value)
-    # Copied out of the cache, so editing what comes back cannot change what the next caller sees.
-    available = dict(editors())
+    available = editors()
     name = name or next(iter(available))
     if name not in available:
         raise ValueError(f"unknown editor: {name}")

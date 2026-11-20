@@ -23,7 +23,7 @@ from rec import Verdict
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import deployed_devices
 from motion_spec.dashboard.metadata import annotations, model_folder
-from motion_spec.dashboard.roots import directory_size, json_file, trace
+from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, trace
 from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
 from motion_spec.rdf_parser.agents import agent_cameras
@@ -41,7 +41,7 @@ from motion_spec.runs.verify import RecordError
 
 
 def generation_info(path: Path) -> dict:
-    layout = json_file(path / "generated/contract/frame_layout.json")
+    layout = json_file(path / LAYOUT_REL)
     # The generation is the activity every tool's step was delegated in.
     provenance = read_generation_dataset(path / "generated" / GENERATION_DOCUMENT)
     began = provenance.value(provenance.value(predicate=PROV.hadActivity), TIME.hasBeginning)
@@ -206,9 +206,7 @@ def generation_details(path: Path) -> dict:
     kept = {get_file_path(provenance, copy): copy for copy in provenance.subjects(PROV.alternateOf)}
     robmot = next((source for source in kept if source.suffix == ".robmot"), None)
     try:
-        description = generation_model(path / "generated").graph.value(
-            predicate=URI_FSM_PRED_DESCRIPTION
-        )
+        description = generation_model(generated).graph.value(predicate=URI_FSM_PRED_DESCRIPTION)
     except ValueError:
         description = None
     # A generation with no run yet has no log to read, so the count comes off the source.
@@ -340,7 +338,7 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
                         if term in PROV
                         else "resource"
                     ),
-                    "graphs": list(graphs.get(str(term), [])),
+                    "graphs": graphs.get(str(term), []),
                 }
             ends.append(nodes[term_id])
         source = ends[0]
@@ -350,16 +348,14 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
             types[short] += 1
             hidden["type_edges"] += 1
             continue
+        label = str(predicate).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
         if isinstance(obj, Literal):
-            source["attributes"].setdefault(
-                str(predicate).rsplit("/", 1)[-1].rsplit("#", 1)[-1], []
-            ).append(str(obj))
+            source["attributes"].setdefault(label, []).append(str(obj))
             hidden["literal_edges"] += 1
             continue
         target = ends[1]
         provenance = any(term in PROV for term in (subject, predicate, obj))
         kind = "provenance" if provenance else "relation"
-        label = str(predicate).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
         links.append(
             {
                 "source": source["id"],
@@ -396,10 +392,8 @@ def provenance_graph(service) -> dict:
 def run_notes(path: Path) -> list[str]:
     """Read notes.json here rather than importing queries, which imports this module: every tag
     used by the run's notes."""
-    stored = json_file(path / "notes.json")
-    notes = stored.get("notes") if isinstance(stored, dict) else None
-    notes = [note for note in notes if isinstance(note, dict)] if isinstance(notes, list) else []
-    return list(dict.fromkeys(str(tag) for note in notes for tag in note.get("tags") or []))
+    notes = json_file(path / "notes.json").get("notes", [])
+    return list(dict.fromkeys(tag for note in notes for tag in note.get("tags") or []))
 
 
 def run_info(path: Path) -> dict:

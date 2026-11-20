@@ -36,24 +36,15 @@ export function listItem(name, detail, click, path, mark = null) {
   button.className = "item";
   button.dataset.path = path;
   button.classList.toggle("picked", state.selected.has(path));
-  const label = document.createElement("span");
-  label.className = "item-name";
-  label.textContent = name;
-  const viewport = document.createElement("span");
-  viewport.className = "item-name-viewport";
+  const viewport = part("span", "", "item-name-viewport");
   if (mark) {
-    const dot = document.createElement("i");
-    dot.className = `run-mark run-mark-${mark.toLowerCase()}`;
+    const dot = part("i", "", `run-mark run-mark-${mark.toLowerCase()}`);
     dot.title = `last run: ${mark.toLowerCase()}`;
     viewport.append(dot);
   }
-  viewport.append(label);
+  viewport.append(part("span", name, "item-name"));
   button.append(viewport);
-  if (detail) {
-    const small = document.createElement("small");
-    small.textContent = detail;
-    button.append(small);
-  }
+  if (detail) button.append(part("small", detail));
   button.onclick = click;
   return button;
 }
@@ -205,19 +196,31 @@ export async function consoleExcerpt(path, lines = 50) {
   return pre;
 }
 
-export function emptyState({ eyebrow = "", title = "", detail = "", spinner = false } = {}) {
-  const empty = document.createElement("div");
-  empty.className = "empty";
+export function showEmpty({ eyebrow = "", title = "", detail = "", spinner = false }) {
+  const empty = part("div", "", "empty");
   if (spinner) empty.append(part("div", "", "spinner"));
   if (eyebrow) empty.append(part("span", eyebrow));
   empty.append(part("h1", title), part("p", detail));
+  $("#content").replaceChildren(empty);
   return empty;
 }
 
-export function showEmpty(options) {
-  const empty = emptyState(options);
-  $("#content").replaceChildren(empty);
-  return empty;
+export function table(headers, rows) {
+  const node = document.createElement("table");
+  const head = document.createElement("tr");
+  head.append(...headers.map((name) => part("th", name)));
+  node.append(head);
+  rows.forEach((cells) => {
+    const line = document.createElement("tr");
+    cells.forEach((value) => {
+      const cell = document.createElement("td");
+      if (value instanceof Node) cell.append(value);
+      else cell.textContent = value;
+      line.append(cell);
+    });
+    node.append(line);
+  });
+  return node;
 }
 
 // One pair of listeners for every menu on the page. Binding per menu leaked a pair per open.

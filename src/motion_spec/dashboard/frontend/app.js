@@ -91,19 +91,15 @@ async function deleteSelected() {
     return showError(error);
   }
   const eligible = preview.items.filter((item) => !item.blocked);
-  const blocked = preview.items.filter((item) => item.blocked);
+  const blocked = preview.items
+    .filter((item) => item.blocked)
+    .map((item) => `${item.path}: ${item.blocked}`);
   if (!eligible.length)
-    return showError(
-      new Error(
-        `Nothing can be moved to Trash. ${blocked.map((item) => `${item.path}: ${item.blocked}`).join("; ")}`,
-      ),
-    );
+    return showError(new Error(`Nothing can be moved to Trash. ${blocked.join("; ")}`));
   const runs = eligible.reduce((total, item) => total + item.runs, 0);
   const bytes = formatBytes(eligible.reduce((total, item) => total + item.bytes, 0));
   const listed = eligible.map((item) => item.path).join("\n");
-  const protectedNote = blocked.length
-    ? `\n\nProtected; excluded:\n${blocked.map((item) => `${item.path}: ${item.blocked}`).join("\n")}`
-    : "";
+  const protectedNote = blocked.length ? `\n\nProtected; excluded:\n${blocked.join("\n")}` : "";
   const ok = await askConfirm({
     message:
       `Move ${eligible.length} items (${runs} runs, ${bytes}) to Trash? Restore them from the ` +

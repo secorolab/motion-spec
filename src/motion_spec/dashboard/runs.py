@@ -10,11 +10,11 @@ from pathlib import Path
 from rec import State, Verdict
 
 from motion_spec.dashboard.frames import FrameLayout
-from motion_spec.runs.provenance import built_executable, rec_run
+from motion_spec.dashboard.roots import LAYOUT_REL
+from motion_spec.runs.provenance import rec_run
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
 
-LAYOUT_REL = Path("generated") / "contract" / "frame_layout.json"
 LOG_REL = Path("logs") / "frame_log.pb"
 # The rest of rec's states -- queued, in-progress -- mean the run may still produce frames.
 ENDED = {State.COMPLETE, State.CANCELED}
@@ -97,11 +97,6 @@ class GenerationInfo:
     def built_at(self) -> float:
         """When this bundle was last written, which is what "latest" means to someone reading."""
         return self.dir.stat().st_mtime
-
-    @property
-    def built(self) -> bool:
-        executable = built_executable(self.dir / "generated")
-        return executable is not None and executable.exists()
 
     @property
     def layout(self) -> FrameLayout:

@@ -6,6 +6,7 @@
 
 import { bindToggle, iconMarkup } from "./components.js";
 import { $, $$, api, nextPlotKey, post, readStored, snack, state, writeStored } from "./core.js";
+import { AXIS_COLOUR, GRID_COLOUR, SERIES_COLOURS } from "./plots.js";
 import {
   constraintKey,
   loadReplay,
@@ -19,7 +20,7 @@ import {
 } from "./run.js";
 
 // A long run would grow a live series without bound; the finished-run reload replaces it anyway.
-export const LIVE_POINT_CAP = 20000;
+const LIVE_POINT_CAP = 20000;
 
 // Enough to cover the second or two an /api/plot read takes, not a second copy of the run.
 const LIVE_BUFFER_CAP = 5000;
@@ -39,7 +40,7 @@ export async function simControl(options) {
 }
 
 // The plot drip belongs to the poll that fed it: both timers stop together.
-export function stopLiveWatch() {
+function stopLiveWatch() {
   clearInterval(state.liveWatch);
   clearInterval(state.liveDrip);
   state.dripping = null;
@@ -174,10 +175,10 @@ function appendLivePoints(plot) {
   // its history render, and by then what landed meanwhile is gone from the server.
   arrived.forEach((points, signal) => {
     if (!points.length) return;
-    let kept = state.liveBuffer.get(signal);
-    if (!kept) state.liveBuffer.set(signal, (kept = []));
+    const kept = state.liveBuffer.get(signal) ?? [];
     for (const point of points) kept.push(point);
     if (kept.length > LIVE_BUFFER_CAP) kept.splice(0, kept.length - LIVE_BUFFER_CAP);
+    state.liveBuffer.set(signal, kept);
   });
   const batch = new Map();
   state.livePlots.forEach((signals, chart) => {
@@ -208,7 +209,7 @@ function dripLivePoints(batch) {
 
 function drawLivePoints(batch, slices) {
   batch.forEach((added, adapter) => {
-    if (adapter.isDisposed?.()) return; // its card closed while this batch was dripping
+    if (adapter.isDisposed()) return; // its card closed while this batch was dripping
     const take = added.map((points) => points.splice(0, Math.ceil(points.length / slices)));
     if (!take.some((points) => points.length)) return;
     adapter.push(take);
@@ -227,12 +228,11 @@ export function addLivePlot(signals, title, detail, { row = null, data = null } 
     '</div></header><div class="plot-signals"></div><div class="plot-chart"></div>';
   card.querySelector("strong").textContent = title;
   card.querySelector("small").textContent = detail;
-  const palette = ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"];
   card.querySelector(".plot-signals").replaceChildren(
     ...signals.map((signal, index) => {
       const chip = document.createElement("span");
       chip.className = "plot-signal";
-      chip.style.setProperty("--series", palette[index % palette.length]);
+      chip.style.setProperty("--series", SERIES_COLOURS[index % SERIES_COLOURS.length]);
       chip.textContent = signal;
       return chip;
     }),
@@ -241,9 +241,9 @@ export function addLivePlot(signals, title, detail, { row = null, data = null } 
   if (row) card.dataset.row = row.dataset.plotKey ??= nextPlotKey();
   const holder = card.querySelector(".plot-chart");
   const axis = {
-    stroke: "#73777d",
-    grid: { stroke: "#383d45", width: 1 },
-    ticks: { stroke: "#383d45" },
+    stroke: AXIS_COLOUR,
+    grid: { stroke: GRID_COLOUR, width: 1 },
+    ticks: { stroke: GRID_COLOUR },
   };
   const tables = signals.map(() => [[], []]);
   signals.forEach((signal, index) => {
@@ -272,7 +272,7 @@ export function addLivePlot(signals, title, detail, { row = null, data = null } 
       series: [
         {},
         ...signals.map((_signal, index) => ({
-          stroke: palette[index % palette.length],
+          stroke: SERIES_COLOURS[index % SERIES_COLOURS.length],
           width: 1.5,
           spanGaps: false,
           points: { show: false },
@@ -326,12 +326,11 @@ export function trackActiveMotion(handler, { plots = livePlotsOn(), live = true 
   // history read. Only the motion the page opened onto was running before anyone was looking.
   const watched = live && state.activeMotion !== null;
   state.activeMotion = motion;
-  let entered = null;
-  $$("#constraints .constraint-motion").forEach((heading) => {
-    const here = heading.textContent === motion;
-    heading.classList.toggle("active-motion", here);
-    if (here) entered = heading;
-  });
+  const headings = $$("#constraints .constraint-motion");
+  headings.forEach((heading) =>
+    heading.classList.toggle("active-motion", heading.textContent === motion),
+  );
+  const entered = headings.findLast((heading) => heading.textContent === motion);
   // The panel reads along: the active motion's block scrolls into view as the run enters it.
   const panel = $("#constraints");
   if (panel && entered) {

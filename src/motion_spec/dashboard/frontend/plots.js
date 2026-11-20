@@ -7,10 +7,10 @@
 import { iconMarkup } from "./components.js";
 import { $, api, nextPlotKey, readStored, state, writeStored } from "./core.js";
 
-const SERIES_COLOURS = ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"];
+export const SERIES_COLOURS = ["#e07a5f", "#79c6a5", "#9da9c7", "#f0c36a"];
 
-const AXIS_COLOUR = "#73777d";
-const GRID_COLOUR = "#383d45";
+export const AXIS_COLOUR = "#73777d";
+export const GRID_COLOUR = "#383d45";
 const TEXT_COLOUR = "#f1eee7";
 const BAND_COLOUR = "#f0c36a";
 
@@ -66,7 +66,6 @@ export function addPlot(
     observer.disconnect();
     chart.dispose();
     state.charts = state.charts.filter((item) => item !== chart);
-    state.livePlots.delete(chart);
     card.remove();
   };
   const replaceSignals = (next) => {
@@ -367,15 +366,18 @@ function bindSignalMenu(card, signals, replaceSignals) {
   const chosen = new Set(signals);
   const fillSignals = () => {
     const query = filter.value.toLowerCase().trim();
-    const groups = new Map();
-    state.replay.signals.forEach((signal) => {
-      const [group, label] = signalPlace(signal);
-      if (query && !`${signal} ${label} ${group}`.toLowerCase().includes(query)) return;
-      const entry = { signal, label, slot: state.replay.signal_index?.[signal]?.slot };
-      const inside = groups.get(group);
-      if (inside) inside.push(entry);
-      else groups.set(group, [entry]);
-    });
+    const groups = Map.groupBy(
+      state.replay.signals
+        .map((signal) => {
+          const [group, label] = signalPlace(signal);
+          return { group, signal, label, slot: state.replay.signal_index?.[signal]?.slot };
+        })
+        .filter(
+          ({ group, signal, label }) =>
+            !query || `${signal} ${label} ${group}`.toLowerCase().includes(query),
+        ),
+      (entry) => entry.group,
+    );
     groups.forEach(nameApart);
     list.replaceChildren(
       ...[...groups].flatMap(([group, entries]) => {
@@ -424,16 +426,18 @@ function signalPlace(signal) {
   }
   if (signal.startsWith("timing.")) return ["timing", signal.slice("timing.".length)];
   const [slot, ...part] = signal.split(".");
-  if (part.length) return [`${spatialKind(part[0])} · ${slot}`, part.join(".")];
+  if (part.length) return [`${SPATIAL_KINDS[part[0]] ?? "slot"} · ${slot}`, part.join(".")];
   return ["quantities", signal];
 }
 
-function spatialKind(part) {
-  if (part === "position" || part === "orientation") return "pose";
-  if (part === "linear" || part === "angular") return "twist";
-  if (part === "force" || part === "torque") return "wrench";
-  return "slot";
-}
+const SPATIAL_KINDS = {
+  position: "pose",
+  orientation: "pose",
+  linear: "twist",
+  angular: "twist",
+  force: "wrench",
+  torque: "wrench",
+};
 
 // Three axes of one constraint all read "error"; tell them apart by whatever is left of the
 // slot name once the shared prefix is gone.
@@ -553,10 +557,8 @@ function pointsUpTo(series, frame) {
 }
 
 export function seriesUpTo(chart, frame) {
-  const full = chart.fullSeries;
-  if (!full) return null;
   return {
-    series: full.map((series) => ({
+    series: chart.fullSeries.map((series) => ({
       data: progressive ? series.slice(0, pointsUpTo(series, frame)) : series,
     })),
   };

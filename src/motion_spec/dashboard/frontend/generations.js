@@ -39,7 +39,7 @@ import { openSource, showGenerated, showSource } from "./sources.js";
 const RUNS_PER_PAGE = 10;
 
 // One remembered run bar per model: every generation of a model shares its cameras and choices.
-export const runOptionsKey = (generationPath) =>
+const runOptionsKey = (generationPath) =>
   `motion-spec.run-options.${generationPath.split("/")[0]}`;
 
 export function readRunOptions(generationPath) {
@@ -50,7 +50,7 @@ export function readRunOptions(generationPath) {
   }
 }
 
-export function saveRunOptions(generationPath, options) {
+function saveRunOptions(generationPath, options) {
   writeStored(runOptionsKey(generationPath), JSON.stringify(options));
 }
 
@@ -80,27 +80,19 @@ export async function loadGenerations(refresh = false) {
   $("#storage").textContent = formatBytes(storage.generations_bytes);
   $("#generation-root").hidden = false;
   $("#generation-root").value = roots.logs;
-  const ordered = [...generations].sort(SORTS[$("#generation-sort").value] ?? SORTS.newest);
+  const sort = SORTS[$("#generation-sort").value] ?? SORTS.newest;
+  // Pinned first, as a group of their own; the rest by model.
+  const ordered = [...generations].sort(
+    (left, right) => Number(right.pinned) - Number(left.pinned) || sort(left, right),
+  );
+  const groups = Map.groupBy(ordered, (generation) =>
+    generation.pinned ? "★ Pinned" : generation.name,
+  );
   $("#browser").replaceChildren(
-    ...[...groupByModel(ordered)].map(([model, entries]) =>
-      generationGroup(model, entries, roots.logs),
-    ),
+    ...[...groups].map(([model, entries]) => generationGroup(model, entries, roots.logs)),
   );
   filterGenerations($("#search").value);
   highlightGeneration();
-}
-
-function groupByModel(ordered) {
-  const groups = new Map();
-  const pinned = ordered.filter((generation) => generation.pinned);
-  if (pinned.length) groups.set("★ Pinned", pinned);
-  for (const generation of ordered) {
-    if (generation.pinned) continue;
-    const group = groups.get(generation.name);
-    if (group) group.push(generation);
-    else groups.set(generation.name, [generation]);
-  }
-  return groups;
 }
 
 function generationGroup(model, entries, logsRoot) {
@@ -140,6 +132,7 @@ function generationGroup(model, entries, logsRoot) {
 
 function generationItem(generation) {
   const folder = generation.path.split("/").pop();
+  const lastRun = lifecycleWord(generation.last_run);
   const item = listItem(
     generation.label || folder,
     [
@@ -162,11 +155,7 @@ function generationItem(generation) {
         : selectGeneration(generation.path);
     },
     generation.path,
-    generation.last_run
-      ? generation.last_run.live
-        ? "live"
-        : (lifecycleWord(generation.last_run) ?? "unknown")
-      : null,
+    generation.last_run ? (generation.last_run.live ? "live" : (lastRun ?? "unknown")) : null,
   );
   // Built once: the filter runs over every row on every keystroke.
   item.dataset.search = [
@@ -181,15 +170,13 @@ function generationItem(generation) {
     .toLowerCase();
   item.dataset.pinned = String(generation.pinned);
   item.dataset.runtime = generation.simulated ? "simulation" : "hardware";
-  item.dataset.runStatus = generation.last_run?.live
-    ? "running"
-    : (lifecycleWord(generation.last_run) ?? "");
+  item.dataset.runStatus = generation.last_run?.live ? "running" : (lastRun ?? "");
   return item;
 }
 
 // rec records an OSLC state and, once complete, a verdict: the one word a row shows is the
 // verdict of a complete run and the state of any other.
-export function lifecycleWord(run) {
+function lifecycleWord(run) {
   if (!run?.state) return null;
   return run.state === "complete" ? run.verdict : run.state;
 }
@@ -203,11 +190,11 @@ export function filterGenerations(value) {
     item.dataset.runtime === wanted ||
     (wanted === "pinned" && item.dataset.pinned === "true");
   document.querySelectorAll(".generation-group").forEach((group) => {
-    let visible = false;
-    group.querySelectorAll(".item").forEach((item) => {
+    const items = [...group.querySelectorAll(".item")];
+    items.forEach((item) => {
       item.hidden = !item.dataset.search.includes(query) || !shown(item);
-      visible ||= !item.hidden;
     });
+    const visible = items.some((item) => !item.hidden);
     group.hidden = !visible;
     if (query && visible) group.open = true;
   });
@@ -259,7 +246,7 @@ export function highlightGeneration() {
     selected.scrollIntoView({ block: "nearest" });
 }
 
-export function pickRange(path, container, source) {
+function pickRange(path, container, source) {
   // shift extends from the last item picked, over what is actually on screen
   const paths = [...container.querySelectorAll("[data-path]")]
     .filter((item) => item.offsetParent !== null)
@@ -273,7 +260,7 @@ export function pickRange(path, container, source) {
   });
 }
 
-export function toggleSelection(path, source = "sidebar", anchor = true) {
+function toggleSelection(path, source = "sidebar", anchor = true) {
   if (anchor) state.anchor = path;
   const picked = !state.selected.has(path);
   picked ? state.selected.add(path) : state.selected.delete(path);
@@ -337,14 +324,7 @@ export async function selectGeneration(path) {
   const metadata = await annotationEditor(path, () => loadGenerations(true));
   if (!mounted.isConnected) return;
   mountAnnotations(mounted, metadata, path);
-  state.generation = {
-    path,
-    folder: generation.folder,
-    // The run page asks this to decide between the recording and the live ROS camera.
-    simulated: generation.simulated,
-    node: $("#content .generation"),
-    setRuns,
-  };
+  state.generation = { path, node: $("#content .generation"), setRuns };
   $("#content").querySelector(".explore-link").onclick = () => showExplore(path).catch(snackError);
 }
 
@@ -399,26 +379,18 @@ function sourceFileRows(generation, path) {
 }
 
 function generatedFileFolders(generation, path) {
-  const folders = new Map();
-  generation.generated_files.forEach((source) => {
-    const [folder, ...rest] = source.name.split("/");
-    // `full` is the name as the generation holds it; `name` is what the folder's row shows.
-    const entry = { ...source, full: source.name, name: rest.join("/") || folder };
-    const inside = folders.get(folder);
-    if (inside) inside.push(entry);
-    else folders.set(folder, [entry]);
-  });
+  const folders = Map.groupBy(generation.generated_files, (source) => source.name.split("/")[0]);
   return [...folders].map(([folder, files]) =>
     fileFolder(
       folder,
       files.map((source) =>
         fileRow(
-          source.name,
+          source.name.slice(folder.length + 1) || folder,
           `${source.path} — click to read, shift-click to copy the path`,
           (event) =>
             event.shiftKey
               ? copyText(source.path)
-              : showGenerated(`${path}/generated/${source.full}`).catch(snackError),
+              : showGenerated(`${path}/generated/${source.name}`).catch(snackError),
         ),
       ),
     ),
@@ -478,6 +450,7 @@ function bindRunList(page, generation, runs) {
   const to = page.querySelector(".run-to");
   const search = page.querySelector(".run-search");
   const clear = page.querySelector(".run-filter-clear");
+  const count = page.querySelector(".run-count");
   const empty = document.createElement("div");
   empty.className = "runs-empty";
   empty.textContent = "No run started in that window.";
@@ -489,9 +462,7 @@ function bindRunList(page, generation, runs) {
   const syncPickAll = () =>
     setPickAll(pickAll, rows.filter((run) => state.selected.has(run.path)).length, rows.length);
   const countRuns = () => {
-    const label = page.querySelector(".run-count");
-    if (!label) return;
-    label.textContent =
+    count.textContent =
       rows.length === all.length
         ? all.length
           ? `${all.length} recorded`
@@ -527,7 +498,7 @@ function bindRunList(page, generation, runs) {
   };
   const draw = () => {
     renderRuns();
-    page.querySelector(".runs-empty")?.remove();
+    empty.remove();
     if (!rows.length && all.length) list.after(empty);
     drawPager();
   };
@@ -906,7 +877,6 @@ export async function showDrift(generationPath, file = null, push = true) {
   stopPlayback();
   state.runPath = null;
   state.generationPath = generationPath;
-  state.diffPath = generationPath;
   if (push) {
     const view = hashView();
     writeHash({
@@ -934,7 +904,6 @@ export async function showDrift(generationPath, file = null, push = true) {
         "This model is no longer in the sources tree, so there is nothing to compare it with.",
       unchanged: "Unchanged — generating again would start from the same model.",
       back: async () => {
-        state.diffPath = null;
         await loadGenerations(true).catch(() => {});
         selectGeneration(generationPath);
       },
@@ -1004,11 +973,7 @@ function renderDriftList(generationPath, files, selected) {
       name.textContent = file.name;
       const mark = document.createElement("small");
       mark.textContent =
-        file.status === "missing"
-          ? "not in sources"
-          : file.status === "changed"
-            ? "changed"
-            : "unchanged";
+        { missing: "not in sources", changed: "changed" }[file.status] ?? "unchanged";
       item.append(name, mark);
       item.onclick = () => showDrift(generationPath, file.name);
       return item;

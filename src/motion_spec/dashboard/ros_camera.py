@@ -56,7 +56,8 @@ class RosCameraSource(RosImageSubscription):
             width, height = msg.width, msg.height
         except ValueError as exc:
             self.error = str(exc)
-            return self.stop.set()
+            self.stop.set()
+            return
         with self._lock:
             self._seq += 1
             self._frame = (self._seq, width, height, rgb)

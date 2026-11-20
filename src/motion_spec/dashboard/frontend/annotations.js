@@ -4,6 +4,12 @@
 
 import { api, askConfirm, post, snack, state } from "./core.js";
 
+export const splitTags = (value) =>
+  value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
 /** Edit a run's or generation's metadata without renaming the archive on disk. */
 export async function annotationEditor(path, changed = () => {}) {
   let data = await api(`/api/annotations?path=${encodeURIComponent(path)}`);
@@ -33,17 +39,18 @@ export async function annotationEditor(path, changed = () => {}) {
       ? "Deleting is refused; removing this asks for the folder name"
       : "Refuse deletion of this bundle";
   };
-  const save = async (changes) => {
+  const update = async (endpoint, body, saved) => {
     try {
-      data = await post("/api/annotations", { path, changes });
+      data = await post(endpoint, { path, ...body });
       state.cache.generations = null;
-      status.textContent = "Saved";
+      status.textContent = saved(data);
       draw();
       await changed(data);
     } catch (error) {
       status.textContent = error.message;
     }
   };
+  const save = (changes) => update("/api/annotations", { changes }, () => "Saved");
   pin.onclick = () => save({ pinned: !data.pinned });
   lock.onclick = async () => {
     const name = path.split("/").pop();
@@ -57,25 +64,13 @@ export async function annotationEditor(path, changed = () => {}) {
       }))
     )
       return;
-    try {
-      data = await post("/api/protect", { path, enabled: !data.protected, confirm });
-      state.cache.generations = null;
-      status.textContent = data.protected ? "Protected from deletion" : "Protection removed";
-      draw();
-      await changed(data);
-    } catch (error) {
-      status.textContent = error.message;
-    }
+    update("/api/protect", { enabled: !data.protected, confirm }, (saved) =>
+      saved.protected ? "Protected from deletion" : "Protection removed",
+    );
   };
   box.onsubmit = (event) => {
     event.preventDefault();
-    save({
-      label: label.value,
-      tags: tags.value
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter(Boolean),
-    });
+    save({ label: label.value, tags: splitTags(tags.value) });
   };
   draw();
   if (path.includes("/runs/")) {

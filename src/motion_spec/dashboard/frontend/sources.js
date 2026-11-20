@@ -40,7 +40,9 @@ export async function loadSources(refresh = false) {
   const { sources, roots } = state.cache.sources;
   state.roots = roots;
   $("#generation-root").value = roots.sources;
-  $("#browser").replaceChildren(...renderSourceNode(sourceTree(sources), "", 0, true));
+  $("#browser").replaceChildren(
+    ...renderSourceNode(sourceTree(sources), 0, "", collapsedFolders()),
+  );
   filterSources($("#search").value);
 }
 
@@ -77,43 +79,30 @@ function rememberFold(path, open) {
   writeStored(FOLDS, JSON.stringify([...collapsed]));
 }
 
-function renderSourceNode(node, name, depth, isRoot = false, path = "") {
-  if (!isRoot) {
-    const branch = document.createElement("details");
-    branch.className = "source-node";
-    branch.open = !collapsedFolders().has(path);
-    branch.ontoggle = () => {
-      if (branch.dataset.openedByQuery === undefined) rememberFold(path, branch.open);
-    };
-    branch.style.setProperty("--depth", depth);
-    const summary = document.createElement("summary");
-    summary.append(icon("chevron-right", "fold-marker"), name);
-    branch.append(summary);
-    branch.append(...renderSourceNode(node, "", depth + 1, true, path));
-    return [branch];
-  }
-  const children = [];
-  [...node.folders]
+function renderSourceNode(node, depth, path, collapsed) {
+  const branches = [...node.folders]
     .sort(([left], [right]) => left.localeCompare(right))
-    .forEach(([folder, child]) => {
-      children.push(
-        ...renderSourceNode(child, folder, depth, false, path ? `${path}/${folder}` : folder),
-      );
+    .map(([folder, child]) => {
+      const inside = path ? `${path}/${folder}` : folder;
+      const branch = document.createElement("details");
+      branch.className = "source-node";
+      branch.open = !collapsed.has(inside);
+      branch.ontoggle = () => {
+        if (branch.dataset.openedByQuery === undefined) rememberFold(inside, branch.open);
+      };
+      branch.style.setProperty("--depth", depth);
+      const summary = document.createElement("summary");
+      summary.append(icon("chevron-right", "fold-marker"), folder);
+      branch.append(summary, ...renderSourceNode(child, depth + 1, inside, collapsed));
+      return branch;
     });
-  node.files
+  const leaves = node.files
     .sort((left, right) => left.file.localeCompare(right.file))
-    .forEach(({ file, source }) => {
+    .map(({ file, source }) => {
       const leaf = document.createElement("div");
       leaf.className = "source-leaf";
       leaf.style.setProperty("--depth", depth);
-      const item = listItem(
-        file,
-        null,
-        () => {
-          openSource(source);
-        },
-        source,
-      );
+      const item = listItem(file, null, () => openSource(source), source);
       scrollLongName(item);
       leaf.append(
         item,
@@ -121,9 +110,9 @@ function renderSourceNode(node, name, depth, isRoot = false, path = "") {
       );
       // Built once: the filter runs over every leaf on every keystroke.
       leaf.dataset.search = leaf.textContent.toLowerCase();
-      children.push(leaf);
+      return leaf;
     });
-  return children;
+  return [...branches, ...leaves];
 }
 
 function scrollLongName(item) {
@@ -369,7 +358,7 @@ function bindEditorChoice(source, editors, terminal) {
 
 // The design graph is made by generating, so the findings come from this model's newest
 // generation and there is nothing to say until one exists. A finding is a warning at most.
-export async function showLint(source) {
+async function showLint(source) {
   const box = document.createElement("section");
   box.className = "lint";
   box.hidden = true;
@@ -414,7 +403,7 @@ function lintRow(item) {
 }
 
 // Generate, build and optionally run a model from its own page, showing the terminal doing it.
-export function bindGenerate(source) {
+function bindGenerate(source) {
   const generate = $("#gen-source");
   const start = $("#gen-run-source");
   const status = document.createElement("span");

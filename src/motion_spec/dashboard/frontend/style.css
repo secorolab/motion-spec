@@ -58,7 +58,7 @@ button {
 }
 
 button:active {
-  background: #383d45;
+  background: var(--line);
   color: var(--text);
   transform: translateY(1px);
 }
@@ -591,7 +591,6 @@ body.sidebar-collapsed .transport {
 }
 
 .drift-item[data-status="missing"] small {
-  color: var(--dim);
   font-style: italic;
 }
 
@@ -1172,14 +1171,19 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   content: "● ";
 }
 
-.run-start {
+.run-start,
+.run-stop,
+#stop-pending {
   padding: 5px 14px;
-  border: 1px solid var(--accent);
   background: none;
-  color: var(--accent);
   font: 10px var(--mono);
   letter-spacing: 0.08em;
   cursor: pointer;
+}
+
+.run-start {
+  border: 1px solid var(--accent);
+  color: var(--accent);
 }
 
 .run-start:hover:enabled {
@@ -1194,13 +1198,8 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
 
 .run-stop,
 #stop-pending {
-  padding: 5px 14px;
   border: 1px solid var(--line);
-  background: none;
   color: var(--muted);
-  font: 10px var(--mono);
-  letter-spacing: 0.08em;
-  cursor: pointer;
 }
 
 .run-stop:hover:enabled,
@@ -1232,7 +1231,7 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
 }
 
 .run-live .live-run strong {
-  color: var(--fg);
+  color: var(--text);
   cursor: pointer;
 }
 
@@ -1294,10 +1293,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
 
 .run + .run {
   border-top: 1px solid var(--bg);
-}
-
-.run:last-child {
-  border-bottom: 0;
 }
 
 .run > :nth-child(7),
@@ -1381,10 +1376,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
 
 .badge-failed {
   color: #e0685f;
-}
-
-.badge-incomplete {
-  color: var(--dim);
 }
 
 .runs-empty {
@@ -1484,11 +1475,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   stroke: currentColor;
   stroke-width: 2.25;
   vertical-align: -0.2em;
-}
-
-.icon.solid {
-  fill: currentColor;
-  stroke: none;
 }
 
 /* The label beside an icon is usually a text node, which no sibling selector can see, so the
@@ -1763,19 +1749,18 @@ button > .icon:only-child {
   color: var(--dim);
   opacity: 0.55;
 }
-.constraint[data-kind="monitored"] strong::after {
-  content: "monitored";
+.constraint[data-kind="monitored"] strong::after,
+.constraint[data-idle] strong::after {
   margin-left: 8px;
   color: var(--dim);
   font: 9px var(--mono);
   letter-spacing: 0.06em;
 }
+.constraint[data-kind="monitored"] strong::after {
+  content: "monitored";
+}
 .constraint[data-idle] strong::after {
   content: "not run";
-  margin-left: 8px;
-  color: var(--dim);
-  font: 9px var(--mono);
-  letter-spacing: 0.06em;
 }
 .constraint-motion {
   position: sticky;
@@ -1837,10 +1822,7 @@ button > .icon:only-child {
   margin-left: auto;
 }
 .chart-controls #live-plots[aria-pressed="true"],
-.chart-controls #progressive-plots[aria-pressed="true"] {
-  color: var(--text);
-  box-shadow: inset 0 -2px 0 var(--accent);
-}
+.chart-controls #progressive-plots[aria-pressed="true"],
 .chart-controls #auto-plot[aria-pressed="true"] {
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
@@ -2330,7 +2312,7 @@ button > .icon:only-child {
 }
 ::highlight(console-match-current) {
   background: var(--accent);
-  color: #141516;
+  color: var(--bg);
 }
 /* Terminal SGR palette, muted to sit on --surface. */
 .ansi-b {
@@ -2459,7 +2441,8 @@ button > .icon:only-child {
 }
 /* Minimized, everything the pane shows goes away but its name. */
 .videos.minimized .video-main > :not(.video-name),
-.videos.minimized .video-strip {
+.videos.minimized .video-strip,
+.videos.minimized .video-max {
   display: none;
 }
 .videos.minimized .video-name {
@@ -2467,10 +2450,8 @@ button > .icon:only-child {
   border: 0;
   background: none;
 }
-.videos.minimized .video-max {
-  display: none;
-}
-.video-min {
+.video-min,
+.video-max {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -2484,24 +2465,10 @@ button > .icon:only-child {
   font: 11px var(--mono);
   line-height: 1;
 }
-.video-min:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 .video-max {
-  position: absolute;
-  top: 8px;
   right: 32px;
-  z-index: 1;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 1px solid var(--line);
-  background: #0d0e10cc;
-  color: var(--muted);
-  font: 11px var(--mono);
-  line-height: 1;
 }
+.video-min:hover,
 .video-max:hover {
   border-color: var(--accent);
   color: var(--accent);
@@ -3439,10 +3406,6 @@ body:has(.notebook) #content {
   margin-left: auto;
   color: var(--dim);
 }
-.legend-others {
-  color: var(--dim);
-  font-style: italic;
-}
 .graph-status {
   grid-row: 4;
   color: var(--dim);
@@ -3537,9 +3500,7 @@ body:has(.notebook) #content {
 }
 .open-with .bar > button + button,
 .open-with .bar > .split + button,
-.open-with #editor-choice {
-  border-left: 1px solid var(--line);
-}
+.open-with #editor-choice,
 .open-with .bar > button:not([hidden]) + .split {
   border-left: 1px solid var(--line);
 }
@@ -3559,10 +3520,7 @@ body:has(.notebook) #content {
 }
 /* The details box stretches to the bar but the summary inside it does not, so without this
    the caret centres itself in a box shorter than the cell it appears to sit in. */
-.split {
-  display: flex;
-  align-items: stretch;
-}
+.split,
 .split #editor-choice {
   display: flex;
   align-items: stretch;
@@ -3574,13 +3532,10 @@ body:has(.notebook) #content {
   gap: 0;
   justify-content: center;
   padding: 5px 9px;
-  border: 0;
-  background: none;
 }
 .split #editor-choice summary:hover,
 .split #editor-choice[open] summary {
   background: var(--bg);
-  border: 0;
   color: var(--text);
 }
 /* Drawn, not a glyph: at this size a text arrow is a smudge. */
@@ -4367,7 +4322,8 @@ dialog.ask {
     right: 12px;
     bottom: 12px;
   }
-  .transport {
+  .transport,
+  body.sidebar-collapsed .transport {
     left: 0;
   }
   #sidebar-toggle,
@@ -4377,16 +4333,12 @@ dialog.ask {
   body.sidebar-collapsed main {
     grid-template-columns: 1fr;
   }
-  body.sidebar-collapsed .transport {
-    left: 0;
-  }
   .item {
     display: inline-block;
     width: auto;
     border-right: 1px solid var(--line);
   }
   #browser {
-    overflow: auto;
     white-space: nowrap;
   }
   .constraint {

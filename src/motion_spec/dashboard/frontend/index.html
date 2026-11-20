@@ -34,11 +34,7 @@
       const view = new URLSearchParams(location.hash.slice(1));
       if (
         (view.get("tab") ?? "logs") !== "logs" ||
-        view.has("run") ||
-        view.has("generation") ||
-        view.has("explore") ||
-        view.has("source") ||
-        view.has("diff")
+        ["run", "generation", "explore", "source", "diff"].some((param) => view.has(param))
       ) {
         document.documentElement.classList.add("restoring");
       }

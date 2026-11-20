@@ -15,7 +15,7 @@ import {
   setPickAll,
   showEmpty,
 } from "./components.js";
-import { NOTES_MARKUP, annotationEditor } from "./annotations.js";
+import { NOTES_MARKUP, annotationEditor, splitTags } from "./annotations.js";
 import { bindInspection, restoreInspection } from "./inspection.js";
 import {
   $,
@@ -137,12 +137,23 @@ export async function loadReplay(path) {
   const timeline = $(".timeline");
   timeline.max = Math.max(0, state.replay.frames - 1);
   timeline.disabled = false;
-  indexReplay();
+  // gate id -> the name the source spells it: a row carries the name, not the gate it ran under
+  state.motionOf = state.replay.motion_names ?? {};
+  // slot id -> the motion and constraint it serves: an edge in the log names the slot.
+  state.slotOwner = Object.fromEntries(
+    Object.values(state.replay.signal_index ?? {})
+      .filter((where) => where.slot)
+      .map((where) => [where.slot, where]),
+  );
   populateConstraints();
   watchPlottedRows();
   // The archive of a run this page started reopens the cards that were open when it ended.
   const reopened = state.autoPlot === path && !state.replay.pending && livePlotsOn();
-  if (reopened) reopenPlots(path);
+  if (reopened) {
+    state.autoPlot = null;
+    openPlotsFor(path, state.reopenRows ?? [], state.reopenMotion);
+    state.reopenRows = state.reopenMotion = null;
+  }
   $("#plot").onclick = () => addPlot([]);
   state.motionSpans = motionSpans();
   state.opening = false;
@@ -182,17 +193,6 @@ function dropOpenCharts() {
   state.activeMotion = null;
 }
 
-function indexReplay() {
-  // gate id -> the name the source spells it: a row carries the name, not the gate it ran under
-  state.motionOf = state.replay.motion_names ?? {};
-  // slot id -> the motion and constraint it serves: an edge in the log names the slot.
-  state.slotOwner = Object.fromEntries(
-    Object.values(state.replay.signal_index ?? {})
-      .filter((where) => where.slot)
-      .map((where) => [where.slot, where]),
-  );
-}
-
 // Edges draw for the constraints whose charts are open, so the strip follows the cards.
 function watchPlottedRows() {
   state.plottedWatch?.disconnect();
@@ -202,14 +202,6 @@ function watchPlottedRows() {
     subtree: true,
     attributeFilter: ["data-plotted"],
   });
-}
-
-function reopenPlots(path) {
-  state.autoPlot = null;
-  const keys = state.reopenRows ?? [];
-  const lastMotion = state.reopenMotion;
-  state.reopenRows = state.reopenMotion = null;
-  openPlotsFor(path, keys, lastMotion);
 }
 
 function mountAnnotations(path) {
@@ -353,8 +345,7 @@ function bindPanels() {
     if (panel === "files") showRunFiles(state.runPath).catch(snackError);
     if (panel === "notes") showNotes(state.runPath).catch(snackError);
     state.charts.forEach((chart) => chart.resize());
-    if (!remember) return;
-    writeHash({ set: { panel }, replace: true });
+    if (remember) writeHash({ set: { panel }, replace: true });
   };
   document.querySelectorAll(".replay-tabs button").forEach((button) => {
     button.onclick = () => show(button.dataset.panel);
@@ -369,9 +360,9 @@ async function showRunFiles(runPath) {
   const files = await api(`/api/run/files?path=${encodeURIComponent(runPath)}`);
   const list = $(".run-files");
   if (!list) return;
-  const entry = (file) => {
-    const row = fileRow(file.name, `${file.path} — click to read`, () =>
-      showGenerated(`${runPath}/${file.full}`).catch(snackError),
+  const entry = (file, name) => {
+    const row = fileRow(name, `${file.path} — click to read`, () =>
+      showGenerated(`${runPath}/${file.name}`).catch(snackError),
     );
     const size = document.createElement("span");
     size.className = "file-size";
@@ -379,19 +370,19 @@ async function showRunFiles(runPath) {
     row.append(size, copyPathButton(file.path, { stopClick: true }));
     return row;
   };
-  const folders = new Map();
-  const loose = [];
-  files.forEach((file) => {
-    const [folder, ...rest] = file.name.split("/");
-    if (!rest.length) return loose.push({ ...file, full: file.name });
-    const entry = { ...file, full: file.name, name: rest.join("/") };
-    const inside = folders.get(folder);
-    if (inside) inside.push(entry);
-    else folders.set(folder, [entry]);
-  });
+  const folders = Map.groupBy(
+    files.filter((file) => file.name.includes("/")),
+    (file) => file.name.split("/")[0],
+  );
   list.replaceChildren(
-    ...loose.map(entry),
-    ...[...folders].map(([folder, inside]) => fileFolder(folder, inside.map(entry), true)),
+    ...files.filter((file) => !file.name.includes("/")).map((file) => entry(file, file.name)),
+    ...[...folders].map(([folder, inside]) =>
+      fileFolder(
+        folder,
+        inside.map((file) => entry(file, file.name.slice(folder.length + 1))),
+        true,
+      ),
+    ),
   );
 }
 
@@ -404,11 +395,6 @@ export async function showNotes(runPath, container = null) {
   const text = panel.querySelector(".note-text");
   const tags = panel.querySelector(".note-tags");
   const status = panel.querySelector(".notes-state");
-  const splitTags = (value) =>
-    value
-      .split(",")
-      .map((tag) => tag.trim())
-      .filter(Boolean);
   let notes = (await api(`/api/notes?path=${encodeURIComponent(runPath)}`)).notes;
   // Only the run page can attach a note to a frame; the generation page has no cursor.
   const [frameInput, endInput] = container ? [null, null] : addFrameFields(panel);
@@ -480,7 +466,7 @@ export async function showNotes(runPath, container = null) {
         Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag }),
       ),
     );
-    if (!container && note.frame !== null && note.frame !== undefined) {
+    if (!container && note.frame != null) {
       const jump = document.createElement("button");
       jump.className = "note-action";
       jump.textContent = `Frame ${note.frame}${note.end_frame == null ? "" : `–${note.end_frame}`}`;
@@ -606,13 +592,10 @@ export const constraintKey = (row) =>
   `${row.dataset.motion}/${row.querySelector("strong")?.textContent}`;
 
 function populateConstraints() {
-  const groups = new Map();
-  state.replay.constraints.forEach((constraint) => {
-    const motion = constraint.motion ?? "shared";
-    const group = groups.get(motion);
-    if (group) group.push(constraint);
-    else groups.set(motion, [constraint]);
-  });
+  const groups = Map.groupBy(
+    state.replay.constraints,
+    (constraint) => constraint.motion ?? "shared",
+  );
   $("#constraints").replaceChildren(
     ...[...groups].flatMap(([motion, constraints]) => {
       const heading = document.createElement("div");
@@ -621,7 +604,12 @@ function populateConstraints() {
       return [heading, ...constraints.map((constraint) => constraintRow(constraint, motion))];
     }),
   );
-  $("#constraint-search").oninput = (event) => filterRows(".constraint", event.target.value);
+  $("#constraint-search").oninput = (event) => {
+    const query = event.target.value.toLowerCase();
+    $$(".constraint").forEach((row) => {
+      row.hidden = !row.textContent.toLowerCase().includes(query);
+    });
+  };
 }
 
 function constraintRow(constraint, motion) {
@@ -755,13 +743,6 @@ function bindRowPlots(row, constraint, motion) {
   };
 }
 
-function filterRows(selector, value) {
-  const query = value.toLowerCase();
-  document.querySelectorAll(selector).forEach((item) => {
-    item.hidden = !item.textContent.toLowerCase().includes(query);
-  });
-}
-
 // Cards follow the cursor the way they follow a live run: one motion's charts open and close
 // behind it, never the whole run's -- eighty charts in one page is what made live pages crawl.
 const AUTO_PLOT_KEY = "motion-spec.auto-plot";
@@ -802,7 +783,7 @@ function followMotion() {
 // from state names (S_PICK_ABOVE to pick-above) would be a spelling rule invented here.
 function motionSpans() {
   const spans = new Map();
-  (state.replay?.constraints ?? []).forEach(({ motion, window }) => {
+  state.replay.constraints.forEach(({ motion, window }) => {
     if (!motion || !window) return;
     const span = spans.get(motion);
     spans.set(
@@ -817,13 +798,11 @@ function motionSpans() {
 // motion before them. Spans overlap where a guard outlives its motion, and the latest wins.
 function motionAt(frame) {
   const spans = state.motionSpans ?? [];
-  let current = null;
-  for (const [motion, [from, to]] of spans) {
-    if (from <= frame && frame <= to) current = motion;
-  }
-  if (current) return current;
-  const entered = spans.filter(([, [from]]) => from <= frame);
-  return (entered.length ? entered.at(-1) : spans[0])?.[0] ?? null;
+  const span =
+    spans.findLast(([, [from, to]]) => from <= frame && frame <= to) ??
+    spans.findLast(([, [from]]) => from <= frame) ??
+    spans[0];
+  return span?.[0] ?? null;
 }
 
 // Light a motion's block and scroll the constraint list to it. Opens no plots.
@@ -910,7 +889,7 @@ export function setTransportMode() {
   const driving = Boolean(state.live);
   const play = $("#play");
   const stepForward = $("#step-forward");
-  play.textContent = driving ? (state.live.paused ? "Play" : "Pause") : "Play";
+  play.textContent = driving && !state.live.paused ? "Pause" : "Play";
   play.title = driving ? "Pause the simulation" : "Play the recording";
   $("#step-back").disabled = driving;
   stepForward.disabled = driving && !state.live.paused;
@@ -1068,21 +1047,15 @@ export function renderMarkers() {
 
 const isEdge = (event) => event.kind === "satisfied" || event.kind === "unsatisfied";
 
-// The event that moved the FSM is drawn on the state mark; only one that moved nothing stands
-// on its own.
-function transitionCauses() {
-  const causes = new Map();
-  state.replay.events.forEach((event) => {
-    if (event.kind === "state") causes.set(event.frame, []);
-  });
-  return causes;
-}
-
 // Marks of one kind too close to tell apart become one mark with several names.
 function markerClusters() {
   // An edge is only drawn for a constraint whose chart is open; with no chart it is texture.
   const plotted = new Set($$("#constraints .constraint[data-plotted]").map(constraintKey));
-  const causes = transitionCauses();
+  // The event that moved the FSM is drawn on the state mark; only one that moved nothing stands
+  // on its own.
+  const causes = new Map(
+    state.replay.events.filter((event) => event.kind === "state").map((event) => [event.frame, []]),
+  );
   const kept = state.replay.events.filter((event) => {
     if (event.kind === "event") {
       const entry = causes.get(event.frame) ?? causes.get(event.frame + 1);
@@ -1139,7 +1112,7 @@ function markerButton(mark) {
 
 function noteMarkers() {
   return (state.notes ?? [])
-    .filter((note) => note.frame !== null && note.frame !== undefined)
+    .filter((note) => note.frame != null)
     .map((note) => {
       const marker = document.createElement("button");
       marker.className = "marker marker-note";
@@ -1151,7 +1124,7 @@ function noteMarkers() {
     });
 }
 
-export function trackFraction(frame) {
+function trackFraction(frame) {
   return frame / Math.max(1, state.replay.frames - 1);
 }
 
@@ -1275,13 +1248,9 @@ function showVideos(runPath, cameras) {
 // whatever the camera publishes now, not a track the timeline drives.
 async function showRosCamera(generationPath) {
   if (!generationPath) return;
-  // Only a cached generation carrying `cameras` answers here: the sidebar keeps a lighter
-  // record, and reading `cameras` off that one silently finds none.
-  const cached =
-    state.generation?.path === generationPath && state.generation.cameras ? state.generation : null;
-  const generation =
-    cached ??
-    (await api(`/api/generation?path=${encodeURIComponent(generationPath)}`).catch(() => null));
+  const generation = await api(`/api/generation?path=${encodeURIComponent(generationPath)}`).catch(
+    () => null,
+  );
   // Nothing is re-read off `state` after the await: a run starting rewrites `state.replay` in
   // place, and checking it here is a race the pane used to lose silently.
   if (!generation) return;
@@ -1289,7 +1258,6 @@ async function showRosCamera(generationPath) {
   // the model does not state is not this page's to invent.
   const carried = generation.cameras?.filter((entry) => entry.topic) ?? [];
   if (!carried.length) return;
-  const declaredTopic = carried[0].topic;
   const panel = $(".videos");
   panel.hidden = false;
   panel.classList.add("one-camera", "ros-camera");
@@ -1306,7 +1274,7 @@ async function showRosCamera(generationPath) {
   const name = main.querySelector(".video-name");
   // The topic picked last is remembered for the session, unless this run does not carry it.
   const remembered = carried.some((entry) => entry.topic === state.rosTopic);
-  topic.value = remembered ? state.rosTopic : declaredTopic;
+  topic.value = remembered ? state.rosTopic : carried[0].topic;
   enhanceSelect(topic);
   const subscribe = () => {
     state.rosTopic = topic.value;

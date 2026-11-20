@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 from functools import lru_cache
+from importlib import metadata
 from pathlib import Path
 
 from motion_spec.runs.provenance import FRAME_LOG_PACKED, artifact_size
@@ -72,15 +73,17 @@ NOT_AUTHORED = {"METADATA.toml", "netlify.toml", "pixi.toml", "pyproject.toml", 
 AUTHORED_NAMES = set(ENVIRONMENT_FILES)
 
 
+def package_version() -> str | None:
+    """The installed motion-spec's version; None when it is not installed as a package."""
+    try:
+        return metadata.version("motion_spec")
+    except metadata.PackageNotFoundError:
+        return None
+
+
 def current_roots() -> dict:
     """Return the currently browsed source and generation roots, and what is serving them."""
-    from importlib import metadata
-
-    try:
-        version = metadata.version("motion_spec")
-    except metadata.PackageNotFoundError:
-        version = None
-    return {"sources": str(WORKSPACE), "logs": str(GENERATIONS), "version": version}
+    return {"sources": str(WORKSPACE), "logs": str(GENERATIONS), "version": package_version()}
 
 
 def set_root(kind: str, value: str) -> dict:
@@ -130,8 +133,8 @@ def pick_root(kind: str) -> dict:
 
 def relative_path(root: Path, value: str) -> Path:
     """Resolve a request path inside root, rejecting traversal and missing paths."""
-    path = (root / value).resolve()
-    if root.resolve() not in (path, *path.parents) or not path.exists():
+    path = expected_path(root, value)
+    if not path.exists():
         raise ValueError("unknown path")
     return path
 

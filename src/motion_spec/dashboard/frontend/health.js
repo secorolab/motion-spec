@@ -34,7 +34,7 @@ export async function loadHealth(refresh = false, env = null) {
   }
 }
 
-export function renderHealth(report, storage) {
+function renderHealth(report, storage) {
   const page = document.createElement("article");
   page.className = "health";
   page.innerHTML =
@@ -123,14 +123,11 @@ export function renderHealth(report, storage) {
   picker.className = "health-row";
   const select = document.createElement("select");
   select.className = "health-env";
-  const options = [["", "this shell (nothing sourced)"], ...(env.choices ?? []).map((p) => [p, p])];
-  options.forEach(([value, label]) => {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    option.selected = value === (env.script ?? "");
-    select.append(option);
-  });
+  const script = env.script ?? "";
+  select.append(
+    new Option("this shell (nothing sourced)", "", false, script === ""),
+    ...(env.choices ?? []).map((choice) => new Option(choice, choice, false, choice === script)),
+  );
   select.onchange = () => loadHealth(false, select.value).catch(showError);
   const browse = document.createElement("button");
   browse.className = "health-action";
@@ -149,16 +146,11 @@ export function renderHealth(report, storage) {
     variables.append(row(name, value ?? "unset", { mark: value ? undefined : "absent" }));
   });
 
-  const groups = new Map();
-  checks.forEach((check) => {
-    const profile = groups.get(check.profile);
-    if (profile) profile.push(check);
-    else groups.set(check.profile, [check]);
-  });
-  const sections = [environment, sourced, variables];
   page.querySelector(".health-groups").replaceChildren(
-    ...sections,
-    ...[...groups].map(([profile, rows]) => {
+    environment,
+    sourced,
+    variables,
+    ...[...Map.groupBy(checks, (check) => check.profile)].map(([profile, rows]) => {
       const required = rows.filter((check) => !check.optional);
       const passed = required.filter((check) => check.ok).length;
       const group = list(profile, {

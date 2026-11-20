@@ -37,7 +37,6 @@ class FrameLogTail:
             return False  # header still being written
         # A live log is tailed as it grows; an archived one is packed and no longer moves.
         self._fh = frame_log_pb.open_log(self.path)
-        self._offset = 0
         return True
 
     def poll(self, stride: int = 1) -> list[dict]:

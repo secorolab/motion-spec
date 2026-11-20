@@ -3,7 +3,7 @@
 
 /** Explore: one query, two projections. The table and the picture are the same answer. */
 
-import { icon, iconMarkup } from "./components.js";
+import { icon, iconMarkup, table } from "./components.js";
 import { $, $$, api, post, snack, snackError, state } from "./core.js";
 import { addPlot } from "./plots.js";
 import { setView } from "./routing.js";
@@ -250,24 +250,7 @@ function mergePins(payload) {
 const edgeKey = (link) => `${link.source} ${link.value} ${link.target}`;
 
 function renderTable(data) {
-  const table = document.createElement("table");
-  const head = document.createElement("tr");
-  data.headers.forEach((name) => {
-    const cell = document.createElement("th");
-    cell.textContent = name;
-    head.append(cell);
-  });
-  table.append(head);
-  data.rows.forEach((row) => {
-    const line = document.createElement("tr");
-    row.forEach((term) => {
-      const cell = document.createElement("td");
-      cell.textContent = term ?? "";
-      line.append(cell);
-    });
-    table.append(line);
-  });
-  $("#answer").replaceChildren(table, ...pager(data));
+  $("#answer").replaceChildren(table(data.headers, data.rows), ...pager(data));
 }
 
 // The server windows the rows; the query is re-asked with the next offset.
@@ -432,20 +415,15 @@ function egoNetwork(payload, roots, depth) {
   };
 }
 
-// The node in focus plus everything expanded since; without those, an Expand inside a focused
-// view would merge into a subgraph nobody is drawing. No focus means no centre at all.
-function drawnRoots() {
-  if (!explore.focus.length) return null;
-  return [explore.focus[explore.focus.length - 1], ...explore.expanded];
-}
-
 async function drawGraph() {
   const shell = $(".explore-graph");
   const target = shell.querySelector(".graph-canvas");
   const status = shell.querySelector(".graph-status");
   if (!explore.payload) return;
   const request = ++explore.drawing;
-  const roots = drawnRoots();
+  // The node in focus plus everything expanded since; without those, an Expand inside a focused
+  // view would merge into a subgraph nobody is drawing. No focus means no centre at all.
+  const roots = explore.focus.length ? [explore.focus.at(-1), ...explore.expanded] : null;
   const drawn = visible(
     roots ? egoNetwork(explore.payload, roots, explore.depth) : explore.payload,
   );
@@ -686,7 +664,7 @@ function legendRow(type, count) {
   const row = pickRow(type, count, explore.onlyTypes, explore.hidden);
   const swatch = document.createElement("i");
   swatch.className = "legend-swatch";
-  swatch.style.background = colourFor({ types: [type], graphs: ["model", "runtime"], degree: 1 });
+  swatch.style.background = colourFor({ types: [type] });
   row.prepend(swatch);
   return row;
 }
@@ -808,7 +786,7 @@ async function expand(node) {
   });
   if (!data.graph) return snack("nothing more to draw for this node");
   const nodes = new Map(explore.payload.nodes.map((entry) => [entry.id, entry]));
-  data.graph.nodes.forEach((entry) => nodes.has(entry.id) || nodes.set(entry.id, entry));
+  for (const entry of data.graph.nodes) if (!nodes.has(entry.id)) nodes.set(entry.id, entry);
   const edges = new Set(explore.payload.links.map(edgeKey));
   const links = [
     ...explore.payload.links,
@@ -823,7 +801,7 @@ async function expand(node) {
 // The drawn node set as SPARQL someone else can run. Both ends are named: `VALUES ?s { .. }
 // ?s ?p ?o` alone drags in every second-hop object, drawing a bigger graph than was exported.
 function exportQuery() {
-  const roots = explore.focus.length ? [explore.focus[explore.focus.length - 1]] : null;
+  const roots = explore.focus.length ? [explore.focus.at(-1)] : null;
   const drawn = visible(
     roots ? egoNetwork(explore.payload, roots, explore.depth) : explore.payload,
   );

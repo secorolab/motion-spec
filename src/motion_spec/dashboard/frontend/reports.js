@@ -3,30 +3,9 @@
 
 /** A run's verdict: per motion, what was reached, held, fired and left. */
 
+import { table } from "./components.js";
 import { $, api, seconds } from "./core.js";
 import { jumpToFinding } from "./run.js";
-
-function table(headers, rows) {
-  const node = document.createElement("table");
-  const head = document.createElement("tr");
-  headers.forEach((name) => {
-    const cell = document.createElement("th");
-    cell.textContent = name;
-    head.append(cell);
-  });
-  node.append(head);
-  rows.forEach((cells) => {
-    const line = document.createElement("tr");
-    cells.forEach((text) => {
-      const cell = document.createElement("td");
-      if (text instanceof Node) cell.append(text);
-      else cell.textContent = text;
-      line.append(cell);
-    });
-    node.append(line);
-  });
-  return node;
-}
 
 function section(title, note, body) {
   const box = document.createElement("details");
@@ -53,56 +32,37 @@ function jumpLink(label, frame, motion = null, constraint = null) {
 
 // Reached, held, fired, left: the four questions asked of every motion after a run.
 function renderVerdict(data) {
-  const at = (frame) =>
-    frame === null || frame === undefined ? "—" : seconds(frame * data.period_s);
-  const rows = [];
-  data.motions.forEach((motion) => {
-    motion.constraints.forEach((row) => {
-      const held =
-        row.kind === "goal" && row.active
-          ? `${Math.round((100 * row.satisfied) / row.active)} %`
-          : "—";
-      const reached =
-        row.kind === "goal"
-          ? jumpLink(
-              row.first_satisfied === null
-                ? "never — inspect motion"
-                : at(row.first_satisfied - motion.window[0]),
-              row.first_satisfied ?? motion.window[0],
-              motion.motion,
-              row.id,
-            )
-          : "—";
-      const fired =
-        row.kind === "monitor"
-          ? jumpLink(
-              row.fired === null ? "never — inspect motion" : at(row.fired - motion.window[0]),
-              row.fired ?? motion.window[0],
-              motion.motion,
-              row.id,
-            )
-          : "—";
-      rows.push([
+  const rows = data.motions.flatMap((motion) => {
+    const at = (frame) => seconds((frame - motion.window[0]) * data.period_s);
+    const jump = (row, frame) =>
+      jumpLink(
+        frame === null ? "never — inspect motion" : at(frame),
+        frame ?? motion.window[0],
+        motion.motion,
+        row.id,
+      );
+    return [
+      ...motion.constraints.map((row) => [
         motion.motion,
         row.id,
         row.kind,
-        reached,
-        held,
+        row.kind === "goal" ? jump(row, row.first_satisfied) : "—",
+        row.kind === "goal" && row.active
+          ? `${Math.round((100 * row.satisfied) / row.active)} %`
+          : "—",
         row.kind === "goal" ? String(row.losses) : "—",
-        fired,
-      ]);
-    });
-    motion.exits.forEach((exit) =>
-      rows.push([
+        row.kind === "monitor" ? jump(row, row.fired) : "—",
+      ]),
+      ...motion.exits.map((exit) => [
         motion.motion,
         "→ " + exit.to_state,
         "exit",
-        jumpLink(at(exit.frame - motion.window[0]), exit.frame),
+        jumpLink(at(exit.frame), exit.frame),
         "—",
         "—",
         [...exit.events, ...exit.monitors].join(", ") || "—",
       ]),
-    );
+    ];
   });
   const goals = data.motions.flatMap((motion) =>
     motion.constraints.filter((row) => row.kind === "goal"),
@@ -127,9 +87,6 @@ function renderVerdict(data) {
   return box;
 }
 
-const holding = (text) =>
-  Object.assign(document.createElement("p"), { className: "path", textContent: text });
-
 export async function showReports(runPath) {
   const panel = $("#panel-reports");
   if (!panel || panel.dataset.run === runPath) return;
@@ -139,6 +96,11 @@ export async function showReports(runPath) {
     panel.append(renderVerdict(await api(`/api/run/verdict?path=${encodeURIComponent(runPath)}`)));
   } catch (error) {
     panel.dataset.run = "";
-    panel.append(holding(`verdict unavailable: ${error.message}`));
+    panel.append(
+      Object.assign(document.createElement("p"), {
+        className: "path",
+        textContent: `verdict unavailable: ${error.message}`,
+      }),
+    );
   }
 }

@@ -25,12 +25,14 @@ def protection(path: Path) -> str | None:
     runs = [run.dir for run in GenerationInfo(generation).runs] if path == generation else [path]
     if generation_status(generation)["running"] or any(RunInfo(run).is_live() for run in runs):
         return "active run"
-    if annotations(path)["protected"] or any(annotations(run)["protected"] for run in runs):
+    bundle = [path, *runs]
+    marks = [annotations(item) for item in bundle]
+    if any(mark["protected"] for mark in marks):
         return "protected generation or run"
-    if annotations(path)["pinned"] or any(annotations(run)["pinned"] for run in runs):
+    if any(mark["pinned"] for mark in marks):
         return "pinned generation or run"
     reference = json_file(model_folder(path) / "dashboard-model.json").get("baseline")
-    if reference and (roots.GENERATIONS / reference) in [path, *runs]:
+    if reference and (roots.GENERATIONS / reference) in bundle:
         return "model baseline"
     return None
 
@@ -46,17 +48,15 @@ def preview(paths: list[str]) -> dict:
         except ValueError as error:
             raise ValueError("only generation bundles and run archives can be deleted") from error
     targets = [path for path in targets if not any(other in path.parents for other in targets)]
-    items = []
-    for path in targets:
-        generation = generation_of(path)
-        items.append(
-            {
-                "path": str(path.relative_to(roots.GENERATIONS)),
-                "bytes": directory_size(path),
-                "runs": len(GenerationInfo(path).runs) if path == generation else 1,
-                "blocked": protection(path),
-            }
-        )
+    items = [
+        {
+            "path": str(path.relative_to(roots.GENERATIONS)),
+            "bytes": directory_size(path),
+            "runs": len(GenerationInfo(path).runs) if path == generation_of(path) else 1,
+            "blocked": protection(path),
+        }
+        for path in targets
+    ]
     return {
         "items": items,
         "bytes": sum(item["bytes"] for item in items),
@@ -69,17 +69,18 @@ def trash_entries() -> list[dict]:
     result = subprocess.run(["gio", "trash", "--list"], capture_output=True, text=True, check=False)
     if result.returncode:
         raise ValueError(f"could not list Trash: {result.stderr.strip()}")
+    root = roots.GENERATIONS.resolve()
     entries = []
     for line in result.stdout.splitlines():
         uri, separator, original = line.partition("\t")
         if not separator:
             continue
         path = Path(original).resolve()
-        if roots.GENERATIONS.resolve() in path.parents:
+        if root in path.parents:
             entries.append(
                 {
                     "uri": uri,
-                    "path": str(path.relative_to(roots.GENERATIONS.resolve())),
+                    "path": str(path.relative_to(root)),
                     "exists": path.exists(),
                     "deleted_at": deletion_date(uri),
                 }

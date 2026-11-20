@@ -336,12 +336,7 @@ export async function mountEditor(
     banner.hidden = !check || check.ok;
     if (!check || check.ok) return;
     banner.textContent = check.line ? `line ${check.line}: ${check.message}` : check.message;
-    banner.onclick = () => {
-      if (!check.line || check.line > target.state.doc.lines) return;
-      const line = target.state.doc.line(check.line);
-      target.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
-      target.focus();
-    };
+    banner.onclick = () => revealLine(check.line);
   };
   // Where the find box parks: just under the file header, which is as tall as its own contents.
   holder.style.setProperty("--head", `${$(".viewer-top")?.offsetHeight ?? 60}px`);
@@ -351,8 +346,7 @@ export async function mountEditor(
   const was = (gitHead ?? text).split("\n");
   const changedLine = Decoration.line({ class: "cm-changedLine" });
   const marked = (doc) => {
-    const now = [];
-    for (let n = 1; n <= doc.lines; n += 1) now.push(doc.line(n).text);
+    const now = doc.toString().split("\n");
     // Trimming the matching ends first keeps what Myers has to search small in the common
     // case of one edit in an otherwise-untouched file.
     let head = 0;
@@ -367,12 +361,12 @@ export async function mountEditor(
     }
     const before = was.slice(head, was.length - tail);
     const after = now.slice(head, now.length - tail);
-    if (!after.length) return new Set();
-    return new Set([...myersInsertions(before, after)].map((index) => head + index + 1));
+    if (!after.length) return [];
+    return [...myersInsertions(before, after)].map((index) => head + index + 1);
   };
   const changes = (doc) =>
     Decoration.set(
-      [...marked(doc)]
+      marked(doc)
         .sort((left, right) => left - right)
         .map((n) => changedLine.range(doc.line(n).from)),
     );

@@ -94,6 +94,27 @@ from motion_spec.utils import trash
 
 LIFECYCLE = None
 
+# GET endpoints by what their `path` names: nothing, an existing or a yet-to-exist path under
+# the generations root, or an authored file.
+GET_PLAIN = {
+    "/api/roots": current_roots,
+    "/api/trash": trash_entries,
+    "/api/pick-env": pick_environment,
+    "/api/storage": storage_info,
+    "/api/sources": authored_sources,
+}
+GET_EXISTING = {
+    "/api/annotations": annotations,
+    "/api/generation": generation_details,
+    "/api/generated": read_generated,
+    "/api/model/lint": model_lint,
+    "/api/run/files": run_files,
+    "/api/run/verdict": run_verdict,
+    "/api/devices": probe_devices,
+}
+GET_EXPECTED = {"/api/queries": saved_queries, "/api/notes": run_notes, "/api/replay": replay_data}
+GET_SOURCE = {"/api/source": read_source, "/api/source-diff": git_diff}
+
 
 class LifecycleListener:
     """Bridge REC lifecycle datagrams into one dashboard revision stream."""
@@ -172,21 +193,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             query = parse_qs(parsed.query)
             value = query.get("path", [""])[0]
-            if parsed.path == "/api/roots":
-                return self.send_json(current_roots())
-            if parsed.path == "/api/annotations":
-                return self.send_json(annotations(relative_path(roots.GENERATIONS, value)))
+            if parsed.path in GET_PLAIN:
+                return self.send_json(GET_PLAIN[parsed.path]())
+            if parsed.path in GET_EXISTING:
+                return self.send_json(
+                    GET_EXISTING[parsed.path](relative_path(roots.GENERATIONS, value))
+                )
+            if parsed.path in GET_EXPECTED:
+                return self.send_json(
+                    GET_EXPECTED[parsed.path](expected_path(roots.GENERATIONS, value))
+                )
+            if parsed.path in GET_SOURCE:
+                return self.send_json(GET_SOURCE[parsed.path](value))
             if parsed.path == "/api/baseline":
                 model = model_folder(relative_path(roots.GENERATIONS, value))
                 return self.send_json(
                     {"baseline": json_file(model / "dashboard-model.json").get("baseline")}
                 )
-            if parsed.path == "/api/trash":
-                return self.send_json(trash_entries())
             if parsed.path == "/api/pick-root":
                 return self.send_json(pick_root(query.get("kind", [""])[0]))
-            if parsed.path == "/api/pick-env":
-                return self.send_json(pick_environment())
             if parsed.path == "/api/generations":
                 return self.send_json(
                     [
@@ -194,10 +219,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         for generation in GenerationCatalog(roots.GENERATIONS).generations()
                     ]
                 )
-            if parsed.path == "/api/storage":
-                return self.send_json(storage_info())
-            if parsed.path == "/api/generation":
-                return self.send_json(generation_details(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/source-drift":
                 generation = relative_path(roots.GENERATIONS, value)
                 file = query.get("file", [""])[0]
@@ -209,10 +230,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(
                     provenance_graph(GraphService(relative_path(roots.GENERATIONS, value)))
                 )
-            if parsed.path == "/api/generated":
-                return self.send_json(read_generated(relative_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/model/lint":
-                return self.send_json(model_lint(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/runs":
                 generation = relative_path(roots.GENERATIONS, value)
                 if query.get("model"):
@@ -232,16 +249,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if (target / LAYOUT_REL).exists():
                     return self.send_json(generation_status(target))
                 return self.send_json(run_status(target))
-            if parsed.path == "/api/run/files":
-                return self.send_json(run_files(relative_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/run/verdict":
-                return self.send_json(run_verdict(relative_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/devices":
-                return self.send_json(probe_devices(relative_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/health":
                 if "env" in query:
-                    return self.send_json(use_environment(query.get("env", [""])[0]))
-                return self.send_json(health_report(bool(query.get("refresh", [""])[0])))
+                    return self.send_json(use_environment(query["env"][0]))
+                return self.send_json(health_report(bool(query.get("refresh"))))
             if parsed.path == "/api/generate":
                 return self.send_json(generate_status(query.get("job", [""])[0]))
             if parsed.path == "/api/console":
@@ -252,17 +263,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 # expected_path, not relative_path: a run directory is named before it exists
                 target = expected_path(roots.GENERATIONS, value)
                 return self.send_json(console_slice(console_log_for(target), offset))
-            if parsed.path == "/api/queries":
-                return self.send_json(saved_queries(expected_path(roots.GENERATIONS, value)))
-            if parsed.path == "/api/notes":
-                return self.send_json(run_notes(expected_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/video":
                 run = relative_path(roots.GENERATIONS, value)
                 video = video_file(run, query.get("camera", [""])[0])
                 # Range is honoured so the player can seek.
                 size = video.stat().st_size
                 start, end = 0, size - 1
-                asked = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "") or "")
+                asked = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
                 if asked and (asked.group(1) or asked.group(2)):
                     if asked.group(1):
                         start = min(int(asked.group(1)), size - 1)
@@ -304,8 +311,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     return
                 return
-            if parsed.path == "/api/replay":
-                return self.send_json(replay_data(expected_path(roots.GENERATIONS, value)))
             if parsed.path == "/api/plot":
                 bounds = query.get("window", [])
                 return self.send_json(
@@ -315,14 +320,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         (int(bounds[0]), int(bounds[1])) if len(bounds) == 2 else None,
                     )
                 )
-            if parsed.path == "/api/sources":
-                return self.send_json(authored_sources())
             if parsed.path == "/api/jupyter":
                 return self.send_json(jupyter_server(self.server.server_address[1]))
-            if parsed.path == "/api/source":
-                return self.send_json(read_source(value))
-            if parsed.path == "/api/source-diff":
-                return self.send_json(git_diff(value))
             self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

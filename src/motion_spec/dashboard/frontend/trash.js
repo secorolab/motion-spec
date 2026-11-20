@@ -51,15 +51,6 @@ export async function browseTrash() {
   document.body.append(dialog);
   dialog.querySelector(".close").onclick = () => dialog.close();
   dialog.onclose = () => dialog.remove();
-  try {
-    fillTrash(dialog, trashed);
-  } catch (error) {
-    dialog.querySelector('[role="status"]').textContent = error.message;
-  }
-  dialog.showModal();
-}
-
-function fillTrash(dialog, trashed) {
   const list = dialog.querySelector(".trash-entries");
   const dateSort = dialog.querySelector(".trash-date-sort");
   const status = dialog.querySelector('[role="status"]');
@@ -74,7 +65,8 @@ function fillTrash(dialog, trashed) {
       .filter((entry) => entry.path.toLowerCase().includes(needle))
       .sort((left, right) => (newestFirst ? 1 : -1) * (when.get(right) - when.get(left)));
     const page = visible.slice(0, shown);
-    const rows = [...byDay(page)].flatMap(([day, dayEntries]) => {
+    const days = Map.groupBy(page, (entry) => dayLabel(entry.deleted_at));
+    const rows = [...days].flatMap(([day, dayEntries]) => {
       const heading = document.createElement("span");
       heading.className = "eyebrow";
       heading.textContent = day;
@@ -101,17 +93,7 @@ function fillTrash(dialog, trashed) {
     draw();
   };
   draw();
-}
-
-function byDay(page) {
-  const groups = new Map();
-  page.forEach((entry) => {
-    const label = dayLabel(entry.deleted_at);
-    const day = groups.get(label);
-    if (day) day.push(entry);
-    else groups.set(label, [entry]);
-  });
-  return groups;
+  dialog.showModal();
 }
 
 function dayLabel(value) {

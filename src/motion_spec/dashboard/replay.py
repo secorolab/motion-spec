@@ -49,11 +49,12 @@ def authored_key(slot, motion, name: str) -> tuple[str, str]:
     # A generated conjunction has no motion in its own IRI, but it is a motion's `until`, so
     # what it watches says where it belongs.
     watched = slot.watched if slot.DESCRIPTOR.name == "Monitor" else ()
+    constraint = (name or "").replace("-", "_")
     for iri in (slot.constraint_iri, *(member.iri for member in watched)):
         segments = PurePosixPath(urlparse(iri or "").path).parts
         if len(segments) >= 3 and segments[-2] in ("while", "until", "when"):
-            return (segments[-3].replace("-", "_"), (name or "").replace("-", "_"))
-    return ((motion.id or "").replace("-", "_"), (name or "").replace("-", "_"))
+            return (segments[-3].replace("-", "_"), constraint)
+    return ((motion.id or "").replace("-", "_"), constraint)
 
 
 def source_constraints(run_dir: Path, contract) -> list[dict]:
@@ -174,6 +175,12 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
     return rows
 
 
+# The signals a pooled slot writes.
+SLOT_KEYS = {
+    "constraints": ("error", "output", "measured", "setpoint", "satisfied"),
+    "monitors": ("value", "satisfied"),
+}
+
 SLOT_ROLES = {
     "constraints": (
         ("error_id", "error"),
@@ -215,14 +222,14 @@ def replay_data(run_dir: Path) -> dict:
     signals.extend(
         name
         for field in contract.fields["constraints"]
-        for key in ("error", "output", "measured", "setpoint", "satisfied")
+        for key in SLOT_KEYS["constraints"]
         if (name := f"{field['id']}.{key}") not in mirrored
     )
     signals.extend(
         f"{slot.id}.{key}"
         for motion in contract.header.motions
         for slot in motion.monitors
-        for key in ("value", "satisfied")
+        for key in SLOT_KEYS["monitors"]
     )
     signals.extend(slot_signals(contract))
     indices = {motion.id: motion.index for motion in contract.header.motions}
@@ -231,11 +238,10 @@ def replay_data(run_dir: Path) -> dict:
     logged = set(signals) | {field["id"] for field in contract.fields["quantities"]}
     parts = {}
     for name in logged:
-        prefix, _, _ = name.partition(".")
-        parts.setdefault(prefix, []).append(name)
+        parts.setdefault(name.partition(".")[0], []).append(name)
     for constraint in constraints:
         constraint["monitors"] = [
-            f"{name}.{key}" for name in constraint["monitors"] for key in ("value", "satisfied")
+            f"{name}.{key}" for name in constraint["monitors"] for key in SLOT_KEYS["monitors"]
         ]
         for key in ("tracking", "control", "monitors", "error"):
             constraint[key] = [
@@ -258,24 +264,17 @@ def replay_data(run_dir: Path) -> dict:
     index: dict[str, dict] = {}
     for motion in contract.header.motions:
         # a controller writes a constraint slot; a monitor writes a monitor slot
-        for pool, slots, keys in (
-            (
-                "constraints",
-                motion.controllers,
-                ("error", "output", "measured", "setpoint", "satisfied"),
-            ),
-            ("monitors", motion.monitors, ("value", "satisfied")),
-        ):
+        for pool, slots in (("constraints", motion.controllers), ("monitors", motion.monitors)):
+            fields = contract.fields.get(pool) or ()
             for slot in slots:
                 owner = (
                     slot.constraint_id
                     or str(slot.constraint_iri).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
                     or slot.id
                 )
-                fields = contract.fields.get(pool) or ()
                 field = fields[slot.number]["id"] if slot.number < len(fields) else None
                 named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
-                for key in keys:
+                for key in SLOT_KEYS[pool]:
                     where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
                     # The pooled slot mirrors a signal the header already names: offering both
                     # is the same series twice, under a name nobody can read.
@@ -512,23 +511,23 @@ def run_verdict(run_dir: Path) -> dict:
     spelling: dict[str, str] = {}
     for row in source_constraints(run_dir, contract):
         spelling.setdefault(row["handler"], row["motion"])
-    motions = []
-    for motion in sorted(contract.header.motions, key=lambda m: windows.get(m.index, [1 << 62])[0]):
-        if motion.index not in windows:
-            continue
-        rows = [
-            {"kind": kind, **counts}
-            for (index, kind, _slot), counts in tally.items()
-            if index == motion.index
-        ]
-        motions.append(
-            {
-                "motion": spelling.get(motion.id, motion.id),
-                "window": windows[motion.index],
-                "constraints": rows,
-                "exits": exits.get(motion.index, []),
-            }
-        )
+    ran = sorted(
+        (motion for motion in contract.header.motions if motion.index in windows),
+        key=lambda motion: windows[motion.index][0],
+    )
+    motions = [
+        {
+            "motion": spelling.get(motion.id, motion.id),
+            "window": windows[motion.index],
+            "constraints": [
+                {"kind": kind, **counts}
+                for (index, kind, _slot), counts in tally.items()
+                if index == motion.index
+            ],
+            "exits": exits.get(motion.index, []),
+        }
+        for motion in ran
+    ]
     return {"period_s": contract.header.nominal_period_ns / 1e9, "motions": motions}
 
 
@@ -599,7 +598,9 @@ def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> d
     series = {name: [] for name in names}
     with frame_log_pb.open_log(log) as fh:
         for index, (frame, _) in enumerate(frame_log_pb.raw_frames(fh, contract)):
-            if first <= index <= last and (index - first) % step == 0:
+            if index > last:
+                break
+            if index >= first and (index - first) % step == 0:
                 for name in names:
                     series[name].append(value(frame, name))
     return {

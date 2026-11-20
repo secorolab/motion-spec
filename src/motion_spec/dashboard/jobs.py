@@ -50,6 +50,11 @@ def run_status(run_dir: Path) -> dict:
     # before anything exists on disk.
     live = busy and not (run_dir.is_dir() and run_ended(run_dir))
     trace(f"run_status {run_dir.name}: busy={busy} running={live}")
+    # Whether the run keeps a frame log: from its provenance once it ended, before that from
+    # the choice this dashboard started it with. False means the page must not wait for a log.
+    recorded = run_recorded(run_dir)
+    if recorded is None and started is not None:
+        recorded = started.get("recorded")
     return {
         "id": run_dir.name,
         "path": str(run_dir.relative_to(roots.GENERATIONS)),
@@ -62,13 +67,7 @@ def run_status(run_dir: Path) -> dict:
         # page cannot tell a cancel from a crash by the code alone.
         "stopped": bool(started and started.get("stopped")),
         "log": str(Path(started["generation"]) / RUN_LOG) if started else None,
-        # Whether the run keeps a frame log: from its provenance once it ended, before that from
-        # the choice this dashboard started it with. False means the page must not wait for a log.
-        "recorded": (
-            started.get("recorded")
-            if (recorded := run_recorded(run_dir)) is None and started is not None
-            else recorded
-        ),
+        "recorded": recorded,
     }
 
 
@@ -122,7 +121,8 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     ]
     # Whether to record is a choice on any platform: no log means no replay and no live plots.
     # How a simulation runs is its robot config's [run] section, not the page's to choose.
-    if options.get("log", True) is False:
+    recorded = options.get("log", True) is not False
+    if not recorded:
         argv.append("--no-log")
     argv += ["--env", ENVIRONMENT["script"]] if ENVIRONMENT["script"] else ["--no-env"]
     # A simulator renders any declared camera and its standard view; a real platform records
@@ -154,7 +154,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         "process": process,
         "run_id": run_id,
         "generation": str(generation_dir),
-        "recorded": options.get("log", True) is not False,
+        "recorded": recorded,
     }
     return {
         **run_status(run_dir),
@@ -267,15 +267,9 @@ def health_report(refresh: bool = False) -> dict:
         HEALTH["thread"] = threading.Thread(target=collect, daemon=True)
         HEALTH["thread"].start()
         running = True
-    from importlib import metadata
-
     from motion_spec.health import environment_values, ros_summary
     from motion_spec.setup import ENVIRONMENT_FILES
 
-    try:
-        version = metadata.version("motion_spec")
-    except metadata.PackageNotFoundError:
-        version = None
     env = ENVIRONMENT["captured"]
     return {
         "running": running,
@@ -283,7 +277,7 @@ def health_report(refresh: bool = False) -> dict:
         "stamp": HEALTH["stamp"],
         "progress": HEALTH["progress"] if running else None,
         "environment": {
-            "motion_spec": version,
+            "motion_spec": roots.package_version(),
             "python": platform.python_version(),
             "executable": sys.executable,
             "ros": ros_summary(env),
@@ -387,19 +381,18 @@ def start_generate(source: Path) -> dict:
     # Logs left by earlier dashboards go too: their jobs died with the process that started
     # them. Another dashboard may be reaping the same ones, so a file that vanishes between
     # the listing and the stat is not an error.
-    if log_dir.is_dir():
-        kept = {started["log"] for started in GENERATING.values()}
+    kept = {started["log"] for started in GENERATING.values()}
 
-        def mtime(path: Path) -> float:
-            try:
-                return os.path.getmtime(path)
-            except OSError:
-                return 0.0
+    def mtime(path: Path) -> float:
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0.0
 
-        written = sorted(log_dir.glob("gen-*.log"), key=mtime)
-        for stale in written[:-GENERATE_LOGS_KEPT]:
-            if stale not in kept:
-                stale.unlink(missing_ok=True)
+    written = sorted(log_dir.glob("gen-*.log"), key=mtime)
+    for stale in written[:-GENERATE_LOGS_KEPT]:
+        if stale not in kept:
+            stale.unlink(missing_ok=True)
     with log.open("wb") as sink:
         # The browsed root is where gen writes, and what the generation's locations are taken from.
         process = subprocess.Popen(

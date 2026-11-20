@@ -229,7 +229,7 @@ class SignalFields:
     """
 
     def __init__(self, layout: FrameLayout, contract):
-        self.layout, self.contract = layout, contract
+        self.contract = contract
         self.offsets: dict[str, tuple[int, struct.Struct]] = {}
         offset = 0
         for field in layout.fields:
@@ -260,43 +260,43 @@ class SignalFields:
         for name in names:
             if name not in self._resolved:
                 self._resolved[name] = self.locate(name)
-            where, divisor, gate = self._resolved[name]
-            if gate is not None:
-                # signal_reader's gate, same source.
-                kind, index = gate
-                written = (
-                    active_motion == index
-                    if kind == "owner"
-                    else (
-                        (table := self.contract.gate.get(kind)) is None
-                        or index in table.get(active_motion, ())
-                    )
-                )
-                if not written:
-                    values.append(None)
-                    continue
+            where, divisor, writers = self._resolved[name]
+            if writers is not None and active_motion not in writers:
+                values.append(None)
+                continue
             value = read(where, raw)
             values.append(value / divisor if divisor else value)
         return values
 
     def locate(self, name: str) -> tuple:
+        """(offset and struct, divisor, the active motions that write it or None for all)."""
         if name in _TIMING_MS:
             flat, divisor = _TIMING_MS[name]
             return self.field_of(name, flat), divisor, None
         if name in self._quantities:
             index = self._quantities[name]
-            return self.field_of(name, f"q{index}"), None, ("quantities", index)
+            return self.field_of(name, f"q{index}"), None, self.writers("quantities", index)
         if name in self._slots:
             kind, field, attribute = self._slots[name]
             flat = f"{_SPATIAL_PREFIX[kind]}{field['index']}.{attribute}"
-            return self.field_of(name, flat), None, (kind, field["index"])
+            return self.field_of(name, flat), None, self.writers(kind, field["index"])
         prefix, _, key = name.rpartition(".")
         if prefix in self._constraints:
             return self.field_of(name, f"c{self._constraints[prefix]}.{key}"), None, None
         if prefix in self._monitors:
             index, owner = self._monitors[prefix]
-            return self.field_of(name, f"m{index}.{key}"), None, ("owner", owner)
+            return self.field_of(name, f"m{index}.{key}"), None, {owner}
         raise ValueError(f"unknown signal: {name}")
+
+    def writers(self, kind: str, index: int) -> set | None:
+        """The active motions whose gate writes slot INDEX of KIND; None when KIND is ungated.
+
+        signal_reader's gate, same source, resolved once per signal rather than per frame.
+        """
+        table = self.contract.gate.get(kind)
+        if table is None:
+            return None
+        return {motion for motion, written in table.items() if index in written}
 
     def field_of(self, name: str, flat: str) -> tuple:
         if flat not in self.offsets:

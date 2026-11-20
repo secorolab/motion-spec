@@ -33,7 +33,7 @@ from motion_spec.runs.verify import RecordError
 GRAPH_MAX_TRIPLES = 20_000
 
 
-_GRAPHS: dict[tuple[str, int, bool], GraphService] = {}
+_GRAPHS: dict[tuple[str, int], GraphService] = {}
 
 
 QUERIES_REL = "queries.json"
@@ -42,8 +42,7 @@ NOTES_REL = "notes.json"
 
 def saved_queries(run_dir: Path) -> list:
     """The queries kept beside this run."""
-    stored = json_file(run_dir / QUERIES_REL)
-    return stored.get("queries", []) if isinstance(stored, dict) else []
+    return json_file(run_dir / QUERIES_REL).get("queries", [])
 
 
 def save_queries(run_dir: Path, queries: list) -> dict:
@@ -57,13 +56,7 @@ def save_queries(run_dir: Path, queries: list) -> dict:
 
 def run_notes(run_dir: Path) -> dict:
     """Every note kept beside this run, as written."""
-    stored = json_file(run_dir / NOTES_REL)
-    notes = stored.get("notes") if isinstance(stored, dict) else None
-    return {
-        "notes": [note for note in notes if isinstance(note, dict)]
-        if isinstance(notes, list)
-        else []
-    }
+    return {"notes": json_file(run_dir / NOTES_REL).get("notes", [])}
 
 
 def save_notes(run_dir: Path, notes: list) -> dict:
@@ -73,7 +66,7 @@ def save_notes(run_dir: Path, notes: list) -> dict:
     if not isinstance(notes, list) or len(notes) > 200:
         raise ValueError("notes must be a list of at most 200 entries")
     kept = []
-    for note in notes[:200]:
+    for note in notes:
         if not isinstance(note, dict):
             raise ValueError("each note must be an object")  # noqa: TRY004 -- HTTP input validation
         frame = note.get("frame")
@@ -123,7 +116,7 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     else:
         # Kept per log revision, as the run list is.
         _, log, _contract = resolve_run(run_dir)
-        key = (str(log), log.stat().st_size, True)
+        key = (str(log), log.stat().st_size)
         if key not in _GRAPHS:
             generation = run_generation(run_dir)
             if generation is None:
@@ -247,12 +240,13 @@ def model_lint(generation_dir: Path) -> dict:
 
     Asked of the whole dataset: nothing but the design is loaded here, so the union is the design.
     """
-    document = kept_dsl_document(Path(generation_dir) / "generated")
+    generated = generation_dir / "generated"
+    document = kept_dsl_document(generated)
     if document is None:
         return {"items": []}
     dataset = rdflib.Dataset(default_union=True)
     load_document(document, dataset)
-    provenance = read_generation_dataset(Path(generation_dir) / "generated" / GENERATION_DOCUMENT)
+    provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
     kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
     authored = next((path for path in kept if path.suffix == ".robmot"), None)
     lines = declaration_lines(authored.read_text()) if authored else {}

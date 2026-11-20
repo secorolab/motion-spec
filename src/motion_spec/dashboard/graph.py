@@ -23,24 +23,10 @@ from motion_spec.runs.provenance import (
 )
 
 
-def load_document(path: Path | str, dataset: rdflib.Dataset) -> dict:
-    """Parse one document into DATASET, in a graph named by its file unless it names its own.
-
-    Returns what it read: the file, and the triples it put in each named graph.
-    """
-    path = Path(path).resolve()
-    # Measured per named graph: a JSON-LD file that declares a graph of its own lands there, not
-    # in the graph it was parsed into.
-    before = {str(graph.identifier): len(graph) for graph in dataset.graphs()}
+def load_document(path: Path, dataset: rdflib.Dataset) -> None:
+    """Parse one document into DATASET, in a graph named by its file unless it names its own."""
+    path = path.resolve()
     dataset.graph(rdflib.URIRef(path.as_uri())).parse(path, format="json-ld")
-    after = {str(graph.identifier): len(graph) for graph in dataset.graphs()}
-    grew = {name: size - before.get(name, 0) for name, size in after.items()}
-    return {
-        "iri": path.as_uri(),
-        "path": str(path),
-        "triples": sum(grew.values()),
-        "graphs": [name for name, count in grew.items() if count],
-    }
 
 
 @lru_cache(maxsize=64)
@@ -67,32 +53,19 @@ def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
 class GraphService:
     """One run's queryable model dataset."""
 
-    def __init__(
-        self,
-        generation_dir: Path | str,
-        *,
-        document: Path | None = None,
-        graphs: list[Path] | None = None,
-    ):
-        self.generation_dir = Path(generation_dir)
+    def __init__(self, generation_dir: Path):
+        generated = generation_dir / "generated"
         self.dataset = rdflib.Dataset(default_union=True)
-        # A run names its own model document; the generation is only where one is found without it.
-        if not (document and document.is_file()):
-            document = kept_dsl_document(self.generation_dir / "generated")
+        document = kept_dsl_document(generated)
+        if document is not None:
+            load_document(document, self.dataset)
         # The scene and FSM graphs the IR names nodes of, which the DSL's document holds none of:
         # the other model documents the provenance attributes.
-        if graphs is None:
-            provenance = read_generation_dataset(
-                self.generation_dir / "generated" / GENERATION_DOCUMENT
-            )
-            dsl = next(provenance.subjects(SDO.name, rdflib.Literal("motion_spec_dsl")), None)
-            graphs = [
-                get_file_path(provenance, entity)
-                for entity, agent in set(provenance.subject_objects(PROV.wasAttributedTo))
-                if agent != dsl and (entity, PROV.atLocation, None) in provenance
-            ]
-        documents = [document, *graphs] if document is not None else graphs
-        self.sources = [load_document(path, self.dataset) for path in documents]
+        provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
+        dsl = next(provenance.subjects(SDO.name, rdflib.Literal("motion_spec_dsl")), None)
+        for entity, agent in set(provenance.subject_objects(PROV.wasAttributedTo)):
+            if agent != dsl and (entity, PROV.atLocation, None) in provenance:
+                load_document(get_file_path(provenance, entity), self.dataset)
 
     def query(self, sparql: str) -> tuple[str, object]:
         """(result type, payload) for a SPARQL query over the current dataset.

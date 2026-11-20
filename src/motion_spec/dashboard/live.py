@@ -103,7 +103,8 @@ class ShmSampler(threading.Thread):
             return
         # The block's standing frame is not an advance: a run armed at the play button may have
         # published one already, and armed means no events yet.
-        first, self.seen = self.seen is None, step
+        first = self.seen is None
+        self.seen = step
         if first:
             return
         with self.lock:
@@ -184,11 +185,11 @@ def live_state(run_dir: Path, signals=()) -> dict:
             # record instead; the page then has a loop to drive and the run has a play button.
             started = RUNNING.get(str(run_dir))
             if not started or started.get("recorded") is not False:
-                return dict(_NOT_STARTED)
+                return _NOT_STARTED
             generation = run_generation(run_dir)
             log = generation / "generated/contract/frame_log_header.pb" if generation else None
             if log is None or not log.is_file():
-                return dict(_NOT_STARTED)
+                return _NOT_STARTED
             contract, log_less = frame_log_pb.read_contract(log), True
         # A session that ends drops its sampler and whatever log handle it fell back to.
         for stale in list(_LIVE.values()):
@@ -296,20 +297,19 @@ def live_state(run_dir: Path, signals=()) -> dict:
     if channel is None:
         channel = session["channel"] = run_channel(run_dir)
     now = time.monotonic()
+    cached = session.get("control_alive")
     if moving:
         alive = True
         session["control_alive"] = (True, now)
+    elif cached is not None and now - cached[1] < 2.0:
+        alive = cached[0]
+    elif channel.available:
+        channel.set_pause(bool(channel.paused))
+        alive = acknowledged(channel)
+        session["control_alive"] = (alive, now)
     else:
-        cached = session.get("control_alive")
-        if cached is not None and now - cached[1] < 2.0:
-            alive = cached[0]
-        else:
-            if channel.available:
-                channel.set_pause(bool(channel.paused))
-                alive = acknowledged(channel)
-            else:
-                alive = False
-            session["control_alive"] = (alive, now)
+        alive = False
+        session["control_alive"] = (False, now)
     control = {
         "available": channel.available,
         "alive": alive,

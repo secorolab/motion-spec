@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import collections
 
-from motion_spec_dsl.rdf_parser.vocab import KC_OP
+from motion_spec_dsl.vocab import KC_OP
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.vocab import URI_GEOM_TYPE_KTREE
 from rdf_utils.namespace import NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT

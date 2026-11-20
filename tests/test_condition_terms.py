@@ -6,7 +6,7 @@ what the model asked for: a monitor that can never fire. It may not reach the ge
 from __future__ import annotations
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
+from motion_spec_dsl.vocab import CSTR, CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, TIME
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.namespace import NS_MM_QUDT_QTY as QUDT_QKIND
 from rdf_utils.namespace import NS_MM_QUDT_UNIT as QUDT_UNIT

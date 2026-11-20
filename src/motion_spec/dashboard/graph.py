@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import rdflib
-from motion_spec_dsl.rdf_parser.vocab import EXEC
+from motion_spec_dsl.vocab import EXEC
 from rdf_utils.models.prov import get_file_path
 from rdflib.namespace import PROV, SDO
 

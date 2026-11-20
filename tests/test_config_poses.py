@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import EXEC
+from motion_spec_dsl.vocab import EXEC
 from rdf_utils.constraints import ConstraintViolation
 from rdflib import Dataset
 

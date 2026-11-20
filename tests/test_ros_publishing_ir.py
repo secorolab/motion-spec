@@ -11,7 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, SENSORS
+from motion_spec_dsl.vocab import CSTR_EXT, CSTR_HDL, QUDT_SCHEMA, SENSORS
 from rdf_utils.namespace import NS_MM_QUDT_QTY
 from rdflib import Dataset, URIRef
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS

@@ -13,7 +13,7 @@ Nothing else in the package sequences anything.
 
 from __future__ import annotations
 
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     ALGO_EXT,
     APP,
     CSTR,

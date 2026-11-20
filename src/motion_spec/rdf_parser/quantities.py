@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 import rdflib
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     AGN,
     ALGO_EXT,
     CSTR,

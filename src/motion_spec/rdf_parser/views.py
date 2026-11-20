@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     CSTR_EXT,
     CSTR_HDL,
     GEOM_COORD,

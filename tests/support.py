@@ -9,7 +9,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import EXEC
+from motion_spec_dsl.vocab import EXEC
 from rdf_utils.models.prov import get_py_pkg_info
 from rdf_utils.namespace import URL_MM_PROV_EXT_JSON, URL_MM_PROV_JSON
 from rdflib.namespace import SDO, SSN
@@ -26,7 +26,6 @@ DSL_MODELS = Path(str(files("motion_spec_dsl") / "models"))
 # Each shipped example's directory by its name, whatever its order number.
 EXAMPLES = {path.name[3:]: path for path in DSL_MODELS.glob("[0-9][0-9]_*")}
 
-METAMODELS = Path(__file__).resolve().parents[2] / "metamodels"
 
 # Nothing recomputes a schema hash after generation; it only has to agree across the files.
 SCHEMA = {

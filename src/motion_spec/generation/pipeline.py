@@ -140,8 +140,9 @@ def generate_model(
     workspace tool is found rather than whatever this process happens to have first.
     """
     from coord_dsl.rdf.provenance import render
-    from motion_spec_dsl.rdf_parser.check import validate_dataset
+    from motion_spec_dsl.vocab import APP
     from rdf_utils import DatasetFormat
+    from rdf_utils.constraints import SHACLViolation, check_shacl_constraints
     from rdf_utils.models.prov import (
         add_activity,
         add_agent,
@@ -217,9 +218,11 @@ def generate_model(
             ended=datetime.now(UTC),
         )
         graph_files.update(dict.fromkeys(written.values(), motion_spec))
-    conforms, report = validate_dataset(dataset)
-    if not conforms:
-        raise RuntimeError(f"generated RDF failed SHACL validation:\n{report}")
+    shapes = {str(o) for _, _, o, _ in dataset.quads((None, APP["constraints"], None, None))}
+    try:
+        check_shacl_constraints(dataset, dict.fromkeys(shapes, "turtle"))
+    except SHACLViolation as exc:
+        raise RuntimeError(f"generated RDF failed SHACL validation:\n{exc}") from exc
     ir_path = model_dir / "ir.json"
     started = datetime.now(UTC)
     ir_text = json.dumps(generate_ir(loaded.model, fsm), cls=DataclassJSONEncoder, indent=4)

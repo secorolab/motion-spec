@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_HDL, KC_STAT
+from motion_spec_dsl.vocab import CSTR, CSTR_HDL, KC_STAT
 from rdf_utils.models.vocab import (
     URI_KC_EXT_PRED_OF_JOINT,
     URI_KC_EXT_TYPE_JOINT_LIMIT,

@@ -277,9 +277,9 @@ def main(ctx: click.Context) -> None:
     """The motion-spec toolchain."""
     # setup installs motion-spec-dsl, so runs without it
     if ctx.invoked_subcommand != "setup":
-        from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+        from rdf_utils.resolver import install_resolver
 
-        install_metamodel_resolver()
+        install_resolver()
     handler = SayHandler()
     for name in TOOL_LOGGERS:
         logger = logging.getLogger(name)
@@ -1017,18 +1017,25 @@ def build(
 
 @main.command()
 @click.argument("manifest", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option(
-    "--meta-shacl", is_flag=True, help="Validate the SHACL shape graph against SHACL-of-SHACL too."
-)
-def check(manifest: Path, meta_shacl: bool) -> None:
+def check(manifest: Path) -> None:
     """Validate MANIFEST against its SHACL constraints."""
     with requirements_reported():
-        from motion_spec_dsl.rdf_parser.check import validate_manifest
+        from motion_spec_dsl.vocab import APP
+        from rdf_utils.constraints import SHACLViolation, check_shacl_constraints
+        from rdf_utils.resolver import install_resolver
+        from rdflib import Dataset
+        from rdflib.util import guess_format
 
-    conforms, report = validate_manifest(manifest, meta_shacl=meta_shacl)
-    click.echo(report)
-    if not conforms:
-        raise click.exceptions.Exit(1)
+    install_resolver()
+    dataset = Dataset(default_union=True)
+    dataset.parse(str(manifest), format=guess_format(str(manifest)))
+    shapes = {str(o) for _, _, o, _ in dataset.quads((None, APP["constraints"], None, None))}
+    try:
+        check_shacl_constraints(dataset, dict.fromkeys(shapes, "turtle"))
+    except SHACLViolation as exc:
+        click.echo(exc)
+        raise click.exceptions.Exit(1) from exc
+    say("done", f"{manifest.name} conforms")
 
 
 @main.command()

@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     AGN,
     ALGO_EXT,
     APP,

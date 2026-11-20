@@ -6,11 +6,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import rdflib
-from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
 from rdf_utils.constraints import SHACLViolation, check_shacl_constraints
 from rdf_utils.models.prov import add_file_hash, get_file_path
 from rdf_utils.models.vocab import URI_PROV_EXT_TYPE_EXECUTION
 from rdf_utils.namespace import URL_MM_PROV_EXT_SHACL, URL_MM_PROV_SHACL, URL_SECORO_MM
+from rdf_utils.resolver import install_resolver
 from rdflib.namespace import DCTERMS, PROV, RDF
 
 from motion_spec.runs.provenance import (
@@ -72,7 +72,7 @@ def verify_run(run_dir: Path | str) -> None:
     if errors:
         raise RecordError(run_dir, *errors)
 
-    install_metamodel_resolver()
+    install_resolver()
     provenance = parse_rdf(rdflib.Dataset(default_union=True), provenance_path)
     model_document = kept_dsl_document(generated)
     if model_document is not None and model_document.is_file():

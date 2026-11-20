@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import CSTR, ENV, EXEC, GEOM_ENT, GEOM_REL
+from motion_spec_dsl.vocab import CSTR, ENV, EXEC, GEOM_ENT, GEOM_REL
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.vocab import (
     URI_ENV_PRED_OF_OBJ,

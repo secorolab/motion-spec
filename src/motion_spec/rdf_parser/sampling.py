@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
+from motion_spec_dsl.vocab import QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.distribution import distrib_from_sampled_quantity

@@ -18,7 +18,7 @@ import collections
 from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     ALGO_EXT,
     APP,
     CSTR,

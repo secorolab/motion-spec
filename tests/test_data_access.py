@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import SLV
+from motion_spec_dsl.vocab import SLV
 
 from motion_spec.classes.base import DataclassJSONEncoder
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding

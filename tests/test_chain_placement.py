@@ -6,7 +6,7 @@ never reaches is an error here rather than a dead controller on its first tick."
 from __future__ import annotations
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import SLV
+from motion_spec_dsl.vocab import SLV
 from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding

@@ -4,7 +4,7 @@
 import contextlib
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import KC_OP, SLV
+from motion_spec_dsl.vocab import KC_OP, SLV
 from rdf_utils.constraints import ConstraintViolation
 
 from motion_spec.classes.bindings import ChainBinding, HardwareBinding, RuntimeBinding

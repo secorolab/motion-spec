@@ -93,7 +93,7 @@ def generation_model(generated: Path):
     Raises:
         ValueError: the generation's provenance records no model document.
     """
-    from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+    from rdf_utils.resolver import install_resolver
 
     from motion_spec.rdf_parser.model import Model
 
@@ -106,7 +106,7 @@ def generation_model(generated: Path):
     documents = [path for path in paths if path is not None]
     if not documents:
         raise ValueError(f"{generated}: its provenance records no model document")
-    install_metamodel_resolver()
+    install_resolver()
     dataset = Dataset(default_union=True)
     for path in documents:
         dataset.parse(path, format="json-ld")
@@ -158,11 +158,11 @@ def add_delegation(graph: Graph, delegate: URIRef, responsible: URIRef, activity
 
 def read_generation_dataset(document: Path) -> Dataset:
     """The generation document as a dataset; empty when it has not been written yet."""
-    from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
+    from rdf_utils.resolver import install_resolver
 
     dataset = Dataset(default_union=True)
     if Path(document).is_file():
-        install_metamodel_resolver()
+        install_resolver()
         dataset.parse(document, format="json-ld")
     return dataset
 
@@ -405,7 +405,7 @@ def record_draw(bundle: Graph, agent: URIRef, quantity: str, values, drawn_at) -
     The run's bundle is its own sample graph, so every run of a generation keeps its own values.
     The program drew them at run time, a position as a VectorXYZ and anything else as one number.
     """
-    from motion_spec_dsl.rdf_parser.vocab import QUDT_SCHEMA
+    from motion_spec_dsl.vocab import QUDT_SCHEMA
     from rdf_utils.models.common import ModelBase
     from rdf_utils.models.geom_coord import set_coord_vectorxyz
     from rdf_utils.models.vocab import URI_GEOM_TYPE_VECTOR_XYZ

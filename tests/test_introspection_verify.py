@@ -6,9 +6,9 @@ import shutil
 from pathlib import Path
 
 import pytest
-from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
 from rdf_utils.models.prov import get_file_path, get_py_pkg_info
 from rdf_utils.models.vocab import URI_PROV_EXT_TYPE_TRANSFORMATION
+from rdf_utils.resolver import install_resolver
 from rdflib import Dataset
 from rdflib.namespace import DCTERMS, PROV, RDF
 from rec.provenance import RUN_BASE
@@ -120,7 +120,7 @@ def test_generated_sources_are_kept_as_alternates_of_the_originals_the_dsl_read(
     monkeypatch.setenv("MOTION_SPEC_GEN", str(tmp_path))
     pick_and_place = EXAMPLES["pick_and_place"] / "pick_and_place.robmot"
     generated = generate_model(pick_and_place, tmp_path, stage="ir")
-    install_metamodel_resolver()
+    install_resolver()
     dataset = Dataset().parse(generated / "model" / "pick_and_place.ld.json", format="json-ld")
     dsl = get_py_pkg_info("motion_spec_dsl").purl
     (provenance,) = [

@@ -7,7 +7,7 @@ monitor publishes and answers with.
 
 from __future__ import annotations
 
-from motion_spec_dsl.rdf_parser.vocab import CSTR_EXT, CSTR_HDL, SENSORS
+from motion_spec_dsl.vocab import CSTR_EXT, CSTR_HDL, SENSORS
 from rdf_utils.constraints import ConstraintViolation
 from rdflib.namespace import RDF, RDFS
 from scene_dsl.rdf_parser.vocab import NS_MM_ROS

@@ -6,7 +6,7 @@ as empty with no error)."""
 from __future__ import annotations
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import SLV_EXT
+from motion_spec_dsl.vocab import SLV_EXT
 from rdf_utils.constraints import ConstraintViolation
 from rdflib import Dataset, URIRef
 from rdflib.namespace import RDF

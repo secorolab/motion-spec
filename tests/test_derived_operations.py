@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     CSTR,
     CSTR_EXT,
     CSTR_HDL,

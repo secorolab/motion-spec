@@ -9,7 +9,7 @@ into the world frame, and written straight into the simulator's applied-force sl
 
 from __future__ import annotations
 
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     CSTR_EXT,
     CSTR_HDL,
     GEOM_OP,

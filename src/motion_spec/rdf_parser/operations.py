@@ -14,7 +14,7 @@ from __future__ import annotations
 import collections
 from typing import NamedTuple
 
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     ALGO_EXT,
     CSTR,
     CSTR_EXT,

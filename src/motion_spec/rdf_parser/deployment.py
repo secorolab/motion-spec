@@ -12,7 +12,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from motion_spec_dsl.rdf_parser.vocab import CSTR, ENV, EXEC, GEOM_ENT, MAP, SOSA
+from motion_spec_dsl.vocab import CSTR, ENV, EXEC, GEOM_ENT, MAP, SOSA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.geom_rel import relation_neighbors

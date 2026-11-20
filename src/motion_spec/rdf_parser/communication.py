@@ -12,7 +12,7 @@ No other module appends to the telemetry artifact or to the frame log.
 
 from __future__ import annotations
 
-from motion_spec_dsl.rdf_parser.vocab import CSTR, CSTR_EXT, CSTR_HDL, MOT, SENSORS
+from motion_spec_dsl.vocab import CSTR, CSTR_EXT, CSTR_HDL, MOT, SENSORS
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdflib.namespace import PROV, RDF, RDFS, SOSA

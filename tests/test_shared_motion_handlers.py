@@ -12,16 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from support import METAMODELS
 
 from motion_spec.generation.pipeline import load_model
 from motion_spec.rdf_parser.ir import generate_ir
 
 MODEL = Path(__file__).parent / "fixtures" / "shared_motion" / "shared_motion.robmot"
-
-pytestmark = pytest.mark.skipif(
-    not METAMODELS.exists(), reason="metamodels is not in this checkout"
-)
 
 
 @pytest.fixture(scope="module")
@@ -32,10 +27,8 @@ def shared_units(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list]:
     A fixture of its own rather than a demo model: the invariant is about the lowering, and a
     demo restructured for reasons of its own has twice left it untested.
     """
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("METAMODELS_PATH", str(METAMODELS))
-        loaded = load_model(MODEL, tmp_path_factory.mktemp("shared_motion"))
-        ir = generate_ir(loaded.model, loaded.fsm)
+    loaded = load_model(MODEL, tmp_path_factory.mktemp("shared_motion"))
+    ir = generate_ir(loaded.model, loaded.fsm)
     by_specification: dict[str, list] = {}
     for unit in ir["coordination"]["motions"]:
         by_specification.setdefault(unit.motion_id, []).append(unit)

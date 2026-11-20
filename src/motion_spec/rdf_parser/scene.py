@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree
 
-from motion_spec_dsl.rdf_parser.vocab import EXEC, GEOM_ENT, QUDT_SCHEMA
+from motion_spec_dsl.vocab import EXEC, GEOM_ENT, QUDT_SCHEMA
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdf_utils.models.prov import get_linked_file_path

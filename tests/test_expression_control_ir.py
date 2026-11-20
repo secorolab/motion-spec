@@ -10,7 +10,7 @@ the half its terms move in, and the control law divides its error by that norm.
 from __future__ import annotations
 
 import pytest
-from motion_spec_dsl.rdf_parser.vocab import (
+from motion_spec_dsl.vocab import (
     ALGO_EXT,
     CSTR,
     CSTR_HDL,

@@ -6,7 +6,7 @@ ns fsm = "https://secorolab.github.io/models/table-edge-reach/fsm/"
 
 exec-context (ns=app) table-edge-reach-exec {
     runs-scene: <table_arm_sim_scene_mjc>
-    platform:   simulation { name: "MuJoCo" }
+    platform:   simulation { name: MuJoCo }
     config:     "table_edge_reach.toml"
     timestep:   1.0 ms
 }

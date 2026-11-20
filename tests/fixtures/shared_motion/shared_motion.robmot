@@ -9,7 +9,7 @@ ns sm = "https://secorolab.github.io/models/shared-motion/fsm/"
 
 exec-context (ns=app) shared-motion-exec {
     runs-scene: <table_arm_sim_scene_mjc>
-    platform:   simulation { name: "MuJoCo" }
+    platform:   simulation { name: MuJoCo }
     config:     "robot.toml"
     timestep:   1.0 ms
 }

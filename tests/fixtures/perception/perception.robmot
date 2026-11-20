@@ -8,7 +8,7 @@ ns pcp = "https://secorolab.github.io/models/perception-fixture/fsm/"
 
 exec-context (ns=app) perception-exec {
     runs-scene: <table_arm_sim_scene_mjc>
-    platform:   simulation { name: "MuJoCo" }
+    platform:   simulation { name: MuJoCo }
     config:     "robot.toml"
     timestep:   1.0 ms
 }

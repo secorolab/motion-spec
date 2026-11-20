@@ -19,6 +19,7 @@ from motion_spec.runs.provenance import (
     rec_run,
     run_generation,
 )
+from motion_spec.telemetry.frame_log_pb import HEADER_FILE
 
 FRAME_LOG = "logs/frame_log.pb"
 PROV_TYPES = (PROV.Entity, PROV.Activity, PROV.Agent)
@@ -66,7 +67,7 @@ def verify_run(run_dir: Path | str) -> None:
     provenance_path = generated / GENERATION_DOCUMENT
     recorded_run = rec_run(run_dir)
     rec_path = recorded_run.store.path(recorded_run.id)
-    required = (generated / "contract" / "frame_log.proto", provenance_path, rec_path)
+    required = (generated / "contract" / HEADER_FILE, provenance_path, rec_path)
     errors = [f"{path}: missing" for path in required if not path.is_file()]
     if errors:
         raise RecordError(run_dir, *errors)

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,7 +41,6 @@ def source_tree(tmp_path: Path) -> Path:
     (path / "contract").mkdir(parents=True)
     with (path / "contract" / frame_log_pb.HEADER_FILE).open("wb") as header:
         frame_log_pb.write_delimited(header, build_frame_log_header_record(SCHEMA))
-    shutil.copyfile(frame_log_pb.PROTO, path / "contract" / "frame_log.proto")
     (path / GENERATION_DOCUMENT).parent.mkdir()
     (path / GENERATION_DOCUMENT).write_text(json.dumps(PROVENANCE, indent=4))
     (path / "model").mkdir()

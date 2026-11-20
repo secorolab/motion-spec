@@ -84,7 +84,7 @@ def run_cataloged(
 
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
-    for path in (source_dir / "contract" / "frame_log.proto", source_dir / GENERATION_DOCUMENT):
+    for path in (source_dir / "contract" / HEADER_FILE, source_dir / GENERATION_DOCUMENT):
         if not path.exists():
             raise RunnerError(f"{path}: required generated artifact is missing")
     if not executable.exists():

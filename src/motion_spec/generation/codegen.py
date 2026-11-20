@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -220,13 +219,8 @@ def generate_code(
         write_payload(ir_payload_path, ir)
         root = f"backend/{ir['configuration']['backend']}/main"
 
-        shutil.copyfile(frame_log_pb.PROTO, contract_dir / "frame_log.proto")
         frame_log_pb.run_protoc(f"--cpp_out={output_dir}")
-        written += [
-            contract_dir / "frame_log.proto",
-            output_dir / "frame_log.pb.h",
-            output_dir / "frame_log.pb.cc",
-        ]
+        written += [output_dir / "frame_log.pb.h", output_dir / "frame_log.pb.cc"]
         renders = [
             ("telemetry_header", ir_payload_path, output_dir / "telemetry.hpp"),
             ("telemetry_model_header", ir_payload_path, output_dir / "telemetry_model.hpp"),

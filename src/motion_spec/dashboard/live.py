@@ -112,20 +112,22 @@ class ShmSampler(threading.Thread):
             self.taken += 1
             self.frame, self.t, self.motion = step, core["t"], core["active_motion"]
             self.advanced = time.monotonic()
-            if core["last_event"] != self._event:
-                self._event = core["last_event"]
-                if 0 <= self._event < len(self.fired):
-                    self.events.append(
-                        {"frame": step, "kind": "event", "label": self.fired[self._event]}
-                    )
-            if core["fsm_state"] != self._state:
-                self._state = core["fsm_state"]
-                label = (
-                    self.states[self._state]
-                    if 0 <= self._state < len(self.states)
-                    else str(self._state)
-                )
-                self.events.append({"frame": step, "kind": "state", "label": label})
+            self.events += transition_rows(
+                step, core, self._event, self._state, self.fired, self.states
+            )
+            self._event, self._state = core["last_event"], core["fsm_state"]
+
+
+def transition_rows(frame: int, core, event_was, state_was, fired: list, states: list) -> list:
+    """The event and state rows FRAME adds where its `last_event` or `fsm_state` changed."""
+    rows = []
+    event, state = core["last_event"], core["fsm_state"]
+    if event != event_was and 0 <= event < len(fired):
+        rows.append({"frame": frame, "kind": "event", "label": fired[event]})
+    if state != state_was:
+        label = states[state] if 0 <= state < len(states) else str(state)
+        rows.append({"frame": frame, "kind": "state", "label": label})
+    return rows
 
 
 _NOT_STARTED = {
@@ -237,20 +239,10 @@ def live_state(run_dir: Path, signals=()) -> dict:
             session["frame"] = index
             session["t"] = logged["t"]
             session["motion"] = logged["active_motion"]
-            if logged["last_event"] != session["event"]:
-                session["event"] = logged["last_event"]
-                if 0 <= session["event"] < len(fired):
-                    session["events"].append(
-                        {"frame": index, "kind": "event", "label": fired[session["event"]]}
-                    )
-            if logged["fsm_state"] != session["state"]:
-                session["state"] = logged["fsm_state"]
-                label = (
-                    states[session["state"]]
-                    if 0 <= session["state"] < len(states)
-                    else str(session["state"])
-                )
-                session["events"].append({"frame": index, "kind": "state", "label": label})
+            session["events"] += transition_rows(
+                index, logged, session["event"], session["state"], fired, states
+            )
+            session["event"], session["state"] = logged["last_event"], logged["fsm_state"]
     names = tuple(signals)
     plot = None
     if names and live:

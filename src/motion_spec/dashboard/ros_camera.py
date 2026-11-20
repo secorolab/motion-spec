@@ -37,7 +37,7 @@ class RosCameraSource(RosImageSubscription):
         self._ready.wait(timeout=2.0)
         return self._thread.is_alive() and not self.stop.is_set() and self.error is None
 
-    def latest(self) -> tuple[int, int, int, bytes] | None:
+    def latest(self) -> tuple[int, int, int, str, bytes] | None:
         with self._lock:
             return self._frame
 
@@ -49,12 +49,8 @@ class RosCameraSource(RosImageSubscription):
         try:
             if msg.encoding not in ("rgb8", "bgr8"):
                 raise ValueError(f"unsupported encoding: {msg.encoding}")
-            rgb = rgb_rows(msg)
-            if msg.encoding == "bgr8":
-                # Swapped by slicing, without cv_bridge or numpy.
-                swapped = bytearray(rgb)
-                swapped[0::3], swapped[2::3] = rgb[2::3], rgb[0::3]
-                rgb = bytes(swapped)
+            pixels = rgb_rows(msg)
+            raw_mode = "BGR" if msg.encoding == "bgr8" else "RGB"
             width, height = msg.width, msg.height
         except ValueError as exc:
             self.error = str(exc)
@@ -62,7 +58,7 @@ class RosCameraSource(RosImageSubscription):
             return
         with self._lock:
             self._seq += 1
-            self._frame = (self._seq, width, height, rgb)
+            self._frame = (self._seq, width, height, raw_mode, pixels)
 
 
 _SOURCE: RosCameraSource | None = None
@@ -94,11 +90,12 @@ def mjpeg_stream(source, running):
         frame = source.latest()
         if frame is not None and frame[0] != seen:
             seen = frame[0]
-            _seq, width, height, rgb = frame
+            _seq, width, height, raw_mode, pixels = frame
             from PIL import Image
 
             buffer = io.BytesIO()
-            Image.frombytes("RGB", (width, height), rgb).save(buffer, "JPEG", quality=JPEG_QUALITY)
+            image = Image.frombytes("RGB", (width, height), pixels, "raw", raw_mode)
+            image.save(buffer, "JPEG", quality=JPEG_QUALITY)
             payload = buffer.getvalue()
             yield (
                 (

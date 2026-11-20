@@ -299,26 +299,18 @@ function showView(name) {
   if (name === "graph") redraw();
 }
 
-// Sigma's WebGL renderer only parses hex/rgb colours -- an hsl() string renders black.
-function hsl(h, s, l) {
-  s /= 100;
-  l /= 100;
-  const f = (n) => {
-    const k = (n + h / 30) % 12;
-    const c = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-    return Math.round(255 * c)
-      .toString(16)
-      .padStart(2, "0");
-  };
-  return `#${f(0)}${f(8)}${f(4)}`;
-}
+// Sigma's WebGL renderer only parses hex/rgb colours -- an hsl() string renders black; a canvas
+// reads it back as hex.
+const COLOUR = document.createElement("canvas").getContext("2d");
 
 // Hashed from the type, so there is no palette to run out of.
 function colourFor(node) {
   const type = node.types[0] ?? "";
+  if (!type) return "#8a8f98";
   let hash = 0;
   for (const character of type) hash = (hash * 31 + character.charCodeAt(0)) % 360;
-  return type ? hsl(hash, 68, 64) : "#8a8f98";
+  COLOUR.fillStyle = `hsl(${hash} 68% 64%)`;
+  return COLOUR.fillStyle;
 }
 
 const sizeFor = (node) => Math.min(12, 3 + Math.log1p(node.degree) * 1.7);

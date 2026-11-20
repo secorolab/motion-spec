@@ -2,8 +2,7 @@
 /* SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de) */
 /* Author: Vamsi Kalagaturu */
 
-/* Shared controls, scrollbars and the narrow-window rules come last, where they are meant to
-   win on source order. */
+/* shared controls, scrollbars and narrow-window rules come last, to win on source order */
 
 :root {
   --bg: #141516;
@@ -24,8 +23,7 @@
   box-sizing: border-box;
 }
 
-/* Every `display` rule here outranks the browser's own [hidden], and a panel that keeps its
-   box while hidden still takes a grid row. */
+/* outranks every display rule here; a hidden panel must not take a grid row */
 [hidden] {
   display: none !important;
 }
@@ -112,8 +110,7 @@ aside {
   background: var(--side);
 }
 
-/* line-height 1, or the inherited 1.6 centres the wordmark in a taller box and it rides high
-   beside the mark. */
+/* line-height 1, or the wordmark rides high beside the mark */
 .brand {
   display: flex;
   flex-wrap: wrap;
@@ -133,7 +130,6 @@ aside {
   color: var(--accent);
 }
 
-/* Above the wordmark's cap height, and kept at its own size while the rail narrows. */
 .brand-mark {
   flex: none;
   display: block;
@@ -303,8 +299,6 @@ nav button.active {
   text-transform: uppercase;
 }
 
-/* Faded into the rail's own colour, so the list reads as continuing under the footer. A drop
-   shadow cannot say that here: black blurred onto a near-black rail is invisible. */
 .aside-foot::before {
   content: "";
   position: absolute;
@@ -369,9 +363,7 @@ body.sidebar-collapsed aside {
   border-right: 0;
 }
 
-/* Collapsed, this button carries the brand mark: the rail is 24px wide, with no room for both.
-   top: 9px, not the expanded toggle's 14px, so the 24px mark centred in a 34px button lands on
-   the same rows the brand's does and collapsing moves it sideways only. */
+/* collapsed, the button carries the brand mark; top 9px lines it up with the brand */
 body.sidebar-collapsed #sidebar-toggle {
   top: 9px;
   left: 0;
@@ -379,8 +371,7 @@ body.sidebar-collapsed #sidebar-toggle {
   height: 34px;
   border-left: 0;
   background: url("mark.svg") no-repeat center / 24px 24px;
-  /* app.js clears the button's glyph, but the collapsed class is set before the first paint, so
-     without this the mark wears an "x" for a frame on every reload. */
+  /* the class is set before first paint, ahead of app.js clearing the glyph */
   font-size: 0;
 }
 
@@ -599,7 +590,7 @@ body.sidebar-collapsed .transport {
   padding: 9px 22px 24px;
 }
 
-/* Room for a bar fixed over the page, kept only while one is there: it is scrollable height. */
+/* room for the fixed selection bar, only while it is shown */
 body:not(:has(.transport)):has(#selection-actions:not([hidden])) #content {
   padding-bottom: 76px;
 }
@@ -651,7 +642,6 @@ html.restoring #content .empty {
   font: 600 19px var(--mono);
 }
 
-/* No border: beside real buttons, a bordered box reads as one more button to press. */
 .page-heading .eyebrow,
 .replay-heading .eyebrow {
   padding: 0 0 3px;
@@ -746,9 +736,7 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   transform: translateY(0);
 }
 
-/* Each cell carries its own border, so a row that does not fill leaves space rather than the
-   slab of background a gapped grid shows through. auto-fill, not auto-fit: a last row of
-   three keeps the column width the first row set instead of stretching across the page. */
+/* auto-fill, not auto-fit: a short last row keeps the first row's column width */
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
@@ -770,7 +758,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   letter-spacing: 0.06em;
 }
 
-/* a fact is short enough to read whole; a list of devices wraps rather than losing its tail */
 .fact span {
   display: block;
   overflow-wrap: anywhere;
@@ -926,7 +913,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   border-color: var(--accent);
 }
 
-/* Marked by colour, not by a border: hover already owns the border. */
 .source-file.is-model {
   color: var(--accent);
 }
@@ -940,8 +926,7 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   white-space: nowrap;
 }
 
-/* Qualified by .source-file to outrank .picker-panel's own `bottom`, set later in this file,
-   which would otherwise pin both edges and squeeze the menu to the gap between them. */
+/* qualified to outrank .picker-panel's later `bottom` */
 .source-file .row-menu {
   top: calc(100% + 4px);
   bottom: auto;
@@ -959,7 +944,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   color: var(--dim);
 }
 
-/* Tinted rather than edge-marked, so a finding does not read as an uncommitted change. */
 .lint {
   display: grid;
   margin: 6px 0 14px;
@@ -1100,7 +1084,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   color: var(--accent);
 }
 
-/* In the flow, not fixed: a fixed bar covered whatever section the reader had scrolled to. */
 .run-bar {
   display: flex;
   flex-wrap: wrap;
@@ -1256,8 +1239,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   border: 1px solid var(--line);
 }
 
-/* The numbers are what gets compared, so they sit together rather than drifting on a 1fr id
-   column. */
 .run,
 .run-header {
   display: grid;
@@ -1268,9 +1249,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   font-size: 12px;
 }
 
-/* Rows are separated by the page's own background and the outcome by colour alone: ten ruled
-   rows and ten outlined badges read as a grid of boxes. The note is a second line under the
-   id, not an eighth column, so row-gap starts it where the id does. */
 .run {
   background: var(--surface);
   cursor: pointer;
@@ -1284,7 +1262,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   letter-spacing: 0.06em;
 }
 
-/* Sized to its columns: a 1fr column only turns the slack into a void between two of them. */
 .runs,
 .run-header,
 .run-pagination {
@@ -1466,8 +1443,6 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   margin-top: 30px;
 }
 
-/* One size, not the font's: these buttons set a font-size to fit the glyph each once drew.
-   Scaled from a 24-unit grid this small, the stroke needs weight back or it reads grey. */
 .icon {
   width: 13px;
   height: 13px;
@@ -1477,8 +1452,7 @@ body.sidebar-collapsed #selection-actions[data-side="sidebar"] {
   vertical-align: -0.2em;
 }
 
-/* The label beside an icon is usually a text node, which no sibling selector can see, so the
-   space goes on the icon. An icon that is the only element in its button needs none. */
+/* the label is usually a bare text node, so the space goes on the icon */
 button > .icon:not(:only-child):first-child {
   margin-right: 6px;
 }
@@ -1495,8 +1469,7 @@ button > .icon:only-child {
   margin: 0;
 }
 
-/* A section of the page the reader folds away. The marker's box is fixed, or the two glyphs
-   are different widths and the heading moves when it opens. */
+/* fixed marker box, so the heading does not shift when it opens */
 .fold summary {
   display: flex;
   align-items: center;
@@ -1509,7 +1482,6 @@ button > .icon:only-child {
   display: none;
 }
 
-/* One shape turned, not two glyphs swapped: the width cannot change, so the heading stays put. */
 .fold summary .fold-marker,
 .source-node summary .fold-marker,
 .generation-group summary .fold-marker,
@@ -1559,7 +1531,6 @@ button > .icon:only-child {
   color: var(--accent);
 }
 
-/* The columns share a row per line, so the two sides stay level with each other. */
 .diff-state {
   margin: 4px 0 16px;
   color: var(--muted);
@@ -1631,8 +1602,6 @@ button > .icon:only-child {
   color: var(--good);
 }
 
-/* A viewport-high column ending where #content's bottom padding clears the fixed transport.
-   Panels scroll inside themselves; the page itself never grows a scrollbar. */
 .replay {
   display: grid;
   gap: 24px;
@@ -1816,7 +1785,6 @@ button > .icon:only-child {
   border-color: var(--accent);
   color: var(--accent);
 }
-/* A state, not an action, so it sits apart from the buttons that do things. */
 .chart-controls #live-plots,
 .chart-controls #auto-plot {
   margin-left: auto;
@@ -1835,7 +1803,7 @@ button > .icon:only-child {
   grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
   gap: 12px;
 }
-/* A card is appended and removed with nothing else inside, so :empty is exactly "no plots". */
+/* cards are the only children, so :empty means no plots */
 .plots:empty::before {
   content: "No plots open. auto plot follows the run, opening each motion's charts as the cursor enters it; a constraint on the left draws just that one.";
   padding: 14px 12px;
@@ -2253,7 +2221,6 @@ button > .icon:only-child {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-/* The whole panel, not an excerpt: the log fills every row under the search bar. */
 #panel-console {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2305,7 +2272,6 @@ button > .icon:only-child {
   color: var(--dim);
   cursor: default;
 }
-/* Painted by the browser over the log's own ANSI spans, so neither has to know about the other. */
 ::highlight(console-match) {
   background: #e07a5f40;
   color: var(--text);
@@ -2314,7 +2280,7 @@ button > .icon:only-child {
   background: var(--accent);
   color: var(--bg);
 }
-/* Terminal SGR palette, muted to sit on --surface. */
+/* terminal SGR palette */
 .ansi-b {
   font-weight: 600;
 }
@@ -2424,7 +2390,6 @@ button > .icon:only-child {
   border: 1px solid var(--line);
   background: var(--surface);
 }
-/* One knob for how tall a video may stand; the expand toggle turns it. */
 .videos.expanded {
   max-width: min(1400px, 85vw);
   --video-h: 75vh;
@@ -2432,14 +2397,13 @@ button > .icon:only-child {
 .videos.one-camera {
   grid-template-columns: 1fr;
 }
-/* After .one-camera, so a minimized single-camera pane collapses rather than staying wide. */
+/* after .one-camera, so a minimized pane collapses */
 .videos.minimized {
   width: auto;
   grid-template-columns: auto;
   justify-self: end;
   padding: 6px 34px 6px 8px;
 }
-/* Minimized, everything the pane shows goes away but its name. */
 .videos.minimized .video-main > :not(.video-name),
 .videos.minimized .video-strip,
 .videos.minimized .video-max {
@@ -2698,12 +2662,9 @@ button > .icon:only-child {
   background: var(--muted);
   transform: rotate(45deg);
 }
-/* A state entered on an event: the event's outline on the state's mark, one mark for the two. */
 .marker-transition {
   border-color: var(--text);
 }
-/* Ticks in the band between the rails, so a chattering constraint reads as texture rather
-   than covering the state and event markers above it. */
 .marker-satisfied,
 .marker-unsatisfied {
   top: 4px;
@@ -2870,7 +2831,6 @@ body:has(.notebook) #content {
 .explore-page > .path {
   margin: 4px 0 18px;
 }
-/* A half each, so a long query list never pushes the sources out of sight. */
 .explore-rail {
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
@@ -3019,7 +2979,6 @@ body:has(.notebook) #content {
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 
-/* Table and graph occupy the same row box, so switching views never changes the frame. */
 #answer {
   height: 100%;
   min-height: 0;
@@ -3067,8 +3026,7 @@ body:has(.notebook) #content {
   font: 10px var(--mono);
 }
 
-/* Rows pinned by index: the empty crumbs row display:nones away, and without the pin the
-   canvas slides into an auto row while the status line inherits the 1fr. */
+/* rows pinned by index: the crumbs row can display:none away */
 .explore-graph {
   display: grid;
   gap: 8px;
@@ -3233,8 +3191,6 @@ body:has(.notebook) #content {
   content: "› ";
   color: var(--dim);
 }
-/* The side rail scrolls within the row: a rail taller than the canvas would stretch the row
-   and leave a dead band under the picture. */
 .graph-main {
   grid-row: 3;
   display: grid;
@@ -3250,7 +3206,6 @@ body:has(.notebook) #content {
   overflow: hidden;
   background: var(--surface);
 }
-/* A half of the rail each, so a long type list can never push the relationships off. */
 .graph-side {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
@@ -3412,17 +3367,14 @@ body:has(.notebook) #content {
   font: 11px var(--mono);
 }
 
-/* A grid item's min-width is auto, so without an explicit track a long source line pushes the
-   pre past the page instead of scrolling inside it. */
+/* explicit track: a grid item's auto min-width lets long lines push past the page */
 .viewer {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
 }
-/* One sticky block, so nothing shows through between the title and the path. #content's top
-   padding is inside the scrollport, so lines would slide through the strip above a header
-   stuck at 0; the viewer carries that padding itself instead. */
+/* #content's top padding is inside the scrollport, so the viewer carries it */
 #content:has(.viewer) {
   padding-top: 0;
 }
@@ -3455,7 +3407,6 @@ body:has(.notebook) #content {
   font: 11px var(--mono);
   cursor: pointer;
 }
-/* The editor is the page, not a window inside it: it grows to the file and #content scrolls. */
 #source-text {
   min-width: 0;
 }
@@ -3466,13 +3417,11 @@ body:has(.notebook) #content {
   overflow: visible;
   line-height: 1.6;
 }
-/* A file the editor could not be fetched for still has to be readable. */
 .plain-source {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 12.5px/1.6 var(--code);
 }
-/* Each group boxed once rather than once per button, with one accent on the primary action. */
 .open-with {
   display: flex;
   align-items: center;
@@ -3518,14 +3467,11 @@ body:has(.notebook) #content {
 .open-with #save-source {
   color: var(--accent);
 }
-/* The details box stretches to the bar but the summary inside it does not, so without this
-   the caret centres itself in a box shorter than the cell it appears to sit in. */
 .split,
 .split #editor-choice {
   display: flex;
   align-items: stretch;
 }
-/* Only a caret inside: space-between would push it to one edge of its own box. */
 .split #editor-choice summary {
   flex: 1;
   min-width: 0;
@@ -3538,7 +3484,6 @@ body:has(.notebook) #content {
   background: var(--bg);
   color: var(--text);
 }
-/* Drawn, not a glyph: at this size a text arrow is a smudge. */
 .split #editor-choice summary::after {
   content: none;
 }
@@ -3692,8 +3637,6 @@ body:has(.notebook) #content {
 .health-what:empty {
   display: none;
 }
-/* A path narrowed past its head can be dragged back into view. No scrollbar: one per row
-   would outweigh the text it sits under, and the ellipsis already marks the cut. */
 .health-value {
   flex: 1;
   min-width: 0;
@@ -3741,7 +3684,6 @@ body:has(.notebook) #content {
   color: var(--accent);
 }
 
-/* One box for every pick on the page, never the platform's rounded blue control. */
 .pick {
   display: inline-grid;
   place-content: center;
@@ -3849,7 +3791,6 @@ body:has(.notebook) #content {
   background: none;
   color: var(--accent);
 }
-/* A multi-pick needs a details, not a select, so the run bar matches the navbar's look here. */
 .run-bar .picker summary {
   position: relative;
   min-width: 96px;
@@ -3895,7 +3836,6 @@ body:has(.notebook) #content {
   background: #282c31;
   color: var(--accent);
 }
-/* The pickers elsewhere sit at the foot of the page and open upward; this one is at the top. */
 .picker-down .picker-panel {
   top: calc(100% + 5px);
   bottom: auto;
@@ -3903,8 +3843,7 @@ body:has(.notebook) #content {
   left: auto;
 }
 
-/* A native select paints its popup in the platform's colours and would ignore the theme, so
-   the real one is kept for its semantics and hidden. */
+/* native select popups ignore the theme; the real one stays, hidden, for semantics */
 .theme-select {
   position: relative;
   min-width: 0;
@@ -3992,7 +3931,7 @@ body:has(.notebook) #content {
   color: var(--dim);
   cursor: default;
 }
-/* `button:active` nudges 1px, which under the last option is scroll height that blinks a bar in. */
+/* `button:active` nudges 1px, which here blinks a scrollbar in */
 .theme-select-option:active,
 .picker-panel button:active {
   transform: none;

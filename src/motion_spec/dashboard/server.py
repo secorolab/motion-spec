@@ -92,8 +92,6 @@ from motion_spec.utils import trash
 
 LIFECYCLE = None
 
-# GET endpoints by what their `path` names: nothing, an existing or a yet-to-exist path under
-# the generations root, or an authored file.
 GET_PLAIN = {
     "/api/roots": current_roots,
     "/api/trash": trash_entries,
@@ -162,11 +160,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if not parsed.path.startswith("/api/"):
             return super().do_GET()
-        # Reading is not harmless here: a GET opens a folder chooser, connects to the robot,
-        # starts a notebook server. Any page in any tab can ask for one of those as an image or a
-        # no-cors fetch, and never see the answer -- the side effect is the attack. Browsers
-        # stamp where a request came from, so that stamp is the gate. Nothing stamps it when the
-        # client is not a browser (curl, the CLI, a test), and those are left alone.
+        # GETs have side effects: refuse cross-site browser requests
         site = self.headers.get("Sec-Fetch-Site")
         if not (site is None or site in ("same-origin", "none")):
             return self.send_json({"error": "cross-site request"}, HTTPStatus.FORBIDDEN)
@@ -237,7 +231,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 runs = GenerationInfo(generation).runs
                 return self.send_json([run_info(run.dir) for run in runs])
             if parsed.path == "/api/run":
-                # A generation answers for every run of it the dashboard started; a run for itself.
                 target = relative_path(roots.GENERATIONS, value)
                 if (target / HEADER_REL).exists():
                     return self.send_json(generation_status(target))
@@ -253,13 +246,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 job = query.get("job", [""])[0]
                 if job:
                     return self.send_json(generate_console(job, offset))
-                # expected_path, not relative_path: a run directory is named before it exists
+                # a run directory is named before it exists
                 target = expected_path(roots.GENERATIONS, value)
                 return self.send_json(console_slice(console_log_for(target), offset))
             if parsed.path == "/api/video":
                 run = relative_path(roots.GENERATIONS, value)
                 video = video_file(run, query.get("camera", [""])[0])
-                # Range is honoured so the player can seek.
                 size = video.stat().st_size
                 start, end = 0, size - 1
                 asked = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
@@ -286,7 +278,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         remaining -= len(chunk)
                 return
             if parsed.path == "/api/ros-camera":
-                # The live view a real platform records nothing of.
                 source = ros_camera.source_for(query.get("topic", [""])[0])
                 if not source.alive():
                     return self.send_json(
@@ -314,19 +305,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     )
                 )
             if parsed.path == "/api/jupyter":
-                return self.send_json(jupyter_server(self.server.server_address[1]))
+                return self.send_json(jupyter_server(self.request.getsockname()[1]))
             self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        # A handler that dies instead closes the connection, leaving the page nothing to report.
+        # an uncaught error drops the connection unanswered
         except Exception as exc:  # noqa: BLE001
             self.send_json(self.failed(exc), HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:
         """Update dashboard roots, open a source, or delete selected runs and generations."""
-        # Only the dashboard's own page may POST: these endpoints delete and spawn. Compared
-        # against the request's own Host, not a hardcoded loopback name, so this holds whether
-        # the page was loaded from 127.0.0.1 or from localhost.
+        # against the request's own Host, so both 127.0.0.1 and localhost pass
         origin = self.headers.get("Origin")
         if self.headers.get_content_type() != "application/json" or (
             origin is not None
@@ -378,13 +367,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if self.path == "/api/run/stop":
                 return self.send_json(stop_run(relative_path(roots.GENERATIONS, body["path"])))
             if self.path == "/api/generate":
-                # source_path takes any authored file; only a .robmot is a whole run to make
                 if Path(body["path"]).suffix != ".robmot":
                     raise ValueError("only a .robmot generates")
                 return self.send_json(start_generate(source_path(body["path"])))
             if self.path == "/api/live":
-                # A run is polled from the moment it is named, before the runtime has written
-                # its directory: live_state answers that with `started: False`.
                 return self.send_json(
                     live_state(
                         expected_path(roots.GENERATIONS, body["path"]), body.get("signals") or ()
@@ -418,7 +404,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 return self.send_json(
                     run_notebook(
                         relative_path(roots.GENERATIONS, body["path"]),
-                        self.server.server_address[1],
+                        self.request.getsockname()[1],
                     )
                 )
             if self.path != "/api/delete":
@@ -437,8 +423,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ]
                 for target in targets:
                     trash(target)
-            # A model folder emptied of its generations is no longer a model folder, and a
-            # generation nested under its own name empties two folders, not one.
             folders = 0
             for target in targets:
                 folder = target.parent
@@ -460,11 +444,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     @staticmethod
     def failed(exc: Exception) -> dict:
-        """A fault, not a bad request: the page is told, and the terminal gets the traceback.
-
-        Anything that is not a ValueError here is the dashboard's own mistake. Answering those
-        with 400 and one line of text hides them as the reader's fault and loses the stack.
-        """
+        """A fault, not a bad request: the page is told, and the terminal gets the traceback."""
         traceback.print_exc()
         return {"error": f"dashboard error: {type(exc).__name__}: {exc}"}
 

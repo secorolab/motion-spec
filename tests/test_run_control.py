@@ -13,7 +13,7 @@ def test_the_block_is_written_only_at_its_own_layout_version(tmp_path: Path) -> 
     block = tmp_path / "ctrl"
     # A program of another layout version: its words sit at other offsets.
     block.write_bytes(struct.pack("<Q", VERSION - 1) + bytes(SIZE))
-    assert not ControlChannel(name=str(block)).available
+    assert ControlChannel(name=str(block)).open() is None
 
     block.write_bytes(struct.pack("<Q", VERSION) + bytes(SIZE - 8))
     channel = ControlChannel(name=str(block))

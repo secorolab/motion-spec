@@ -165,12 +165,13 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 )
             )
             continue
-        position, orientation = quantities.frame_placement(
+        placement = quantities.frame_placement(
             model, frame, quantities.placement_frame(model, body)
         )
         # left out rather than invent a spot at the body's origin
-        if position is None:
+        if placement is None:
             continue
+        position, orientation = placement
         scene.frames.append(
             MjcfSceneFrame(
                 body=body_name,
@@ -203,9 +204,10 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         camera_frame = URIRef(camera.frame_uri)
         if body_of_frame(camera_frame, graph) not in static_bodies:
             continue
-        position, orientation = quantities.frame_placement(model, camera_frame, anchor)
-        if position is None:
+        placement = quantities.frame_placement(model, camera_frame, anchor)
+        if placement is None:
             continue
+        position, orientation = placement
         scene.static_cameras.append(
             MjcfSceneCamera(
                 name=camera.id,

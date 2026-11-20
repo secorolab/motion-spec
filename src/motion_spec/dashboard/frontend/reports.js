@@ -30,7 +30,6 @@ function jumpLink(label, frame, motion = null, constraint = null) {
   return button;
 }
 
-// Reached, held, fired, left: the four questions asked of every motion after a run.
 function renderVerdict(data) {
   const rows = data.motions.flatMap((motion) => {
     const at = (frame) => seconds((frame - motion.window[0]) * data.period_s);

@@ -147,10 +147,10 @@ def generate_code(
     coord-dsl's framed FSM `fsm`.
 
     Raises:
-        RuntimeError: the IR declares no FSM. The generated program is an FSM dispatcher.
+        RuntimeError: the model declares no FSM. The generated program is an FSM dispatcher.
     """
     ir = json.loads(ir_path.read_text())
-    if not ir["coordination"].get("fsm"):
+    if not fsm:
         raise RuntimeError(
             f"{ir_path}: the model declares no FSM; FSM-less execution is not supported. "
             "Coordinate the model with an FSM to generate C++."

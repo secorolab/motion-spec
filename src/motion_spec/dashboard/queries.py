@@ -10,8 +10,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import rdflib
-from rdf_utils.models.prov import get_file_path
-from rdflib.namespace import PROV
 
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import classify_quads, graph_name, term_graphs
@@ -23,13 +21,14 @@ from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.runs.provenance import (
     GENERATION_DOCUMENT,
     kept_dsl_document,
+    kept_sources,
     read_generation_dataset,
     run_generation,
 )
 from motion_spec.runs.replay import resolve_run
 from motion_spec.runs.verify import RecordError
 
-# A picture of a hundred thousand triples is a locked browser, not an answer.
+# a larger picture locks the browser
 GRAPH_MAX_TRIPLES = 20_000
 
 
@@ -118,16 +117,12 @@ PAGE_SIZE = 500
 def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     """Answer one SPARQL query against a run, or say why it could not be answered.
 
-    The answer carries both projections of the one result: the rows, and the classified graph
-    the same terms make. A table and a picture disagreeing would be two results, not two views.
-    The table pages through the rows PAGE_SIZE at a time; the graph is always the whole answer.
+    The answer carries the rows, paged PAGE_SIZE at a time, and the whole result as a graph.
+    A generation path is answered from its model graph.
     """
-    # A generation with no run still has a model graph worth exploring, and the Explore page is
-    # the only way left to look at one -- so a query aimed at a generation answers from it.
     if (run_dir / HEADER_REL).exists():
         service = GraphService(run_dir)
     else:
-        # Kept per log revision, as the run list is.
         _, log, _contract = resolve_run(run_dir)
         key = (str(log), log.stat().st_size)
         if key not in _GRAPHS:
@@ -139,15 +134,10 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
         service = _GRAPHS[key]
     started = time.perf_counter()
     try:
-        kind, payload = service.query(sparql)
-        if kind in ("CONSTRUCT", "DESCRIBE"):
-            headers, rows = ["subject", "predicate", "object"], payload
-        else:
-            headers, rows = payload
+        kind, headers, rows = service.query(sparql)
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         if not len(service.dataset):
-            # no prefixes, no model triples: the generation this run names is not there
             detail += (
                 ". This run's model graph is unavailable -- the generation it names is missing, "
                 "so only its recorded observations can be queried."
@@ -175,12 +165,10 @@ def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
     """The result drawn as a graph, or None when there is nothing to draw.
 
     A constructed graph is its own triples. Bindings are drawn as the IRIs they bound, plus the
-    unbound terms that join two of them -- a row set whose members are related only through a
-    handler or a motion draws as that relation rather than as a field of loose dots.
-    Either way the picture answers the same query the table does.
+    unbound terms that join two of them.
     """
     if kind in ("CONSTRUCT", "DESCRIBE"):
-        # A derived triple came from none of the named graphs.
+        # a derived triple is in no named graph
         quads = [
             (
                 *triple,
@@ -190,9 +178,7 @@ def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
         ]
     elif kind == "SELECT":
         bound = {t for row in rows for t in row if isinstance(t, rdflib.URIRef)}
-        # Plus every term that stands between two bound ones. One hop is as far as this goes: a
-        # term reached from a single answer is that answer's neighbourhood, which is what Expand
-        # is for, not part of the answer.
+        # one hop only; a single answer's neighbourhood is Expand's
         joins: dict = {}
         for subject, predicate, obj, _context in service.dataset.quads((None, None, None, None)):
             if predicate == rdflib.RDF.type or isinstance(obj, rdflib.Literal):
@@ -208,7 +194,7 @@ def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
             and (obj in drawn or isinstance(obj, rdflib.Literal) or predicate == rdflib.RDF.type)
         ]
     else:
-        return None  # an ASK answers yes or no; there is no picture of that
+        return None
     if not quads or len(quads) > GRAPH_MAX_TRIPLES:
         return None
     return classify_quads(quads, term_graphs(service.dataset))
@@ -224,14 +210,12 @@ def curie(term, prefixes: dict) -> str | None:
     prefix, namespace = max(
         ((prefix, ns) for prefix, ns in prefixes.items() if text.startswith(ns)),
         key=lambda item: len(item[1]),
-        default=(None, None),
+        default=("", ""),
     )
     return f"{prefix}:{text[len(namespace) :]}" if prefix else text
 
 
-# Only declared quantities: one given its value at run time reads as unreferenced for reasons
-# that are not the author's. Referenced means the object of any triple at all, which is why
-# `zero-length` and `zero-angle` are not flagged -- they are tolerances a constraint names.
+# declared values only: a run-time value is unreferenced by design
 UNUSED_DECLARATION = """
 PREFIX qudt: <http://qudt.org/schema/qudt/>
 SELECT ?term ?value WHERE {
@@ -240,18 +224,13 @@ SELECT ?term ?value WHERE {
 }
 """
 
-# Warn, never error: the graph can say a term is read by nothing, but only the author knows
-# whether that is a mistake or a value being kept for the next edit.
 LINT_SEVERITY = "warn"
 
 
 def model_lint(generation_dir: Path) -> dict:
     """What the design graph says about itself: terms declared and read by nothing.
 
-    Design graph only -- no run, no frame log. A generation with no model document lints to
-    nothing rather than failing, so the page can ask about any generation it lists.
-
-    Asked of the whole dataset: nothing but the design is loaded here, so the union is the design.
+    A generation with no model document lints to nothing rather than failing.
     """
     generated = generation_dir / "generated"
     document = kept_dsl_document(generated)
@@ -260,23 +239,21 @@ def model_lint(generation_dir: Path) -> dict:
     dataset = rdflib.Dataset(default_union=True)
     load_document(document, dataset)
     provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
-    kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
-    authored = next((path for path in kept if path.suffix == ".robmot"), None)
+    authored = next((path for path in kept_sources(provenance) if path.suffix == ".robmot"), None)
     lines = declaration_lines(authored) if authored else {}
+    term, value = rdflib.Variable("term"), rdflib.Variable("value")
     items = [
         {
             "rule": "unused-declaration",
             "severity": LINT_SEVERITY,
-            "iri": str(term),
+            "iri": str(binding[term]),
             "name": name,
             "source_line": lines.get(name),
-            "why": f"declared as {value} and read by nothing in the model",
+            "why": f"declared as {binding[value]} and read by nothing in the model",
         }
-        for term, value in dataset.query(UNUSED_DECLARATION)
-        if (name := str(term).rsplit("/", 1)[-1].rsplit("#", 1)[-1])
+        for binding in dataset.query(UNUSED_DECLARATION).bindings
+        if (name := str(binding[term]).rsplit("/", 1)[-1].rsplit("#", 1)[-1])
     ]
-    # In the order they are read in; what an imported graph declares has no line here, so it
-    # sorts to the end rather than to the top.
     return {
         "items": sorted(
             items,

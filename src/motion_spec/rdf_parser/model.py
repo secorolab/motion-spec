@@ -15,7 +15,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import NamedTuple
+from typing import NamedTuple, overload
 from uuid import uuid4
 
 import rdflib
@@ -24,6 +24,7 @@ from rdf_utils.models.geom_coord import LENGTH_UNITS
 from rdf_utils.namespace import NS_MM_QUDT_UNIT
 from rdflib import URIRef
 from rdflib.namespace import split_uri
+from rdflib.term import Node
 
 
 def identifier(name) -> str:
@@ -43,6 +44,10 @@ def kebab(text: str) -> str:
     return text.replace("_", "-").lower()
 
 
+@overload
+def local_name(node: None) -> None: ...
+@overload
+def local_name(node: Node | str) -> str: ...
 def local_name(node) -> str | None:
     """The last segment of a node's URI, or None when there is no node."""
     return None if node is None else split_uri(str(node))[1]
@@ -108,7 +113,7 @@ class _DerivedIri(NamedTuple):
 
     uri: str
     parent: str
-    relation: object
+    relation: URIRef
     types: list
 
 

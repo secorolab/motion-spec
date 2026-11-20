@@ -67,7 +67,7 @@ from motion_spec.classes.solvers import (
     SolverFamily,
 )
 from motion_spec.rdf_parser import quantities
-from motion_spec.rdf_parser.model import identifier, kebab, local_name
+from motion_spec.rdf_parser.model import Model, identifier, kebab, local_name
 
 _MOBILE_PLATFORM = SolverFamily()
 
@@ -141,7 +141,7 @@ class SolverIdFactory:
     (`<ctrl-iri>/eacc-<axis>`) -- so an id nothing asks for names nothing.
     """
 
-    model: object
+    model: Model
     controller: URIRef
 
     def component_controller(self, axis: quantities.SpatialAxis) -> str:
@@ -535,7 +535,7 @@ class SolverDerivationContext:
     derived id reaches the context, and those are the only places the parent node is still known.
     """
 
-    model: object
+    model: Model
     controllers_by_handler: dict
     controllers_by_solver: dict
     algorithm_by_solver: dict
@@ -765,7 +765,7 @@ def axis_view(model, superobject, subobject, axis: quantities.SpatialAxis) -> Vi
         superobject,
         subobject,
         axis.subspace,
-        quantities.AXIS_BY_NAME.get(axis.frame_axis),
+        quantities.AXIS_BY_NAME.get(axis.frame_axis) if axis.frame_axis is not None else None,
         direction=(
             quantities.direction(model, axis.direction) if axis.direction is not None else None
         ),
@@ -1022,7 +1022,9 @@ def motion_drivers(model, context, solver: URIRef, chain) -> list:
             pose_target=(
                 pose_target(model, context, solver, node, chain) if family.name == "IPK" else None
             ),
-            **driver_slots,
+            acceleration_constraint=driver_slots["acceleration_constraint"],
+            cartesian_acceleration=driver_slots["cartesian_acceleration"],
+            cartesian_velocity=driver_slots["cartesian_velocity"],
         )
         for node in model.graph.objects(solver, SLV["motion-drivers"])
     ]
@@ -1113,7 +1115,8 @@ def pose_target(model, context, solver: URIRef, driver: URIRef, chain) -> PoseTa
         id=f"pose_target_{model.id(driver)}",
         measured=model.id(measured),
         reference=model.id(target),
-        **gains,
+        stiffness=gains["stiffness"],
+        damping=gains["damping"],
     )
 
 
@@ -1403,7 +1406,9 @@ def add_control_parameters(model, functions: dict, algorithm_data: list, motions
         if function.get("type") != "Controller":
             continue
         controller = controller_by_id.get(function["id"])
-        gains = CONTROLLER_GAIN_FIELDS.get(controller.type if controller is not None else None)
+        if controller is None:
+            continue
+        gains = CONTROLLER_GAIN_FIELDS.get(controller.type)
         if not gains:
             continue
         owner_id = function["id"]

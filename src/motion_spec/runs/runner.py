@@ -18,6 +18,8 @@ from pathlib import Path
 from rdf_utils.models.prov import (
     add_directory_location,
     capture_file_prov,
+    create_bundle,
+    get_py_pkg_info,
     load_transformation_prov,
 )
 from rdflib import Literal, URIRef
@@ -204,7 +206,9 @@ def start_rec_run(
     """
     run = rec_run(run_dir, run_id)
     run.start()
-    with run_bundle(run_dir, run_id) as bundle:
+    with run.store.edit(run.id) as dataset:
+        bundle_id = create_bundle(dataset, get_py_pkg_info("motion_spec").purl)
+        bundle = dataset.graph(bundle_id)
         inputs = [config] if config is not None else []
         if environment_script is not None and environment_script.is_file():
             kept = run_dir / "files" / f"environment{environment_script.suffix}"
@@ -216,7 +220,7 @@ def start_rec_run(
                 record_run_file(bundle, run.node, run_dir.parents[1], path, generated=False)
         record_execution(bundle, run.node, source_dir, executable, platform)
     publish_lifecycle(run_dir, run_id, *run.lifecycle())
-    return run, bundle.identifier
+    return run, bundle_id
 
 
 @contextmanager
@@ -321,22 +325,25 @@ def run_executable(
         env["MOTION_SPEC_RECORD_CAMERAS"] = ",".join(record)
         env["MOTION_SPEC_RECORD_DIR"] = str(frame_log.parent.resolve())
     console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")
+    output_in, output_out = os.pipe()
+    output = os.fdopen(output_in, errors="replace")
     try:
         process = subprocess.Popen(
             [str(executable)],
             cwd=str(cwd) if cwd else None,
             env=env,
-            stdout=subprocess.PIPE,
+            stdout=output_out,
             # one pump drains both, so no half-read pipe blocks the exit
             stderr=subprocess.STDOUT,
-            text=True,
-            errors="replace",
-            bufsize=1,
         )
     except OSError as exc:
+        output.close()
         console.close()
         raise RunnerError(f"{executable}: failed to launch: {exc}") from exc
-    pump = threading.Thread(target=tee, args=(process.stdout, console), daemon=True)
+    finally:
+        # the program holds its own copy
+        os.close(output_out)
+    pump = threading.Thread(target=tee, args=(output, console), daemon=True)
     pump.start()
     canceled_at = None
     try:
@@ -364,7 +371,7 @@ def run_executable(
     finally:
         # a grandchild may hold the pipe open
         pump.join(timeout=5)
-        process.stdout.close()
+        output.close()
         console.close()
 
 

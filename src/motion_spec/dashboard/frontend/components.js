@@ -8,7 +8,6 @@ import { $, api, copyText, state } from "./core.js";
 
 const ICONS = "vendor/icons.svg";
 
-/** One icon from the vendored Lucide sprite, drawn in whatever colour its caller is using. */
 export function icon(name, className = "") {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", `icon ${className}`.trim());
@@ -19,7 +18,6 @@ export function icon(name, className = "") {
   return svg;
 }
 
-/** The same icon, for a piece of the page built as a string. */
 export function iconMarkup(name, className = "") {
   return `<svg class="${`icon ${className}`.trim()}" aria-hidden="true"><use href="${ICONS}#${name}"></use></svg>`;
 }
@@ -86,7 +84,6 @@ export function fileFolder(name, rows, open = false) {
   return group;
 }
 
-// `stopClick` keeps the copy from reaching a row that is itself clickable.
 export function copyPathButton(path, { stopClick = false } = {}) {
   const button = document.createElement("button");
   button.className = "copy-path";
@@ -120,8 +117,7 @@ export function bindToggle(button, name, isOn, toggle) {
   draw();
 }
 
-// One row per thing actually knocked on, showing host, port and path only: credentials from
-// the config must not reach the page.
+// host, port and path only: config credentials must not reach the page
 export function deviceRows(device) {
   const targets =
     device.kind === "network"
@@ -142,12 +138,11 @@ export function deviceRows(device) {
   });
 }
 
-// Stay on the newest line, unless the reader scrolled up to read an older one.
 export function appendConsole(pre, text) {
   const follow = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
-  // Every piece goes in through textContent, so log bytes can never become markup.
+  // text nodes only: log bytes must never become markup
   text = (pre._ansiTail ?? "") + text;
-  // An escape split across two polls would render as junk once; hold the tail back instead.
+  // hold back an escape split across polls
   const cut = text.match(/\x1b(\[[0-9;]*)?$/);
   pre._ansiTail = cut ? cut[0] : "";
   if (cut) text = text.slice(0, -cut[0].length);
@@ -223,7 +218,6 @@ export function table(headers, rows) {
   return node;
 }
 
-// One pair of listeners for every menu on the page. Binding per menu leaked a pair per open.
 document.addEventListener("click", (event) => {
   document.querySelectorAll("details.picker[open]").forEach((menu) => {
     if (!menu.contains(event.target)) menu.open = false;

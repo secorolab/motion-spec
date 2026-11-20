@@ -86,6 +86,8 @@ from rdf_utils.models.vocab import (
 from rdf_utils.namespace import NS_MM_KC_EXT, NS_MM_QUDT_QTY, NS_MM_QUDT_UNIT
 from rdflib import Graph, URIRef
 from rdflib.namespace import PROV, RDF
+from rdflib.paths import InvPath
+from rdflib.term import Node
 from scene_dsl.rdf.sensors import URI_SENS_TYPE_CAMERA
 from scene_dsl.rdf_parser.common import ensure_one_obj_uri, ensure_one_typed_subject_uri
 from scene_dsl.rdf_parser.kinematics import body_of_frame, pose_between, root_frame_of
@@ -429,7 +431,7 @@ def orientation(model, node) -> Orientation:
         frame(model, coordinate.as_seen_by.id),
         Unit(unit),
         str(axes) if axes is not None else "xyz",
-        (node, ~MAP["subobject"], None) in graph,
+        (node, InvPath(MAP["subobject"]), None) in graph,
         provenance=value_provenance(model, node),
     )
 
@@ -562,9 +564,9 @@ def view_of(graph, operand):
 class ReferenceFrames(NamedTuple):
     """The three frames a spatial quantity is stated against."""
 
-    of: object
-    with_respect_to: object
-    as_seen_by: object
+    of: Node | None
+    with_respect_to: Node | None
+    as_seen_by: Node | None
 
 
 def derived_reference_frames(model, node) -> ReferenceFrames:
@@ -896,15 +898,16 @@ def quantity(model, node):
         if (node, MAP.axis, None) in graph:
             # a single-axis view names its own scalar
             superobject = None
-        sup_types = get_node_types(graph, superobject) if superobject is not None else set()
-        if (
+        if superobject is None:
+            node = viewed
+        elif (
             subspace == MAP_EXT.position
-            and URI_GEOM_TYPE_POSITION_COORD in sup_types
+            and URI_GEOM_TYPE_POSITION_COORD in get_node_types(graph, superobject)
             or subspace == MAP_EXT.orientation
-            and URI_GEOM_TYPE_ORIENT_COORD in sup_types
+            and URI_GEOM_TYPE_ORIENT_COORD in get_node_types(graph, superobject)
         ):
             node = superobject
-        elif subspace in (MAP_EXT.position, MAP_EXT.orientation) and superobject is not None:
+        elif subspace in (MAP_EXT.position, MAP_EXT.orientation):
             component = local_name(subspace)
             usage = graph.value(
                 rdflib.URIRef(f"{superobject}-{component}-selection"), PROV.qualifiedUsage
@@ -942,9 +945,6 @@ def quantity(model, node):
             frame(model, seen_node) if seen_node is not None else None,
             [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
             None,
-            None,
-            None,
-            None,
             provenance=value_provenance(model, node),
         )
     if URI_GEOM_TYPE_POSITION in types:
@@ -960,7 +960,7 @@ def quantity(model, node):
     unit_node = graph.value(node, QUDT_SCHEMA["unit"])
     si_node = si_unit(unit_node)
     unit = Unit(model.id(si_node), str(si_node))
-    has_view = (node, ~MAP["subobject"], None) in graph
+    has_view = (node, InvPath(MAP["subobject"]), None) in graph
     provenance = value_provenance(model, node)
 
     if CSTR_HDL_EXT["SetpointGenerator"] in types:
@@ -1211,10 +1211,11 @@ def placement_of(model, attachment, anchor):
     """
     kind, _name, frame, parent, _host_frame = attachment
     if kind != "World":
-        return frame_placement(model, frame, placement_frame(model, parent))
+        return frame_placement(model, frame, placement_frame(model, parent)) or (None, None)
     # the runtime places the body, not the frame a joint hangs it by
     is_frame = GEOM_ENT.Frame in get_node_types(model.graph, frame)
-    return frame_placement(model, body_of_frame(frame, model.graph) if is_frame else frame, anchor)
+    body = body_of_frame(frame, model.graph) if is_frame else frame
+    return frame_placement(model, body, anchor) or (None, None)
 
 
 class DrawnPlacement(NamedTuple):
@@ -1246,8 +1247,20 @@ def drawn_placement_of(model, attachment, anchor) -> DrawnPlacement | None:
             if URI_DISTRIB_TYPE_SAMPLED_QUANTITY not in get_node_types(model.graph, position):
                 continue
             rotation = get_rotation_between_frames(frame, pose.wrt_id, model.graph)
-            base_pos, base_quat = frame_placement(model, pose.wrt_id, anchor)
-            return DrawnPlacement(position, list(rotation.as_quat()), base_pos, base_quat)
+            if rotation is None:
+                raise ConstraintViolation(
+                    "geometry",
+                    f"'{pose.id}' draws '{position}' with no orientation of '{frame}' in "
+                    f"'{pose.wrt_id}' -- a drawn placement needs the pose's orientation",
+                )
+            base = frame_placement(model, pose.wrt_id, anchor)
+            if base is None:
+                raise ConstraintViolation(
+                    "geometry",
+                    f"'{pose.id}' draws '{position}' against '{pose.wrt_id}', which no pose "
+                    f"places in '{anchor}' -- a drawn placement needs its frame placed by numbers",
+                )
+            return DrawnPlacement(position, list(rotation.as_quat()), *base)
     return None
 
 
@@ -1278,12 +1291,12 @@ def placement_graph(model):
     return graph
 
 
-def frame_placement(model, node, wrt):
+def frame_placement(model, node, wrt) -> tuple[list[float], list[float]] | None:
     """Where a body or frame sits in `wrt`, in metres and [x, y, z, w].
 
     Composed along the poses that place it, so a scene may author a placement against any
     frame it likes and still be read against the one it is assembled on. A body no pose
-    leads to is placed by the joint that holds it, and comes back coincident.
+    leads to is placed by the joint that holds it: None.
     """
     frame = placement_frame(model, node)
     graph = placement_graph(model)
@@ -1299,8 +1312,8 @@ def frame_placement(model, node, wrt):
                     )
     transform = pose_between(frame, wrt, graph)
     if transform is None:
-        return None, None
-    return list(transform.translation), list(transform.rotation.as_quat())
+        return None
+    return transform.translation.tolist(), transform.rotation.as_quat().tolist()
 
 
 @reader

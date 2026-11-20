@@ -43,6 +43,7 @@ from motion_spec.classes.handlers import (
     EdgeMonitor,
     EvaluatorType,
     LevelMonitor,
+    Monitor,
 )
 from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
 from motion_spec.rdf_parser import perturbations, quantities
@@ -194,7 +195,7 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
 
 
 @reader
-def monitor_entry(model, node):
+def monitor_entry(model, node) -> Monitor:
     """A monitor: a level flag its constraint sets continuously, or an edge event it fires once."""
     graph = model.graph
     handler = ensure_one_typed_subject_uri(
@@ -289,7 +290,7 @@ def build_constraint_handlers(model, schedule, derivation):
         node: int(graph.value(node, APP.order, default=Literal(0)).value)
         for node in graph.subjects(RDF.type, CSTR_HDL["ConstraintHandler"])
     }
-    for node in sorted(order_by_node, key=order_by_node.get):
+    for node in sorted(order_by_node, key=order_by_node.__getitem__):
         handler = ConstraintHandler(
             model.id(node),
             guarded_motion(model, graph.value(node, CSTR_HDL["motion"])),
@@ -647,7 +648,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             id=handler.id,
             motion_id=handler.motion.id,
             name=handler.motion.name,
-            description=(handler.motion.description or "").splitlines(),
+            description=(
+                handler.motion.description.splitlines() if handler.motion.description else []
+            ),
             when_elapsed_ids=when_elapsed,
             active_elapsed_ids=active_elapsed,
             when_observation_ages=when_ages,

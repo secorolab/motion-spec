@@ -29,29 +29,22 @@ from motion_spec.dashboard.catalog import (
 from motion_spec.dashboard.roots import HEADER_REL, RUN_LOG, trace
 from motion_spec.setup import GENERATION_VARIABLE
 
-# One entry per run this dashboard started, keyed by the run directory: several runs of one
-# generation can be up at once.
 RUNNING: dict[str, dict] = {}
 
-# Finished runs whose status a page may still ask for; older ones are the past.
 RUNS_KEPT = 20
 
 
 def run_status(run_dir: Path) -> dict:
     """Whether this run is in progress, and where its output is going.
 
-    A run is over when its archive is written, not when the process that started it exits:
-    the CLI still verifies and reports for a while after, which is no longer this run.
+    A run is over when its archive is written, not when its process exits.
     """
     started = RUNNING.get(str(run_dir))
     process = started["process"] if started else None
-    busy = process is not None and process.poll() is None
-    # The dashboard names the run when it starts it, so the directory to watch is known
-    # before anything exists on disk.
+    pid = process.pid if process is not None and process.poll() is None else None
+    busy = pid is not None
     live = busy and not (run_dir.is_dir() and run_ended(run_dir))
     trace(f"run_status {run_dir.name}: busy={busy} running={live}")
-    # Whether the run keeps a frame log: from its provenance once it ended, before that from
-    # the choice this dashboard started it with. False means the page must not wait for a log.
     recorded = run_recorded(run_dir)
     if recorded is None and started is not None:
         recorded = started.get("recorded")
@@ -60,11 +53,9 @@ def run_status(run_dir: Path) -> dict:
         "path": str(run_dir.relative_to(roots.GENERATIONS)),
         "running": live,
         "busy": busy,
-        "pid": process.pid if busy else None,
-        "run": str(run_dir.relative_to(roots.GENERATIONS)) if live else None,
+        "pid": pid,
+        "run":str(run_dir.relative_to(roots.GENERATIONS)) if live else None,
         "exit_code": None if busy or process is None else process.returncode,
-        # Ended on request, not by failing. A signalled run exits non-zero either way, so the
-        # page cannot tell a cancel from a crash by the code alone.
         "stopped": bool(started and started.get("stopped")),
         "log": str(Path(started["generation"]) / RUN_LOG) if started else None,
         "recorded": recorded,
@@ -82,17 +73,10 @@ def generation_status(generation_dir: Path) -> dict:
 
 
 def start_run(generation_dir: Path, options: dict) -> dict:
-    """Run a generation again, with the options `motion-spec run` takes for one.
-
-    The CLI owns what a run is -- the run directory, the archive, the recovery afterwards --
-    so start it rather than reimplementing it here, and let it say what it made.
-    """
+    """Run a generation again, with the options `motion-spec run` takes for one."""
     if not (generation_dir / HEADER_REL).exists():
         raise ValueError("not a generation")
     simulated = bool(generation_platform(generation_dir).get("simulated"))
-    # Simulations run side by side; the real robot runs one thing at a time, whichever
-    # generation asks. Whether the hardware answers is not asked here: the devices panel
-    # probes when the operator asks it to.
     if not simulated:
         other = next(
             (
@@ -107,8 +91,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
             raise ValueError(f"the real robot is already running {other.name}")
     from motion_spec.generation.pipeline import new_id
 
-    # Name the run here rather than letting the CLI pick: the browser can then open the run
-    # page at once and wait for the log, instead of polling for a directory to appear.
+    # named here so the page can open the run before its directory exists
     run_id = new_id("run")
     argv = [
         "motion-spec",
@@ -119,14 +102,10 @@ def start_run(generation_dir: Path, options: dict) -> dict:
         "--run-id",
         run_id,
     ]
-    # Whether to record is a choice on any platform: no log means no replay and no live plots.
-    # How a simulation runs is its robot config's [run] section, not the page's to choose.
     recorded = options.get("log", True) is not False
     if not recorded:
         argv.append("--no-log")
     argv += ["--env", ENVIRONMENT["script"]] if ENVIRONMENT["script"] else ["--no-env"]
-    # A simulator renders any declared camera and its standard view; a real platform records
-    # the cameras that name a ROS image topic to read.
     recordable = {
         camera["id"]
         for camera in generation_cameras(generation_dir)
@@ -137,14 +116,12 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     recording = [camera for camera in options.get("cameras") or () if camera in recordable]
     for camera in recording:
         argv += ["--record", camera]
-    # Finished runs beyond the last few are forgotten: their status is on disk, in rec's record.
     finished = sorted(
         key for key, started in RUNNING.items() if started["process"].poll() is not None
     )
     for key in finished[:-RUNS_KEPT]:
         RUNNING.pop(key)
-    # Closed here: Popen dups the descriptor for the child, and a handle per run never
-    # collected is a file descriptor leaked for the life of the server.
+    # Popen dups the fd for the child; ours would leak
     with (generation_dir / RUN_LOG).open("wb") as sink:
         process = subprocess.Popen(
             argv, cwd=roots.WORKSPACE, stdout=sink, stderr=sink, start_new_session=True
@@ -164,16 +141,13 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     }
 
 
-# How long a run gets to end on a TERM before it is killed outright.
 STOP_GRACE_S = 5
 
 
 def mark_stopped(run_dir: Path) -> None:
     """Record that this run's end was asked for, whoever asked.
 
-    A run signalled from the generation page and one cancelled through its control block both
-    exit non-zero, exactly as a failed run does. Only the asking tells them apart, so it is the
-    asking that is remembered.
+    A stopped run exits non-zero as a failed one does; only this mark tells them apart.
     """
     started = RUNNING.get(str(run_dir))
     if started is not None:
@@ -183,9 +157,8 @@ def mark_stopped(run_dir: Path) -> None:
 def stop_run(run_dir: Path) -> dict:
     """End a run this dashboard started.
 
-    A run rec has started is cancelled as `motion-spec cancel` does it: its runner stops the
-    program and rec records it canceled. A job still generating or building has no run to
-    cancel yet, so the process group the dashboard started it in is signalled.
+    A run rec has started is cancelled as `motion-spec cancel` does it. A job still generating
+    or building has no run yet, so its process group is signalled.
     """
     from rec import State
 
@@ -195,14 +168,12 @@ def stop_run(run_dir: Path) -> dict:
     process = started["process"] if started else None
     if process is None or process.poll() is not None:
         raise ValueError(f"{run_dir.name} is not running here")
-    # Remembered before asking, so the exit this sets up is already known to be asked for
-    # by the time anything reads the status back.
     mark_stopped(run_dir)
     run = rec_run(run_dir)
     if run.lifecycle()[0] is State.IN_PROGRESS:
         run.cancel()
     else:
-        # The whole session: the CLI starts the runtime as a child.
+        # the CLI starts the runtime as a child
         os.killpg(os.getpgid(process.pid), signal.SIGTERM)
     try:
         process.wait(timeout=2 * STOP_GRACE_S)
@@ -213,7 +184,6 @@ def stop_run(run_dir: Path) -> dict:
 
 
 HEALTH: dict = {"checks": None, "stamp": None, "thread": None, "progress": None}
-# The environment file the page asked health to report under, and what sourcing it gave.
 ENVIRONMENT: dict = {"script": None, "captured": None}
 
 
@@ -241,8 +211,7 @@ def pick_environment() -> dict:
 def health_report(refresh: bool = False) -> dict:
     """The CLI's health checks, run once and remembered; refresh reruns them.
 
-    Some checks configure CMake projects, so they take seconds: run them on a thread the page
-    polls rather than holding a request open, and keep the answer for the server's lifetime.
+    The checks take seconds, so they run on a thread the page polls.
     """
     thread = HEALTH["thread"]
     running = thread is not None and thread.is_alive()
@@ -332,25 +301,17 @@ def console_log_for(path: Path) -> Path:
 
 GENERATING: dict[str, dict] = {}
 
-
-# under roots.GENERATIONS; the catalog only lists generation dirs, but keep the logs out of the way
 GENERATE_LOGS = ".dashboard"
 
-
-# How far into a job's log the generation it made can still be announced.
 GENERATION_LINE_SCAN = 8192
 
-
-# Finished jobs whose logs are kept for a page still reading them; older ones are the past.
 GENERATE_LOGS_KEPT = 20
 
 
 def start_generate(source: Path) -> dict:
     """Generate a .robmot from its page, and build what it made.
 
-    Making is all this does: a run starts from the generation's own page, where the devices are
-    tested, the run is named and its page follows it. `gen` prints the directory it made on
-    stdout, which is what hands it to `build`; the terminal words are the record.
+    It does not run it: a run starts from the generation's own page.
     """
     from motion_spec.generation.pipeline import new_id
 
@@ -358,11 +319,7 @@ def start_generate(source: Path) -> dict:
     log_dir = roots.GENERATIONS / GENERATE_LOGS
     log_dir.mkdir(exist_ok=True)
     log = log_dir / f"{job}.log"
-    # The capture eats gen's narration, so the path is announced into the log here for
-    # generate_status to read. No tee back into it: a /dev/fd reopen starts at offset 0 and
-    # overwrites what the others wrote.
-    # pipefail, or the status is tail's, build is reached with an empty path, and click's
-    # "Directory '' does not exist" buries the rejection. bash, not sh: dash has no pipefail.
+    # pipefail, else a failed gen reaches build with an empty path; dash has no pipefail
     env = f" --env {shlex.quote(ENVIRONMENT['script'])}" if ENVIRONMENT["script"] else " --no-env"
     chain = (
         "set -o pipefail; "
@@ -370,19 +327,14 @@ def start_generate(source: Path) -> dict:
         f' && printf "generation: %s\\n" "$g" && exec motion-spec build{env} "$g"'
     )
     argv = ["bash", "-c", chain]
-    # A job is a process, a log and what it made; the page reads all three while it runs and for
-    # as long as it is looking at the console afterwards. Keeping the last few covers that. The
-    # rest are runs of the build from days ago, holding a Popen each and a file on disk.
     finished = sorted(
         job for job, started in GENERATING.items() if started["process"].poll() is not None
     )
     for finished_job in finished[:-GENERATE_LOGS_KEPT]:
         GENERATING.pop(finished_job)
-    # Logs left by earlier dashboards go too: their jobs died with the process that started
-    # them. Another dashboard may be reaping the same ones, so a file that vanishes between
-    # the listing and the stat is not an error.
     kept = {started["log"] for started in GENERATING.values()}
 
+    # another dashboard may reap the same logs
     def mtime(path: Path) -> float:
         try:
             return os.path.getmtime(path)
@@ -394,7 +346,6 @@ def start_generate(source: Path) -> dict:
         if stale not in kept:
             stale.unlink(missing_ok=True)
     with log.open("wb") as sink:
-        # The browsed root is where gen writes, and what the generation's locations are taken from.
         process = subprocess.Popen(
             argv,
             cwd=roots.WORKSPACE,
@@ -410,9 +361,7 @@ def start_generate(source: Path) -> dict:
 def generation_named_in(log: Path) -> str | None:
     """The generation the runner announced, from the head of its log.
 
-    The chain prints `generation: <path>` before it builds anything, so the answer is in the
-    first lines or it is not coming -- and reading only those keeps a poll every two seconds
-    off a log that grows for the length of a build.
+    The chain prints `generation: <path>` before it builds, so only the head is read.
     """
     if not log.is_file():
         return None

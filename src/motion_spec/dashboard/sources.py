@@ -26,9 +26,7 @@ from motion_spec.dashboard.roots import (
 def browsable(path: Path) -> bool:
     """Whether the sources tree shows this one file: a DSL file, by its extension, anywhere.
 
-    One rule, not "a DSL file, or anything beside one": a directory only has to hold a single
-    `.robmot` for that second rule to sweep in everything else living there, which at the top
-    of a workspace is the whole repository. The environment file is named, not matched.
+    The environment file is named, not matched.
     """
     return path.name in AUTHORED_NAMES or (
         path.suffix in AUTHORED and path.name not in NOT_AUTHORED
@@ -38,10 +36,7 @@ def browsable(path: Path) -> bool:
 def authored_sources() -> list[str]:
     """Every source file the tree lists, relative to the sources root.
 
-    Pruned rather than filtered: rglob descends into `build`, `install` and `.git` and yields
-    every file in them before anything can reject it, which is a hundred thousand paths to
-    walk for the hundred this returns. os.walk lets the ignored directories be dropped before
-    they are entered.
+    Ignored directories are pruned before they are entered.
     """
     listed = []
     for folder, folders, files in os.walk(roots.WORKSPACE):
@@ -56,12 +51,7 @@ def authored_sources() -> list[str]:
 
 
 def source_path(value: str) -> Path:
-    """Resolve a source file inside the sources root.
-
-    Only the working tree: a generation's vendored copies are a record of what was built, and
-    reading them here would show a file the tree cannot point at and that the working copy may
-    already have moved past.
-    """
+    """Resolve a source file inside the sources root, never a generation's vendored copy."""
     path = relative_path(roots.WORKSPACE, value)
     if not path.is_file() or not browsable(path):
         raise ValueError(f"not an authored model file: {value}")
@@ -71,10 +61,8 @@ def source_path(value: str) -> Path:
 def save_source(value: str, text: str) -> dict:
     """Write an authored file back, so a small change can be made where it is read.
 
-    Only what the tree already lists and only under the sources root -- `source_path` decides
-    that, the same as reading does. Written through a neighbouring temporary file so a failed
-    write cannot leave a half-saved model behind. The save always happens: the check that
-    follows reports on what was written rather than standing between the reader and their file.
+    Written through a neighbouring temporary file, so a failed write leaves no half-saved
+    model. The syntax check reports on what was written; it never blocks the save.
     """
     path = source_path(value)
     pending = path.with_name(f".{path.name}.saving")
@@ -94,41 +82,30 @@ def save_source(value: str, text: str) -> dict:
 def check_syntax(path: Path) -> dict | None:
     """Whether textX can still parse this file, and where it gave up if not.
 
-    textX in this process rather than `textx check` in another: the same load either way, but
-    the failure arrives as an exception carrying its own line and column instead of a message
-    to scrape back out of a subprocess's stderr.
-
-    None when nothing here can check this kind of file -- no grammar registered for it, or no
-    textX installed at all, both of which are silence rather than a pass it did not earn.
+    None when no grammar is registered for it or textX is not installed.
     """
     try:
         from textx import metamodel_for_file
         from textx.exceptions import TextXError, TextXRegistrationError
     except ImportError:
-        return None  # the optional DSL feature is not installed
+        return None
     try:
         metamodel = metamodel_for_file(str(path))
     except TextXRegistrationError:
-        return None  # no grammar for this extension: nothing to be wrong about
+        return None
     try:
-        # By path, not by the text just written: a model's imports resolve against its own
-        # directory, so the file has to be read from where its neighbours are.
+        # by path: imports resolve against the file's directory
         metamodel.model_from_file(str(path))
     except TextXError as problem:
-        # line/col are 0 or None when the fault is the whole file rather than a place in it
-        # (an import that does not resolve, say) -- then there is no line worth pointing at.
         return {
             "ok": False,
             "line": problem.line or None,
             "column": problem.col or None,
-            # Without the absolute path and position the complaint already reports.
             "message": re.sub(rf"^{re.escape(str(path))}:\d+:\d+:\s*", "", str(problem)).strip(),
         }
     except RecursionError:
         return {"ok": False, "message": "too deeply nested to parse"}
     except (OSError, ValueError, KeyError, AttributeError, TypeError) as problem:
-        # A model can fail to load for reasons that are not syntax -- a missing import, a
-        # reference to something absent. Still worth saying; just not placeable on a line.
         return {"ok": False, "message": f"{type(problem).__name__}: {problem}"}
     return {"ok": True, "message": "syntax OK"}
 
@@ -138,7 +115,6 @@ def read_source(value: str) -> dict:
     host = terminal()
     return {
         "path": value,
-        # The page shows where the file is; it should not have to join a root onto a name.
         "absolute": str(path),
         "text": path.read_text(),
         "git_head": git_baseline(path, git_root(path)),
@@ -148,18 +124,11 @@ def read_source(value: str) -> dict:
 
 
 def aligned_rows(was: list[str], now: list[str]) -> dict:
-    """Two texts aligned line for line, as the diff page's rows plus whether anything differs.
-
-    Lives here rather than beside either caller: a generation's archived copy against the
-    working tree, and git HEAD against the working tree, are the same comparison drawn the
-    same way.
-    """
+    """Two texts aligned line for line, as the diff page's rows plus whether anything differs."""
     rows = []
     for kind, left_from, left_to, right_from, right_to in difflib.SequenceMatcher(
         None, was, now, autojunk=False
     ).get_opcodes():
-        # A replaced block pairs line for line, and the shorter side runs out into blanks
-        # rather than shifting everything below it out of step with the other column.
         for index in range(max(left_to - left_from, right_to - right_from)):
             here, there = left_from + index, right_from + index
             rows.append(
@@ -191,8 +160,7 @@ def git_baseline(path: Path, root: Path | None) -> str | None:
     since the last commit.
 
     None when the tree is not a git repository, git is not installed, or the file has no
-    commit yet -- the reader sees plain text with no diff marks rather than every line marked
-    as new.
+    commit yet.
     """
     if root is None:
         return None
@@ -211,14 +179,13 @@ def git_baseline(path: Path, root: Path | None) -> str | None:
 def git_diff(value: str) -> dict:
     """This file at git HEAD beside the file as it is now, in the rows the diff page draws.
 
-    The same shape source_drift returns, so one diff page renders both: what a generation was
-    built from vs the working tree, and what was committed vs the working tree.
+    The same shape source_drift returns.
     """
     path = source_path(value)
     root = git_root(path)
     committed = git_baseline(path, root)
     working = {"name": path.name, "workspace": value, "workspace_path": str(path)}
-    if committed is None:
+    if root is None or committed is None:
         return {
             **working,
             "archived": None,
@@ -234,11 +201,7 @@ def git_diff(value: str) -> dict:
 
 
 def git_checkout(value: str) -> dict:
-    """Discard this file's uncommitted changes, restoring it from git HEAD.
-
-    Named by its one path, the same as save and delete -- never a bare `git checkout .` that
-    could discard something the reader never looked at here.
-    """
+    """Discard this file's uncommitted changes, restoring it from git HEAD."""
     path = source_path(value)
     root = git_root(path)
     if root is None:
@@ -254,14 +217,13 @@ def git_checkout(value: str) -> dict:
     return {"text": path.read_text()}
 
 
-# GUI editors take the file directly; terminal ones need a terminal emulator to live in.
 GUI_EDITORS = {"code": ["code", "--goto"], "zed": ["zed"], "kate": ["kate"], "gedit": ["gedit"]}
 
 
 TERMINAL_EDITORS = ("nvim", "vim", "hx", "emacs", "nano", "micro")
 
 
-# How each terminal takes "then run this command"; -e is the x-terminal-emulator convention.
+# -e is the x-terminal-emulator convention
 TERMINAL_ARGS = {
     "xdg-terminal-exec": [],
     "kitty": [],
@@ -280,9 +242,7 @@ def terminal() -> tuple[str, list[str]] | None:
     """The desktop's terminal and the argv that runs a command in a new window.
 
     $TERMINAL, then the freedesktop and Debian pointers at the user's chosen terminal, and
-    only then a known one off PATH -- picking a favourite here would override their default.
-
-    Cached: this is a dozen PATH lookups, and /api/source asks on every file opened.
+    only then a known one off PATH.
     """
     override = os.environ.get("TERMINAL")
     for name in (override, "xdg-terminal-exec", "x-terminal-emulator", *TERMINAL_ARGS):
@@ -348,8 +308,7 @@ def authored_lines(path: Path) -> dict:
     """(motion, constraint) -> (line number, expression, authored motion name) for every named
     `while`/`until` constraint of the source at PATH.
 
-    Display only: what a constraint is and what it drives comes off the log header, this says
-    where the reader can go and read it.
+    Display only: what a constraint is comes off the log header.
     """
     from motion_spec_dsl.classes.constraints import flatten_constraint_items
     from textx import get_children_of_type, get_location
@@ -368,7 +327,7 @@ def authored_lines(path: Path) -> dict:
                     continue
                 number = get_location(item)["line"]
                 expression = text[number - 1].strip().rstrip(",").partition(":")[2].strip()
-                # Authored with dashes, generated with underscores: one spelling keys both.
+                # authored with dashes, generated with underscores
                 key = (motion.name.replace("-", "_"), item.name.replace("-", "_"))
                 lines[key] = (number, expression, motion.name)
     return lines

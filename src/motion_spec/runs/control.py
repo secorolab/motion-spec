@@ -32,22 +32,21 @@ class ControlChannel:
         self.name = name
         self._mm: mmap.mmap | None = None
 
-    @property
-    def available(self) -> bool:
-        """False when the block is absent -- a real platform, or a run without sim control --
-        or was laid out by a program of another block version."""
+    def open(self) -> mmap.mmap | None:
+        """The mapped block; None when it is absent -- a real platform, or a run without sim
+        control -- or was laid out by a program of another block version."""
         if self._mm is not None:
-            return True
+            return self._mm
         path = shm_path(self.name)
         if not path.exists() or path.stat().st_size < SIZE:
-            return False
+            return None
         with path.open("r+b") as fh:
             block = mmap.mmap(fh.fileno(), SIZE)
         if struct.unpack_from("<Q", block, VERSION_OFF)[0] != VERSION:
             block.close()
-            return False
+            return None
         self._mm = block
-        return True
+        return block
 
     def close(self) -> None:
         if self._mm is not None:
@@ -55,17 +54,19 @@ class ControlChannel:
             self._mm = None
 
     def read(self, offset: int, fmt: str):
-        if not self.available:
+        block = self.open()
+        if block is None:
             return None
-        return struct.unpack_from(fmt, self._mm, offset)[0]
+        return struct.unpack_from(fmt, block, offset)[0]
 
     def write(self, offset: int, fmt: str, value) -> int | None:
         """Set one field, then publish it by bumping seq; returns the seq the runtime must ack."""
-        if not self.available:
+        block = self.open()
+        if block is None:
             return None
-        struct.pack_into(fmt, self._mm, offset, value)
-        seq = struct.unpack_from("<Q", self._mm, SEQ_OFF)[0] + 1
-        struct.pack_into("<Q", self._mm, SEQ_OFF, seq)
+        struct.pack_into(fmt, block, offset, value)
+        seq = struct.unpack_from("<Q", block, SEQ_OFF)[0] + 1
+        struct.pack_into("<Q", block, SEQ_OFF, seq)
         return seq
 
     def set_pause(self, paused: bool) -> int | None:
@@ -76,9 +77,9 @@ class ControlChannel:
 
     def request_steps(self, ticks: int = 1) -> int | None:
         """Owe a paused run this many more ticks; it counts them down one per poll."""
-        if not self.available:
+        pending = self.read(STEPS_OFF, "<q")
+        if pending is None:
             return None
-        pending = struct.unpack_from("<q", self._mm, STEPS_OFF)[0]
         return self.write(STEPS_OFF, "<q", max(0, pending) + max(1, int(ticks)))
 
     @property
@@ -120,7 +121,7 @@ def run_channel(run_dir: Path) -> ControlChannel:
 
 def acknowledged(channel: ControlChannel, timeout_s: float = 0.4) -> bool:
     """Whether the loop reads the block: it copies each seq back once applied."""
-    if not channel.available:
+    if channel.open() is None:
         return False
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -157,7 +158,7 @@ def control_run(run_dir: Path, action: str, value: float | None = None) -> dict:
             # re-publish the current state to ask the loop for an ack
             channel.set_pause(bool(channel.paused))
         return {
-            "available": channel.available,
+            "available": channel.open() is not None,
             "alive": acknowledged(channel),
             "paused": channel.paused,
             "speed": channel.speed,

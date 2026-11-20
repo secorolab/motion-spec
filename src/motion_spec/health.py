@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -127,7 +128,7 @@ def ros_distro(env: dict[str, str] | None = None) -> str | None:
     except (OSError, ValueError):
         declared = None
     if declared:
-        return declared
+        return str(declared)
     installed = installed_ros_distros()
     return installed[0] if len(installed) == 1 else None
 
@@ -573,7 +574,7 @@ def apt_packages(checks: list[HealthCheck]) -> list[str]:
 
 
 def check_health(
-    profiles: tuple[str, ...],
+    profiles: Collection[str],
     targets: tuple[str, ...] = (),
     env: dict[str, str] | None = None,
     *,

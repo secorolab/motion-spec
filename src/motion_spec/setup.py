@@ -224,7 +224,7 @@ def workspace(argument: Path | None = None) -> Path:
             f"no workspace: set {WORKSPACE_VARIABLE}, pass --workspace <path>, or put a "
             f"{CONFIG_FILE} in it"
         )
-    root = Path(chosen).expanduser()
+    root = Path(str(chosen)).expanduser()
     if not root.is_dir():
         raise RuntimeError(f"workspace is not a directory: {root}")
     return root.resolve()
@@ -241,7 +241,7 @@ def generations_root() -> Path:
     chosen = setting("workspace.generations").value
     if chosen is None:
         raise RuntimeError(f"no generation directory: set {GENERATION_VARIABLE}")
-    return Path(chosen).expanduser()
+    return Path(str(chosen)).expanduser()
 
 
 def ignore_thirdparty(root: Path) -> None:
@@ -736,7 +736,7 @@ def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path
         else ""
     )
     declared = configured("workspace.generations", root)
-    generations = Path(declared) if declared else root / GENERATION_DIRECTORY
+    generations = Path(str(declared)) if declared else root / GENERATION_DIRECTORY
     body = (
         "# Written by `motion-spec setup`. Source it before generating, building or running.\n"
         + activation

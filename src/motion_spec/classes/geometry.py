@@ -116,7 +116,7 @@ class Pose:
     with_respect_to: SimplicialComplex | Frame | None = field(metadata=INTERNAL)
     quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     as_seen_by: Frame | None
-    unit: list[Unit] = field(metadata=INTERNAL)
+    unit: list[str] = field(metadata=INTERNAL)
     position: list[float] | None
     euler_axes_sequence: str | None = field(default=None, metadata=INTERNAL)
     euler_intrinsic: bool = field(default=False, metadata=INTERNAL)
@@ -139,7 +139,7 @@ class SpatialCoordinate:
     quantity_kind: list[QuantityKind] = field(metadata=INTERNAL)
     reference_point: Point
     as_seen_by: Frame
-    unit: list[Unit] = field(metadata=INTERNAL)
+    unit: list[str] = field(metadata=INTERNAL)
     provenance: Provenance = field(default_factory=Provenance)
 
 
@@ -195,7 +195,7 @@ class View:
     """A scalar/axis view onto one subspace of a spatial superobject."""
 
     id: str
-    superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench
+    superobject: Pose | VelocityTwist | AccelerationTwist | PoseDifference | Wrench | Direction
     subobject: Quantity = field(metadata=INTERNAL)
     # None for a 3-vector superobject
     subspace: Subspace | None

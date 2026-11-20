@@ -9,7 +9,6 @@ import { addPlot } from "./plots.js";
 import { setView } from "./routing.js";
 import { showSource } from "./sources.js";
 
-// Each spells out its prefixes to say which metamodel it uses.
 const CANNED = {
   "everything in this graph": `CONSTRUCT { ?s ?p ?o }
 WHERE { ?s ?p ?o }`,
@@ -79,7 +78,6 @@ export const EXPLORE_MARKUP = `<div class="explore">
   </div>
 </div>`;
 
-// One Explore at a time; a second page replaces it, renderer and layout included.
 const explore = {
   path: null,
   view: "table",
@@ -164,8 +162,7 @@ function selectQuery(index) {
 }
 
 function saveQueries() {
-  // Kept beside the run, so they travel with the archive. A generation has nowhere for them,
-  // which is not an error worth showing.
+  // stored beside the run; a generation has nowhere for them
   if (!state.runPath) return;
   post("/api/queries", {
     path: state.runPath,
@@ -211,13 +208,12 @@ function statusLine(data) {
     .join(" · ");
   return (
     `${data.count} row${data.count === 1 ? "" : "s"} · ${data.elapsed_ms} ms` +
-    // an empty model graph is a run detached from its generation, not a query that found nothing
+    // no model triples: the run is detached from its generation
     `${data.model_triples ? "" : " · model graph unavailable"}` +
     `${folded ? ` · folded ${folded}` : ""}`
   );
 }
 
-// A fresh answer drops the exploration built on the last one, except the pins.
 function showAnswer(data) {
   explore.data = data;
   explore.payload = mergePins(data.graph);
@@ -252,7 +248,6 @@ function renderTable(data) {
   $("#answer").replaceChildren(table(data.headers, data.rows), ...pager(data));
 }
 
-// The server windows the rows; the query is re-asked with the next offset.
 function pager(data) {
   const size = data.page_size ?? data.rows.length;
   if (!size || (data.count ?? 0) <= size) return [];
@@ -292,18 +287,15 @@ function showView(name) {
   );
   $("#answer").hidden = name !== "table";
   $(".explore-graph").hidden = name !== "graph";
-  // Drawing nothing is not a graph; say so where the picture would be.
   $$(".explore-views button").forEach((button) => {
     button.disabled = button.dataset.view === "graph" && !explore.payload;
   });
   if (name === "graph") redraw();
 }
 
-// Sigma's WebGL renderer only parses hex/rgb colours -- an hsl() string renders black; a canvas
-// reads it back as hex.
+// Sigma parses only hex/rgb colours; a canvas turns hsl() into hex
 const COLOUR = document.createElement("canvas").getContext("2d");
 
-// Hashed from the type, so there is no palette to run out of.
 function colourFor(node) {
   const type = node.types[0] ?? "";
   if (!type) return "#8a8f98";
@@ -315,10 +307,9 @@ function colourFor(node) {
 
 const sizeFor = (node) => Math.min(12, 3 + Math.log1p(node.degree) * 1.7);
 
-// One type per node, so a click on a legend row selects exactly the nodes that row counted.
 const typeOf = (node) => node.types[0] ?? "(untyped)";
 
-// Sigma's own hover box is a hardcoded white fill, and near-white labels vanish into it.
+// Sigma's hover box is hardcoded white; near-white labels vanish in it
 function drawNodeHover(context, data, settings) {
   const pad = 2;
   const size = settings.labelSize;
@@ -355,8 +346,6 @@ function drawNodeHover(context, data, settings) {
   settings.defaultDrawNodeLabel(context, data, settings);
 }
 
-// A pick keeps only what it names; picking nothing keeps everything but the shift-clicked
-// exclusions. Picking relationships also drops the nodes left with no edge.
 function visible(payload) {
   const inScope = (node) =>
     !explore.onlyGraphs.size || node.graphs.some((name) => explore.onlyGraphs.has(name));
@@ -379,7 +368,6 @@ function visible(payload) {
   return { nodes, links };
 }
 
-// Focus isolates: what is outside the ego network is not handed to the renderer at all.
 function egoNetwork(payload, roots, depth) {
   const near = new Map();
   payload.links.forEach((link) => {
@@ -412,13 +400,12 @@ async function drawGraph() {
   const status = shell.querySelector(".graph-status");
   if (!explore.payload) return;
   const request = ++explore.drawing;
-  // The node in focus plus everything expanded since; without those, an Expand inside a focused
-  // view would merge into a subgraph nobody is drawing. No focus means no centre at all.
+  // expanded nodes stay roots, or an Expand in a focused view is never drawn
   const roots = explore.focus.length ? [explore.focus.at(-1), ...explore.expanded] : null;
   const drawn = visible(
     roots ? egoNetwork(explore.payload, roots, explore.depth) : explore.payload,
   );
-  // Drawn before the renderer is imported, so a failed import still leaves these.
+  // before the import, so a failed import still leaves these
   renderLegend();
   renderScopes();
   renderCrumbs();
@@ -465,7 +452,7 @@ async function drawGraph() {
   });
   renderer.on("clickNode", ({ node }) => showDetails(node));
   explore.renderer = renderer;
-  // Without the log-scaled slowDown a small ego graph never damps: the nodes oscillate.
+  // without the log-scaled slowDown a small ego graph oscillates
   const layout = new ForceAtlas2Layout(graph, {
     settings: {
       barnesHutOptimize: drawn.nodes.length > 2000,
@@ -480,8 +467,7 @@ async function drawGraph() {
   settle(graph, layout, drawn, status, shell);
 }
 
-// Run the layout to convergence, not to a fixed budget: stop once the graph stops moving.
-// The ceiling is a backstop for a graph that never settles, not the normal exit.
+// run to convergence; the ceiling is only a backstop
 function settle(graph, layout, drawn, status, shell) {
   const halt = shell.querySelector(".graph-halt");
   const positions = () => graph.mapNodes((_id, attributes) => [attributes.x, attributes.y]);
@@ -543,15 +529,13 @@ function renderCrumbs() {
 
 const shortName = (iri) => iri.split(/[/#]/).filter(Boolean).pop() ?? iri;
 
-// The named graphs the answer spans, as a filter: which file a term came from is otherwise
-// only visible one node at a time, in the details panel.
 function renderScopes() {
   const counts = new Map();
   explore.payload.nodes.forEach((node) =>
     node.graphs.forEach((name) => counts.set(name, (counts.get(name) ?? 0) + 1)),
   );
   const scopes = $(".graph-scopes");
-  if (counts.size < 2) return scopes.replaceChildren(); // one graph is not a choice
+  if (counts.size < 2) return scopes.replaceChildren();
   scopes.replaceChildren(
     Object.assign(document.createElement("em"), { textContent: "graph" }),
     ...[...counts]
@@ -586,8 +570,7 @@ function renderLegend() {
   filter.className = "legend-filter";
   filter.placeholder = `Filter ${counts.size} types`;
   filter.value = explore.filter;
-  // Only the rows are redrawn as the reader types: replacing the field would take its focus
-  // with it, and the counts do not change while a filter narrows them.
+  // rows only: replacing the field would take its focus
   const drawRows = () => {
     legend.querySelectorAll(".legend-row").forEach((row) => row.remove());
     for (const [type, count] of ranked) {
@@ -615,7 +598,6 @@ function renderLegend() {
   );
 }
 
-// The heading says how narrow the picture is, and clears the narrowing.
 function legendHeading(what, only, hidden) {
   const heading = document.createElement("div");
   heading.className = "legend-heading";
@@ -633,7 +615,6 @@ function legendHeading(what, only, hidden) {
   return heading;
 }
 
-// Picking adds; unpicking the last one draws everything again.
 function pickRow(name, count, only, hidden) {
   const row = document.createElement("button");
   row.className = "legend-row";
@@ -706,8 +687,6 @@ function showDetails(id) {
   details.append(actions);
 }
 
-// Each action below is built only after its target has been found: an offer that cannot be
-// honoured is worse than none.
 const sameName = (left, right) =>
   String(left ?? "")
     .toLowerCase()
@@ -724,15 +703,12 @@ function authoredIn(iri) {
 
 function nodeActions(node) {
   const actions = [];
-  // Only a run has a recording to plot and a constraint list to point at.
   const replay = explore.path === state.runPath ? state.replay : null;
   const row = (replay?.constraints ?? []).find(
     (constraint) =>
       constraint.evaluator === node.value ||
       (constraint.members ?? []).some((member) => member.iri === node.value) ||
-      // The graph spells a constraint `hold-position` and the log header `hold_position`, so
-      // the comparison folds the separator. The motion comes from the IRI, because the same
-      // name is authored in several of them.
+      // graph `hold-position` vs log `hold_position`; the motion comes from the IRI
       (sameName(constraint.name, node.label) &&
         (!authoredIn(node.value) || sameName(constraint.motion, authoredIn(node.value)))),
   );
@@ -754,7 +730,7 @@ function nodeActions(node) {
       redraw();
     },
   ]);
-  // DESCRIBE names an IRI; a blank node has none to name, so it is not offered one.
+  // a blank node has no IRI to DESCRIBE
   if (node.kind !== "blank") {
     actions.push(["expand", () => expand(node).catch((error) => snack(error.message))]);
   }
@@ -769,7 +745,6 @@ function nodeActions(node) {
   return actions;
 }
 
-// Expand merges, never replaces: exploring accumulates.
 async function expand(node) {
   const data = await post("/api/sparql", {
     path: explore.path,
@@ -789,8 +764,7 @@ async function expand(node) {
   showDetails(node.id);
 }
 
-// The drawn node set as SPARQL someone else can run. Both ends are named: `VALUES ?s { .. }
-// ?s ?p ?o` alone drags in every second-hop object, drawing a bigger graph than was exported.
+// name both ends: `?s ?p ?o` alone drags in every second-hop object
 function exportQuery() {
   const roots = explore.focus.length ? [explore.focus.at(-1)] : null;
   const drawn = visible(
@@ -811,7 +785,6 @@ function exportQuery() {
   runQuery();
 }
 
-// Through the tab, so its own click writes the hash. An absent tab means no action was offered.
 function openPanel(panel) {
   document.querySelector(`.replay-tabs button[data-panel="${panel}"]`)?.click();
 }
@@ -837,7 +810,6 @@ function showConstraint(row) {
   target.click();
 }
 
-// A generation's model graph on its own; a run explores the same way from its own tab.
 export async function showExplore(path, push = true) {
   if (push) setView("explore", path);
   state.runPath = null;
@@ -915,7 +887,6 @@ function bindGraphBar() {
       $$(".graph-depth button").forEach((other) =>
         other.classList.toggle("active", other === button),
       );
-      // Depth is a radius around a focused node; with none, the last clicked one is meant.
       if (!explore.focus.length && explore.selected) explore.focus.push(explore.selected);
       if (!explore.focus.length) {
         snack("Depth needs a centre: click a node or search for one first.");
@@ -939,13 +910,11 @@ function bindGraphBar() {
   bindGraphSearch(shell);
 }
 
-// Picking a match focuses it, rather than only highlighting it.
 function bindGraphSearch(shell) {
   shell.querySelector(".graph-search").oninput = (event) => {
     const wanted = event.target.value.toLowerCase().trim();
     const matches = shell.querySelector(".graph-matches");
     if (!wanted || !explore.payload) return matches.replaceChildren();
-    // A term whose own name matches ranks above one that merely lives under a matching IRI.
     matches.replaceChildren(
       ...explore.payload.nodes
         .filter((node) => `${node.label} ${node.value}`.toLowerCase().includes(wanted))

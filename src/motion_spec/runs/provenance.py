@@ -34,6 +34,7 @@ from rdf_utils.models.vocab import URI_AGN_TYPE_MOD_AGN, URI_PROV_EXT_TYPE_EXECU
 from rdf_utils.namespace import NS_MM_QUDT
 from rdflib import Dataset, Graph, Literal, URIRef
 from rdflib.namespace import PROV, RDF, SDO
+from rdflib.term import Node
 
 PROVENANCE_DIR = "provenance"
 GENERATION_DOCUMENT = f"{PROVENANCE_DIR}/generation.ld.json"
@@ -50,20 +51,15 @@ def rec_run(run_dir: Path, run_id: str | None = None):
 
 
 @contextmanager
-def run_bundle(
-    run_dir: Path, run_id: str | None = None, bundle_id: URIRef | None = None
-) -> Iterator[Graph]:
+def run_bundle(run_dir: Path, run_id: str, bundle_id: URIRef) -> Iterator[Graph]:
     """motion-spec's bundle in the run's document, beside rec's: what rec does not record of the
     run, edited under rec's store lock so neither tool overwrites the other.
 
-    BUNDLE_ID is the bundle an earlier step of the run created; None creates it, and the caller
-    keeps the yielded graph's identifier for the steps after.
+    BUNDLE_ID is the bundle the run's start created (`runner.start_rec_run`).
     """
     run = rec_run(run_dir, run_id)
     with run.store.edit(run.id) as dataset:
-        yield dataset.graph(
-            bundle_id or create_bundle(dataset, get_py_pkg_info("motion_spec").purl)
-        )
+        yield dataset.graph(bundle_id)
 
 
 def kept_dsl_document(generated: Path) -> Path | None:
@@ -111,6 +107,21 @@ def generation_model(generated: Path):
     for path in documents:
         dataset.parse(path, format="json-ld")
     return Model(graph=dataset)
+
+
+def kept_sources(provenance: Graph) -> dict[Path, Node]:
+    """The sources a generation archived, each copy's file with the copy entity.
+
+    Raises:
+        ValueError: a kept copy has no location in PROVENANCE.
+    """
+    kept = {}
+    for copy in provenance.subjects(PROV.alternateOf):
+        path = get_file_path(provenance, copy)
+        if path is None:
+            raise ValueError(f"kept source '{copy}' has no location -- provenance is incomplete")
+        kept[path] = copy
+    return kept
 
 
 def add_package(graph: Graph, key: str) -> URIRef:
@@ -413,7 +424,8 @@ def record_draw(bundle: Graph, agent: URIRef, quantity: str, values, drawn_at) -
     quantity_id = URIRef(quantity)
     if len(values) == 3:
         coordinate = ModelBase(quantity_id, types={URI_GEOM_TYPE_VECTOR_XYZ})
-        set_coord_vectorxyz(coordinate, tuple(float(value) for value in values), bundle)
+        x, y, z = values
+        set_coord_vectorxyz(coordinate, (float(x), float(y), float(z)), bundle)
     else:
         bundle.set((quantity_id, URIRef(QUDT_SCHEMA["value"]), Literal(float(values[0]))))
     load_sampling_prov(
@@ -456,7 +468,11 @@ def run_outputs(run_dir: Path) -> list[Path]:
 def run_generation(run_dir: Path) -> Path | None:
     """The generation directory of the run in RUN_DIR: the one whose provenance the run's
     document names for the executable the run used, at the location it states; None before
-    motion-spec has recorded the run."""
+    motion-spec has recorded the run.
+
+    Raises:
+        ValueError: the run's document names the generation's record but not where it is.
+    """
     run = rec_run(run_dir)
     graph = run.store.load(run.id)
     if graph is None:
@@ -464,7 +480,10 @@ def run_generation(run_dir: Path) -> Path | None:
     graph.default_union = True
     for used in graph.objects(run.node, PROV.used):
         for record in graph.objects(used, PROV.has_provenance):
-            return get_file_path(graph, graph.value(record, PROV.atLocation))
+            location = graph.value(record, PROV.atLocation)
+            if location is None:
+                raise ValueError(f"{run_dir}: the generation record '{record}' has no location")
+            return get_file_path(graph, location)
     return None
 
 

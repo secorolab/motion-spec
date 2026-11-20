@@ -2,9 +2,7 @@
 // SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 // Author: Vamsi Kalagaturu
 
-/**
- * JupyterLab, in the page, on the run being read.
- */
+/** JupyterLab, in the page, on the run being read. */
 
 import { showEmpty } from "./components.js";
 import { $, api, post } from "./core.js";
@@ -20,7 +18,7 @@ export async function loadNotebook(url = null) {
     const lab = url ? { url } : await api("/api/jupyter");
     $(".notebook iframe").src = lab.url;
   } catch (error) {
-    // a missing JupyterLab is a thing to install, not a page that failed to load
+    // a missing JupyterLab is not a load failure
     showEmpty({
       eyebrow: "NOTEBOOK",
       title: "JupyterLab is not available.",

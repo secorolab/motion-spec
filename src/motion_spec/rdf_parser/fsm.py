@@ -287,5 +287,5 @@ def apply_fsm_gate_calls(motions, namespace) -> None:
                 "needs_robot": gate.when_needs_robot,
                 "needs_events": gate.when_needs_events,
             }
-            for gate in map(by_id.get, fallback.fsm_when_gate_motions)
+            for gate in map(by_id.__getitem__, fallback.fsm_when_gate_motions)
         ]

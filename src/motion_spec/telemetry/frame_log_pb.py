@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
+from typing import Any
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
@@ -117,7 +118,7 @@ def descriptor_set() -> bytes:
 
 
 @cache
-def record_class_of(serialized_set: bytes):
+def record_class_of(serialized_set: bytes) -> Any:
     """The FrameLogRecord class of a serialized FileDescriptorSet, built once per set."""
     pool = descriptor_pool.DescriptorPool()
     for file_proto in descriptor_pb2.FileDescriptorSet.FromString(serialized_set).file:
@@ -138,7 +139,7 @@ def write_delimited(fh, message: bytes) -> None:
     fh.write(message)
 
 
-def varint_at(data: bytes, offset: int) -> tuple[int, int]:
+def varint_at(data: bytes | bytearray, offset: int) -> tuple[int, int]:
     value = shift = 0
     while True:
         if offset >= len(data) or shift > 63:
@@ -414,7 +415,7 @@ def parse_frame(msg, contract: LogContract) -> dict:
     return record
 
 
-def raw_frames(fh, contract: LogContract, offset: int = 0) -> Iterator[tuple[object, int]]:
+def raw_frames(fh, contract: LogContract, offset: int = 0) -> Iterator[tuple[Any, int]]:
     """Each whole RuntimeFrame from OFFSET on, undecoded, with the offset just past it.
 
     A record still being written ends the walk, so a crashed run's log reads up to its last

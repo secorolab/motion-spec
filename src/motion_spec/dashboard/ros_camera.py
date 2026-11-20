@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """Live camera for a real platform: the newest frame off a ROS image topic, as MJPEG.
 
-A simulated run records mp4 and replays it; hardware has no recording, so the pane shows what
-the camera publishes right now. Latest-frame slot only, like the shm reader: a dropped frame is
-a frame the viewer never needed. A dashboard without a ROS environment still serves every other
-page, and says so in the pane instead.
+Latest-frame slot only, like the shm reader. Without a ROS environment the pane says so.
 """
 
 from __future__ import annotations
@@ -27,7 +24,7 @@ class RosCameraSource(RosImageSubscription):
 
     def __init__(self, topic: str = DEFAULT_TOPIC):
         super().__init__(topic or DEFAULT_TOPIC, NODE_NAME)
-        self._frame: tuple[int, int, int, bytes] | None = None  # seq, width, height, rgb8
+        self._frame: tuple[int, int, int, str, bytes] | None = None  # seq, w, h, raw mode, pixels
         self._seq = 0
         self._lock = threading.Lock()
         self._thread.start()
@@ -45,13 +42,13 @@ class RosCameraSource(RosImageSubscription):
         self.stop.set()
         self._thread.join(timeout=2.0)
 
-    def absorb(self, msg) -> None:
+    def absorb(self, message) -> None:
         try:
-            if msg.encoding not in ("rgb8", "bgr8"):
-                raise ValueError(f"unsupported encoding: {msg.encoding}")
-            pixels = rgb_rows(msg)
-            raw_mode = "BGR" if msg.encoding == "bgr8" else "RGB"
-            width, height = msg.width, msg.height
+            if message.encoding not in ("rgb8", "bgr8"):
+                raise ValueError(f"unsupported encoding: {message.encoding}")
+            pixels = rgb_rows(message)
+            raw_mode = "BGR" if message.encoding == "bgr8" else "RGB"
+            width, height = message.width, message.height
         except ValueError as exc:
             self.error = str(exc)
             self.stop.set()
@@ -79,11 +76,7 @@ def source_for(topic: str) -> RosCameraSource:
 
 
 def mjpeg_stream(source, running):
-    """Yield one multipart part per new frame, at most `STREAM_FPS` a second.
-
-    A generator rather than a write loop, so the pacing and the skip are testable without a
-    socket: the caller writes what this yields and stops when the client is gone.
-    """
+    """Yield one multipart part per new frame, at most `STREAM_FPS` a second."""
     period = 1.0 / STREAM_FPS
     seen = None
     while running():

@@ -255,7 +255,7 @@ def fields(message) -> list[tuple[str, str, bool, bool]]:
         element = slot.value_type if many else slot
         nested = isinstance(element, NamespacedType)
         if nested:
-            type_name = f"{element.namespaces[0]}/{element.name}"
+            type_name = f"{element.namespaced_name()[0]}/{element.name}"
         elif isinstance(element, AbstractString):
             type_name = "string"
         elif isinstance(element, AbstractWString):

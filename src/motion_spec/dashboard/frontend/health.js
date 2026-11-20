@@ -7,8 +7,7 @@
 import { icon } from "./components.js";
 import { $, api, showError, snack, stampText, state } from "./core.js";
 
-// The checks cost seconds, so the server runs them on a thread and this follows it. The poll
-// outlives the tab but never drags the reader back: off the tab it only announces the result.
+// polls a server thread; off the tab it only announces the result
 export async function loadHealth(refresh = false, env = null) {
   clearTimeout(state.healthWatch);
   const onTab = () => state.tab === "health";
@@ -46,7 +45,6 @@ function renderHealth(report, storage) {
     '<div class="health-groups"></div>';
 
   const checks = report.checks ?? [];
-  // An optional dependency left out of the build is listed, but does not count as failing.
   const failing = checks.filter((check) => !check.ok && !check.optional);
   const verdict = page.querySelector(".health-verdict");
   if (report.running && !checks.length) {
@@ -100,7 +98,7 @@ function renderHealth(report, storage) {
     line.querySelector(".health-key").textContent = name;
     line.querySelector(".health-what").textContent = dim ?? "";
     const cell = line.querySelector(".health-value");
-    // LRM marks pin the bidi order: the cell is direction:rtl only to ellipsize on the left.
+    // LRM pins bidi order; rtl is only for left ellipsis
     cell.textContent = value == null ? "—" : `‎${value}‎`;
     if (title ?? value) cell.title = title ?? value;
     return line;
@@ -158,7 +156,6 @@ function renderHealth(report, storage) {
         ok: passed === required.length,
       });
       rows.forEach((check) => {
-        // The key column already names the dependency: drop the module/cmake boilerplate tail.
         const tidy = check.path?.replace(/\/__init__\.py$/, "").replace(/\/cmake\/.*$/, "");
         const mark = check.ok ? "ok" : check.optional ? "absent" : "fail";
         group.append(

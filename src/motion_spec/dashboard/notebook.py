@@ -29,7 +29,7 @@ def jupyter_server(dashboard_port: int) -> dict:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     token = secrets.token_urlsafe(24)
-    # A settings directory of our own, so the framed lab is dark without touching ~/.jupyter.
+    # own settings directory, so ~/.jupyter stays untouched
     settings = Path(tempfile.gettempdir()) / "motion-spec-lab-settings"
     themes = settings / "@jupyterlab" / "apputils-extension"
     themes.mkdir(parents=True, exist_ok=True)
@@ -64,7 +64,7 @@ def jupyter_server(dashboard_port: int) -> dict:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    # Its own session, so a dashboard killed outright leaves this for `dashboard -k` to find.
+    # lets `dashboard -k` find a lab its killed dashboard left behind
     JUPYTER["pidfile"] = roots.pidfile(dashboard_port, "lab")
     JUPYTER["pidfile"].write_text(f"{JUPYTER['process'].pid}\n")
     JUPYTER["url"] = f"http://127.0.0.1:{port}/lab?token={token}"

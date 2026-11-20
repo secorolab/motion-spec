@@ -55,7 +55,7 @@ export async function browseTrash() {
   const dateSort = dialog.querySelector(".trash-date-sort");
   const status = dialog.querySelector('[role="status"]');
   const search = dialog.querySelector("input");
-  // Parsed once: sorting on Date objects builds two of them per comparison, per keystroke.
+  // parse once, not per comparison
   const when = new Map(trashed.map((entry) => [entry, Date.parse(entry.deleted_at ?? "") || 0]));
   let newestFirst = true;
   let shown = PAGE_SIZE;

@@ -58,7 +58,7 @@ export function addPlot(
     zoom: chart.getOption().dataZoom?.map(({ start, end }) => ({ start, end })),
   });
   state.charts.push(chart);
-  // the plot grid reflows as cards come and go; the canvas only follows if told
+  // the canvas only resizes when told
   const observer = new ResizeObserver(() => chart.resize());
   observer.observe(card.querySelector(".plot-chart"));
   if (row) card.dataset.row = row.dataset.plotKey ??= nextPlotKey();
@@ -132,7 +132,6 @@ function drawSignals(card, chart, signals, { constraint, prefetched, zoom }) {
       const seriesValues = signals.map((signal) => data.signals?.[signal] ?? []);
       const step = data.sample_step || 1;
       const firstFrame = data.first_frame ?? 0;
-      // Kept whole so progressive drawing has something to cut from, and something to restore to.
       const drawn = seriesValues.map((values) => points(values, firstFrame, step));
       const nearest = trackNearestSeries(card, chart, seriesValues, firstFrame, step);
       chart.setOption(chartOption(chart, signals, drawn, constraint, nearest));
@@ -140,8 +139,7 @@ function drawSignals(card, chart, signals, { constraint, prefetched, zoom }) {
       if (zoom?.length) chart.setOption({ dataZoom: zoom });
       chart.fullSeries = drawn;
       if (progressive) {
-        // The axis stays the run's full width whatever is drawn into it, so the line grows across
-        // a picture that does not move under it.
+        // the axis keeps the run's full width while the line grows
         chart.setOption({
           xAxis: {
             min: constraint?.window?.[0] ?? firstFrame,
@@ -150,7 +148,6 @@ function drawSignals(card, chart, signals, { constraint, prefetched, zoom }) {
         });
         chart.setOption(seriesUpTo(chart, state.frame));
       }
-      // Same as updateCursor: while the run is being followed the cursor sits on the live edge.
       if (!state.following) chart.setOption(cursorOption(state.frame, chart.cursorIndex));
     })
     .catch((error) => chart.showLoading("default", { text: error.message }));
@@ -161,9 +158,7 @@ const points = (values, firstFrame, step) =>
     .map((value, point) => (value == null ? null : [firstFrame + point * step, value]))
     .filter(Boolean);
 
-// Which line the pointer is nearest, so one tooltip row can stand out. Measured in pixels for
-// a scale-fair distance, and held until another line is clearly closer: constraint lines cross
-// and sit pixel-adjacent, and the choice would flicker on every mouse-move there.
+// px a line must be closer by before the highlight switches
 const HYSTERESIS_PX = 6;
 
 function trackNearestSeries(card, chart, seriesValues, firstFrame, step) {
@@ -403,8 +398,7 @@ function bindSignalMenu(card, signals, replaceSignals) {
     );
   };
   filter.oninput = fillSignals;
-  // Filled on opening, never on creation: a run has hundreds of signals and a page has dozens
-  // of cards, and the list nobody opened is never read.
+  // filled on open: hundreds of signals, dozens of cards
   menu.ontoggle = () => {
     if (!menu.open) return;
     filter.value = "";
@@ -416,8 +410,6 @@ function bindSignalMenu(card, signals, replaceSignals) {
   };
 }
 
-// Where a signal belongs: the constraint it serves if the header says, else the slot it is a
-// component of, so a pose is one entry and not seven.
 function signalPlace(signal) {
   const where = state.replay.signal_index?.[signal];
   if (where) {
@@ -439,8 +431,6 @@ const SPATIAL_KINDS = {
   torque: "wrench",
 };
 
-// Three axes of one constraint all read "error"; tell them apart by whatever is left of the
-// slot name once the shared prefix is gone.
 function nameApart(entries) {
   const repeated = new Set(
     entries.map((entry) => entry.label).filter((label, index, all) => all.indexOf(label) !== index),
@@ -529,8 +519,6 @@ function printVector(svg, width, height) {
   setTimeout(() => frame.remove(), 60000);
 }
 
-// Draw a recording the way a run arrives: nothing past the cursor, into an axis already scaled
-// to the whole run. A growing axis would rescale under the reader on every frame.
 const PROGRESSIVE_KEY = "motion-spec.progressive-replay";
 
 let progressive = readStored(PROGRESSIVE_KEY) === "on";
@@ -544,7 +532,6 @@ export function setProgressive(on) {
   writeStored(PROGRESSIVE_KEY, on ? "on" : "off");
 }
 
-// The points are in frame order, so the cut is a binary search, not a scan.
 function pointsUpTo(series, frame) {
   let low = 0;
   let high = series.length;

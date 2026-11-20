@@ -8,25 +8,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rec import State, Verdict
+from rec.stores.file_store import FileStore
 
 from motion_spec.dashboard.frames import FrameLayout
 from motion_spec.dashboard.roots import HEADER_REL
-from motion_spec.runs.provenance import rec_run
+from motion_spec.runs.provenance import PROVENANCE_DIR, rec_run
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
 
 LOG_REL = Path("logs") / "frame_log.pb"
-# The rest of rec's states -- queued, in-progress -- mean the run may still produce frames.
 ENDED = {State.COMPLETE, State.CANCELED}
 LIVE_WINDOW_S = 10.0
 
-# The doc only changes when the runner appends a transition, so mtime+size gates a re-read.
 _LIFECYCLE_CACHE: dict[Path, tuple[tuple, tuple[State, Verdict]]] = {}
 
 
 def lifecycle(run_dir: Path) -> tuple[State, Verdict]:
     try:
-        stat = rec_run(run_dir).store.path(run_dir.name).stat()
+        stat = FileStore(run_dir / PROVENANCE_DIR).path(run_dir.name).stat()
     except OSError:
         return State.NEW, Verdict.UNAVAILABLE
     key = (stat.st_mtime_ns, stat.st_size)
@@ -69,11 +68,9 @@ class RunInfo:
     def is_live(self) -> bool:
         """Not finished, and the frame log grew within the last `LIVE_WINDOW_S` seconds.
 
-        Asking the state alone is not enough: a run killed outright never records an end,
-        so a stale log is what actually distinguishes it from one still ticking. The log
-        is written through buffered stdio, so mtime lags the tick by an unpredictable margin --
-        hence the wide window. A caller already polling the shm block has the sharper signal in
-        its advancing seq and should prefer it.
+        A run killed outright never records an end, so the log's age decides. The window is
+        wide because buffered writes make mtime lag. A caller polling the shm block should
+        prefer its advancing seq.
         """
         if self.state in ENDED or not self.log_path.exists():
             return False
@@ -118,7 +115,7 @@ class GenerationCatalog:
         self.root = Path(root)
 
     def generations(self) -> list[GenerationInfo]:
-        # a bundle sits two or three levels down, and `latest` is a link to one already found
+        # `latest` links to a bundle already found
         found = {
             layout.parent.parent.parent
             for depth in ("*/*", "*/*/*")
@@ -126,7 +123,6 @@ class GenerationCatalog:
             if not layout.parent.parent.parent.is_symlink()
         }
         generations = [GenerationInfo(d, self.root) for d in found]
-        # a model is as recent as its newest generation, so the list leads with what was last built
         newest: dict[str, float] = {}
         for generation in generations:
             built = generation.built_at

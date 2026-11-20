@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import socket
 import tomllib
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,7 +22,7 @@ ROBOT_TOML_REL = "generated/source/robot.toml"
 CONNECT_TIMEOUT_MS = 1000
 
 
-def endpoints(table: dict, name: str):
+def endpoints(table: dict, name: str) -> Iterator[dict]:
     """Every endpoint one table tree names, as what it is rather than what it is called.
 
     A table with a host is reached over the network on every port it names; one whose port is a

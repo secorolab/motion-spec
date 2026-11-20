@@ -48,6 +48,7 @@ from rdf_utils.models.vocab import (
 from rdf_utils.namespace import NS_MM_QUDT_QTY
 from rdflib import Graph, Literal, URIRef
 from rdflib.namespace import DCTERMS, RDF, SDO
+from rdflib.paths import AlternativePath, SequencePath
 from scene_dsl.kdl_tree import build_kdl_trees
 from scene_dsl.rdf.sensors import (
     CAMERA_TYPES,
@@ -135,7 +136,7 @@ class AgentAssembly:
     so no third naming scheme survives: `urdf`, `owned_trees`, `tip`.
     """
 
-    agent: object
+    agent: URIRef
     device: str
     config_key: str
     sensors: list
@@ -282,7 +283,7 @@ def cameras(model, hosted, runtime_prefix) -> list:
     return cameras
 
 
-def agent_assemblies(model, attach_by_body) -> list:
+def agent_assemblies(model, attach_by_body) -> list[AgentAssembly]:
     graph = model.graph
     trees, holders = scene_kinematics(model)
     instance = quantities.scene_instance(model)
@@ -345,18 +346,11 @@ def agent_assemblies(model, attach_by_body) -> list:
             root_binding = own[0]
             root_frame = root_frame_of(root_binding["tree"], graph).id
             root_body = body_of_frame(root_frame, graph)
-        else:
-            scene_tree, chain = serial
-            root_binding = next(
-                binding for binding in own if binding["tree"] in holders[chain.root_body]
+            attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
+            attach_kind, attach_name, _frame, _parent, _host_frame = attachment
+            position, orientation = quantities.placement_of(
+                model, attachment, quantities.anchor_frame(model)
             )
-            root_frame, root_body = chain.root_frame, chain.root_body
-        attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
-        attach_kind, attach_name, _frame, _parent, _host_frame = attachment
-        position, orientation = quantities.placement_of(
-            model, attachment, quantities.anchor_frame(model)
-        )
-        if serial is None:
             result.append(
                 AgentAssembly(
                     agent=agent,
@@ -382,6 +376,16 @@ def agent_assemblies(model, attach_by_body) -> list:
                 )
             )
             continue
+        scene_tree, chain = serial
+        root_binding = next(
+            binding for binding in own if binding["tree"] in holders[chain.root_body]
+        )
+        root_frame, root_body = chain.root_frame, chain.root_body
+        attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
+        attach_kind, attach_name, _frame, _parent, _host_frame = attachment
+        position, orientation = quantities.placement_of(
+            model, attachment, quantities.anchor_frame(model)
+        )
         tip_binding = next(
             (binding for binding in bindings if binding["tree"] in holders[chain.tip_body]),
             root_binding,
@@ -758,7 +762,9 @@ def placed_on_chain(carrier) -> tuple[tuple[object, bool], ...]:
     return ()
 
 
-def place_on_chain(chain, item, owner: str, world_fk: bool, world_index: dict) -> str | None:
+def place_on_chain(
+    chain, item: Point | Frame | SimplicialComplex, owner: str, world_fk: bool, world_index: dict
+) -> str | None:
     """Resolve where one frame, point or body sits, once, while generating.
 
     The generated code is handed a resolved index, never a name: a name would have to be matched
@@ -771,8 +777,6 @@ def place_on_chain(chain, item, owner: str, world_fk: bool, world_index: dict) -
     Returns:
         the full tree segment name for a world-model read, else None
     """
-    if not isinstance(item, (Point, Frame, SimplicialComplex)):
-        return None
     if world_fk:
         segment = chain.world_segments.get(item.uri) or world_index.get(item.uri)
         if segment is None:
@@ -836,6 +840,8 @@ def place_solver_on_chain(solver, world_index: dict, root_by_segment: dict) -> l
     segment_by_frame: dict[str, str] = {}
     off_branch: set[str] = set()
     for item, world_fk in reads:
+        if not isinstance(item, (Point, Frame, SimplicialComplex)):
+            continue
         segment = place_on_chain(solver.chain, item, solver.id, world_fk, world_index)
         if segment is None:
             continue
@@ -1166,7 +1172,11 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
             default=0,
         )
         serial_chains.append(solver)
-        driven = graph[node : SLV["motion-drivers"] / (SLV["cartesian-force"] | SLV["joint-force"])]
+        driven = graph[
+            node : SequencePath(
+                SLV["motion-drivers"], AlternativePath(SLV["cartesian-force"], SLV["joint-force"])
+            )
+        ]
         steps.extend(schedule.of(driven, OPS_GENERIC + OPS_SOLVER))
 
     platform_force = []
@@ -1185,7 +1195,7 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
                 forces=forces,
             )
         )
-        driven = graph[node : SLV["motion-drivers"] / SLV["cartesian-force"]]
+        driven = graph[node : SequencePath(SLV["motion-drivers"], SLV["cartesian-force"])]
         steps.extend(schedule.of([node, *driven], OPS_GENERIC + OPS_SOLVER))
 
     for type_, label in _UNIMPLEMENTED_PLATFORM_ALGORITHMS:

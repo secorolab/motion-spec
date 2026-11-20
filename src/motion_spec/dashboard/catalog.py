@@ -16,8 +16,9 @@ from pathlib import Path
 from coord_dsl.rdf.vocab import URI_FSM_PRED_DESCRIPTION
 from google.protobuf.message import DecodeError
 from rdf_utils.models.prov import get_file_path
-from rdflib import RDF, BNode, Dataset, Literal, URIRef
+from rdflib import RDF, BNode, Dataset, Literal
 from rdflib.namespace import PROV, TIME
+from rdflib.term import Node
 from rec import Verdict
 
 from motion_spec.dashboard import roots
@@ -32,6 +33,7 @@ from motion_spec.runs.provenance import (
     FRAME_LOG_PACKED,
     GENERATION_DOCUMENT,
     generation_model,
+    kept_sources,
     read_generation_dataset,
     rec_run,
     run_outputs,
@@ -42,13 +44,11 @@ from motion_spec.runs.verify import RecordError
 
 def generation_info(path: Path) -> dict:
     layout = GenerationInfo(path, roots.GENERATIONS).layout
-    # The generation is the activity every tool's step was delegated in.
     provenance = read_generation_dataset(path / "generated" / GENERATION_DOCUMENT)
     began = provenance.value(provenance.value(predicate=PROV.hadActivity), TIME.hasBeginning)
     created = provenance.value(began, TIME.inXSDDateTimeStamp)
     platform = generation_platform(path)
-    kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
-    source = next((source for source in kept if source.suffix == ".robmot"), None)
+    source = next((path for path in kept_sources(provenance) if path.suffix == ".robmot"), None)
     generation = GenerationInfo(path, roots.GENERATIONS)
     runs = generation.runs
     return {
@@ -85,8 +85,7 @@ def generation_info(path: Path) -> dict:
 def build_toolchain(generation_dir: Path) -> dict:
     """What this generation was actually built against, read out of its own CMake cache.
 
-    Per generation rather than per machine: an old bundle keeps the versions it was built
-    with, and a build that never ran reports nothing rather than today's install.
+    A generation never built reports nothing.
     """
     cache = generation_dir / "build" / "CMakeCache.txt"
     if not cache.is_file():
@@ -101,7 +100,7 @@ def build_toolchain(generation_dir: Path) -> dict:
         version = re.search(r'set\(PACKAGE_VERSION\s+"([^"]+)"', version_file.read_text())
         if version:
             toolchain["wrapper"] = version.group(1)
-    # The wrapper's exported config names the MuJoCo it links; the version is in that path.
+    # the linked MuJoCo's version is in the wrapper config's paths
     for exported in config_dir.glob("*.cmake"):
         mujoco = re.search(r"mujoco-(\d+\.\d+\.\d+)", exported.read_text())
         if mujoco:
@@ -115,8 +114,7 @@ def drift_summary(generation_dir: Path) -> dict:
     generated = generation_dir / "generated"
     provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
     files = []
-    for copy in set(provenance.subjects(PROV.alternateOf)):
-        archived = get_file_path(provenance, copy)
+    for archived, copy in kept_sources(provenance).items():
         if not archived.is_file():
             continue
         twin = workspace_twin(generated, provenance, copy)
@@ -142,13 +140,11 @@ def drift_summary(generation_dir: Path) -> dict:
 def source_drift(generation_dir: Path, name: str | None = None) -> dict:
     """What one archived source has been edited into since this generation was made.
 
-    The generation keeps what it was built from; the working tree has whatever it has been
-    edited into. Comparing the two is the only honest answer to "would generating again give
-    me this?". The sides are aligned by `aligned_rows`, so the page only draws rows.
+    The sides are aligned by `aligned_rows`, so the page only draws rows.
     """
     generated = generation_dir / "generated"
     provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
-    kept = {get_file_path(provenance, copy): copy for copy in provenance.subjects(PROV.alternateOf)}
+    kept = kept_sources(provenance)
     archived = next(
         (
             path
@@ -171,7 +167,6 @@ def source_drift(generation_dir: Path, name: str | None = None) -> dict:
         }
     return {
         "workspace": twin,
-        # Where it actually is, not a root the page has to remember and join a name onto.
         "workspace_path": str(roots.WORKSPACE / twin),
         "archived": str(archived),
         "name": archived.name,
@@ -181,7 +176,7 @@ def source_drift(generation_dir: Path, name: str | None = None) -> dict:
     }
 
 
-def workspace_twin(generated: Path, provenance: Dataset, copy: URIRef) -> str | None:
+def workspace_twin(generated: Path, provenance: Dataset, copy: Node) -> str | None:
     """The working-tree file under the sources root that the kept source COPY is an alternate
     of, or None if it is not there any more.
 
@@ -203,25 +198,19 @@ def generation_details(path: Path) -> dict:
     details = generation_info(path)
     generated = path / "generated"
     provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
-    kept = {get_file_path(provenance, copy): copy for copy in provenance.subjects(PROV.alternateOf)}
+    kept = kept_sources(provenance)
     robmot = next((source for source in kept if source.suffix == ".robmot"), None)
     try:
         description = generation_model(generated).graph.value(predicate=URI_FSM_PRED_DESCRIPTION)
     except ValueError:
         description = None
-    # A generation with no run yet has no log to read, so the count comes off the source.
     constraints = authored_lines(robmot) if robmot else {}
-    # A simulation is a platform with a name; hardware is the devices it deploys, which the
-    # model graph names one by one. Reading them costs a graph parse, so it stays off the list.
     details["platform"] = details["platform"] or " · ".join(deployed_devices(path)) or None
     details["authored_constraints"] = len(constraints)
     details["motions"] = len({motion for motion, _name in constraints})
     details["folder"] = str(path)
     details["spec_name"] = Path(details["source"] or path.name).stem
     details["description"] = str(description) if description is not None else None
-    # A generation vendors a copy of what it was built from. Only the model carries the way
-    # back to the working file, since that is what `gen` is pointed at again; the rest are its
-    # imports, and where the tree no longer has one this says nothing.
     details["source_files"] = [
         {
             "name": source.name,
@@ -241,11 +230,9 @@ def generation_details(path: Path) -> dict:
     return details
 
 
-# A 13 MB ir.json handed to the editor locks the browser, so a larger file arrives cut off
-# and says so.
+# a larger file locks the browser's editor
 GENERATED_MAX_BYTES = 2_000_000
 
-# Tab, newline and carriage return are the only control bytes text has any business carrying.
 _TEXT_CONTROL = {9, 10, 13}
 
 
@@ -254,9 +241,7 @@ def read_generated(path: Path) -> dict:
     size = path.stat().st_size
     with path.open("rb") as handle:
         head = handle.read(GENERATED_MAX_BYTES)
-    # A NUL in the first block alone passes a serialized frame log, whose wire format is field
-    # tags and lengths in the low bytes with hardly a NUL among them; counting every control
-    # byte catches it, and leaves real source (which has none) far below the line.
+    # a protobuf log has few NULs, so count every control byte
     block = head[:8192]
     control = sum(1 for byte in block if byte < 32 and byte not in _TEXT_CONTROL)
     if b"\0" in block or control > len(block) * 0.02:
@@ -265,7 +250,7 @@ def read_generated(path: Path) -> dict:
         "absolute": str(path),
         "size": size,
         "binary": False,
-        # replace, not strict: the cut can land mid-character, and one glyph is not a failure
+        # the cut can land mid-character
         "text": head.decode("utf-8", "replace"),
         "truncated": size > GENERATED_MAX_BYTES,
     }
@@ -280,9 +265,7 @@ def graph_name(context) -> str:
 def term_graphs(dataset) -> dict[str, list[str]]:
     """Term -> the named graphs it appears in, anywhere in the dataset.
 
-    Membership is a property of the term, not of the triple that happened to name it: a design
-    IRI in `model` and `runtime` was modelled *and* ran, and that stays true in a result that
-    only carries its design triples.
+    Membership is a property of the term, not of the triple that names it.
     """
     where: dict[str, list[str]] = {}
     for subject, _p, obj, context in dataset.quads((None, None, None, None)):
@@ -297,10 +280,8 @@ def term_graphs(dataset) -> dict[str, list[str]]:
 def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
     """Classify (subject, predicate, object, graph name) tuples so the renderer can draw them.
 
-    Three edge classes never reach the picture as edges, because as edges they are hubs that a
-    force layout cannot separate: `rdf:type` becomes its subject's `types`, a literal object
-    becomes its subject's `attributes`, and `prov:` terms stay but are marked for the overlay.
-    `hidden` counts each one, so a reader can account for every triple that is not a link.
+    `rdf:type` becomes its subject's `types`, a literal object its subject's `attributes`, and
+    `prov:` terms stay but are marked for the overlay; `hidden` counts each.
     """
     nodes: dict[str, dict] = {}
     links: list[dict] = []
@@ -309,8 +290,7 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
     hidden = {"type_edges": 0, "literal_edges": 0, "provenance_edges": 0}
 
     quads = list(quads)
-    # A blank node's label changes every time the live overlay regenerates; its place in the
-    # graph does not. Reached from an IRI, it borrows that edge as its stable payload id.
+    # blank labels change per regeneration: key a blank node by the edge reaching it
     blank_ids: dict[str, str] = {}
     for subject, predicate, obj, _name in quads:
         if isinstance(obj, BNode) and not isinstance(subject, BNode):
@@ -381,8 +361,7 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
 
 
 def run_notes(path: Path) -> list[str]:
-    """Read notes.json here rather than importing queries, which imports this module: every tag
-    used by the run's notes."""
+    """Every tag used by the run's notes."""
     state = roots.GENERATIONS / STATE_REL / path.relative_to(roots.GENERATIONS)
     notes = json_file(state / "notes.json").get("notes", [])
     return list(dict.fromkeys(tag for note in notes for tag in note.get("tags") or []))
@@ -391,7 +370,6 @@ def run_notes(path: Path) -> list[str]:
 def run_info(path: Path) -> dict:
     info = RunInfo(path)
     health = info.health or {}
-    # A run that has only just started has no readable log yet; it still belongs in the list.
     try:
         period_ns = resolve_run(path)[2].header.nominal_period_ns
     except (RecordError, DecodeError, OSError):
@@ -441,7 +419,6 @@ def generation_cameras(generation_dir: Path) -> list[dict]:
             "id": camera.id,
             "width": camera.width,
             "height": camera.height,
-            # Where a viewer reads it, or nothing: the page shows no live pane without one.
             "topic": camera.topic,
             "message": camera.message,
         }
@@ -452,8 +429,7 @@ def generation_cameras(generation_dir: Path) -> list[dict]:
 def run_files(run_dir: Path) -> list[dict]:
     """Every file this run wrote, named relative to the run.
 
-    The run's own tree and nothing beyond it: the generation-owned files its manifest points
-    back to are the generation page's to list.
+    The run's own tree only, not the generation files its manifest points to.
     """
     return [
         {"name": str(path.relative_to(run_dir)), "path": str(path), "size": path.stat().st_size}

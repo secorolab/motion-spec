@@ -25,26 +25,26 @@ class FrameLogTail:
         self._fh = None
         self._offset = 0
 
-    def open(self) -> bool:
-        """True once the log's header record is complete and its contract has been read."""
+    def open(self) -> frame_log_pb.LogContract | None:
+        """The log's contract once its header record is complete, else None."""
         if self.contract is not None:
-            return True
+            return self.contract
         if not self.path.exists():
-            return False
+            return None
         try:
             self.contract = frame_log_pb.read_contract(self.path)
         except (RecordError, DecodeError):
-            return False  # header still being written
-        # A live log is tailed as it grows; an archived one is packed and no longer moves.
+            return None  # header still being written
         self._fh = frame_log_pb.open_log(self.path)
-        return True
+        return self.contract
 
     def poll(self, stride: int = 1) -> list[dict]:
         """Frames appended since the previous poll, in order, keeping every nth record."""
-        if not self.open():
+        contract = self.open()
+        if contract is None:
             return []
         records, self._offset = frame_log_pb.stream_records(
-            self._fh, self.contract, self._offset, stride
+            self._fh, contract, self._offset, stride
         )
         return records
 

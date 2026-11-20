@@ -26,13 +26,13 @@ class MjcfSceneAttachment:
     pos: list[float] | None = None
     quat: list[float] | None = None
     actuator: str = ""
-    pos_x: float | None = None
-    pos_y: float | None = None
-    pos_z: float | None = None
-    quat_x: float | None = None
-    quat_y: float | None = None
-    quat_z: float | None = None
-    quat_w: float | None = None
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    pos_z: float = 0.0
+    quat_x: float = 0.0
+    quat_y: float = 0.0
+    quat_z: float = 0.0
+    quat_w: float = 1.0
     type: str = field(default="MjcfSceneAttachment")
 
 
@@ -49,13 +49,13 @@ class MjcfSceneRobot:
     pos: list[float] | None = None
     quat: list[float] | None = None
     attachments: list[MjcfSceneAttachment] = field(default_factory=list)
-    pos_x: float | None = None
-    pos_y: float | None = None
-    pos_z: float | None = None
-    quat_x: float | None = None
-    quat_y: float | None = None
-    quat_z: float | None = None
-    quat_w: float | None = None
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    pos_z: float = 0.0
+    quat_x: float = 0.0
+    quat_y: float = 0.0
+    quat_z: float = 0.0
+    quat_w: float = 1.0
     type: str = field(default="MjcfSceneRobot")
 
 
@@ -80,13 +80,13 @@ class MjcfSceneObject:
     color: list[float] | None = None
     mass: float | None = None
     friction: list[float] | None = None
-    pos_x: float | None = None
-    pos_y: float | None = None
-    pos_z: float | None = None
-    quat_x: float | None = None
-    quat_y: float | None = None
-    quat_z: float | None = None
-    quat_w: float | None = None
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    pos_z: float = 0.0
+    quat_x: float = 0.0
+    quat_y: float = 0.0
+    quat_z: float = 0.0
+    quat_w: float = 1.0
     has_path: bool = False
     size_x: float | None = None
     size_y: float | None = None

@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from io import BufferedWriter
 from pathlib import Path
 
 
@@ -62,6 +64,7 @@ class RosImageSubscription:
     def spin(self) -> None:
         try:
             import rclpy
+            from rclpy.context import Context
             from rclpy.executors import SingleThreadedExecutor
             from rclpy.qos import qos_profile_sensor_data
             from sensor_msgs.msg import Image
@@ -69,7 +72,7 @@ class RosImageSubscription:
             self.error = f"no ROS environment: {exc}"
             return self._ready.set()
         # own context: leaves any other rclpy in this process alone
-        context = rclpy.Context()
+        context = Context()
         node = executor = None
         try:
             rclpy.init(context=context)
@@ -91,6 +94,10 @@ class RosImageSubscription:
                 node.destroy_node()
             if context.ok():
                 rclpy.shutdown(context=context)
+
+    def absorb(self, message) -> None:
+        """Take one image the topic delivered, on the spinning thread."""
+        raise NotImplementedError
 
 
 class RosImageRecorder(RosImageSubscription):
@@ -143,7 +150,8 @@ class RosImageRecorder(RosImageSubscription):
     def write(self) -> None:
         origin: float | None = None
         last_slot = 0
-        last_frame: bytes | None = None
+        last_frame = b""
+        encoder: BufferedWriter | None = None
         try:
             while True:
                 item = self._frames.get()
@@ -156,35 +164,41 @@ class RosImageRecorder(RosImageSubscription):
                 if message.width <= 0 or message.height <= 0 or message.step < message.width * 3:
                     self.error = "invalid RGB image dimensions"
                     continue
-                if self._ffmpeg is None:
+                if encoder is None:
                     self.output.parent.mkdir(parents=True, exist_ok=True)
-                    self._ffmpeg = subprocess.Popen(
-                        [
-                            "ffmpeg",
-                            "-y",
-                            "-loglevel",
-                            "error",
-                            "-f",
-                            "rawvideo",
-                            "-pixel_format",
-                            "rgb24" if message.encoding == "rgb8" else "bgr24",
-                            "-video_size",
-                            f"{message.width}x{message.height}",
-                            "-framerate",
-                            str(self.recording.rate_hz),
-                            "-i",
-                            "pipe:0",
-                            "-an",
-                            "-c:v",
-                            "libx264",
-                            "-pix_fmt",
-                            "yuv420p",
-                            str(self.output),
-                        ],
-                        stdin=subprocess.PIPE,
-                        # Ctrl-C is for the controller, not ffmpeg
-                        start_new_session=True,
-                    )
+                    frames_in, frames_out = os.pipe()
+                    encoder = os.fdopen(frames_out, "wb")
+                    try:
+                        self._ffmpeg = subprocess.Popen(
+                            [
+                                "ffmpeg",
+                                "-y",
+                                "-loglevel",
+                                "error",
+                                "-f",
+                                "rawvideo",
+                                "-pixel_format",
+                                "rgb24" if message.encoding == "rgb8" else "bgr24",
+                                "-video_size",
+                                f"{message.width}x{message.height}",
+                                "-framerate",
+                                str(self.recording.rate_hz),
+                                "-i",
+                                "pipe:0",
+                                "-an",
+                                "-c:v",
+                                "libx264",
+                                "-pix_fmt",
+                                "yuv420p",
+                                str(self.output),
+                            ],
+                            stdin=frames_in,
+                            # Ctrl-C is for the controller, not ffmpeg
+                            start_new_session=True,
+                        )
+                    finally:
+                        # ffmpeg holds its own copy
+                        os.close(frames_in)
                 header_stamp = message.header.stamp
                 stamp = (
                     header_stamp.sec + header_stamp.nanosec * 1e-9
@@ -202,17 +216,18 @@ class RosImageRecorder(RosImageSubscription):
                 frame = rgb_rows(message)
                 try:
                     for _ in range(slot - last_slot - 1):
-                        self._ffmpeg.stdin.write(last_frame)
-                    self._ffmpeg.stdin.write(frame)
-                    self._ffmpeg.stdin.flush()
+                        encoder.write(last_frame)
+                    encoder.write(frame)
+                    encoder.flush()
                 except (BrokenPipeError, OSError) as exc:
                     self.error = f"ffmpeg stopped: {exc}"
                     return
                 last_slot = slot
                 last_frame = frame
         finally:
+            if encoder is not None:
+                encoder.close()
             if self._ffmpeg is not None:
-                self._ffmpeg.stdin.close()
                 try:
                     self._ffmpeg.wait(timeout=10)
                 except subprocess.TimeoutExpired:

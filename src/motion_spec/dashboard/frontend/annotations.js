@@ -99,7 +99,6 @@ export async function annotationEditor(path, changed = () => {}) {
   return box;
 }
 
-// Shared with the run page's Notes panel, which wraps it in a section of its own.
 export const NOTES_MARKUP = `
   <div class="notes-compose">
     <textarea

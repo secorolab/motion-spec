@@ -202,7 +202,7 @@ def views_for_access(
         output_id for function in functions.values() for output_id in function_output_ids(function)
     )
 
-    indexed: dict[str, object] = {}
+    indexed: dict[str, View | None] = {}
     for view in views.values():
         # a constraint may name the view itself
         indexed.setdefault(view.id, view)

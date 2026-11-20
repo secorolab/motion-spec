@@ -4,8 +4,6 @@
 
 """User annotations, kept in the dashboard's store beside the bundles rather than in them."""
 
-from __future__ import annotations
-
 import json
 import threading
 from pathlib import Path

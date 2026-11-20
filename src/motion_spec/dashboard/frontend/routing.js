@@ -14,8 +14,7 @@ import { loadNotebook } from "./notebook.js";
 import { loadReplay, stopPlayback } from "./run.js";
 import { loadSources, openSource, showGenerated } from "./sources.js";
 
-// A page tab fills the content pane itself, so it cannot also be showing a view: selecting one
-// drops every view parameter, or the hash names two things and a reload picks the wrong one.
+// a page tab fills the pane, so selecting one drops every view parameter
 const PAGE_TABS = { health: loadHealth, notebook: loadNotebook };
 const VIEW_PARAMS = [
   "run",
@@ -29,7 +28,6 @@ const VIEW_PARAMS = [
   "panel",
 ];
 
-// A hash can still name more than one view; this is the order in which they win.
 const VIEW_ORDER = ["explore", "run", "diff", "gitdiff", "source", "generated", "generation"];
 
 const OPEN_VIEW = {
@@ -37,7 +35,7 @@ const OPEN_VIEW = {
   run: (view) => loadReplay(view.get("run")),
   diff: (view) => showDrift(view.get("diff"), view.get("file"), false),
   gitdiff: (view) => showGitDiff(view.get("gitdiff"), false),
-  // The viewer re-renders itself; it must not push the entry it is restoring back on.
+  // no history push while restoring
   source: (view) => openSource(view.get("source"), null, false),
   generated: (view) => showGenerated(view.get("generated"), false),
   generation: (view) => selectGeneration(view.get("generation")),
@@ -94,8 +92,6 @@ export function setTab(tab, push = true) {
   });
 }
 
-// Only the sources tab swaps the sidebar list. Asking "is this the logs tab" instead would
-// empty the sidebar the moment health or notebook opened.
 export function sidebarLoader() {
   return state.tab === "sources" ? loadSources : loadGenerations;
 }
@@ -126,17 +122,16 @@ export function loadLocation() {
   const requested = view.get("tab") ?? "logs";
   setTab(requested, false);
   const loadSidebar = sidebarLoader();
-  // Uncover the empty state even when nothing loaded, or a failed restore leaves a blank pane.
+  // settle even on failure, or the pane stays blank
   const settle = (loading) =>
     loading.catch(showError).finally(() => document.documentElement.classList.remove("restoring"));
-  // setTab has just dropped the view parameters on a page tab, so hold no generation either.
   const page = PAGE_TABS[state.tab];
   state.generationPath = page ? null : generationOf(view);
   if (page) return settle(loadSidebar().then(() => page()));
   const named = VIEW_ORDER.find((param) => view.has(param));
   if (!named) return settle(loadSidebar());
   const open = () => OPEN_VIEW[named](view);
-  // The drift page fills the sidebar itself, with the generation's own sources.
+  // the drift page fills its own sidebar
   return settle(named === "diff" ? open() : loadSidebar().then(open));
 }
 

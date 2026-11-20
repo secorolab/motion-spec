@@ -14,12 +14,9 @@ from motion_spec.telemetry.frame_log_pb import shm_path
 
 READ_ATTEMPTS = 8
 _SPATIAL_PREFIX = {"poses": "pose", "twists": "twist", "wrenches": "wrench"}
-# The words a live sampler steers by: where the run is, and what put it there.
 CORE_SIGNALS = ("step", "t", "fsm_state", "active_motion", "last_event")
-# Timing signals are nanoseconds in the frame and milliseconds on a plot.
 _TIMING_MS = {"timing.compute_ms": ("compute_ns", 1e6), "timing.period_ms": ("period_ns", 1e6)}
 
-# How a spatial slot's proto fields read as authored components.
 SLOT_PARTS = {
     "poses": {
         "position.x": "px",
@@ -81,16 +78,17 @@ class ShmFrameReader:
         self.layout = layout
         self._mm: mmap.mmap | None = None
 
-    def open(self) -> bool:
-        """True once the block exists and is fully sized; the runtime creates it at startup."""
+    def open(self) -> mmap.mmap | None:
+        """The mapped block once it exists and is fully sized, else None; the runtime creates it
+        at startup."""
         if self._mm is not None:
-            return True
+            return self._mm
         path, size = shm_path(self.name), self.layout.struct.size
         if not path.exists() or path.stat().st_size < size:
-            return False
+            return None
         with path.open("rb") as fh:
             self._mm = mmap.mmap(fh.fileno(), size, prot=mmap.PROT_READ)
-        return True
+        return self._mm
 
     def close(self) -> None:
         if self._mm is not None:
@@ -101,9 +99,9 @@ class ShmFrameReader:
         """The newest whole frame as the bytes it was published as, or None while the writer
         keeps tearing it (or has yet to publish one). A torn read is never returned: seq
         brackets every publish."""
-        if not self.open():
+        mm, size = self.open(), self.layout.struct.size
+        if mm is None:
             return None
-        mm, size = self._mm, self.layout.struct.size
         for _ in range(READ_ATTEMPTS):
             seq = struct.unpack_from("<Q", mm, 0)[0]
             if seq == 0 or seq & 1:  # nothing published yet / mid-write
@@ -118,10 +116,8 @@ class ShmFrameReader:
 class SignalFields:
     """Signal names resolved to their (offset, struct) in a raw frame, plus the motion gate.
 
-    replay.signal_reader reads the same names off a protobuf frame; the gates and the units here
-    are that reader's, so a live point means what the same point means in history. A flat layout
-    name is positional (c0.error, m0.value, q0, wrench0.fx) while the contract names the same
-    slot semantically -- the slot index is what joins the two.
+    Gates and units match replay.signal_reader. A flat layout name is positional (c0.error,
+    m0.value, q0, wrench0.fx); the slot index joins it to the contract's semantic name.
     """
 
     def __init__(self, layout: FrameLayout, contract):
@@ -180,10 +176,7 @@ class SignalFields:
         raise ValueError(f"unknown signal: {name}")
 
     def writers(self, kind: str, index: int) -> set | None:
-        """The active motions whose gate writes slot INDEX of KIND; None when KIND is ungated.
-
-        signal_reader's gate, same source, resolved once per signal rather than per frame.
-        """
+        """The active motions whose gate writes slot INDEX of KIND; None when KIND is ungated."""
         table = self.contract.gate.get(kind)
         if table is None:
             return None

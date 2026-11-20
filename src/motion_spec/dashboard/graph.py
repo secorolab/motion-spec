@@ -3,7 +3,6 @@
 
 The DSL's document, found through the generation's provenance, with the scene and FSM graphs
 beside it, each document its own named graph.
-The dashboard mints no vocabulary of its own.
 """
 
 from __future__ import annotations
@@ -31,11 +30,7 @@ def load_document(path: Path, dataset: rdflib.Dataset) -> None:
 
 @lru_cache(maxsize=64)
 def deployed_devices(generation_dir: Path | str) -> tuple[str, ...]:
-    """The device models the execution context realizes, as the model names them.
-
-    This is what a real platform is made of; a simulation carries a name of its own instead, so
-    nothing here has to tell one platform kind from another.
-    """
+    """The device models the execution context realizes, as the model names them."""
     document = kept_dsl_document(Path(generation_dir) / "generated")
     if document is None:
         return ()
@@ -59,24 +54,30 @@ class GraphService:
         document = kept_dsl_document(generated)
         if document is not None:
             load_document(document, self.dataset)
-        # The scene and FSM graphs the IR names nodes of, which the DSL's document holds none of:
-        # the other model documents the provenance attributes.
+        # the scene and FSM graphs live in the other attributed documents
         provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
         dsl = next(provenance.subjects(SDO.name, rdflib.Literal("motion_spec_dsl")), None)
         for entity, agent in set(provenance.subject_objects(PROV.wasAttributedTo)):
-            if agent != dsl and (entity, PROV.atLocation, None) in provenance:
-                load_document(get_file_path(provenance, entity), self.dataset)
+            if agent == dsl:
+                continue
+            path = get_file_path(provenance, entity)
+            if path is not None:
+                load_document(path, self.dataset)
 
-    def query(self, sparql: str) -> tuple[str, object]:
-        """(result type, payload) for a SPARQL query over the current dataset.
+    def query(self, sparql: str) -> tuple[str, list[str], list[tuple]]:
+        """(result type, column names, rows) for a SPARQL query over the current dataset.
 
-        SELECT and ASK answer with `(variable names, rows)`. CONSTRUCT and DESCRIBE answer with
-        their triples: `result.vars` is None for both, so rows alone would flatten them away.
+        SELECT and ASK answer with their variables' bindings. CONSTRUCT and DESCRIBE answer with
+        the graph they build, one (subject, predicate, object) row per triple.
         """
         result = self.dataset.query(sparql)
-        if result.type in ("CONSTRUCT", "DESCRIBE"):
-            return result.type, [tuple(triple) for triple in result]
+        if result.graph is not None:
+            return result.type, ["subject", "predicate", "object"], list(result.graph)
         if result.type == "ASK":
-            return result.type, (["answer"], [(result.askAnswer,)])
-        headers = [str(var) for var in (result.vars or [])]
-        return result.type, (headers, [tuple(row) for row in result])
+            return result.type, ["answer"], [(result.askAnswer,)]
+        variables = result.vars or []
+        return (
+            result.type,
+            [str(var) for var in variables],
+            [tuple(binding.get(var) for var in variables) for binding in result.bindings],
+        )

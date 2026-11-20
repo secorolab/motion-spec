@@ -7,12 +7,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>motion-spec</title>
-    <!-- Named, or the browser asks for /favicon.ico and logs the 404 when it misses. -->
+    <!-- named, or the browser requests /favicon.ico and logs a 404 -->
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="style.css" />
-    <!-- Vendored, not fetched: a robot's machine is often on a network with no way out. -->
     <script src="vendor/echarts.min.js"></script>
-    <!-- live cards stream through uPlot; echarts stays for replay's zoom/cursor/export -->
+    <!-- uPlot for live cards, echarts for replay zoom, cursor and export -->
     <link rel="stylesheet" href="vendor/uPlot.min.css" />
     <script src="vendor/uPlot.iife.min.js"></script>
   </head>
@@ -48,7 +47,6 @@
     <main>
       <aside>
         <div class="sidebar-header">
-          <!-- The same file the tab icon uses, so the two can never drift apart. -->
           <button id="home" class="brand">
             <img class="brand-mark" src="mark.svg" alt="" width="24" height="24" />
             <span>motion-spec</span>
@@ -70,7 +68,7 @@
             </button>
           </div>
           <div class="root-control">
-            <!-- Filled from /api/roots; a value here would show a stranger's path until then. -->
+            <!-- left empty until /api/roots answers -->
             <input id="generation-root" title="Edit path" />
             <button id="pick-root" title="Choose folder" aria-label="Choose folder">
               <svg class="icon" aria-hidden="true">

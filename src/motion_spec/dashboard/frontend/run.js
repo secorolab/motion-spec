@@ -56,8 +56,6 @@ import { showGenerated } from "./sources.js";
 
 const PANELS = ["plots", "reports", "explore", "console", "files", "notes"];
 
-// The page of a run just named, open before its log exists. /api/replay answers from the
-// generation's contract, so a generation built before that file existed holds here instead.
 export async function openPendingRun(runPath) {
   state.autoPlot = runPath;
   if (await opened(runPath)) return;
@@ -70,11 +68,10 @@ export async function openPendingRun(runPath) {
   highlightGeneration();
   showRunStarting();
   const hop = setInterval(async () => {
-    if (state.runPath !== runPath) return clearInterval(hop); // the user went elsewhere
+    if (state.runPath !== runPath) return clearInterval(hop);
     if (await opened(runPath)) return clearInterval(hop);
     const status = await api(`/api/run?path=${encodeURIComponent(runPath)}`).catch(() => null);
     if (status && !status.busy) {
-      // over without ever writing a log: the runner's own words are all there is to show
       clearInterval(hop);
       await showRunWithoutLog(state.generationPath, runPath, status);
     }
@@ -86,7 +83,6 @@ const opened = (runPath) =>
     .then(() => true)
     .catch(() => false);
 
-// A run that never reaches its first frame is waited on here, so this is where it is ended.
 function showRunStarting() {
   const waiting = showEmpty({
     spinner: true,
@@ -100,8 +96,6 @@ function showRunStarting() {
   };
 }
 
-// A run over with no log. Told not to write one is not the same as never having run, and the
-// manifest says which.
 export async function showRunWithoutLog(generationPath, runPath, status) {
   if (status?.recorded !== false) return showRunNeverStarted(generationPath, status?.exit_code);
   const empty = showEmpty({
@@ -137,9 +131,9 @@ export async function loadReplay(path) {
   const timeline = $(".timeline");
   timeline.max = Math.max(0, state.replay.frames - 1);
   timeline.disabled = false;
-  // gate id -> the name the source spells it: a row carries the name, not the gate it ran under
+  // gate id -> source name: a row carries the name, not the gate
   state.motionOf = state.replay.motion_names ?? {};
-  // slot id -> the motion and constraint it serves: an edge in the log names the slot.
+  // slot id -> motion and constraint: a log edge names the slot
   state.slotOwner = Object.fromEntries(
     Object.values(state.replay.signal_index ?? {})
       .filter((where) => where.slot)
@@ -147,7 +141,6 @@ export async function loadReplay(path) {
   );
   populateConstraints();
   watchPlottedRows();
-  // The archive of a run this page started reopens the cards that were open when it ended.
   const reopened = state.autoPlot === path && !state.replay.pending && livePlotsOn();
   if (reopened) {
     state.autoPlot = null;
@@ -158,18 +151,16 @@ export async function loadReplay(path) {
   state.motionSpans = motionSpans();
   state.opening = false;
   bindAutoPlot();
-  // Following would close that set on the spot to show frame 0's motion instead.
+  // following would close the reopened set for frame 0's motion
   if (!reopened) followMotion();
   $("#notebook").onclick = () => openNotebook(state.runPath).catch(snackError);
   bindLivePlots();
   bindProgressive();
   bindPanels();
-  // A side panel that cannot load is not the page failing to load.
   bindExplore(path).catch(snackError);
   bindTransport();
   setTransportMode();
   showVideos(path, state.replay.videos ?? []);
-  // Nothing recorded: a real platform has a camera, but only ROS to reach it through.
   if (!state.replay.videos?.length) showRosCamera(state.replay.generation);
   followLiveRun(path);
   bindConsoleSearch();
@@ -193,7 +184,6 @@ function dropOpenCharts() {
   state.activeMotion = null;
 }
 
-// Edges draw for the constraints whose charts are open, so the strip follows the cards.
 function watchPlottedRows() {
   state.plottedWatch?.disconnect();
   state.plottedWatch = new MutationObserver(() => renderMarkers());
@@ -233,7 +223,6 @@ function loadNotes(path) {
     .catch(snackError);
 }
 
-// The same start the generation page makes, with the run bar's remembered choices.
 function bindRunAgain(runPath) {
   const button = $("#run-again");
   const generation = state.replay.generation;
@@ -340,7 +329,6 @@ function bindPanels() {
     PANELS.forEach((name) => {
       $(`#panel-${name}`).hidden = name !== panel;
     });
-    // A panel that cannot load is not the page failing to load.
     if (panel === "reports") showReports(state.runPath).catch(snackError);
     if (panel === "files") showRunFiles(state.runPath).catch(snackError);
     if (panel === "notes") showNotes(state.runPath).catch(snackError);
@@ -350,12 +338,10 @@ function bindPanels() {
   document.querySelectorAll(".replay-tabs button").forEach((button) => {
     button.onclick = () => show(button.dataset.panel);
   });
-  // A hash naming a panel this page no longer offers falls back to plots.
   const stored = hashView().get("panel");
   show(PANELS.includes(stored) ? stored : "plots", false);
 }
 
-// Re-read on each opening of the tab: a live run is still adding to it.
 async function showRunFiles(runPath) {
   const files = await api(`/api/run/files?path=${encodeURIComponent(runPath)}`);
   const list = $(".run-files");
@@ -386,8 +372,6 @@ async function showRunFiles(runPath) {
   );
 }
 
-// Every note kept beside the run, newest first. The whole list is saved on any change: notes
-// are few and small, and one write is one thing to get right.
 export async function showNotes(runPath, container = null) {
   const panel = container ?? $("#panel-notes");
   if (!panel) return;
@@ -396,9 +380,8 @@ export async function showNotes(runPath, container = null) {
   const tags = panel.querySelector(".note-tags");
   const status = panel.querySelector(".notes-state");
   let notes = (await api(`/api/notes?path=${encodeURIComponent(runPath)}`)).notes;
-  // Only the run page can attach a note to a frame; the generation page has no cursor.
   const [frameInput, endInput] = container ? [null, null] : addFrameFields(panel);
-  // Picked by id, so a selection survives a redraw and is dropped only with the note it names.
+  // by id, so a selection survives a redraw
   const picked = new Set();
   const bar = panel.querySelector(".notes-bar");
   const pickAll = bar.querySelector(".notes-pick-all");
@@ -619,9 +602,8 @@ function constraintRow(constraint, motion) {
   const expression = document.createElement("span");
   row.className = "constraint";
   row.dataset.kind = constraint.kind;
-  row.dataset.motion = motion; // which block a live run's active motion lights up
-  // A when-guard's monitor runs in the predecessor motion's window, so its plots follow the
-  // owner rather than the block it was authored in.
+  row.dataset.motion = motion;
+  // a when-guard's monitor runs in the predecessor motion's window
   const monitorPrefix = constraint.monitors?.[0]?.split(".")[0];
   const owner = state.replay.monitor_owners?.[monitorPrefix];
   if (owner && owner !== motion) row.dataset.monitorOwner = owner;
@@ -675,7 +657,6 @@ function bindRowPlots(row, constraint, motion) {
   row.title = constraint.window
     ? `Plot this ${constraint.kind} constraint`
     : "This motion never ran in this recording";
-  // measured against its setpoint where there is one; otherwise the error against zero
   const tracked = constraint.tracking.length ? constraint.tracking : constraint.error;
   const machinery =
     constraint.kind === "monitored"
@@ -686,12 +667,9 @@ function bindRowPlots(row, constraint, motion) {
   const between = constraint.between.length ? ` · ${constraint.between.join(" vs ")}` : "";
   const where = constraint.line ? `L${constraint.line}: ` : "";
   const detail = `${where}${constraint.expression ?? constraint.name}${between}`;
-  // A when-guard's monitor runs during the predecessor motion; say so on the card.
   const monitorDetail = row.dataset.monitorOwner
     ? `${detail} · evaluated during ${row.dataset.monitorOwner}`
     : detail;
-  // Live: one card per constraint, because its tracked signal and controller machinery share
-  // the frame axis. The monitor keeps its own, its value and satisfied being another scale.
   const openLive = (data) => {
     const combined = [
       ...new Set([...tracked, ...(constraint.kind === "monitored" ? [] : machinery)]),
@@ -725,8 +703,7 @@ function bindRowPlots(row, constraint, motion) {
         data,
       });
   };
-  // `data` is a prefetched /api/plot answer shared across one motion's rows; without one the
-  // card fetches its own, which is what a lone click wants.
+  // `data`: one /api/plot answer shared across a motion's rows
   row.openPlots = (data = null) => {
     row.dataset.plotted = "true";
     if (state.following && livePlotsOn()) return openLive(data);
@@ -743,8 +720,6 @@ function bindRowPlots(row, constraint, motion) {
   };
 }
 
-// Cards follow the cursor the way they follow a live run: one motion's charts open and close
-// behind it, never the whole run's -- eighty charts in one page is what made live pages crawl.
 const AUTO_PLOT_KEY = "motion-spec.auto-plot";
 
 let followMotions = readStored(AUTO_PLOT_KEY) === "on";
@@ -764,12 +739,10 @@ function bindAutoPlot() {
 
 function followMotion() {
   if (state.restoringInspection) return;
-  // A live run is already followed by its poll; this is the same behaviour for a recording.
   if (!followMotions || state.following || state.opening) return;
   const motion = motionAt(state.frame);
   if (!motion || motion === state.activeMotion) return;
-  // Scrubbing crosses motions faster than a card can load: one unfold at a time, then a
-  // re-check, so a drag lands on the motion it stopped at rather than every one it passed.
+  // one unfold at a time, so a drag lands on the motion it stopped at
   state.opening = true;
   Promise.resolve(trackActiveMotion(motion, { plots: true, live: false }))
     .catch(() => {})
@@ -779,8 +752,7 @@ function followMotion() {
     });
 }
 
-// When each motion ran, from the spans its own constraints were evaluated over. Deriving it
-// from state names (S_PICK_ABOVE to pick-above) would be a spelling rule invented here.
+// from constraint spans: deriving it from state names would invent a spelling rule
 function motionSpans() {
   const spans = new Map();
   state.replay.constraints.forEach(({ motion, window }) => {
@@ -794,8 +766,7 @@ function motionSpans() {
   return [...spans].sort((left, right) => left[1][0] - right[1][0]);
 }
 
-// The motion at this frame, or the last one entered: the gaps between motions belong to the
-// motion before them. Spans overlap where a guard outlives its motion, and the latest wins.
+// gaps belong to the motion before; where spans overlap the latest wins
 function motionAt(frame) {
   const spans = state.motionSpans ?? [];
   const span =
@@ -805,7 +776,6 @@ function motionAt(frame) {
   return span?.[0] ?? null;
 }
 
-// Light a motion's block and scroll the constraint list to it. Opens no plots.
 function revealMotion(name) {
   if (!name) return;
   trackActiveMotion(name, { plots: false, live: false });
@@ -818,7 +788,6 @@ function revealMotion(name) {
   panel.scrollTo({ top, behavior: "smooth" });
 }
 
-// The cards a named set asks for, else every plottable constraint of the last motion that ran.
 function openPlotsFor(path, keys, motion) {
   const wanted =
     motion ??
@@ -826,8 +795,7 @@ function openPlotsFor(path, keys, motion) {
       .filter((constraint) => constraint.window)
       .sort((left, right) => right.window[1] - left.window[1])[0]?.motion;
   const asked = new Set(keys);
-  // Each row is a full-log /api/plot read: click them apart so several never land in one
-  // frame. Detached on purpose -- the page is usable while the cards fill in.
+  // each row is a full-log read: click them apart, detached on purpose
   (async () => {
     const rows = $$("#constraints .constraint").filter((row) => {
       if (!row.dataset.plottable || row.dataset.plotted || row.dataset.idle) return false;
@@ -835,14 +803,13 @@ function openPlotsFor(path, keys, motion) {
     });
     if (!rows.length) return snack("Nothing recorded to plot in this run.");
     for (const row of rows) {
-      if (state.runPath !== path) return; // the reader moved on
+      if (state.runPath !== path) return;
       row.click();
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   })();
 }
 
-// One transport for a recording or the live run writing it.
 function bindTransport() {
   $(".timeline").oninput = (event) => seek(Number(event.target.value));
   $("#step-back").onclick = () => seek(state.frame - 1);
@@ -861,7 +828,6 @@ function bindTransport() {
   renderMarkers();
 }
 
-// Replay speed is the page's; a live run's is the loop's.
 function setSpeed(speed) {
   state.speed = speed;
   showSpeed(speed);
@@ -869,7 +835,6 @@ function setSpeed(speed) {
   if (video) video.playbackRate = speed;
   if (state.live) return simControl({ action: "speed", speed });
   if (state.timer) {
-    // restart the animation on the new rate
     stopPlayback();
     togglePlayback();
   }
@@ -883,7 +848,6 @@ export function showSpeed(speed) {
   if (summary) summary.textContent = `${speed}×`;
 }
 
-// A growing log is followed; only a loop that answers can be paused.
 export function setTransportMode() {
   const following = Boolean(state.following);
   const driving = Boolean(state.live);
@@ -896,12 +860,9 @@ export function setTransportMode() {
   stepForward.title = driving ? "Advance one tick" : "Next frame";
   $(".timeline").disabled = driving || !state.replay.frames;
   $("#cancel-run").hidden = !driving;
-  // Starting another run while this one drives the loop would fight it for the platform.
   const again = $("#run-again");
   if (again) again.hidden = driving;
   $(".transport").classList.toggle("transport-live", following);
-  // "live plots" only means something on a run being written; "auto plot" is its counterpart
-  // on a recording, since the live poll follows motions on its own.
   const live = following || Boolean(state.replay.pending);
   $("#live-plots").hidden = !live;
   $("#auto-plot").hidden = live;
@@ -938,7 +899,6 @@ function togglePlayback() {
     video.play().catch(() => {});
   }
   const tick = (now) => {
-    // With a recording the video is the clock, so the cursor follows what is on screen.
     if (video && !video.paused)
       cursor = (video.currentTime / video.duration) * (state.replay.frames - 1);
     else cursor += ((now - last) * fps) / 1000;
@@ -962,7 +922,6 @@ export function stopPlayback() {
   if ($("#play")) $("#play").textContent = "Play";
 }
 
-/** Reports and annotations use the same seek path as the transport and video. */
 export function jumpToFinding(frame, motion = null, constraint = null, endFrame = null) {
   $(".replay-tabs [data-panel=plots]").click();
   seek(frame);
@@ -983,7 +942,6 @@ export function jumpToFinding(frame, motion = null, constraint = null, endFrame 
     );
 }
 
-// Turning it off has to put back what it cut, so both directions go through updateCursor.
 function bindProgressive() {
   bindToggle($("#progressive-plots"), "progressive", progressiveOn, () => {
     setProgressive(!progressiveOn());
@@ -995,11 +953,9 @@ function bindProgressive() {
 }
 
 export function updateCursor() {
-  // A cursor pinned to the live edge is not worth a setOption on every chart.
   if (state.following) return;
   state.charts.forEach((chart) => {
-    // Only when the cut actually moves: at 5x most frames land between two samples, and
-    // redrawing every series to draw the identical line is the whole cost of playing.
+    // redraw only when the cut moves: at 5x most frames land between samples
     if (progressiveOn() && chart.fullSeries) {
       const cut = seriesUpTo(chart, state.frame);
       const drawn = cut.series[0]?.data.length ?? 0;
@@ -1012,9 +968,7 @@ export function updateCursor() {
   });
 }
 
-// Waiting on the run: nothing on the page is worth clicking yet.
 export function settle(waiting, message = "archiving the run…") {
-  // The live poll settles after an await, by which time the reader may have left the page.
   const overlay = $(".settling");
   if (!overlay) return;
   overlay.hidden = !waiting;
@@ -1023,12 +977,11 @@ export function settle(waiting, message = "archiving the run…") {
   $(".transport")?.classList.toggle("busy", waiting);
 }
 
-// Marks of one kind closer than this many pixels are drawn as one.
+// px within which marks of one kind merge
 const CLUSTER_PX = 4;
 
 export function renderMarkers() {
   const clusters = markerClusters();
-  // The legend names what is drawn, nothing more.
   const anyEdge = clusters.some(isEdge);
   $$(".lg-edges").forEach((item) => {
     item.hidden = !anyEdge;
@@ -1047,12 +1000,8 @@ export function renderMarkers() {
 
 const isEdge = (event) => event.kind === "satisfied" || event.kind === "unsatisfied";
 
-// Marks of one kind too close to tell apart become one mark with several names.
 function markerClusters() {
-  // An edge is only drawn for a constraint whose chart is open; with no chart it is texture.
   const plotted = new Set($$("#constraints .constraint[data-plotted]").map(constraintKey));
-  // The event that moved the FSM is drawn on the state mark; only one that moved nothing stands
-  // on its own.
   const causes = new Map(
     state.replay.events.filter((event) => event.kind === "state").map((event) => [event.frame, []]),
   );
@@ -1137,12 +1086,11 @@ export function movePlayhead() {
   $(".transport").style.setProperty("--f", trackFraction(state.frame));
 }
 
-// The panel floats over the page, so the page ends above it rather than behind it.
 export function reserveVideoSpace() {
   const transport = $(".transport");
   const panel = $(".videos");
   const covered = panel && !panel.hidden && !panel.classList.contains("minimized");
-  // Every measurement first: writing a custom property between two reads forces a reflow.
+  // all reads first: a write between two reads forces a reflow
   const transportHeight = transport?.offsetHeight ?? 0;
   const videoHeight = covered ? panel.offsetHeight + 16 : 0;
   const videoWidth = covered ? panel.offsetWidth + 16 : 0;
@@ -1152,8 +1100,6 @@ export function reserveVideoSpace() {
   style.setProperty("--video-w", `${videoWidth}px`);
 }
 
-// Expand and minimize, both remembered per browser; expanded is one custom property the
-// video rules read.
 const VIDEO_TOGGLES = [
   {
     control: ".video-max",
@@ -1186,7 +1132,6 @@ function bindVideoToggles(panel) {
   });
 }
 
-// What the run recorded: one camera large, the rest alongside to swap in.
 function showVideos(runPath, cameras) {
   const panel = $(".videos");
   panel.hidden = !cameras.length;
@@ -1195,7 +1140,6 @@ function showVideos(runPath, cameras) {
     `/api/video?path=${encodeURIComponent(runPath)}&camera=${encodeURIComponent(camera)}`;
   const main = panel.querySelector("video");
   main.oncontextmenu = (event) => event.preventDefault();
-  // The other half of syncVideo's one-seek-at-a-time: a drag's newest target lands here.
   main.onseeked = () => {
     const queued = main._queuedSeek;
     main._queuedSeek = undefined;
@@ -1205,10 +1149,8 @@ function showVideos(runPath, cameras) {
   const show = (camera) => {
     state.camera = camera;
     main.src = url(camera);
-    // A video that is never played paints nothing until it is seeked.
+    // a never-played video paints nothing until seeked
     main.onloadedmetadata = () => {
-      // Fit the box to the recording: a 3D view with the panels open is portrait, and a
-      // landscape box would letterbox it.
       const portrait = main.videoHeight > main.videoWidth;
       main.style.width = portrait ? "auto" : "100%";
       main.style.height = portrait ? "var(--video-h, 34vh)" : "auto";
@@ -1220,7 +1162,6 @@ function showVideos(runPath, cameras) {
       .querySelectorAll(".video-pick")
       .forEach((pick) => pick.setAttribute("aria-pressed", pick.dataset.camera === camera));
   };
-  // Nothing to swap between with one camera: the strip would be the same view again.
   const strip = panel.querySelector(".video-strip");
   strip.hidden = cameras.length < 2;
   panel.classList.toggle("one-camera", cameras.length < 2);
@@ -1232,7 +1173,6 @@ function showVideos(runPath, cameras) {
       pick.innerHTML = `<video muted playsinline preload="metadata"></video><span>${camera}</span>`;
       const thumb = pick.querySelector("video");
       thumb.src = url(camera);
-      // Show something of the run rather than the black frame it opens on.
       thumb.onloadedmetadata = () => {
         thumb.currentTime = Math.min(1, thumb.duration / 2);
       };
@@ -1244,18 +1184,13 @@ function showVideos(runPath, cameras) {
   reserveVideoSpace();
 }
 
-// The same pane pointed at a live ROS topic, for a run with no recording: the picture is
-// whatever the camera publishes now, not a track the timeline drives.
 async function showRosCamera(generationPath) {
   if (!generationPath) return;
   const generation = await api(`/api/generation?path=${encodeURIComponent(generationPath)}`).catch(
     () => null,
   );
-  // Nothing is re-read off `state` after the await: a run starting rewrites `state.replay` in
-  // place, and checking it here is a race the pane used to lose silently.
+  // nothing re-read off `state` after the await: a starting run rewrites it
   if (!generation) return;
-  // Only the cameras the model gives a channel, in the order the scene declares them: a topic
-  // the model does not state is not this page's to invent.
   const carried = generation.cameras?.filter((entry) => entry.topic) ?? [];
   if (!carried.length) return;
   const panel = $(".videos");
@@ -1272,7 +1207,6 @@ async function showRosCamera(generationPath) {
   const topic = main.querySelector("select");
   const status = main.querySelector(".ros-status");
   const name = main.querySelector(".video-name");
-  // The topic picked last is remembered for the session, unless this run does not carry it.
   const remembered = carried.some((entry) => entry.topic === state.rosTopic);
   topic.value = remembered ? state.rosTopic : carried[0].topic;
   enhanceSelect(topic);
@@ -1280,12 +1214,11 @@ async function showRosCamera(generationPath) {
     state.rosTopic = topic.value;
     status.textContent = "";
     name.textContent = carried.find((entry) => entry.topic === state.rosTopic)?.id ?? "";
-    // A new query each time, so the browser reconnects rather than showing the stalled stream.
+    // a fresh query, so the browser reconnects
     frame.src = `/api/ros-camera?topic=${encodeURIComponent(state.rosTopic)}&t=${Date.now()}`;
   };
   frame.onerror = () => {
     frame.removeAttribute("src");
-    // An armed run publishes nothing until it is played, so this is a wait, not a dead end.
     status.textContent = "waiting for frames…";
     reserveVideoSpace();
     clearTimeout(state.rosRetry);
@@ -1302,22 +1235,19 @@ async function showRosCamera(generationPath) {
   reserveVideoSpace();
 }
 
-// The recording of the run, if this run has one on screen.
 function playingVideo() {
   const panel = $(".videos");
   const video = panel && !panel.hidden ? panel.querySelector("video") : null;
   return video && video.duration && isFinite(video.duration) ? video : null;
 }
 
-// Frames and video are two clocks over the same run: map by position, not by seconds, and
-// leave a deadband so the video playing itself does not fight the cursor it is driving.
+// map by position, not seconds, with a deadband so playback does not fight the cursor
 function syncVideo(force = false) {
   const video = playingVideo();
   if (!video) return;
   const target = trackFraction(state.frame) * video.duration;
   if (!force && Math.abs(video.currentTime - target) <= 0.25) return;
-  // Scrubbing fires seeks faster than the decoder lands them, and each new one aborts the last
-  // mid-decode. One at a time: a drag queues only its newest target.
+  // one seek at a time: each new one aborts the last mid-decode
   if (video.seeking) video._queuedSeek = target;
   else video.currentTime = target;
 }
@@ -1334,7 +1264,6 @@ function followConsole(runPath) {
     if (!slice || !slice.text) return;
     offset = slice.offset;
     appendConsole(pre, slice.text);
-    // What just arrived is part of the log the search bar is searching.
     findInConsole();
   };
   poll();
@@ -1344,8 +1273,7 @@ function followConsole(runPath) {
 let consoleHits = [];
 let consoleHit = 0;
 
-// Matches are painted through the CSS highlight registry, not by wrapping elements around
-// them: the log is appended to while it is read, and it already carries ANSI spans.
+// CSS highlights, not wrappers: the log grows while read and carries ANSI spans
 function findInConsole(step = 0) {
   const pre = $("#console-text");
   const input = $("#console-search");
@@ -1366,7 +1294,6 @@ function findInConsole(step = 0) {
       : "no matches"
     : "";
   $("#console-prev").disabled = $("#console-next").disabled = consoleHits.length < 2;
-  // Only a step is asked to move the view: re-searching as the run writes must not yank it.
   if (step && consoleHits.length) {
     const hit = consoleHits[consoleHit].getBoundingClientRect();
     pre.scrollTop += hit.top - pre.getBoundingClientRect().top - pre.clientHeight / 2;
@@ -1378,7 +1305,7 @@ function matchRanges(pre, needle) {
   const walk = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
   for (let node = walk.nextNode(); node; node = walk.nextNode()) {
     const text = node.data.toLowerCase();
-    // A word broken across an ANSI colour change is two text nodes and is not matched.
+    // a word split across ANSI spans is not matched
     for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length)) {
       const range = new Range();
       range.setStart(node, at);
@@ -1391,7 +1318,6 @@ function matchRanges(pre, needle) {
 
 function bindConsoleSearch() {
   const input = $("#console-search");
-  // Nothing to paint matches with: the field would take words and show nothing for them.
   if (!CSS.highlights) return input.closest(".console-bar").remove();
   input.oninput = () => {
     consoleHit = 0;

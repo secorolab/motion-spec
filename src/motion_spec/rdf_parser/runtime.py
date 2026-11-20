@@ -197,8 +197,8 @@ def world_ports(
         if tree["root"] == anchored_root or tree["root"] in placed_by_perception:
             continue
         obj = object_by_body.get(tree["root_iri"])
-        mapped_body = mapped_by_root[tree["root_iri"]]
-        if obj is None and mapped_body is None:
+        mapping = obj.body if obj is not None else mapped_by_root[tree["root_iri"]]
+        if mapping is None:
             raise ConstraintViolation(
                 "kinematics",
                 f"'{tree['name']}' is a free body the scene does not place, so nothing can "
@@ -214,7 +214,7 @@ def world_ports(
             WorldPort(
                 kind="free_root",
                 segment=tree["root"],
-                mapping=obj.body if obj is not None else mapped_body,
+                mapping=mapping,
                 slot=len(free_roots),
                 iri=tree["root_iri"],
             )

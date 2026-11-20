@@ -15,6 +15,7 @@ from rdflib.namespace import DCTERMS, PROV, RDF
 
 from motion_spec.runs.provenance import (
     GENERATION_DOCUMENT,
+    PROVENANCE_DIR,
     kept_dsl_document,
     rec_run,
     run_generation,
@@ -45,7 +46,7 @@ class RecordError(ValueError):
         self.problems = problems
 
 
-def verify_run(run_dir: Path | str) -> None:
+def verify_run(run_dir: Path | str) -> Path:
     """Check the recorded run in RUN_DIR against its provenance, reading only.
 
     The generation is the one the run's document names the provenance of, by its location. Its
@@ -56,9 +57,14 @@ def verify_run(run_dir: Path | str) -> None:
     with the DSL's record, must conform to the PROV shapes, and the run's document together with
     it to the REC shapes.
 
+    Returns:
+        the generation directory the run names
+
     Raises:
         RecordError: naming every failed check of the first stage that failed.
     """
+    from rec.stores.file_store import FileStore
+
     run_dir = Path(run_dir)
     generation = run_generation(run_dir)
     if generation is None:
@@ -66,7 +72,7 @@ def verify_run(run_dir: Path | str) -> None:
     generated = generation / "generated"
     provenance_path = generated / GENERATION_DOCUMENT
     recorded_run = rec_run(run_dir)
-    rec_path = recorded_run.store.path(recorded_run.id)
+    rec_path = FileStore(run_dir / PROVENANCE_DIR).path(recorded_run.id)
     required = (generated / "contract" / HEADER_FILE, provenance_path, rec_path)
     errors = [f"{path}: missing" for path in required if not path.is_file()]
     if errors:
@@ -133,6 +139,7 @@ def verify_run(run_dir: Path | str) -> None:
             check_shacl_constraints(graph, shapes)
         except SHACLViolation as exc:
             raise RecordError(run_dir, f"{label}: {exc}") from exc
+    return generation
 
 
 def parse_rdf(dataset: rdflib.Dataset, path: Path) -> rdflib.Dataset:

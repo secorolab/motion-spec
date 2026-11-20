@@ -24,7 +24,7 @@ import { showGeneration, showGitDiff } from "./generations.js";
 import { hashView, setTab, setView, writeHash } from "./routing.js";
 import { loadReplay } from "./run.js";
 
-// What the server sends at most; only ever used to say so.
+// server cap, only used in the notice
 const GENERATED_SHOWN = 2_000_000;
 
 export async function loadSources(refresh = false) {
@@ -63,7 +63,6 @@ function sourceTree(sources) {
 
 const FOLDS = "motion-spec.source-folds";
 
-// Only the folders the reader collapsed, so a new one arrives open and the list stays short.
 function collapsedFolders() {
   try {
     return new Set(JSON.parse(readStored(FOLDS, "[]")));
@@ -108,7 +107,6 @@ function renderSourceNode(node, depth, path, collapsed) {
         item,
         copyPathButton(() => `${state.roots.sources}/${source}`),
       );
-      // Built once: the filter runs over every leaf on every keystroke.
       leaf.dataset.search = leaf.textContent.toLowerCase();
       return leaf;
     });
@@ -132,14 +130,12 @@ export function filterSources(value) {
   document.querySelectorAll(".source-leaf").forEach((item) => {
     item.hidden = !item.dataset.search.includes(query);
   });
-  // Deepest first, and each branch asks only its own children: asking every descendant instead
-  // walks the whole tree once per branch.
   [...document.querySelectorAll(".source-node")].reverse().forEach((node) => {
     const visible = [...node.children].some(
       (child) => child.matches(".source-leaf, .source-node") && !child.hidden,
     );
     node.hidden = !visible;
-    // Opened to show a match, not by the reader, so it must not outlive the query.
+    // opened for a match, so it closes when the query clears
     if (query && visible && !node.open) {
       node.dataset.openedByQuery = "";
       node.open = true;
@@ -150,7 +146,6 @@ export function filterSources(value) {
   });
 }
 
-// Always the working-tree file, never a generation's archived copy of it.
 export async function showSource(workspace, absolute, line = null) {
   if (!workspace) {
     await copyText(absolute);
@@ -166,8 +161,7 @@ export async function showSource(workspace, absolute, line = null) {
   }
 }
 
-// Generated output in the same editor the sources tab mounts, minus everything that writes:
-// the generator owns these files. Back goes to the generation, or to the run that wrote it.
+// read-only: the generator owns these files
 export async function showGenerated(relative, push = true) {
   const run = relative.match(/^(.*\/runs\/[^/]+)\/(.+)$/);
   const [generation, name] = run
@@ -202,7 +196,6 @@ export async function showGenerated(relative, push = true) {
   await mountEditor($("#source-text"), relative, read.text, true);
 }
 
-// Two groups of actions: what to do with the file, and what to make from it.
 const VIEWER_MARKUP = `
   <div class="viewer">
     <div class="viewer-top">
@@ -253,35 +246,30 @@ export async function openSource(source, absolute = null, push = true, line = nu
   if (state.viewing !== source) return;
   $("#content").innerHTML = VIEWER_MARKUP;
   $(".viewer h1").textContent = source.split("/").pop();
-  // A generation's vendored copy is not under the sources root; show where it really is.
+  // a vendored copy lives outside the sources root
   $(".viewer .path").textContent = where ?? absolute ?? source;
   revealInTree(source);
   await mountEditor($("#source-text"), source, text, false, gitHead, line);
-  // With no commit to compare against there is no diff to show and nothing to go back to.
   const dirty = gitHead != null && gitHead !== text;
   $("#diff-source").hidden = !dirty;
   $("#diff-source").onclick = () => showGitDiff(source).catch(snackError);
   bindCheckout(source, absolute, dirty);
   bindEditorChoice(source, editors, terminal);
-  // Only a .robmot is a whole generation to make; the other authored files are parts of one.
   if (source.endsWith(".robmot")) {
     bindGenerate(source);
     showLint(source).catch(() => {});
   }
 }
 
-// A file opened from a generation is otherwise unfindable in the tree.
 function revealInTree(source) {
   $$("#browser .item").forEach((item) =>
     item.classList.toggle("selected", item.dataset.path === source),
   );
   const listed = $(`#browser .item[data-path="${CSS.escape(source)}"]`);
   if (!listed) return;
-  // Every collapsed folder above it, not just the nearest, or the entry stays hidden.
   for (let node = listed.closest("details"); node; node = node.parentElement?.closest("details")) {
     node.open = true;
   }
-  // Scrolling an entry the reader can already see moves the list under their eyes for nothing.
   const browser = $("#browser");
   const list = browser.getBoundingClientRect();
   const entry = listed.getBoundingClientRect();
@@ -356,8 +344,7 @@ function bindEditorChoice(source, editors, terminal) {
   };
 }
 
-// The design graph is made by generating, so the findings come from this model's newest
-// generation and there is nothing to say until one exists. A finding is a warning at most.
+// findings come from the model's newest generation
 async function showLint(source) {
   const box = document.createElement("section");
   box.className = "lint";
@@ -402,7 +389,6 @@ function lintRow(item) {
   return row;
 }
 
-// Generate, build and optionally run a model from its own page, showing the terminal doing it.
 function bindGenerate(source) {
   const generate = $("#gen-source");
   const start = $("#gen-run-source");
@@ -459,7 +445,6 @@ function bindGenerate(source) {
         await tail(); // the closing lines land after the process is already gone
         clearInterval(state.generateConsole);
         if (!job.generation) return;
-        // A failure stays put, where its console is, and offers the way in instead.
         if (job.exit_code) {
           open.hidden = false;
           open.onclick = () => showGeneration(job.generation);

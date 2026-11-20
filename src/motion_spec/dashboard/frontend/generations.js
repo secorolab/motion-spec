@@ -38,7 +38,7 @@ import { openSource, showGenerated, showSource } from "./sources.js";
 
 const RUNS_PER_PAGE = 10;
 
-// One remembered run bar per model: every generation of a model shares its cameras and choices.
+// one per model: its generations share cameras and choices
 const runOptionsKey = (generationPath) =>
   `motion-spec.run-options.${generationPath.split("/")[0]}`;
 
@@ -71,7 +71,7 @@ export async function loadGenerations(refresh = false) {
     ]);
     state.cache.generations = { generations, storage, roots };
   }
-  // Health and notebook still browse generations, so this must not ask for the logs tab.
+  // health and notebook still browse generations
   if (request !== state.listRequest || state.tab === "sources") return;
   $("#list-title").textContent = "GENERATIONS";
   const { generations, storage, roots } = state.cache.generations;
@@ -81,7 +81,6 @@ export async function loadGenerations(refresh = false) {
   $("#generation-root").hidden = false;
   $("#generation-root").value = roots.logs;
   const sort = SORTS[$("#generation-sort").value] ?? SORTS.newest;
-  // Pinned first, as a group of their own; the rest by model.
   const ordered = [...generations].sort(
     (left, right) => Number(right.pinned) - Number(left.pinned) || sort(left, right),
   );
@@ -157,7 +156,6 @@ function generationItem(generation) {
     generation.path,
     generation.last_run ? (generation.last_run.live ? "live" : (lastRun ?? "unknown")) : null,
   );
-  // Built once: the filter runs over every row on every keystroke.
   item.dataset.search = [
     generation.name,
     generation.path,
@@ -174,8 +172,7 @@ function generationItem(generation) {
   return item;
 }
 
-// rec records an OSLC state and, once complete, a verdict: the one word a row shows is the
-// verdict of a complete run and the state of any other.
+// a complete run shows its verdict, any other its OSLC state
 function lifecycleWord(run) {
   if (!run?.state) return null;
   return run.state === "complete" ? run.verdict : run.state;
@@ -237,7 +234,6 @@ export function highlightGeneration() {
   document.querySelectorAll("#browser .item").forEach((item) => {
     item.classList.toggle("selected", item.dataset.path === state.generationPath);
   });
-  // Scrolling an item the reader can already see moves the list under their eyes for nothing.
   const selected = document.querySelector("#browser .item.selected");
   if (!selected) return;
   const list = $("#browser").getBoundingClientRect();
@@ -264,7 +260,6 @@ function toggleSelection(path, source = "sidebar", anchor = true) {
   if (anchor) state.anchor = path;
   const picked = !state.selected.has(path);
   picked ? state.selected.add(path) : state.selected.delete(path);
-  // By path, not by scanning every [data-path] on the page: a range pick calls this per row.
   document.querySelectorAll(`[data-path="${CSS.escape(path)}"]`).forEach((item) => {
     item.classList.toggle("picked", picked);
     const box = item.querySelector(":scope > input[type=checkbox]");
@@ -279,7 +274,7 @@ function toggleSelection(path, source = "sidebar", anchor = true) {
 export async function selectGeneration(path) {
   saveInspection();
   state.anchor = path;
-  clearInterval(state.liveWatch); // following a live run belongs to the run page that left
+  clearInterval(state.liveWatch);
   clearInterval(state.consoleWatch);
   state.runPath = null;
   state.live = state.following = null;
@@ -289,12 +284,9 @@ export async function selectGeneration(path) {
   state.activeMotion = null;
   setView("generation", path);
   state.generationPath = path;
-  // Coming back to a generation already built: put the page back and refresh what can have
-  // changed, rather than laying the same facts out again.
   if (state.generation?.path === path) {
     $("#content").replaceChildren(state.generation.node);
     highlightGeneration();
-    // This page was put aside mid-run; what it says about that run is only what was true then.
     $(".run-bar")?.refreshRun?.();
     return api(`/api/runs?path=${encodeURIComponent(path)}`).then(state.generation.setRuns);
   }
@@ -305,7 +297,6 @@ export async function selectGeneration(path) {
   if (state.generationPath !== path || hashView().get("generation") !== path) return;
   highlightGeneration();
 
-  // Write into the page that is up; swapping the subtree lays the same boxes out again.
   const shown = $("#content .generation");
   const page = shown ?? $("#generation-template").content.cloneNode(true);
   page.querySelector("h1").textContent = generation.spec_name ?? generation.name;
@@ -328,8 +319,7 @@ export async function selectGeneration(path) {
   $("#content").querySelector(".explore-link").onclick = () => showExplore(path).catch(snackError);
 }
 
-// What `gen` and `build` tee'd into the generation, or the dashboard's log of a run it started.
-// Read when the panel is opened: a log is thousands of lines nobody has asked to see.
+// read on open: a log is thousands of lines
 function bindGenerationConsole(page, path) {
   const panel = page.querySelector(".generation-console");
   const pre = panel.querySelector("pre");
@@ -350,7 +340,6 @@ function bindGenerationConsole(page, path) {
 function factsMarkup(generation) {
   return [
     fact("Runtime", generation.simulated ? "Simulated" : "Hardware", "fact-key"),
-    // Wider than the rest: a simulation is one name, hardware is every device it deploys.
     fact("Platform", generation.platform, "fact-key fact-wide", generation.toolchain?.mujoco),
     fact("Backend", generation.backend, "", generation.toolchain?.wrapper),
     fact("Motions", generation.motions),
@@ -364,8 +353,6 @@ function factsMarkup(generation) {
 
 function sourceFileRows(generation, path) {
   return generation.source_files.map((source) => {
-    // The model can be read, generated from or diffed, so clicking it asks which. Its imports
-    // are archived copies, and their path is all there is to take.
     const row = fileRow(
       source.name,
       source.model
@@ -412,7 +399,6 @@ function mountAnnotations(mounted, metadata, path) {
   };
 }
 
-// What there is to do with the model a generation was built from, anchored under its row.
 function modelMenu(row, source, generationPath, event) {
   event.stopPropagation();
   document.querySelector(".row-menu")?.remove();
@@ -458,7 +444,6 @@ function bindRunList(page, generation, runs) {
   let rows = runs;
   let runPage = 0;
 
-  // The header box stands for every run the filter left, across pages: all picked, none, or some.
   const syncPickAll = () =>
     setPickAll(pickAll, rows.filter((run) => state.selected.has(run.path)).length, rows.length);
   const countRuns = () => {
@@ -548,7 +533,6 @@ function runRow(run, generation, number, syncPickAll) {
   row.dataset.path = run.path;
   row.classList.toggle("picked", state.selected.has(run.path));
   const status = lifecycleWord(run) ?? (run.complete ? "passed" : "incomplete");
-  // Every id begins `run-<date>T`; what distinguishes one row from the next is the time.
   const short = run.id.replace(/^run-\d{8}T/, "").replace(/Z$/, "");
   row.innerHTML = `<input type="checkbox" class="pick" title="Select; shift-click to select a range"><span>${number}</span><strong>${short}</strong><span>${stampText(run.started)}</span><span>${run.duration_s.toFixed(2)} s</span><span>${(run.written_frames ?? 0).toLocaleString()}</span><span class="badge badge-${status}">${status}</span>`;
   row.firstChild.checked = state.selected.has(run.path);
@@ -571,7 +555,6 @@ function runRow(run, generation, number, syncPickAll) {
     );
     row.append(note);
   }
-  // A run still ticking can be ended from its row; the server says so if it did not start it.
   if (run.live) row.querySelector(".badge").append(" ", stopButton(run.path));
   row.title = `${run.id} — open replay; Ctrl/Cmd-click to select`;
   row.onclick = (event) => {
@@ -598,13 +581,11 @@ function stopButton(runPath) {
   return stop;
 }
 
-// Signals the process. The transport's cancel asks the loop, which only a ticking loop hears;
-// this also reaches a run that is still connecting, or hung.
+// signals the process, so it also reaches a run still connecting or hung
 export function stopRun(path) {
   return post("/api/run/stop", { path });
 }
 
-// Several at once, each on its own: one the server did not start is skipped, not a failure.
 export async function stopRuns(paths) {
   const results = await Promise.allSettled(paths.map(stopRun));
   const stopped = results.filter((result) => result.status === "fulfilled").length;
@@ -620,7 +601,6 @@ export async function stopRuns(paths) {
 
 export function bindRunAgain(page, path, cameras, simulated) {
   const bar = page.querySelector(".run-bar");
-  // Each option is a choice between two named states, not a flag to guess the meaning of.
   bar.querySelectorAll(".run-choice").forEach((choice) => {
     choice.querySelectorAll("button").forEach((option) => {
       option.onclick = () => {
@@ -645,8 +625,7 @@ export function bindRunAgain(page, path, cameras, simulated) {
   watchRun(page, bar, path, options);
 }
 
-// A simulator renders any declared camera plus the standard view; a real platform records only
-// the cameras that name a ROS image topic.
+// simulators render any camera; hardware records only those with a ROS image topic
 function mountCameraMenu(bar, cameras, simulated, save) {
   const record = bar.querySelector(".run-record");
   const offered = simulated
@@ -664,7 +643,6 @@ function mountCameraMenu(bar, cameras, simulated, save) {
     const available = [...menu.querySelectorAll(".run-camera")].filter((chip) => !chip.hidden);
     const picked = chosen().length;
     summary.textContent = picked ? `${picked} camera${picked === 1 ? "" : "s"}` : "none";
-    // Nothing to record from is not an empty menu to open: the whole control goes away.
     record.hidden = !available.length;
     if (!available.length) menu.open = false;
   };
@@ -695,7 +673,6 @@ function mountCameraMenu(bar, cameras, simulated, save) {
   return { chosen, label };
 }
 
-// What was picked last time this model was run.
 function restoreChoices(bar, path, label) {
   const remembered = readRunOptions(path);
   bar.querySelectorAll(".run-choice[data-option]").forEach((choice) => {
@@ -717,18 +694,16 @@ function restoreChoices(bar, path, label) {
   }
 }
 
-// Every run of this generation the dashboard has up is listed with its own stop; the page keeps
-// looking while any is running and, as each ends, says how and puts it in the list.
 function watchRun(page, bar, path, options) {
   const status = bar.querySelector(".run-state");
   const start = bar.querySelector(".run-start");
   const live = page.querySelector(".run-live");
   const failed = page.querySelector(".run-console");
-  // The page is written into in place, so this may still hold the last generation's failure.
+  // written in place, so this may hold the last generation's failure
   failed.hidden = true;
   failed.replaceChildren();
   live.replaceChildren();
-  const watched = new Set(); // runs seen running here, so each ending is reported once
+  const watched = new Set(); // runs seen here, so each ending is reported once
   const check = async () => {
     const answer = await api(`/api/run?path=${encodeURIComponent(path)}`).catch(() => null);
     if (!answer) return;
@@ -743,9 +718,9 @@ function watchRun(page, bar, path, options) {
         : run.exit_code
           ? `${run.id} exited ${run.exit_code}`
           : `${run.id} finished`;
-      // A stopped run exits non-zero too, and did not fail, so it gets no post-mortem.
+      // a stopped run exits non-zero too
       if (run.exit_code && !run.stopped) showPostMortem(failed, path);
-      // The run's own page may have announced the same ending seconds earlier.
+      // the run's own page may have announced it already
       if (!state.announced.has(run.path)) {
         snack(run.exit_code ? `run failed (${run.exit_code})` : "run finished");
       }
@@ -774,7 +749,6 @@ function watchRun(page, bar, path, options) {
         : "";
       watched.add(started.path);
       watch();
-      // The server names the run before anything is on disk, so its page can open and wait.
       await openPendingRun(started.run);
     } catch (error) {
       status.textContent = error.message;
@@ -809,8 +783,7 @@ function liveRow(run) {
   return row;
 }
 
-// Swallowed: the status line has already said how the run ended, so a failure to read the
-// console would only toast about the wrong thing.
+// swallowed: the status line already said how the run ended
 function showPostMortem(failed, path) {
   consoleExcerpt(path)
     .then((pre) => {
@@ -822,13 +795,11 @@ function showPostMortem(failed, path) {
     });
 }
 
-// A hardware generation names every endpoint it drives, so the wire can be tested here rather
-// than failing into the run console. Only when asked: a probe is a connection attempt.
+// probe only on request: each probe is a connection attempt
 function bindDevices(page, path, simulated) {
   const panel = page.querySelector(".devices");
   const rows = panel.querySelector(".device-rows");
   const status = panel.querySelector(".devices-state");
-  // The page is written into in place, so the generation before this one may have left rows.
   rows.replaceChildren();
   status.textContent = "";
   panel.hidden = simulated;
@@ -847,7 +818,6 @@ function bindDevices(page, path, simulated) {
   };
 }
 
-// What this file has become since its last commit, drawn by the same page as source drift.
 export async function showGitDiff(source, push = true) {
   state.viewing = null;
   if (push) {
@@ -870,8 +840,6 @@ export async function showGitDiff(source, push = true) {
   );
 }
 
-// What the model has become since this generation was made: the archived copy beside the
-// file as it is authored now.
 export async function showDrift(generationPath, file = null, push = true) {
   state.anchor = generationPath;
   stopPlayback();
@@ -885,7 +853,6 @@ export async function showDrift(generationPath, file = null, push = true) {
       replace: view.get("diff") === generationPath && view.get("file") === file,
     });
   }
-  // Both asked at once; neither depends on the other. The list still renders first.
   const query = new URLSearchParams({ path: generationPath });
   if (file) query.set("file", file);
   const pending = api(`/api/source-drift?${query}`).catch((error) => ({ error: error.message }));
@@ -911,7 +878,6 @@ export async function showDrift(generationPath, file = null, push = true) {
   );
 }
 
-// One page for both diffs; the caller says what to call the two sides and where back goes.
 function driftPage(drift, { left, right, missing, unchanged, back }) {
   const page = document.createElement("article");
   page.className = "diff-page";
@@ -936,7 +902,6 @@ function driftPage(drift, { left, right, missing, unchanged, back }) {
   return page;
 }
 
-// The columns share a row per line, so the two sides stay level with each other.
 function diffRow(row) {
   const line = document.createElement("div");
   line.className = "diff-row";
@@ -957,7 +922,6 @@ function diffRow(row) {
   return line;
 }
 
-// The generation's own sources take over the sidebar while its drift is being read.
 function renderDriftList(generationPath, files, selected) {
   $("#list-title").textContent = "RUN SOURCES";
   $("#storage").textContent = "";
@@ -981,13 +945,10 @@ function renderDriftList(generationPath, files, selected) {
   );
 }
 
-// Leave the source page for a generation just made. The list is re-read because the new
-// generation is not in it yet.
 export function showGeneration(path, run = false) {
   setTab("logs");
   loadGenerations(true)
     .then(() => selectGeneration(path))
-    // Running is that page's own act: it tests the devices, names the run and follows it.
     .then(() => {
       if (run) $(".run-bar .run-start")?.click();
     })

@@ -125,6 +125,8 @@ def recorded_coord_policy(candidates, graph=None, coord_id=None, component=None,
     The writer runs the authored choice and minutes it as PROV under the deterministic
     activity name `{coordinate}-{component}-selection`; this is the read half of that pact.
     """
+    if graph is None:
+        raise ValueError(f"pose coordinate '{coord_id}': its recorded selection needs the graph")
     activity = URIRef(f"{coord_id}-{component}-selection")
     for usage in graph.objects(activity, PROV.qualifiedUsage):
         chosen = graph.value(usage, PROV.entity)
@@ -216,7 +218,7 @@ def pose_edges(model) -> dict:
 
 def pose_path(edges, start: URIRef, goal: URIRef) -> tuple:
     """Shortest `(pose, inverted)` chain from `start` to `goal`; empty when unreachable."""
-    queue = collections.deque([(start, ())])
+    queue: collections.deque[tuple[URIRef, tuple]] = collections.deque([(start, ())])
     seen = {start}
     while queue:
         frame, current_path = queue.popleft()
@@ -249,6 +251,7 @@ def invert(model, owner: URIRef, suffix: str, pose: URIRef, out: URIRef) -> None
 
 def compose_path(model, owner: URIRef, path):
     """Emit the invert/compose operations along `path`; return the composed pose, or None."""
+    # (pose composed so far, the first step's wrt frame)
     current = None
     for index, (pose, inverted) in enumerate(path):
         step = pose
@@ -259,15 +262,15 @@ def compose_path(model, owner: URIRef, path):
             emit_derived_pose(model, step, step_of, step_wrt)
             invert(model, owner, f"path-{index}-invert", pose, step)
         if current is None:
-            current = step
-            current_wrt = step_wrt
+            current = (step, step_wrt)
             continue
+        composed, current_wrt = current
         composite = model.derived_node(owner, f"path-{index}-pose")
         emit_derived_pose(model, composite, step_of, current_wrt)
-        compose(model, owner, f"path-{index}-compose", current, step, composite)
-        current = composite
+        compose(model, owner, f"path-{index}-compose", composed, step, composite)
+        current = (composite, current_wrt)
 
-    return current
+    return current[0] if current is not None else None
 
 
 def recorded_distance_operand(graph, distance, role):
@@ -390,14 +393,13 @@ def materialize_pose_reference_transforms(model) -> None:
                 f"to a reference of {source_of}.",
             )
 
-        path = pose_path(edges, target_wrt, source_wrt)
-        if not path:
+        current = compose_path(model, constraint, pose_path(edges, target_wrt, source_wrt))
+        if current is None:
             raise ConstraintViolation(
                 "geometry",
                 f"Equality constraint {constraint} has no pose path from "
                 f"{target_wrt} to {source_wrt}.",
             )
-        current = compose_path(model, constraint, path)
 
         reference_in_target = model.derived_node(constraint, "reference-in-target")
         emit_derived_pose(model, reference_in_target, source_of, target_wrt)
@@ -466,7 +468,7 @@ class Operator:
         self.output = list(output)
         self.parameters = list(parameters)
 
-    def function_step(self, model, node):
+    def function_step(self, model, node) -> dict | None:
         """The function this operator's call at `node` renders to."""
         function = {"id": model.id(node), "type": self.keyword}
         fill_function_args(model.graph, function, model.id, self, node, node)
@@ -956,7 +958,7 @@ def function_output_ids(function: dict) -> set[str]:
     """Data ids written by a generated function call."""
     outputs = {
         value
-        for field in _FUNCTION_OUTPUT_FIELDS.get(function.get("type"), ())
+        for field in _FUNCTION_OUTPUT_FIELDS.get(function.get("type", ""), ())
         if isinstance((value := function.get(field)), str)
     }
     outputs.update(

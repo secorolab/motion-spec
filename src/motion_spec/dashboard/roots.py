@@ -2,9 +2,8 @@
 
 """Where the dashboard reads: the two roots, and how a request names a path inside them.
 
-The roots are rebound while the server runs -- someone points the page at another output
-directory -- so every other module reaches them through this one rather than importing
-their values, which would freeze whichever root was current at import time.
+The roots are rebound while the server runs, so other modules read them through this one
+rather than importing their values.
 """
 
 from __future__ import annotations
@@ -30,8 +29,7 @@ def pidfile(port: int | str, role: str = "dashboard") -> Path:
     return runtime / f"motion-spec-{role}-{port}.pid"
 
 
-# Roots the dashboard browses, replaced at startup by `serve` and by /api/roots. The root the
-# CLI writes to, or the working directory: importing must not fail.
+# importing must not fail
 try:
     GENERATIONS = generations_root()
 except RuntimeError:
@@ -54,23 +52,15 @@ IGNORED = {
     "__pycache__",
     "test",
     "tests",
-    # What `motion-spec setup` imports under src/: the Python packages and STST, none of them
-    # anybody's authored model, and between them more files than the workspace itself.
     "thirdparty",
 }
 
 
-# The DSL's own file types, plus .toml for the config a model names in its exec-context. By
-# extension alone: "anything beside a model" swept in a whole repository from one .robmot at
-# the top of a workspace.
 AUTHORED = (".robmot", ".fsm", ".scenex", ".scene", ".ktree", ".bdd", ".bddx", ".toml")
 
 
-# .toml belongs to the wider world too, so the tooling files that spell it are named here.
 NOT_AUTHORED = {"METADATA.toml", "netlify.toml", "pixi.toml", "pyproject.toml", "theme.toml"}
 
-# Not a DSL file and not a suffix worth admitting -- every .zsh in a workspace is not a source.
-# This one is: every build and run is launched under it, so what it says is part of the result.
 AUTHORED_NAMES = set(ENVIRONMENT_FILES)
 
 
@@ -152,7 +142,6 @@ def json_file(path: Path) -> dict:
     """One generated JSON document, parsed once per version of the file.
 
     Keyed on mtime and size, so a regenerated file is read again and an unchanged one is not.
-    These run to hundreds of kilobytes and are read on every list, poll and page.
     """
     if not path.exists():
         return {}
@@ -165,7 +154,6 @@ def parsed_json(path: Path, _mtime_ns: int, _size: int) -> dict:
     return json.loads(path.read_text())
 
 
-# Byte size of one generation bundle, cached for the dashboard session.
 directory_size = lru_cache(maxsize=256)(artifact_size)
 
 
@@ -175,7 +163,7 @@ def storage_info() -> dict:
     files = [path for path in GENERATIONS.rglob("*") if path.is_file()]
     return {
         "generations_bytes": sum(path.stat().st_size for path in files),
-        # Either name: a run still being written, and an archived one that has been packed.
+        # a log being written, or a packed archived one
         "logs_bytes": sum(
             path.stat().st_size
             for path in files
@@ -185,7 +173,6 @@ def storage_info() -> dict:
 
 
 HEADER_REL = f"generated/contract/{HEADER_FILE}"
-# the dashboard's own files, mirrored beside the bundles they are about
 STATE_REL = ".dashboard"
 
 

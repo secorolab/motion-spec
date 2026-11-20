@@ -8,7 +8,7 @@ import { showEmpty } from "./components.js";
 
 export const state = {
   tab: "logs",
-  announced: new Set(), // runs whose ending a page has already reported
+  announced: new Set(), // runs whose end was already reported
   roots: {},
   cache: {},
   listRequest: 0,
@@ -58,7 +58,6 @@ export async function copyText(value) {
   snack("Copied path");
 }
 
-// A refusal is not a failure, so it must not say "could not load": nothing broke.
 export function showError(error) {
   const refused = error.status === 403;
   showEmpty({
@@ -84,7 +83,7 @@ export const post = (path, body) =>
     body: JSON.stringify(body),
   });
 
-// A private window refuses storage; a preference nobody could save must not fail the page.
+// private windows refuse storage
 export function readStored(key, fallback = null) {
   try {
     return localStorage.getItem(key) ?? fallback;

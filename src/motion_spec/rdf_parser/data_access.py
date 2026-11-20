@@ -474,10 +474,8 @@ def analyse_data_access(
             if not sources:
                 waiting.append(value_id)
                 continue
-            live = [
-                cadence for cadence in sources if isinstance(cadence, dict) or cadence == "tick"
-            ]
-            if "tick" in live:
+            live = [cadence for cadence in sources if isinstance(cadence, dict)]
+            if "tick" in sources:
                 cadence = "tick"
             elif live:
                 cadence = {

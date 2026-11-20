@@ -7,20 +7,22 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
-from rdf_utils.models.prov import get_file_path
 from rdflib import Dataset
-from rdflib.namespace import PROV
 
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.frames import slot_signals
 from motion_spec.dashboard.sources import authored_lines
-from motion_spec.runs.provenance import GENERATION_DOCUMENT, read_generation_dataset, run_generation
+from motion_spec.runs.provenance import (
+    GENERATION_DOCUMENT,
+    kept_sources,
+    read_generation_dataset,
+    run_generation,
+)
 from motion_spec.runs.replay import resolve_run, validate_header
 from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
 
-# How the dashboard labels the gain roles a controller slot carries; others keep their role name.
 GAIN_LABELS = {
     "proportional_gain": "Kp",
     "integral_gain": "Ki",
@@ -42,12 +44,10 @@ def slot_ids(slots: list, field: str) -> list[str]:
 def authored_key(slot, motion, name: str) -> tuple[str, str]:
     """The (motion, constraint) a slot was authored as, from the IRI the header carries.
 
-    A constraint IRI reads `<model>/<motion>/<phase>/<constraint>`, so it says which motion the
-    slot serves. A name alone does not: one authored in several motions -- an elbow held
-    everywhere -- would otherwise take the first motion's line for all of them.
+    A constraint IRI reads `<model>/<motion>/<phase>/<constraint>`; a name alone does not say
+    the motion when one constraint is authored in several.
     """
-    # A generated conjunction has no motion in its own IRI, but it is a motion's `until`, so
-    # what it watches says where it belongs.
+    # a generated conjunction is placed by what it watches
     watched = slot.watched if slot.DESCRIPTOR.name == "Monitor" else ()
     constraint = (name or "").replace("-", "_")
     for iri in (slot.constraint_iri, *(member.iri for member in watched)):
@@ -60,10 +60,7 @@ def authored_key(slot, motion, name: str) -> tuple[str, str]:
 def source_constraints(run_dir: Path, contract) -> list[dict]:
     """Return one row per constraint this run recorded, read off the log's own header.
 
-    The header says which constraint every controller and monitor slot serves, which quantity
-    ids carry its error, output, measurement and setpoint, which constant holds its tolerance
-    and which gains the controller runs -- so the join is on identity the run wrote down rather
-    than on names recovered from the source, and a run plots wherever it is stored.
+    The join is on the slot identities the header records, not on names from the source.
 
     The row shape is a contract with the frontend: motion, handler, line, name, expression,
     kind, evaluator, between, tracking, error, control, monitors, setpoints, gains, tolerance.
@@ -74,8 +71,10 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
         if generation
         else Dataset()
     )
-    kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
-    source = next((path for path in kept if path.suffix == ".robmot" and path.is_file()), None)
+    source = next(
+        (path for path in kept_sources(provenance) if path.suffix == ".robmot" and path.is_file()),
+        None,
+    )
     authored = authored_lines(source) if source else {}
     constants = {
         key: row.value
@@ -87,9 +86,7 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
     rows = []
     for motion in contract.header.motions:
         for kind, slots in (("controlled", motion.controllers), ("monitored", motion.monitors)):
-            # Grouped by the constraint they serve -- the axis controllers of one share it. An
-            # aggregate monitor watches several constraints and names none of them singly, so
-            # it groups under its own id and stays one row.
+            # an aggregate monitor names no constraint and groups under its own id
             groups: dict[str, list] = {}
             for slot in slots:
                 groups.setdefault(slot.constraint_iri or slot.id, []).append(slot)
@@ -102,8 +99,6 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
                 )
                 key = authored_key(first, motion, name)
                 line, expression, authored_motion = authored.get(key, (None, None, None))
-                # The header names the pair the evaluator compares; measured/setpoint only where
-                # it does not.
                 operands = list(
                     dict.fromkeys(value for slot in group for value in slot.operand_ids)
                 )
@@ -115,21 +110,15 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
                 evaluator = next(iter(slot_ids(group, "evaluator_id")), None)
                 rows.append(
                     {
-                        # As the source spells it, so a generated row lands in the motion's own
-                        # block
                         "motion": authored_motion or spelled.get(key[0]) or key[0] or motion.id,
                         "handler": motion.id,
                         "line": line,
                         "name": name,
                         "expression": expression,
                         "kind": kind,
-                        # The function the header names, or the slot computing the error where
-                        # it names none.
                         "evaluator": evaluator or first.iri or first.id or None,
                         "between": compared,
                         "tracking": [value for value in compared if value not in constants],
-                        # A velocity and a distance share no axis, so each member gets a plot of
-                        # its own.
                         "members": list(
                             {
                                 member.id: {
@@ -175,7 +164,6 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
     return rows
 
 
-# The signals a pooled slot writes.
 SLOT_KEYS = {
     "constraints": ("error", "output", "measured", "setpoint", "satisfied"),
     "monitors": ("value", "satisfied"),
@@ -199,8 +187,7 @@ def replay_data(run_dir: Path) -> dict:
     try:
         run_dir, log, contract = resolve_run(run_dir)
     except RecordError:
-        # A run named but not yet writing. The generation's header record is the same one the
-        # runtime puts at the front of the log, and is itself a zero-frame log.
+        # not writing yet: the generation's header record is a zero-frame log
         generation = run_generation(run_dir)
         record = generation / roots.HEADER_REL if generation else None
         if record is None or not record.is_file():
@@ -233,7 +220,7 @@ def replay_data(run_dir: Path) -> dict:
     )
     signals.extend(slot_signals(contract))
     indices = {motion.id: motion.index for motion in contract.header.motions}
-    spelling: dict[str, str] = {}  # gate id -> the motion name the source uses
+    spelling: dict[str, str] = {}
     scanned = log_events(log, contract)
     logged = set(signals) | {field["id"] for field in contract.fields["quantities"]}
     parts = {}
@@ -257,15 +244,11 @@ def replay_data(run_dir: Path) -> dict:
         for constraint in constraints
         for signal in (*constraint["tracking"], *constraint["control"], *constraint["monitors"])
     )
-    # A constraint's own signals are pooled ones already listed: each is offered once.
     offered = list(dict.fromkeys(signals))
-    # signal id -> the motion and constraint it belongs to, and its role there: a picker
-    # offering `constraint_0.error` beside `eacc_ctrl_home_x` asks the reader to know the schema.
     index: dict[str, dict] = {}
     for motion in contract.header.motions:
-        # a controller writes a constraint slot; a monitor writes a monitor slot
         for pool, slots in (("constraints", motion.controllers), ("monitors", motion.monitors)):
-            fields = contract.fields.get(pool) or ()
+            fields = contract.fields[pool]
             for slot in slots:
                 owner = (
                     slot.constraint_id
@@ -276,8 +259,7 @@ def replay_data(run_dir: Path) -> dict:
                 named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
                 for key in SLOT_KEYS[pool]:
                     where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
-                    # The pooled slot mirrors a signal the header already names: offering both
-                    # is the same series twice, under a name nobody can read.
+                    # skip a pooled signal mirroring one the header names
                     if field and key not in named:
                         index[f"{field}.{key}"] = where
                     if pool == "monitors":
@@ -305,7 +287,6 @@ def replay_data(run_dir: Path) -> dict:
                                 "slot": slot.id,
                             },
                         )
-    # A generation outside the browsed root has no page to go back to; the log says the rest.
     generation = run_generation(run_dir)
     return {
         "generation": (
@@ -323,10 +304,8 @@ def replay_data(run_dir: Path) -> dict:
             for name, where in index.items()
         },
         "constraints": constraints,
-        # The live poll names the motion by its gate; the panel is headed by the authored name.
         "motion_names": spelling,
-        # A `when` guard's monitor runs while the PREDECESSOR motion is active: the contract's
-        # owner, not the block it was authored in, says whose window carries its data.
+        # a `when` monitor runs in its predecessor motion, not where it was authored
         "monitor_owners": {
             slot.id: spelling.get(motion.id, motion.id)
             for motion in contract.header.motions
@@ -345,13 +324,9 @@ _EVENTS: dict[str, dict] = {}
 def log_events(log: Path, contract) -> dict:
     """Every FSM state entry, fired event and satisfied edge in one log, scanned incrementally.
 
-    Events come off the frame's trigger ring, not `last_event`: several events fire on one
-    transition and `last_event` holds only one of them, while the ring carries every fire of
-    that tick (`trigger_count` entries, each naming its event by index). A satisfied edge is a
-    rise and a fall for a goal constraint, a rise only for a monitor.
-    A log the runtime is still writing resumes at the byte the last call
-    stopped at, latches intact, so the live page pays for its new frames only; a finished log is
-    never rescanned.
+    Events come off the frame's trigger ring, since `last_event` holds only one of a tick's
+    fires. A satisfied edge is a rise and a fall for a goal constraint, a rise only for a
+    monitor. A growing log resumes where the last call stopped; a finished one is not rescanned.
     """
     size = log.stat().st_size
     scan = _EVENTS.get(str(log))
@@ -365,8 +340,7 @@ def log_events(log: Path, contract) -> dict:
             "index": 0,
             "states": [state.id for state in contract.header.fsm_states],
             "fired": fired,
-            # Slot indices are motion-local: the active motion says which controller and
-            # monitor slot i is, and a slot that motion does not claim is not written at all.
+            # slot indices are motion-local
             "by_motion": {
                 motion.index: (
                     {slot.number: slot for slot in motion.controllers},
@@ -419,13 +393,10 @@ def log_events(log: Path, contract) -> dict:
                 and bool((entry := frame_log_pb.slot(frame, "monitors", slot)) and entry.satisfied)
                 for slot in range(monitor_pool)
             ]
-            # The latch is only valid within one state and motion: across a change slot i is
-            # a different controller, so the projection compares nothing there either.
+            # across a state or motion change slot i is another controller
             held = frame.fsm_state == state_was and frame.active_motion == motion_was
             _, monitors_was = scan["by_motion"].get(motion_was, ({}, {}))
             if state_was is not None and frame.fsm_state != state_was:
-                # The motion that was running is what left; what fired and which monitors
-                # stood true on the way out say why.
                 exits.setdefault(motion_was, []).append(
                     {
                         "frame": index,
@@ -503,11 +474,10 @@ def log_events(log: Path, contract) -> dict:
 
 def run_verdict(run_dir: Path) -> dict:
     """Per motion: whether each goal was reached and held, when each monitor fired, and how the
-    motion was left. Read off the marker scan the page already paid for, never a second pass."""
+    motion was left, read off the cached marker scan."""
     run_dir, log, contract = resolve_run(run_dir)
     scanned = log_events(log, contract)
     tally, exits, windows = scanned["tally"], scanned["exits"], scanned["windows"]
-    # The authored motion name, the way the constraint panel spells it.
     spelling: dict[str, str] = {}
     for row in source_constraints(run_dir, contract):
         spelling.setdefault(row["handler"], row["motion"])
@@ -532,11 +502,7 @@ def run_verdict(run_dir: Path) -> dict:
 
 
 def signal_reader(contract):
-    """Map a signal name onto a raw frame, the way the plots read one.
-
-    The plot history and the live increments read the same log; sharing the lookup means a
-    signal cannot mean one thing while the run writes and another once it is finished.
-    """
+    """Map a signal name onto a raw frame, the way the plots read one."""
     constraint_slots = {
         field["id"]: index for index, field in enumerate(contract.fields["constraints"])
     }
@@ -587,8 +553,7 @@ def signal_reader(contract):
 def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> dict:
     """Stream and downsample requested fields without shaping complete frames.
 
-    Sampling follows the window asked for, so a motion that lasted a handful of frames is
-    drawn from those frames rather than missed between two samples of the whole run.
+    Sampling follows the window asked for, so a short motion is not missed between samples.
     """
     _, log, contract = resolve_run(run_dir)
     value = signal_reader(contract)

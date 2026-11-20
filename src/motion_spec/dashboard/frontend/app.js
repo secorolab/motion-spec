@@ -24,7 +24,7 @@ import { installSelectTheme } from "./selects.js";
 import { filterSources, loadSources } from "./sources.js";
 import { browseTrash, forgetTrash, loadTrash } from "./trash.js";
 
-// Below this width the sidebar folds away by itself, and unfolds again above it.
+// px below which the sidebar auto-collapses
 const NARROW = 1000;
 
 const ASIDE_DEFAULT = 290;
@@ -50,7 +50,6 @@ $("#search").oninput = (event) => {
 };
 
 $("#delete-selected").onclick = () => deleteSelected();
-// Only runs stop; a generation picked in the sidebar is left alone.
 $("#stop-selected").onclick = () =>
   stopRuns([...state.selected].filter((path) => path.includes("/runs/")));
 
@@ -67,8 +66,7 @@ document.onkeydown = (event) => {
   if (event.key === "Escape" && state.selected.size) $("#clear-selection").click();
 };
 
-// Escape closes the editor's find box wherever it was pressed, and takes the key before the
-// selection handler above: with a find box open, escape means close it.
+// capture phase: an open find box takes Escape before the selection handler
 document.addEventListener(
   "keydown",
   (event) => {
@@ -119,7 +117,6 @@ async function deleteSelected() {
   await afterDelete(eligible.map((item) => item.path));
 }
 
-// Only the page being looked at moves, and then only as far as its parent.
 async function afterDelete(trashed) {
   const inTrash = (path) =>
     path && trashed.some((gone) => path === gone || path.startsWith(`${gone}/`));
@@ -174,7 +171,7 @@ sidebarToggle.onclick = () => {
     "motion-spec.sidebar-collapsed",
     String(document.body.classList.contains("sidebar-collapsed")),
   );
-  state.autoCollapsed = false; // a deliberate choice outlives the width that suggested it
+  state.autoCollapsed = false; // a manual toggle overrides auto-collapse
   showSidebarState();
   reserveVideoSpace();
 };
@@ -182,7 +179,7 @@ sidebarToggle.onclick = () => {
 function showSidebarState() {
   const collapsed = document.body.classList.contains("sidebar-collapsed");
   const label = collapsed ? "Expand navigation" : "Collapse navigation";
-  // Collapsed, the CSS draws the brand mark on this button, so it must carry nothing of its own.
+  // collapsed, the CSS draws the brand mark here
   sidebarToggle.replaceChildren(...(collapsed ? [] : [icon("panel-left-close")]));
   sidebarToggle.title = label;
   sidebarToggle.setAttribute("aria-label", label);

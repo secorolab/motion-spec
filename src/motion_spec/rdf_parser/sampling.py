@@ -8,6 +8,7 @@ The graph carries no numbers for these; the generated controller draws them once
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 
 import numpy as np
 from motion_spec_dsl.vocab import QUDT_SCHEMA
@@ -44,7 +45,7 @@ def unplaced_frames(tree: dict) -> list[dict]:
 
 
 def sampled_quantities(
-    model, trees: list[dict], placements: set[str] = frozenset()
+    model, trees: list[dict], placements: Collection[str] = frozenset()
 ) -> list[SampledQuantity]:
     """Every sampled quantity of the model, in the order the model states them.
 

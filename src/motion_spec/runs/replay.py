@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from motion_spec.runs.provenance import run_generation, run_outputs
+from motion_spec.runs.provenance import run_outputs
 from motion_spec.runs.verify import FRAME_LOG, RecordError, verify_run
 from motion_spec.telemetry import frame_log_pb
 
@@ -56,8 +56,7 @@ def verify_recording(path: Path | str) -> int:
     """
     run_dir, log_path, contract = resolve_run(path)
     validate_header(log_path, contract)
-    verify_run(run_dir)
-    header_path = run_generation(run_dir) / "generated" / "contract" / frame_log_pb.HEADER_FILE
+    header_path = verify_run(run_dir) / "generated" / "contract" / frame_log_pb.HEADER_FILE
     expected = frame_log_pb.read_contract(header_path).header.schema_hash
     if contract.header.schema_hash != expected:
         raise RecordError(

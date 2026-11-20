@@ -12,26 +12,9 @@ import mmap
 import struct
 from pathlib import Path
 
-from motion_spec.telemetry.frame_log_pb import (
-    CONSTRAINT_KEYS,
-    MONITOR_KEYS,
-    SPATIAL_CATEGORIES,
-    TRIGGER_KEYS,
-    shm_path,
-)
+from motion_spec.telemetry.frame_log_pb import shm_path
 
-_CORE_KEYS = (
-    "t",
-    "step",
-    "fsm_state",
-    "active_motion",
-    "last_event",
-    "state_since_t",
-    "state_since_wall_ns",
-    "event_t",
-    "event_wall_ns",
-)
-_TIMING_KEYS = ("wall_ns", "period_ns", "compute_ns")
+READ_ATTEMPTS = 8
 _SPATIAL_PREFIX = {"poses": "pose", "twists": "twist", "wrenches": "wrench"}
 # The words a live sampler steers by: where the run is, and what put it there.
 CORE_SIGNALS = ("step", "t", "fsm_state", "active_motion", "last_event")
@@ -107,17 +90,11 @@ class FrameLayout:
 
 
 class ShmFrameReader:
-    """The latest published frame, read through the writer's seqlock.
+    """The latest published frame, read through the writer's seqlock."""
 
-    `contract` is the frame log's own header contract. With it the quantities come back under
-    their model ids and the motion gate applies, so a shm frame and a logged frame are the same
-    dict; without it quantities fall back to their positional layout names.
-    """
-
-    def __init__(self, shm_name: str, layout: FrameLayout, contract=None):
+    def __init__(self, shm_name: str, layout: FrameLayout):
         self.name = shm_name
         self.layout = layout
-        self.contract = contract
         self._mm: mmap.mmap | None = None
 
     def open(self) -> bool:
@@ -136,14 +113,14 @@ class ShmFrameReader:
             self._mm.close()
             self._mm = None
 
-    def latest_raw(self, retries: int = 8) -> bytes | None:
+    def latest_raw(self) -> bytes | None:
         """The newest whole frame as the bytes it was published as, or None while the writer
         keeps tearing it (or has yet to publish one). A torn read is never returned: seq
         brackets every publish."""
         if not self.open():
             return None
         mm, size = self._mm, self.layout.struct.size
-        for _ in range(retries):
+        for _ in range(READ_ATTEMPTS):
             seq = struct.unpack_from("<Q", mm, 0)[0]
             if seq == 0 or seq & 1:  # nothing published yet / mid-write
                 continue
@@ -152,71 +129,6 @@ class ShmFrameReader:
                 continue
             return raw
         return None
-
-    def latest(self, retries: int = 8) -> dict | None:
-        """The newest whole frame, shaped as the log's records are. Shaping costs some thirty
-        times the read, so a sampler reading every tick takes latest_raw instead."""
-        raw = self.latest_raw(retries)
-        if raw is None:
-            return None
-        # The flat struct read as the record shape frame_log_pb.frame_records yields.
-        flat = dict(zip(self.layout.names, self.layout.struct.unpack(raw)))
-        pools, contract = self.layout.pools, self.contract
-        record = {key: flat[key] for key in _CORE_KEYS}
-        record["timing"] = {key: flat[key] for key in _TIMING_KEYS}
-        record["constraints"] = [
-            {key: flat[f"c{idx}.{key}"] for key in CONSTRAINT_KEYS}
-            for idx in range(pools["constraints"])
-        ]
-        record["monitors"] = [
-            {key: flat[f"m{idx}.{key}"] for key in MONITOR_KEYS} for idx in range(pools["monitors"])
-        ]
-        # Quantities carry no per-slot active word, so which ones the active motion writes comes
-        # from the log header's gate -- the same source the protobuf decoder uses.
-        qids = (
-            contract.quantity_ids
-            if contract is not None
-            else [f"q{idx}" for idx in range(pools["quantities"])]
-        )
-        gate = contract.gate.get("quantities") if contract is not None else None
-        written = gate.get(flat["active_motion"], ()) if gate is not None else None
-        record["quantities"] = {
-            qids[idx]: flat[f"q{idx}"]
-            for idx in range(min(len(qids), pools["quantities"]))
-            if written is None or idx in written
-        }
-        devices = (
-            contract.fields.get("devices", [])
-            if contract is not None
-            else [{"index": idx, "id": f"device{idx}"} for idx in range(pools.get("devices", 0))]
-        )
-        record["devices"] = {
-            entry["id"]: {
-                "seq": flat[f"device{entry['index']}.seq"],
-                "success": bool(flat[f"device{entry['index']}.success"]),
-            }
-            for entry in devices
-        }
-        pool_size, count = pools["triggers"], flat["trigger_count"]
-        record["triggers"] = (
-            [
-                {key: flat[f"tr{idx % pool_size}.{key}"] for key in TRIGGER_KEYS}
-                for idx in range(max(0, count - pool_size), count)
-            ]
-            if pool_size
-            else []
-        )
-        # A slot the active motion does not write stays a hole, so a slot keeps one index for
-        # the whole run. Here the slot's own active word says so; the log infers it from the gate.
-        for category, names in SPATIAL_CATEGORIES:
-            prefix = _SPATIAL_PREFIX[category]
-            record[category] = [
-                {name: flat[f"{prefix}{idx}.{name}"] for name in names}
-                if flat[f"{prefix}{idx}.active"]
-                else None
-                for idx in range(pools.get(category, 0))
-            ]
-        return record
 
 
 class SignalFields:

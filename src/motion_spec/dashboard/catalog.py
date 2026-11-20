@@ -380,15 +380,6 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
     }
 
 
-def provenance_graph(service) -> dict:
-    """Every term and triple of one dataset, classified."""
-    quads = (
-        (subject, predicate, obj, graph_name(context))
-        for subject, predicate, obj, context in service.dataset.quads((None, None, None, None))
-    )
-    return classify_quads(quads, term_graphs(service.dataset))
-
-
 def run_notes(path: Path) -> list[str]:
     """Read notes.json here rather than importing queries, which imports this module: every tag
     used by the run's notes."""

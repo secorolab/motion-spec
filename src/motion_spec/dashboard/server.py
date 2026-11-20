@@ -23,7 +23,6 @@ from motion_spec.dashboard.catalog import (
     drift_summary,
     generation_details,
     generation_info,
-    provenance_graph,
     read_generated,
     run_files,
     run_info,
@@ -31,7 +30,6 @@ from motion_spec.dashboard.catalog import (
     video_file,
 )
 from motion_spec.dashboard.cleanup import preview, restore, trash_entries
-from motion_spec.dashboard.graph import GraphService
 from motion_spec.dashboard.jobs import (
     console_log_for,
     console_slice,
@@ -225,11 +223,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if query.get("summary"):
                     return self.send_json(drift_summary(generation))
                 return self.send_json(source_drift(generation, file or None))
-            if parsed.path == "/api/generation-graph":
-                # The whole model graph, imports followed: the model has no file boundaries.
-                return self.send_json(
-                    provenance_graph(GraphService(relative_path(roots.GENERATIONS, value)))
-                )
             if parsed.path == "/api/runs":
                 generation = relative_path(roots.GENERATIONS, value)
                 if query.get("model"):

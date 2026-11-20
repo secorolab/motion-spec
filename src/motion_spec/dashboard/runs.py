@@ -18,6 +18,7 @@ from motion_spec.telemetry.frame_log_pb import read_health
 LOG_REL = Path("logs") / "frame_log.pb"
 # The rest of rec's states -- queued, in-progress -- mean the run may still produce frames.
 ENDED = {State.COMPLETE, State.CANCELED}
+LIVE_WINDOW_S = 10.0
 
 # The doc only changes when the runner appends a transition, so mtime+size gates a re-read.
 _LIFECYCLE_CACHE: dict[Path, tuple[tuple, tuple[State, Verdict]]] = {}
@@ -65,8 +66,8 @@ class RunInfo:
     def health(self) -> dict | None:
         return read_health(self.log_path)
 
-    def is_live(self, within_s: float = 10.0) -> bool:
-        """Not finished, and the frame log grew within the last `within_s` seconds.
+    def is_live(self) -> bool:
+        """Not finished, and the frame log grew within the last `LIVE_WINDOW_S` seconds.
 
         Asking the state alone is not enough: a run killed outright never records an end,
         so a stale log is what actually distinguishes it from one still ticking. The log
@@ -76,7 +77,7 @@ class RunInfo:
         """
         if self.state in ENDED or not self.log_path.exists():
             return False
-        return time.time() - self.log_path.stat().st_mtime <= within_s
+        return time.time() - self.log_path.stat().st_mtime <= LIVE_WINDOW_S
 
 
 @dataclass

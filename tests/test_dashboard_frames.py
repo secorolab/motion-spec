@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""The shm reader must yield the record the frame log yields, and never a torn one."""
+"""The shm reader must yield the frame the runtime published, and never a torn one."""
 
 from __future__ import annotations
 
@@ -11,10 +11,8 @@ from support import DASHBOARD_SCHEMA
 from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader
 from motion_spec.generation.artifacts import (
     build_frame_layout,
-    build_frame_log_header_record,
     field_names_and_format,
 )
-from motion_spec.telemetry import frame_log_pb
 
 FRAME = {
     "t": 2.5,
@@ -65,23 +63,12 @@ def layout(tmp_path) -> FrameLayout:
     return FrameLayout.load(path)
 
 
-def test_shm_frame_decodes_to_the_same_record_the_log_does(tmp_path, layout):
-    flat = ZERO_FRAME | FRAME
-    log = tmp_path / "frame_log.pb"
-    with log.open("wb") as fh:
-        frame_log_pb.write_delimited(fh, build_frame_log_header_record(DASHBOARD_SCHEMA))
-        frame_log_pb.write_delimited(fh, frame_log_pb.frame_record(flat, DASHBOARD_SCHEMA))
-    contract = frame_log_pb.read_contract(log)
-    (logged,) = list(frame_log_pb.frame_records(log, contract))
-
+def test_a_reader_returns_the_published_frame(tmp_path, layout):
     # A shm block as the C++ publisher leaves it: the frame, bracketed by an even seq.
+    published = layout.struct.pack(*((ZERO_FRAME | FRAME | {"seq": 2})[name] for name in layout.names))
     block = tmp_path / "shm_block"
-    block.write_bytes(layout.struct.pack(*((flat | {"seq": 2})[name] for name in layout.names)))
-    live = ShmFrameReader(str(block), layout, contract).latest()
-    assert live == logged
-    assert live["constraints"][0]["error"] == 0.125
-    assert live["quantities"] == {"dist": 42.5}
-    assert [t["idx"] for t in live["triggers"]] == [3]
+    block.write_bytes(published)
+    assert ShmFrameReader(str(block), layout).latest_raw() == published
 
 
 # An odd seq is a block mid-write; an unpublished block (seq 0) is not a frame of zeros either.
@@ -89,4 +76,4 @@ def test_shm_frame_decodes_to_the_same_record_the_log_does(tmp_path, layout):
 def test_a_reader_never_returns_a_torn_frame(tmp_path, layout, flat, seq):
     block = tmp_path / "shm_block"
     block.write_bytes(layout.struct.pack(*((flat | {"seq": seq})[name] for name in layout.names)))
-    assert ShmFrameReader(str(block), layout).latest() is None
+    assert ShmFrameReader(str(block), layout).latest_raw() is None

@@ -9,9 +9,8 @@ import { addPlot } from "./plots.js";
 import { setView } from "./routing.js";
 import { showSource } from "./sources.js";
 
-// The suite reads this dictionary and runs every entry: a canned query that answers nothing
-// teaches the wrong vocabulary. Each spells out its prefixes to say which metamodel it uses.
-export const CANNED = {
+// Each spells out its prefixes to say which metamodel it uses.
+const CANNED = {
   "everything in this graph": `CONSTRUCT { ?s ?p ?o }
 WHERE { ?s ?p ?o }`,
 

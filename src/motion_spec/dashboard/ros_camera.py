@@ -18,6 +18,8 @@ from motion_spec.runs.ros_video import RosImageSubscription, rgb_rows
 DEFAULT_TOPIC = "/camera/color/image_raw"
 NODE_NAME = "motion_spec_dashboard_camera"
 BOUNDARY = "frame"
+STREAM_FPS = 20.0
+JPEG_QUALITY = 80
 
 
 class RosCameraSource(RosImageSubscription):
@@ -80,13 +82,13 @@ def source_for(topic: str) -> RosCameraSource:
         return _SOURCE
 
 
-def mjpeg_stream(source, running, *, fps: float = 20.0, quality: int = 80):
-    """Yield one multipart part per new frame, at most `fps` a second.
+def mjpeg_stream(source, running):
+    """Yield one multipart part per new frame, at most `STREAM_FPS` a second.
 
     A generator rather than a write loop, so the pacing and the skip are testable without a
     socket: the caller writes what this yields and stops when the client is gone.
     """
-    period = 1.0 / fps
+    period = 1.0 / STREAM_FPS
     seen = None
     while running():
         frame = source.latest()
@@ -96,7 +98,7 @@ def mjpeg_stream(source, running, *, fps: float = 20.0, quality: int = 80):
             from PIL import Image
 
             buffer = io.BytesIO()
-            Image.frombytes("RGB", (width, height), rgb).save(buffer, "JPEG", quality=quality)
+            Image.frombytes("RGB", (width, height), rgb).save(buffer, "JPEG", quality=JPEG_QUALITY)
             payload = buffer.getvalue()
             yield (
                 (

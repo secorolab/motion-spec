@@ -153,7 +153,7 @@ def live_sampler(run_dir: Path, contract) -> ShmSampler | None:
         return None
     name = os.environ.get("MOTION_SPEC_SHM_NAME") or shm_name_for(layout.schema_hash, run_dir.name)
     sampler = ShmSampler(
-        ShmFrameReader(name, layout, contract),
+        ShmFrameReader(name, layout),
         fields,
         [state.id for state in contract.header.fsm_states],
         [event.id for event in contract.header.fsm_events],

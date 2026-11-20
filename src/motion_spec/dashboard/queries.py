@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import secrets
 import time
 from datetime import UTC, datetime
@@ -50,7 +49,8 @@ def save_queries(run_dir: Path, queries: list) -> dict:
     if not RunInfo(run_dir).log_path.exists():
         raise ValueError("queries belong to a run")
     texts = [str(query) for query in queries][:200]
-    (run_dir / QUERIES_REL).write_text(json.dumps({"queries": texts}, indent=1))
+    with LOCK:
+        write_document(run_dir / QUERIES_REL, {"queries": texts})
     return {"saved": len(texts)}
 
 

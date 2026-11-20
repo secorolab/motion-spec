@@ -153,52 +153,13 @@ class RosImageRecorder(RosImageSubscription):
         last_frame = b""
         encoder: BufferedWriter | None = None
         try:
-            while True:
-                item = self._frames.get()
-                if item is None:
-                    return
+            while (item := self._frames.get()) is not None:
                 receipt, message = item
-                if message.encoding not in ("rgb8", "bgr8"):
-                    self.error = f"unsupported image encoding {message.encoding!r}"
+                problem = image_problem(message)
+                if problem:
+                    self.error = problem
                     continue
-                if message.width <= 0 or message.height <= 0 or message.step < message.width * 3:
-                    self.error = "invalid RGB image dimensions"
-                    continue
-                if encoder is None:
-                    self.output.parent.mkdir(parents=True, exist_ok=True)
-                    frames_in, frames_out = os.pipe()
-                    encoder = os.fdopen(frames_out, "wb")
-                    try:
-                        self._ffmpeg = subprocess.Popen(
-                            [
-                                "ffmpeg",
-                                "-y",
-                                "-loglevel",
-                                "error",
-                                "-f",
-                                "rawvideo",
-                                "-pixel_format",
-                                "rgb24" if message.encoding == "rgb8" else "bgr24",
-                                "-video_size",
-                                f"{message.width}x{message.height}",
-                                "-framerate",
-                                str(self.recording.rate_hz),
-                                "-i",
-                                "pipe:0",
-                                "-an",
-                                "-c:v",
-                                "libx264",
-                                "-pix_fmt",
-                                "yuv420p",
-                                str(self.output),
-                            ],
-                            stdin=frames_in,
-                            # Ctrl-C is for the controller, not ffmpeg
-                            start_new_session=True,
-                        )
-                    finally:
-                        # ffmpeg holds its own copy
-                        os.close(frames_in)
+                encoder = encoder or self.start_encoder(message)
                 header_stamp = message.header.stamp
                 stamp = (
                     header_stamp.sec + header_stamp.nanosec * 1e-9
@@ -207,29 +168,87 @@ class RosImageRecorder(RosImageSubscription):
                 )
                 if origin is None:
                     origin = stamp
-                    slot = 0
-                else:
-                    slot = round((stamp - origin) * self.recording.rate_hz)
-                    # duplicate or late frame
-                    if slot <= last_slot:
-                        continue
+                slot = round((stamp - origin) * self.recording.rate_hz)
+                # a duplicate or late frame; the first frame always takes slot 0
+                if slot <= last_slot and last_frame:
+                    continue
                 frame = rgb_rows(message)
-                try:
-                    for _ in range(slot - last_slot - 1):
-                        encoder.write(last_frame)
-                    encoder.write(frame)
-                    encoder.flush()
-                except (BrokenPipeError, OSError) as exc:
-                    self.error = f"ffmpeg stopped: {exc}"
+                if not self.encode(encoder, frame, last_frame, slot - last_slot - 1):
                     return
                 last_slot = slot
                 last_frame = frame
         finally:
-            if encoder is not None:
-                encoder.close()
-            if self._ffmpeg is not None:
-                try:
-                    self._ffmpeg.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self._ffmpeg.terminate()
-                    self._ffmpeg.wait()
+            self.finish_encoding(encoder)
+
+    def encode(self, encoder: BufferedWriter, frame: bytes, last_frame: bytes, gap: int) -> bool:
+        """Write LAST_FRAME into the GAP empty slots, then FRAME; False once ffmpeg has stopped."""
+        try:
+            encoder.writelines([last_frame] * max(gap, 0))
+            encoder.write(frame)
+            encoder.flush()
+        except (BrokenPipeError, OSError) as exc:
+            self.error = f"ffmpeg stopped: {exc}"
+            return False
+        return True
+
+    def start_encoder(self, message) -> BufferedWriter:
+        """Start ffmpeg encoding frames the size and pixel order of MESSAGE; the pipe into it."""
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        frames_in, frames_out = os.pipe()
+        encoder = os.fdopen(frames_out, "wb")
+        try:
+            self._ffmpeg = subprocess.Popen(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "rawvideo",
+                    "-pixel_format",
+                    "rgb24" if message.encoding == "rgb8" else "bgr24",
+                    "-video_size",
+                    f"{message.width}x{message.height}",
+                    "-framerate",
+                    str(self.recording.rate_hz),
+                    "-i",
+                    "pipe:0",
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(self.output),
+                ],
+                stdin=frames_in,
+                # Ctrl-C is for the controller, not ffmpeg
+                start_new_session=True,
+            )
+        except BaseException:
+            encoder.close()
+            raise
+        finally:
+            # ffmpeg holds its own copy
+            os.close(frames_in)
+        return encoder
+
+    def finish_encoding(self, encoder: BufferedWriter | None) -> None:
+        """Close the pipe into ffmpeg and wait for it to finish the file."""
+        if encoder is not None:
+            encoder.close()
+        if self._ffmpeg is None:
+            return
+        try:
+            self._ffmpeg.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self._ffmpeg.terminate()
+            self._ffmpeg.wait()
+
+
+def image_problem(message) -> str | None:
+    """Why MESSAGE is no RGB image the recorder can encode, or None when it is one."""
+    if message.encoding not in ("rgb8", "bgr8"):
+        return f"unsupported image encoding {message.encoding!r}"
+    if message.width <= 0 or message.height <= 0 or message.step < message.width * 3:
+        return "invalid RGB image dimensions"
+    return None

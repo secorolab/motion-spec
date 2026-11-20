@@ -160,3 +160,11 @@ export function askConfirm({ message, confirmLabel = "Confirm", require = "" }) 
     (require ? typed : yes).focus();
   });
 }
+
+/** Run ACTION for Ctrl or Cmd with KEY, in place of what the browser would do. */
+export function onModifierKey(event, key, action) {
+  if ((event.metaKey || event.ctrlKey) && event.key === key) {
+    event.preventDefault();
+    action();
+  }
+}

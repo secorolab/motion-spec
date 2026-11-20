@@ -58,21 +58,23 @@ class RosCameraSource(RosImageSubscription):
             self._frame = (self._seq, width, height, raw_mode, pixels)
 
 
-_SOURCE: RosCameraSource | None = None
-_SOURCE_LOCK = threading.Lock()
+CAMERA_SOURCE: RosCameraSource | None = None
+CAMERA_SOURCE_LOCK = threading.Lock()
 
 
 def source_for(topic: str) -> RosCameraSource:
     """The process's camera source, restarted when the pane asks for a different topic."""
-    global _SOURCE
+    global CAMERA_SOURCE
     topic = topic or DEFAULT_TOPIC
-    with _SOURCE_LOCK:
-        if _SOURCE is not None and (_SOURCE.topic != topic or _SOURCE.error is not None):
-            _SOURCE.close()
-            _SOURCE = None
-        if _SOURCE is None:
-            _SOURCE = RosCameraSource(topic)
-        return _SOURCE
+    with CAMERA_SOURCE_LOCK:
+        if CAMERA_SOURCE is not None and (
+            CAMERA_SOURCE.topic != topic or CAMERA_SOURCE.error is not None
+        ):
+            CAMERA_SOURCE.close()
+            CAMERA_SOURCE = None
+        if CAMERA_SOURCE is None:
+            CAMERA_SOURCE = RosCameraSource(topic)
+        return CAMERA_SOURCE
 
 
 def mjpeg_stream(source, running):

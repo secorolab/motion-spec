@@ -412,6 +412,7 @@ function bindGenerate(source) {
     generate.disabled = start.disabled = working;
   };
   const gone = () => state.viewing !== source || !pre.isConnected;
+  const view = { pre, status, open, stop, busy, gone };
   const launch = async (run) => {
     stop();
     busy(true);
@@ -419,42 +420,10 @@ function bindGenerate(source) {
     status.textContent = "starting…";
     pre.textContent = "";
     pre.hidden = false;
-    let offset = 0;
     try {
       const started = await post("/api/generate", { path: source });
       status.textContent = `running · pid ${started.pid}`;
-      const tail = async () => {
-        if (gone()) return stop();
-        const slice = await api(
-          `/api/console?job=${encodeURIComponent(started.job)}&offset=${offset}`,
-        ).catch(() => null);
-        if (!slice || !slice.text) return;
-        offset = slice.offset;
-        appendConsole(pre, slice.text);
-      };
-      const check = async () => {
-        if (gone()) return stop();
-        const job = await api(`/api/generate?job=${encodeURIComponent(started.job)}`).catch(
-          () => null,
-        );
-        if (!job) return;
-        status.textContent = job.busy ? `running · pid ${job.pid}` : `exited ${job.exit_code}`;
-        if (job.busy) return;
-        clearInterval(state.generateWatch);
-        busy(false);
-        await tail(); // the closing lines land after the process is already gone
-        clearInterval(state.generateConsole);
-        if (!job.generation) return;
-        if (job.exit_code) {
-          open.hidden = false;
-          open.onclick = () => showGeneration(job.generation);
-          return;
-        }
-        showGeneration(job.generation, run);
-      };
-      await tail();
-      state.generateConsole = setInterval(tail, 1000);
-      state.generateWatch = setInterval(check, 2000);
+      await followGenerate(started.job, view, run);
     } catch (error) {
       stop();
       busy(false);
@@ -463,4 +432,45 @@ function bindGenerate(source) {
   };
   generate.onclick = () => launch(false);
   start.onclick = () => launch(true);
+}
+
+// poll generate JOB: its console into VIEW.pre, and its state until it exits
+async function followGenerate(job, view, run) {
+  let offset = 0;
+  const tail = async () => {
+    if (view.gone()) return view.stop();
+    const slice = await api(
+      `/api/console?job=${encodeURIComponent(job)}&offset=${offset}`,
+    ).catch(() => null);
+    if (!slice || !slice.text) return;
+    offset = slice.offset;
+    appendConsole(view.pre, slice.text);
+  };
+  const check = async () => {
+    if (view.gone()) return view.stop();
+    const status = await api(`/api/generate?job=${encodeURIComponent(job)}`).catch(() => null);
+    if (!status) return;
+    view.status.textContent = status.busy
+      ? `running · pid ${status.pid}`
+      : `exited ${status.exit_code}`;
+    if (!status.busy) await finishGenerate(status, view, tail, run);
+  };
+  await tail();
+  state.generateConsole = setInterval(tail, 1000);
+  state.generateWatch = setInterval(check, 2000);
+}
+
+// after a generate job exits: its last console lines, then its generation, opened on success
+async function finishGenerate(job, view, tail, run) {
+  clearInterval(state.generateWatch);
+  view.busy(false);
+  await tail(); // the closing lines land after the process is already gone
+  clearInterval(state.generateConsole);
+  if (!job.generation) return;
+  if (job.exit_code) {
+    view.open.hidden = false;
+    view.open.onclick = () => showGeneration(job.generation);
+    return;
+  }
+  showGeneration(job.generation, run);
 }

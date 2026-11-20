@@ -90,7 +90,7 @@ def set_root(kind: str, value: str) -> dict:
     else:
         raise ValueError("unknown root")
     directory_size.cache_clear()
-    storage_info.cache_clear()
+    storage_totals.cache_clear()
     return current_roots()
 
 
@@ -158,7 +158,7 @@ directory_size = lru_cache(maxsize=256)(artifact_size)
 
 
 @lru_cache(maxsize=1)
-def storage_info() -> dict:
+def storage_totals() -> dict:
     """Generation and frame-log storage totals for the dashboard sidebar."""
     files = [path for path in GENERATIONS.rglob("*") if path.is_file()]
     return {
@@ -176,14 +176,14 @@ HEADER_REL = f"generated/contract/{HEADER_FILE}"
 STATE_REL = ".dashboard"
 
 
-_TRACED: dict[str, str] = {}
+LAST_TRACE_LINES: dict[str, str] = {}
 
 
 def trace(line: str) -> None:
     """Print a state line the first time it changes, so a run leaves a readable trail."""
     key = line.split(":")[0]
-    if _TRACED.get(key) != line:
-        _TRACED[key] = line
+    if LAST_TRACE_LINES.get(key) != line:
+        LAST_TRACE_LINES[key] = line
         print(f"[trace] {time.strftime('%H:%M:%S')} {line}", file=sys.stderr, flush=True)
 
 

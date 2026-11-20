@@ -31,7 +31,7 @@ CONFIG_POSE = f"""
 @prefix app: <{APP}> .
 @prefix exec: <{EXEC}> .
 @prefix prov: <http://www.w3.org/ns/prov#> .
-app:demo-exec a exec:ExecutionContext ; prov:wasDerivedFrom app:demo-exec.config .
+app:demo-exec a exec:ExecutionContext ; exec:has-config app:demo-exec.config .
 app:demo-exec.config a prov:Entity ; prov:atLocation <file:///somewhere/robot.toml> .
 <{APP}shared/spec/look-at-table> prov:wasDerivedFrom app:demo-exec.config ;
     <https://schema.org/identifier> "poses.table" .
@@ -65,7 +65,7 @@ def test_the_platform_is_read_from_the_model_with_the_config_it_states() -> None
         @prefix app: <{APP}> .
         @prefix exec: <{EXEC}> .
         @prefix prov: <http://www.w3.org/ns/prov#> .
-        app:demo-exec a exec:RealWorld ; prov:wasDerivedFrom app:demo-exec.config .
+        app:demo-exec a exec:RealWorld ; exec:has-config app:demo-exec.config .
         app:demo-exec.config a prov:Entity ; prov:atLocation <file:///somewhere/robot.toml> .
         """,
         format="turtle",
@@ -79,13 +79,13 @@ def test_the_platform_is_read_from_the_model_with_the_config_it_states() -> None
     }
 
 
-_ARM_SECTION = (
+ARM_SECTION = (
     "[agents.arm1]\nip='10.0.0.1'\nuser='u'\npassword='p'\nport=1\n"
     "port_real_time=2\nsession_timeout_ms=3\nconnection_timeout_ms=4\n"
 )
-_FT_SECTION = "[arm1.wrist_ft]\nport='ttyUSB0'\nbaudrate=19200\nslave_address=9\n"
-_FT = {"kind": "RobotiqFT300s", "config_key": "arm1.wrist_ft", "drives": "wrist_ft"}
-_ARM = {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""}
+FT_SECTION = "[arm1.wrist_ft]\nport='ttyUSB0'\nbaudrate=19200\nslave_address=9\n"
+FT_DEVICE = {"kind": "RobotiqFT300s", "config_key": "arm1.wrist_ft", "drives": "wrist_ft"}
+ARM_DEVICE = {"kind": "KinovaGen3", "config_key": "agents.arm1", "drives": ""}
 
 
 # The codegen payload a real-hardware program's config check renders from.
@@ -112,7 +112,9 @@ def test_robot_config_must_cover_every_bound_device(tmp_path: Path, source: Path
         json.dumps(
             {
                 "configuration": {**CONFIGURATION, "config_poses": []},
-                "resources": {"by_kind": {"serial_chain": [{**ARM_ROBOT, "devices": [_ARM, _FT]}]}},
+                "resources": {
+                    "by_kind": {"serial_chain": [{**ARM_ROBOT, "devices": [ARM_DEVICE, FT_DEVICE]}]}
+                },
             }
         )
     )
@@ -126,16 +128,16 @@ def test_robot_config_must_cover_every_bound_device(tmp_path: Path, source: Path
     with pytest.raises(RunnerError, match="is missing user"):
         validate_robot_config(source, tmp_path)
 
-    config.write_text(_ARM_SECTION)
+    config.write_text(ARM_SECTION)
     with pytest.raises(RunnerError, match=r"no \[arm1.wrist_ft\] section for the bound Robotiq"):
         validate_robot_config(source, tmp_path)
 
     # The FT sensor is a serial device: the arm's network keys say nothing about it.
-    config.write_text(_ARM_SECTION + "[arm1.wrist_ft]\nport='ttyUSB0'\n")
+    config.write_text(ARM_SECTION + "[arm1.wrist_ft]\nport='ttyUSB0'\n")
     with pytest.raises(RunnerError, match=r"\[arm1.wrist_ft\] is missing baudrate"):
         validate_robot_config(source, tmp_path)
 
-    config.write_text(_ARM_SECTION + _FT_SECTION)
+    config.write_text(ARM_SECTION + FT_SECTION)
     validate_robot_config(source, tmp_path)
 
 
@@ -151,7 +153,9 @@ def test_a_pose_the_model_reads_binds_its_section(tmp_path: Path, source: Path) 
                     **CONFIGURATION,
                     "config_poses": [{"id": "home", "config_key": "poses.home"}],
                 },
-                "resources": {"by_kind": {"serial_chain": [{**ARM_ROBOT, "devices": [_ARM]}]}},
+                "resources": {
+                    "by_kind": {"serial_chain": [{**ARM_ROBOT, "devices": [ARM_DEVICE]}]}
+                },
             }
         )
     )
@@ -159,18 +163,18 @@ def test_a_pose_the_model_reads_binds_its_section(tmp_path: Path, source: Path) 
     config = tmp_path / "robot.toml"
     pose = "[poses.home]\nposition = [0.1, 0.2, 0.3]\norientation = [0.0, 0.0, 0.0]\n"
 
-    config.write_text(_ARM_SECTION + pose)
+    config.write_text(ARM_SECTION + pose)
     validate_robot_config(source, tmp_path)
 
     # The numbers may be retuned without regenerating, so their shape is checked on the way in.
     config.write_text(
-        _ARM_SECTION + "[poses.home]\nposition = [0.1, 0.2]\norientation = [0, 0, 0]\n"
+        ARM_SECTION + "[poses.home]\nposition = [0.1, 0.2]\norientation = [0, 0, 0]\n"
     )
     with pytest.raises(RunnerError, match=r"\[poses.home\] states no three-number `position`"):
         validate_robot_config(source, tmp_path)
 
     # A deployment may keep more poses than the model reads; an unread one is skipped.
-    config.write_text(_ARM_SECTION + pose + "[poses.spare]\nposition = [0, 0, 0]\n")
+    config.write_text(ARM_SECTION + pose + "[poses.spare]\nposition = [0, 0, 0]\n")
     validate_robot_config(source, tmp_path)
 
 
@@ -182,27 +186,33 @@ def test_a_home_is_rejected_on_a_real_device(tmp_path: Path, source: Path) -> No
         json.dumps(
             {
                 "configuration": {**CONFIGURATION, "config_poses": []},
-                "resources": {"by_kind": {"serial_chain": [{**ARM_ROBOT, "devices": [_ARM]}]}},
+                "resources": {
+                    "by_kind": {"serial_chain": [{**ARM_ROBOT, "devices": [ARM_DEVICE]}]}
+                },
             }
         )
     )
     render_template(STST, ROBIF2B, "config_check", payload, source / "controller" / CONFIG_CHECK)
     config = tmp_path / "robot.toml"
 
-    config.write_text(_ARM_SECTION + "home = [0.0, 0.6, 3.14, -2.0, 0.0, 1.1, 1.57]\n")
+    config.write_text(ARM_SECTION + "home = [0.0, 0.6, 3.14, -2.0, 0.0, 1.1, 1.57]\n")
     with pytest.raises(RunnerError, match=r"`home` in \[agents.arm1\]"):
         validate_robot_config(source, tmp_path)
 
-    config.write_text(_ARM_SECTION)
+    config.write_text(ARM_SECTION)
     validate_robot_config(source, tmp_path)
 
 
 @pytest.mark.parametrize(
     ("devices", "missing"),
     [
-        ([{"kind": "KinovaGen3-2F85", "config_key": "agents.arm1", "drives": ""}, _FT], None),
+        ([{"kind": "KinovaGen3-2F85", "config_key": "agents.arm1", "drives": ""}, FT_DEVICE], None),
         (
-            [_ARM, {"kind": "Robotiq2F85", "config_key": "agents.gripper1", "drives": ""}, _FT],
+            [
+                ARM_DEVICE,
+                {"kind": "Robotiq2F85", "config_key": "agents.gripper1", "drives": ""},
+                FT_DEVICE,
+            ],
             r"no \[agents.gripper1\] section",
         ),
     ],
@@ -225,7 +235,7 @@ def test_the_authored_device_decides_which_sections_the_config_needs(
     )
     render_template(STST, ROBIF2B, "config_check", payload, source / "controller" / CONFIG_CHECK)
     config = tmp_path / "robot.toml"
-    config.write_text(_ARM_SECTION + _FT_SECTION)
+    config.write_text(ARM_SECTION + FT_SECTION)
     if missing:
         with pytest.raises(RunnerError, match=missing):
             validate_robot_config(source, tmp_path)

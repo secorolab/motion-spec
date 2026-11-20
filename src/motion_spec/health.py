@@ -486,21 +486,26 @@ def cmake_package_path(
             target = (build / "target").read_text().strip()
         except OSError:
             return None
-        if env is not None:
-            # ENV's LD_LIBRARY_PATH decides, not ours
-            loaded = subprocess.run(
-                [sys.executable, "-c", "import ctypes, sys; ctypes.CDLL(sys.argv[1])", target],
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            return target if loaded.returncode == 0 else None
-        try:
-            ctypes.CDLL(target)
-        except OSError:
-            return None
-        return target
+        return target if library_loads(target, env) else None
+
+
+def library_loads(library: str, env: dict[str, str] | None = None) -> bool:
+    """Whether the shared LIBRARY loads, in a process under ENV when one is given."""
+    if env is not None:
+        # ENV's LD_LIBRARY_PATH decides, not ours
+        loaded = subprocess.run(
+            [sys.executable, "-c", "import ctypes, sys; ctypes.CDLL(sys.argv[1])", library],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return loaded.returncode == 0
+    try:
+        ctypes.CDLL(library)
+    except OSError:
+        return False
+    return True
 
 
 VERDICT_PROFILES = ("base", "dsl", "codegen", "build", "runtime")
@@ -573,6 +578,283 @@ def apt_packages(checks: list[HealthCheck]) -> list[str]:
     )
 
 
+def import_checks(profile: str, checks: list[HealthCheck], targets, env, on_progress) -> None:
+    """Whether every module PROFILE imports is importable."""
+    for module in PROFILE_IMPORTS[profile]:
+        on_progress(len(checks), module)
+        path = module_path(module, env)
+        checks.append(
+            HealthCheck(
+                profile,
+                module,
+                module_what(path),
+                path,
+                path is not None,
+                "pip install motion_spec"
+                if profile == "base"
+                else f"motion-spec install {profile}",
+            )
+        )
+
+
+def telemetry_checks(profile: str, checks: list[HealthCheck], targets, env, on_progress) -> None:
+    """The telemetry imports, and the Protobuf the generated runtime links."""
+    import_checks(profile, checks, targets, env, on_progress)
+    on_progress(len(checks), "Protobuf")
+    path = cmake_package_path("Protobuf", env=env)
+    checks.append(
+        HealthCheck(
+            profile, "Protobuf", "CMake package", path, path is not None, remedy("Protobuf")
+        )
+    )
+
+
+def codegen_checks(profile: str, checks: list[HealthCheck], targets, env, on_progress) -> None:
+    """stst, with the jar it runs, and the executables C++ generation calls."""
+    from motion_spec.setup import find_stst
+
+    on_progress(len(checks), "stst")
+    path = (
+        find_stst(path=env.get("PATH", ""), workspace=env.get("MOTION_SPEC_WS"))
+        if env is not None
+        else find_stst()
+    )
+    runs = path is not None and stst_jar(path)
+    checks.append(
+        HealthCheck(
+            "codegen",
+            "stst",
+            "executable" if runs else "executable, jar missing",
+            path,
+            runs,
+            "motion-spec setup stst --force" if path else remedy("stst"),
+        )
+    )
+    for executable in CODEGEN_EXECUTABLES:
+        on_progress(len(checks), executable)
+        path = which(executable, env)
+        checks.append(
+            HealthCheck(
+                "codegen", executable, "executable", path, path is not None, remedy(executable)
+            )
+        )
+
+
+def ros_checks(profile: str, checks: list[HealthCheck], targets, env, on_progress) -> None:
+    """The ROS distribution, its Python modules and its CMake packages; each one optional."""
+    distro = active_ros_distro(env)
+    installed = installed_ros_distros()
+    checks.append(
+        HealthCheck(
+            "ros",
+            "ROS distribution",
+            "sourced" if distro else "installed" if installed else "not found",
+            str(ROS_ROOT / distro)
+            if distro
+            else ", ".join(str(ROS_ROOT / name) for name in installed) or None,
+            distro is not None,
+            ros_summary(env),
+            optional=True,
+        )
+    )
+    for module in ROS_IMPORTS:
+        on_progress(len(checks), module)
+        path = module_path(module, env)
+        checks.append(
+            HealthCheck(
+                "ros",
+                module,
+                module_what(path),
+                path,
+                path is not None,
+                remedy(module, env),
+                optional=True,
+            )
+        )
+    for alternatives in ROS_ALTERNATIVES:
+        on_progress(len(checks), alternatives[0])
+        path = next((found for name in alternatives if (found := module_path(name, env))), None)
+        checks.append(
+            HealthCheck(
+                "ros",
+                " or ".join(alternatives),
+                module_what(path),
+                path,
+                path is not None,
+                remedy(alternatives[0], env),
+                optional=True,
+                name=alternatives[0],
+            )
+        )
+    for name in ROS_BUILD_PACKAGES:
+        on_progress(len(checks), name)
+        path = cmake_package_path(name, env=env)
+        checks.append(
+            HealthCheck(
+                "ros",
+                name,
+                "CMake package",
+                path,
+                path is not None,
+                remedy(name, env),
+                optional=True,
+            )
+        )
+
+
+def build_checks(profile: str, checks: list[HealthCheck], targets, env, on_progress) -> None:
+    """The compilers and CMake packages every build needs, then those of each of TARGETS."""
+    for executable in ("cmake", "c++"):
+        on_progress(len(checks), executable)
+        path = which(executable, env)
+        checks.append(
+            HealthCheck(
+                "build", executable, "executable", path, path is not None, remedy(executable)
+            )
+        )
+    for name in GENERAL_BUILD_PACKAGES:
+        on_progress(len(checks), name)
+        path = cmake_package_path(name, env=env)
+        checks.append(
+            HealthCheck("build", name, "CMake package", path, path is not None, remedy(name))
+        )
+    if "mujoco" in targets:
+        mujoco_build_checks(checks, env, on_progress)
+    if "robif2b" in targets:
+        for name in ROBIF2B_BUILD_PACKAGES:
+            on_progress(len(checks), name)
+            path = cmake_package_path(name, env=env)
+            checks.append(
+                HealthCheck(
+                    "build[robif2b]",
+                    name,
+                    "CMake package",
+                    path,
+                    path is not None,
+                    remedy(name),
+                    optional=name in OPTIONAL_BUILD_PACKAGES,
+                    name=name,
+                )
+            )
+
+
+def mujoco_build_checks(checks: list[HealthCheck], env, on_progress) -> None:
+    """What mj_kdl_wrapper's configure needs, and mj_kdl_wrapper at the pinned version."""
+    from motion_spec.setup import shipped_pin
+
+    on_progress(len(checks), "glfw3")
+    path = cmake_package_path("glfw3", env=env)
+    checks.append(
+        HealthCheck(
+            "build[mujoco]", "glfw3", "CMake package", path, path is not None, remedy("glfw3")
+        )
+    )
+    for name, library in (("OpenGL", "GL"), ("EGL", "EGL")):
+        on_progress(len(checks), name)
+        path = cmake_library_path(library, env=env)
+        checks.append(
+            HealthCheck(
+                "build[mujoco]", name, "shared library", path, path is not None, remedy(name)
+            )
+        )
+    on_progress(len(checks), "ffmpeg")
+    path = which("ffmpeg", env)
+    checks.append(
+        HealthCheck(
+            "build[mujoco]", "ffmpeg", "executable", path, path is not None, remedy("ffmpeg")
+        )
+    )
+    # the generated CMakeLists requires the pinned version
+    version = shipped_pin("mj_kdl_wrapper").version.lstrip("v")
+    on_progress(len(checks), "mj_kdl_wrapper")
+    path = cmake_package_path("mj_kdl_wrapper", version=version, env=env)
+    checks.append(
+        HealthCheck(
+            "build[mujoco]",
+            f"mj_kdl_wrapper {version}",
+            "CMake package",
+            path,
+            path is not None,
+            remedy("mj_kdl_wrapper"),
+            name="mj_kdl_wrapper",
+        )
+    )
+
+
+RUNTIME_TARGETS = {
+    "mujoco": (("mj_kdl_wrapper", "mj_kdl_wrapper::mj_kdl_wrapper"),),
+    "robif2b": (
+        ("robif2b", "robif2b::kinova_gen3"),
+        ("robif2b", "robif2b::robotiq_gripper"),
+        ("robif2b", "robif2b::robotiq_ft_sensor"),
+    ),
+}
+
+
+def runtime_checks(profile: str, checks: list[HealthCheck], targets, env, on_progress) -> None:
+    """Whether coord2b and each of TARGETS' libraries load."""
+    on_progress(len(checks), "coord2b")
+    path = cmake_package_path("coord2b", load_target="coord2b", env=env)
+    checks.append(
+        HealthCheck(
+            "runtime", "coord2b", "shared library", path, path is not None, remedy("coord2b")
+        )
+    )
+    for target in targets:
+        for package, cmake_target in RUNTIME_TARGETS[target]:
+            on_progress(len(checks), cmake_target)
+            path = cmake_package_path(package, load_target=cmake_target, env=env)
+            flag = ROBIF2B_DEVICE_FLAGS.get(cmake_target)
+            checks.append(
+                HealthCheck(
+                    f"runtime[{target}]",
+                    cmake_target,
+                    "shared library",
+                    path,
+                    path is not None,
+                    remedy(package)
+                    if flag is None
+                    else f'add "-D{flag}=ON" to robif2b in colcon.meta, then '
+                    "motion-spec setup --real --force robif2b",
+                )
+            )
+
+
+PROFILE_CHECKS = {
+    "base": import_checks,
+    "telemetry": telemetry_checks,
+    "dsl": import_checks,
+    "codegen": codegen_checks,
+    "ros": ros_checks,
+    "build": build_checks,
+    "runtime": runtime_checks,
+}
+
+
+def with_details(check: HealthCheck, env: dict[str, str] | None) -> HealthCheck:
+    """CHECK with why it is needed, where it comes from, how to build it instead, and the apt
+    packages that provide it."""
+    bare = check.name or check.dependency
+    name = bare.partition("::")[0]
+    spec = DETAILS.get(check.dependency) or DETAILS.get(name) or {}
+    flag = ROBIF2B_DEVICE_FLAGS.get(bare)
+    alternative = ""
+    if flag:
+        alternative = cmake_build("robif2b", *installed_options("robif2b"), f"-D{flag}=ON")
+    elif name in SETUP_PROVIDES:
+        alternative = cmake_build(name, *installed_options(name))
+    return dataclasses.replace(
+        check,
+        why=spec.get("why", ""),
+        source=spec.get("source", ""),
+        alternative=alternative,
+        apt=tuple(
+            package.replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
+            for package in APT_PACKAGES.get(name, ())
+        ),
+    )
+
+
 def check_health(
     profiles: Collection[str],
     targets: tuple[str, ...] = (),
@@ -586,267 +868,10 @@ def check_health(
     ON_PROGRESS is called with (done, dependency) before each probe: configuring a CMake
     project takes seconds, and several of these do.
     """
-    selected = tuple(
-        profile
-        for profile in PROFILES
-        if "all" in profiles or profile == "base" or profile in profiles
-    )
     checks = []
-    for profile in selected:
-        for module in PROFILE_IMPORTS.get(profile, ()):
-            on_progress(len(checks), module)
-            path = module_path(module, env)
-            checks.append(
-                HealthCheck(
-                    profile,
-                    module,
-                    module_what(path),
-                    path,
-                    path is not None,
-                    "pip install motion_spec"
-                    if profile == "base"
-                    else f"motion-spec install {profile}",
-                )
-            )
-        if profile == "telemetry":
-            on_progress(len(checks), "Protobuf")
-            path = cmake_package_path("Protobuf", env=env)
-            checks.append(
-                HealthCheck(
-                    profile, "Protobuf", "CMake package", path, path is not None, remedy("Protobuf")
-                )
-            )
-    if "codegen" in selected:
-        from motion_spec.setup import find_stst
+    for profile in PROFILES:
+        if "all" in profiles or profile == "base" or profile in profiles:
+            PROFILE_CHECKS[profile](profile, checks, targets, env, on_progress)
+    return [with_details(check, env) for check in checks]
 
-        on_progress(len(checks), "stst")
-        path = (
-            find_stst(path=env.get("PATH", ""), workspace=env.get("MOTION_SPEC_WS"))
-            if env is not None
-            else find_stst()
-        )
-        runs = path is not None and stst_jar(path)
-        checks.append(
-            HealthCheck(
-                "codegen",
-                "stst",
-                "executable" if runs else "executable, jar missing",
-                path,
-                runs,
-                "motion-spec setup stst --force" if path else remedy("stst"),
-            )
-        )
-        for executable in CODEGEN_EXECUTABLES:
-            on_progress(len(checks), executable)
-            path = which(executable, env)
-            checks.append(
-                HealthCheck(
-                    "codegen", executable, "executable", path, path is not None, remedy(executable)
-                )
-            )
-    if "ros" in selected:
-        distro = active_ros_distro(env)
-        installed = installed_ros_distros()
-        checks.append(
-            HealthCheck(
-                "ros",
-                "ROS distribution",
-                "sourced" if distro else "installed" if installed else "not found",
-                str(ROS_ROOT / distro)
-                if distro
-                else ", ".join(str(ROS_ROOT / name) for name in installed) or None,
-                distro is not None,
-                ros_summary(env),
-                optional=True,
-            )
-        )
-        for module in ROS_IMPORTS:
-            on_progress(len(checks), module)
-            path = module_path(module, env)
-            checks.append(
-                HealthCheck(
-                    "ros",
-                    module,
-                    module_what(path),
-                    path,
-                    path is not None,
-                    remedy(module, env),
-                    optional=True,
-                )
-            )
-        for alternatives in ROS_ALTERNATIVES:
-            on_progress(len(checks), alternatives[0])
-            path = next(
-                (found for name in alternatives if (found := module_path(name, env))), None
-            )
-            checks.append(
-                HealthCheck(
-                    "ros",
-                    " or ".join(alternatives),
-                    module_what(path),
-                    path,
-                    path is not None,
-                    remedy(alternatives[0], env),
-                    optional=True,
-                    name=alternatives[0],
-                )
-            )
-        for name in ROS_BUILD_PACKAGES:
-            on_progress(len(checks), name)
-            path = cmake_package_path(name, env=env)
-            checks.append(
-                HealthCheck(
-                    "ros",
-                    name,
-                    "CMake package",
-                    path,
-                    path is not None,
-                    remedy(name, env),
-                    optional=True,
-                )
-            )
-    if "build" in selected:
-        for executable in ("cmake", "c++"):
-            on_progress(len(checks), executable)
-            path = which(executable, env)
-            checks.append(
-                HealthCheck(
-                    "build", executable, "executable", path, path is not None, remedy(executable)
-                )
-            )
-        for name in GENERAL_BUILD_PACKAGES:
-            on_progress(len(checks), name)
-            path = cmake_package_path(name, env=env)
-            checks.append(
-                HealthCheck("build", name, "CMake package", path, path is not None, remedy(name))
-            )
-        if "mujoco" in targets:
-            # mj_kdl_wrapper's configure needs these
-            on_progress(len(checks), "glfw3")
-            path = cmake_package_path("glfw3", env=env)
-            checks.append(
-                HealthCheck(
-                    "build[mujoco]",
-                    "glfw3",
-                    "CMake package",
-                    path,
-                    path is not None,
-                    remedy("glfw3"),
-                )
-            )
-            for name, library in (("OpenGL", "GL"), ("EGL", "EGL")):
-                on_progress(len(checks), name)
-                path = cmake_library_path(library, env=env)
-                checks.append(
-                    HealthCheck(
-                        "build[mujoco]",
-                        name,
-                        "shared library",
-                        path,
-                        path is not None,
-                        remedy(name),
-                    )
-                )
-            on_progress(len(checks), "ffmpeg")
-            path = which("ffmpeg", env)
-            checks.append(
-                HealthCheck(
-                    "build[mujoco]",
-                    "ffmpeg",
-                    "executable",
-                    path,
-                    path is not None,
-                    remedy("ffmpeg"),
-                )
-            )
-            from motion_spec.setup import shipped_pin
 
-            # the generated CMakeLists requires the pinned version
-            version = shipped_pin("mj_kdl_wrapper").version.lstrip("v")
-            on_progress(len(checks), "mj_kdl_wrapper")
-            path = cmake_package_path("mj_kdl_wrapper", version=version, env=env)
-            checks.append(
-                HealthCheck(
-                    "build[mujoco]",
-                    f"mj_kdl_wrapper {version}",
-                    "CMake package",
-                    path,
-                    path is not None,
-                    remedy("mj_kdl_wrapper"),
-                    name="mj_kdl_wrapper",
-                )
-            )
-        if "robif2b" in targets:
-            for name in ROBIF2B_BUILD_PACKAGES:
-                on_progress(len(checks), name)
-                path = cmake_package_path(name, env=env)
-                checks.append(
-                    HealthCheck(
-                        "build[robif2b]",
-                        name,
-                        "CMake package",
-                        path,
-                        path is not None,
-                        remedy(name),
-                        optional=name in OPTIONAL_BUILD_PACKAGES,
-                        name=name,
-                    )
-                )
-    if "runtime" in selected:
-        on_progress(len(checks), "coord2b")
-        path = cmake_package_path("coord2b", load_target="coord2b", env=env)
-        checks.append(
-            HealthCheck(
-                "runtime", "coord2b", "shared library", path, path is not None, remedy("coord2b")
-            )
-        )
-        runtime_targets = {
-            "mujoco": (("mj_kdl_wrapper", "mj_kdl_wrapper::mj_kdl_wrapper"),),
-            "robif2b": (
-                ("robif2b", "robif2b::kinova_gen3"),
-                ("robif2b", "robif2b::robotiq_gripper"),
-                ("robif2b", "robif2b::robotiq_ft_sensor"),
-            ),
-        }
-        for target in targets:
-            for package, cmake_target in runtime_targets[target]:
-                on_progress(len(checks), cmake_target)
-                path = cmake_package_path(package, load_target=cmake_target, env=env)
-                flag = ROBIF2B_DEVICE_FLAGS.get(cmake_target)
-                checks.append(
-                    HealthCheck(
-                        f"runtime[{target}]",
-                        cmake_target,
-                        "shared library",
-                        path,
-                        path is not None,
-                        remedy(package)
-                        if flag is None
-                        else f'add "-D{flag}=ON" to robif2b in colcon.meta, then '
-                        "motion-spec setup --real --force robif2b",
-                    )
-                )
-    enriched = []
-    for check in checks:
-        bare = check.name or check.dependency
-        name = bare.partition("::")[0]
-        spec = DETAILS.get(check.dependency) or DETAILS.get(name) or {}
-        flag = ROBIF2B_DEVICE_FLAGS.get(bare)
-        alternative = ""
-        if flag:
-            alternative = cmake_build("robif2b", *installed_options("robif2b"), f"-D{flag}=ON")
-        elif name in SETUP_PROVIDES:
-            alternative = cmake_build(name, *installed_options(name))
-        enriched.append(
-            dataclasses.replace(
-                check,
-                why=spec.get("why", ""),
-                source=spec.get("source", ""),
-                alternative=alternative,
-                apt=tuple(
-                    package.replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
-                    for package in APT_PACKAGES.get(name, ())
-                ),
-            )
-        )
-    return enriched

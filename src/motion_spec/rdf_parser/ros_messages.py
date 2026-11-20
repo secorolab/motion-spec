@@ -16,15 +16,15 @@ from motion_spec.classes.handlers import RosGoalAnswer, RosPublication
 from motion_spec.rdf_parser import quantities
 
 # node-owned fields, never authored
-_AUTO_TIME_TYPE = "builtin_interfaces/Time"
-_AUTO_CONTEXT_ID = ("scenario_context_id", "unique_identifier_msgs/UUID")
+AUTO_TIME_TYPE = "builtin_interfaces/Time"
+AUTO_CONTEXT_ID = ("scenario_context_id", "unique_identifier_msgs/UUID")
 # any other stated field type must read as a number
-_STRING_TYPES = ("string", "wstring")
-_HEADER_TYPE = "std_msgs/Header"
-_FRAME_FIELD = "frame_id"
-_POSE_TYPE = "geometry_msgs/Pose"
-_PAYLOAD_TYPES = {
-    "Pose": (_POSE_TYPE, "geometry_msgs/Transform"),
+STRING_TYPES = ("string", "wstring")
+HEADER_TYPE = "std_msgs/Header"
+FRAME_FIELD = "frame_id"
+POSE_TYPE = "geometry_msgs/Pose"
+PAYLOAD_TYPES = {
+    "Pose": (POSE_TYPE, "geometry_msgs/Transform"),
     "VelocityTwist": ("geometry_msgs/Twist",),
     "Wrench": ("geometry_msgs/Wrench",),
 }
@@ -130,7 +130,7 @@ def detect_shape(type_name: str, pose_path: str) -> dict:
     goal_targets = [
         name
         for name, element, many, nested in fields(action.Goal)
-        if many and element in _STRING_TYPES
+        if many and element in STRING_TYPES
     ]
     detections_path, detection = sole(
         repeated_leaves(action.Result), "repeated message fields", f"{type_name} result"
@@ -181,13 +181,13 @@ def detection_paths(detection, pose_path: str) -> dict:
     ids = [
         name
         for name, element, many, _nested in detection_fields
-        if not many and element in _STRING_TYPES
+        if not many and element in STRING_TYPES
     ]
     id_path = sole(ids, "string fields", element_name)
     headers = [
-        name for name, element, _many, _nested in detection_fields if element == _HEADER_TYPE
+        name for name, element, _many, _nested in detection_fields if element == HEADER_TYPE
     ]
-    header = sole(headers, f"'{_HEADER_TYPE}' fields", element_name)
+    header = sole(headers, f"'{HEADER_TYPE}' fields", element_name)
     container, _, field = pose_path.partition(".")
     if not field:
         raise ConstraintViolation(
@@ -217,11 +217,11 @@ def detection_paths(detection, pose_path: str) -> dict:
             f"'{type_name_of(entry)}' has no message field '{field}' to read a pose from",
         )
     # the named field may wrap the pose, e.g. with a covariance
-    descent = descend_to(message_class(carried[0]), _POSE_TYPE, f"{container}.{field}")
+    descent = descend_to(message_class(carried[0]), POSE_TYPE, f"{container}.{field}")
 
     return {
         "id_path": id_path,
-        "frame_path": f"{header}.{_FRAME_FIELD}",
+        "frame_path": f"{header}.{FRAME_FIELD}",
         "pose_path": f"{container}[0].{field}{'.' + descent if descent else ''}",
         "pose_container": container,
     }
@@ -279,7 +279,7 @@ def repeated_leaves(message) -> list[tuple[str, object]]:
             path = f"{prefix}{name}"
             if many and nested:
                 found.append((path, message_class(element)))
-            elif not many and nested and element != _HEADER_TYPE:
+            elif not many and nested and element != HEADER_TYPE:
                 walk(message_class(element), f"{path}.")
 
     walk(message, "")
@@ -336,9 +336,9 @@ def shape_of(root, type_name: str, package: str, include: str) -> dict:
     def walk(message, prefix: str) -> None:
         for name, element, many, nested in fields(message):
             path = f"{prefix}{name}"
-            if not many and element == _AUTO_TIME_TYPE:
+            if not many and element == AUTO_TIME_TYPE:
                 auto[path] = "time"
-            elif not many and (name, element) == _AUTO_CONTEXT_ID:
+            elif not many and (name, element) == AUTO_CONTEXT_ID:
                 auto[path] = "context_id"
             elif not many and nested:
                 walk(message_class(element), f"{path}.")
@@ -373,12 +373,12 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
         ConstraintViolation: no ROS type carries that quantity whole, or the message reaches
             neither one of the type it maps to nor one array of something that does.
     """
-    carriers = _PAYLOAD_TYPES.get(quantity_type)
+    carriers = PAYLOAD_TYPES.get(quantity_type)
     if carriers is None:
         raise ConstraintViolation(
             "communication",
             f"a '{quantity_type}' has no ROS type that carries it whole; a standing publish "
-            f"reports {', '.join(_PAYLOAD_TYPES)}",
+            f"reports {', '.join(PAYLOAD_TYPES)}",
         )
     root = message_class(type_name)
     arrays = repeated_leaves(root)
@@ -404,7 +404,7 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
         ids = [
             name
             for name, element, many, nested in fields(entry_class)
-            if not many and element in _STRING_TYPES
+            if not many and element in STRING_TYPES
         ]
         entry_descent = descend_to(entry_class, wanted, entry_name)
         entry = {
@@ -433,10 +433,10 @@ def frame_path(message) -> str | None:
     headers = [
         name
         for name, element, many, nested in fields(message)
-        if not many and element == _HEADER_TYPE
+        if not many and element == HEADER_TYPE
     ]
 
-    return f"{headers[0]}.{_FRAME_FIELD}" if headers else None
+    return f"{headers[0]}.{FRAME_FIELD}" if headers else None
 
 
 def sole_payload_path(shape: dict) -> str:
@@ -459,7 +459,7 @@ def cpp_value(shape: dict, path: str, text: str) -> str:
     if hasattr(owner, text) and text not in owner.get_fields_and_field_types():
         _package, owner_cpp, _include = cpp_names(owner)
         return f"{owner_cpp}::{text}"
-    if element in _STRING_TYPES:
+    if element in STRING_TYPES:
         return '"{}"'.format(text.replace("\\", "\\\\").replace('"', '\\"'))
     try:
         float(text)
@@ -484,6 +484,63 @@ def publish_field(shape: dict, path: str, text: str) -> dict:
     return {"path": path, "cpp_value": cpp_value(shape, path, text)}
 
 
+def publish_rate(model, rate_node, publisher: str) -> float:
+    """The rate in Hz a publish states, PUBLISHER naming it in the error.
+
+    Raises:
+        ConstraintViolation: the rate is not positive.
+    """
+    rate_hz = quantities.quantity(model, rate_node).value
+    if not rate_hz or rate_hz <= 0.0:
+        raise ConstraintViolation(
+            "communication",
+            f"{publisher} publishes at {rate_hz} Hz; a rate says how often, so it is positive",
+        )
+
+    return rate_hz
+
+
+def goal_answer(model, node, answer_node, watched: set) -> RosGoalAnswer:
+    """How a monitor answers the goal the run serves: the outcome, whether it answers when the
+    WATCHED constraint is satisfied, and the result fields it sets.
+
+    Raises:
+        ConstraintViolation: the outcome is not one a run answers with.
+    """
+    graph = model.graph
+    result_shape = action_shape(str(graph.value(answer_node, NS_MM_ROS["type-name"]) or ""))[
+        "result"
+    ]
+    outcome, satisfied, result_fields = None, True, []
+    for member in graph.objects(answer_node, RDFS.member):
+        result_path = graph.value(member, NS_MM_ROS["field-path"])
+        if result_path is None:
+            outcome = str(graph.value(member, RDF.value))
+            satisfied = set(graph.objects(member, CSTR_EXT["has-constraint"])) == watched
+            continue
+        result_fields.append(
+            publish_field(result_shape, str(result_path), str(graph.value(member, RDF.value)))
+        )
+    if outcome not in ANSWER_METHOD_BY_STATUS:
+        raise ConstraintViolation(
+            "communication",
+            f"monitor '{model.id(node)}' answers its goal '{outcome}'; a run answers "
+            f"{' or '.join(ANSWER_METHOD_BY_STATUS)}",
+        )
+
+    return RosGoalAnswer(
+        outcome,
+        ANSWER_METHOD_BY_STATUS[outcome],
+        result_shape["cpp_type"],
+        fields=result_fields,
+        satisfied=satisfied,
+        auto_time=[path for path, kind in result_shape["auto"].items() if kind == "time"],
+        auto_context_id=[
+            path for path, kind in result_shape["auto"].items() if kind == "context_id"
+        ],
+    )
+
+
 def ros_publication(model, node) -> dict:
     """What a monitor publishes, when the model asks it to publish at all.
 
@@ -502,38 +559,7 @@ def ros_publication(model, node) -> dict:
     watched = set(graph.objects(node, CSTR_HDL["constraint"]))
     answer = {}
     if answer_node is not None:
-        result_shape = action_shape(str(graph.value(answer_node, NS_MM_ROS["type-name"]) or ""))[
-            "result"
-        ]
-        outcome, satisfied, result_fields = None, True, []
-        for member in graph.objects(answer_node, RDFS.member):
-            result_path = graph.value(member, NS_MM_ROS["field-path"])
-            if result_path is None:
-                outcome = str(graph.value(member, RDF.value))
-                satisfied = set(graph.objects(member, CSTR_EXT["has-constraint"])) == watched
-                continue
-            result_fields.append(
-                publish_field(result_shape, str(result_path), str(graph.value(member, RDF.value)))
-            )
-        if outcome not in _ANSWER_METHODS:
-            raise ConstraintViolation(
-                "communication",
-                f"monitor '{model.id(node)}' answers its goal '{outcome}'; a run answers "
-                f"{' or '.join(_ANSWER_METHODS)}",
-            )
-        answer = {
-            "answer": RosGoalAnswer(
-                outcome,
-                _ANSWER_METHODS[outcome],
-                result_shape["cpp_type"],
-                fields=result_fields,
-                satisfied=satisfied,
-                auto_time=[path for path, kind in result_shape["auto"].items() if kind == "time"],
-                auto_context_id=[
-                    path for path, kind in result_shape["auto"].items() if kind == "context_id"
-                ],
-            )
-        }
+        answer = {"answer": goal_answer(model, node, answer_node, watched)}
     channel = graph.value(node, NS_MM_ROS["channel-name"])
     if channel is None:
         return answer
@@ -554,7 +580,7 @@ def ros_publication(model, node) -> dict:
         if graph.value(row, RDF.value) is None:
             occurrence_path = sole_payload_path(shape)
             element, _owner = shape["leaves"][occurrence_path]
-            if element not in _STRING_TYPES:
+            if element not in STRING_TYPES:
                 raise ConstraintViolation(
                     "communication",
                     f"monitor '{model.id(node)}' publishes an occurrence on "
@@ -565,16 +591,13 @@ def ros_publication(model, node) -> dict:
             occurrence_events.append(str(row))
             continue
         conditions = set(graph.objects(row, CSTR_EXT["has-constraint"]))
-        if not conditions:
-            polarity = on_violated
-        elif conditions == watched:
-            polarity = on_satisfied
-        else:
+        if conditions and conditions != watched:
             raise ConstraintViolation(
                 "communication",
                 f"publish row '{model.id(row)}' states a condition that is not the constraint "
                 "its monitor watches",
             )
+        polarity = on_satisfied if conditions else on_violated
         polarity.append(
             publish_field(
                 shape,
@@ -587,13 +610,7 @@ def ros_publication(model, node) -> dict:
     rate_hz = None
     rate_node = graph.value(node, SENSORS["update-rate"])
     if rate_node is not None:
-        rate_hz = quantities.quantity(model, rate_node).value
-        if not rate_hz or rate_hz <= 0.0:
-            raise ConstraintViolation(
-                "communication",
-                f"monitor '{model.id(node)}' publishes at {rate_hz} Hz; a rate says how often, so "
-                "it is positive",
-            )
+        rate_hz = publish_rate(model, rate_node, f"monitor '{model.id(node)}'")
 
     return {
         **answer,
@@ -616,4 +633,4 @@ def ros_publication(model, node) -> dict:
 
 
 # a cancel is the client's to ask for, never an answer
-_ANSWER_METHODS = {"STATUS_SUCCEEDED": "succeed", "STATUS_ABORTED": "abort"}
+ANSWER_METHOD_BY_STATUS = {"STATUS_SUCCEEDED": "succeed", "STATUS_ABORTED": "abort"}

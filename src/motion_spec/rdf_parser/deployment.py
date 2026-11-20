@@ -26,7 +26,7 @@ from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.agents import DRIVEN_DEVICES
 from motion_spec.rdf_parser.model import local_name
 
-_GEOMETRIC_ENTITY_TYPES = {
+GEOMETRIC_ENTITY_TYPES = {
     GEOM_ENT.Point,
     GEOM_ENT.Frame,
     GEOM_ENT.SimplicialComplex,
@@ -59,7 +59,7 @@ def platform_facts(graph) -> dict:
     simulation = next(graph.subjects(RDF.type, EXEC.Simulation), None)
     context = simulation or next(graph.subjects(RDF.type, EXEC.RealWorld), None)
     path = (
-        get_linked_file_path(graph, context, PROV.wasDerivedFrom) if context is not None else None
+        get_linked_file_path(graph, context, EXEC["has-config"]) if context is not None else None
     )
     name = (
         str(graph.value(graph.value(simulation, SSN.deployedOnPlatform), SDO.name) or "")
@@ -172,7 +172,7 @@ def entities_from(graph, starts: set) -> set:
         if node in seen or not isinstance(node, URIRef):
             continue
         seen.add(node)
-        if _GEOMETRIC_ENTITY_TYPES & get_node_types(graph, node):
+        if GEOMETRIC_ENTITY_TYPES & get_node_types(graph, node):
             entities.add(node)
             continue
         queue.extend(graph.objects(node, None))
@@ -372,6 +372,18 @@ def ros_clock(platform: dict, config: dict) -> dict | None:
 ROS_TF_KEY = "ros.tf"
 
 
+def frames_placed_by_camera(model, camera_frame: URIRef) -> list[URIRef]:
+    """What perception places with a camera: its frame and every frame posed against that,
+    directly or through another frame posed against it.
+    """
+    frames = [camera_frame]
+    for wrt in frames:
+        for posed, _pose in relation_neighbors(wrt, URI_GEOM_TYPE_POSE, model.graph, reverse=True):
+            if posed not in frames:
+                frames.append(posed)
+    return frames
+
+
 def ros_tf(
     model, platform: dict, config: dict, serial_chains, cameras, world_index: dict, ports: dict
 ) -> dict | None:
@@ -400,27 +412,19 @@ def ros_tf(
             "could report.",
         )
     anchor = world_index[str(quantities.anchor_frame(model))]
-    for solver in owners:
-        if solver.chain.tree_root != anchor:
-            raise ConstraintViolation(
-                "platform",
-                f"[{ROS_TF_KEY}]: solver '{solver.id}' stands in the tree rooted at "
-                f"'{solver.chain.tree_root}', not at the scene's anchor '{anchor}'; the "
-                "published forest would hang from two roots",
-            )
+    stray = next((solver for solver in owners if solver.chain.tree_root != anchor), None)
+    if stray is not None:
+        raise ConstraintViolation(
+            "platform",
+            f"[{ROS_TF_KEY}]: solver '{stray.id}' stands in the tree rooted at "
+            f"'{stray.chain.tree_root}', not at the scene's anchor '{anchor}'; the "
+            "published forest would hang from two roots",
+        )
     observed: dict[str, None] = {}
     for camera in cameras:
         if not camera.topic:
             continue
-        # perception places the camera and the frames posed against it
-        frames = [URIRef(camera.frame_uri)]
-        for frame in frames:
-            for posed, _pose in relation_neighbors(
-                frame, URI_GEOM_TYPE_POSE, model.graph, reverse=True
-            ):
-                if posed not in frames:
-                    frames.append(posed)
-        for frame in frames:
+        for frame in frames_placed_by_camera(model, URIRef(camera.frame_uri)):
             segment = world_index.get(str(frame))
             if segment is None:
                 raise ConstraintViolation(

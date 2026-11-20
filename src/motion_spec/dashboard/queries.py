@@ -32,7 +32,7 @@ from motion_spec.runs.verify import RecordError
 GRAPH_MAX_TRIPLES = 20_000
 
 
-_GRAPHS: dict[tuple[str, int], GraphService] = {}
+GRAPH_SERVICES: dict[tuple[str, int], GraphService] = {}
 
 
 QUERIES_REL = "queries.json"
@@ -125,13 +125,13 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     else:
         _, log, _contract = resolve_run(run_dir)
         key = (str(log), log.stat().st_size)
-        if key not in _GRAPHS:
+        if key not in GRAPH_SERVICES:
             generation = run_generation(run_dir)
             if generation is None:
                 raise RecordError(run_dir, "the run's document names no generation's provenance")
-            _GRAPHS.clear()
-            _GRAPHS[key] = GraphService(generation)
-        service = _GRAPHS[key]
+            GRAPH_SERVICES.clear()
+            GRAPH_SERVICES[key] = GraphService(generation)
+        service = GRAPH_SERVICES[key]
     started = time.perf_counter()
     try:
         kind, headers, rows = service.query(sparql)
@@ -161,40 +161,52 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     }
 
 
+def constructed_quads(dataset: rdflib.Dataset, rows: list) -> list:
+    """A constructed graph's triples, each in the named graph it was read from."""
+    # a derived triple is in no named graph
+    return [
+        (*triple, next((graph_name(quad[3]) for quad in dataset.quads(triple)), "result"))
+        for triple in rows
+    ]
+
+
+def selected_quads(dataset: rdflib.Dataset, rows: list) -> list:
+    """The quads about the IRIs a selection bound, plus the unbound terms joining two of them."""
+    bound = {t for row in rows for t in row if isinstance(t, rdflib.URIRef)}
+    # one hop only; a single answer's neighbourhood is Expand's
+    joins: dict = {}
+    for subject, predicate, obj, _context in dataset.quads((None, None, None, None)):
+        if predicate == rdflib.RDF.type or isinstance(obj, rdflib.Literal):
+            continue
+        for term, other in ((subject, obj), (obj, subject)):
+            if other in bound and term not in bound:
+                joins.setdefault(term, set()).add(other)
+    drawn = bound | {term for term, reached in joins.items() if len(reached) > 1}
+    return [
+        (subject, predicate, obj, graph_name(context))
+        for subject, predicate, obj, context in dataset.quads((None, None, None, None))
+        if subject in drawn
+        and (obj in drawn or isinstance(obj, rdflib.Literal) or predicate == rdflib.RDF.type)
+    ]
+
+
+RESULT_QUADS = {
+    "CONSTRUCT": constructed_quads,
+    "DESCRIBE": constructed_quads,
+    "SELECT": selected_quads,
+}
+
+
 def result_graph(service: GraphService, kind: str, rows: list) -> dict | None:
     """The result drawn as a graph, or None when there is nothing to draw.
 
     A constructed graph is its own triples. Bindings are drawn as the IRIs they bound, plus the
     unbound terms that join two of them.
     """
-    if kind in ("CONSTRUCT", "DESCRIBE"):
-        # a derived triple is in no named graph
-        quads = [
-            (
-                *triple,
-                next((graph_name(quad[3]) for quad in service.dataset.quads(triple)), "result"),
-            )
-            for triple in rows
-        ]
-    elif kind == "SELECT":
-        bound = {t for row in rows for t in row if isinstance(t, rdflib.URIRef)}
-        # one hop only; a single answer's neighbourhood is Expand's
-        joins: dict = {}
-        for subject, predicate, obj, _context in service.dataset.quads((None, None, None, None)):
-            if predicate == rdflib.RDF.type or isinstance(obj, rdflib.Literal):
-                continue
-            for term, other in ((subject, obj), (obj, subject)):
-                if other in bound and term not in bound:
-                    joins.setdefault(term, set()).add(other)
-        drawn = bound | {term for term, reached in joins.items() if len(reached) > 1}
-        quads = [
-            (subject, predicate, obj, graph_name(context))
-            for subject, predicate, obj, context in service.dataset.quads((None, None, None, None))
-            if subject in drawn
-            and (obj in drawn or isinstance(obj, rdflib.Literal) or predicate == rdflib.RDF.type)
-        ]
-    else:
+    quads_of = RESULT_QUADS.get(kind)
+    if quads_of is None:
         return None
+    quads = quads_of(service.dataset, rows)
     if not quads or len(quads) > GRAPH_MAX_TRIPLES:
         return None
     return classify_quads(quads, term_graphs(service.dataset))

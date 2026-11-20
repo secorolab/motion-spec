@@ -13,9 +13,9 @@ import struct
 from motion_spec.telemetry.frame_log_pb import shm_path
 
 READ_ATTEMPTS = 8
-_SPATIAL_PREFIX = {"poses": "pose", "twists": "twist", "wrenches": "wrench"}
+SPATIAL_PREFIX_BY_POOL = {"poses": "pose", "twists": "twist", "wrenches": "wrench"}
 CORE_SIGNALS = ("step", "t", "fsm_state", "active_motion", "last_event")
-_TIMING_MS = {"timing.compute_ms": ("compute_ns", 1e6), "timing.period_ms": ("period_ns", 1e6)}
+TIMING_MS_SIGNALS = {"timing.compute_ms": ("compute_ns", 1e6), "timing.period_ms": ("period_ns", 1e6)}
 
 SLOT_PARTS = {
     "poses": {
@@ -157,15 +157,15 @@ class SignalFields:
 
     def locate(self, name: str) -> tuple:
         """(offset and struct, divisor, the active motions that write it or None for all)."""
-        if name in _TIMING_MS:
-            flat, divisor = _TIMING_MS[name]
+        if name in TIMING_MS_SIGNALS:
+            flat, divisor = TIMING_MS_SIGNALS[name]
             return self.field_of(name, flat), divisor, None
         if name in self._quantities:
             index = self._quantities[name]
             return self.field_of(name, f"q{index}"), None, self.writers("quantities", index)
         if name in self._slots:
             kind, field, attribute = self._slots[name]
-            flat = f"{_SPATIAL_PREFIX[kind]}{field['index']}.{attribute}"
+            flat = f"{SPATIAL_PREFIX_BY_POOL[kind]}{field['index']}.{attribute}"
             return self.field_of(name, flat), None, self.writers(kind, field["index"])
         prefix, _, key = name.rpartition(".")
         if prefix in self._constraints:

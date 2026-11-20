@@ -235,18 +235,13 @@ def frame_record(flat: dict, schema: dict) -> bytes:
         "trigger_count",
     ):
         setattr(m, key, flat[key])
-    for i in range(pools["constraints"]):
-        if not flat[f"c{i}.active"]:
-            continue
-        s = m.constraints.add()
-        for key in CONSTRAINT_KEYS[1:]:
-            setattr(s, key, flat[f"c{i}.{key}"])
-    for i in range(pools["monitors"]):
-        if not flat[f"m{i}.active"]:
-            continue
-        s = m.monitors.add()
-        for key in MONITOR_KEYS[1:]:
-            setattr(s, key, flat[f"m{i}.{key}"])
+    for prefix, keys, category in (
+        ("c", CONSTRAINT_KEYS, "constraints"),
+        ("m", MONITOR_KEYS, "monitors"),
+    ):
+        for i in range(pools[category]):
+            if flat[f"{prefix}{i}.active"]:
+                getattr(m, category).add(**{key: flat[f"{prefix}{i}.{key}"] for key in keys[1:]})
     for i in range(pools["quantities"]):
         if flat[f"q{i}"]:
             m.quantity_slots.append(i)
@@ -256,20 +251,18 @@ def frame_record(flat: dict, schema: dict) -> bytes:
         s.seq = flat.get(f"device{i}.seq", 0)
         s.success = bool(flat.get(f"device{i}.success", 0))
     for i in range(min(flat["trigger_count"], pools["triggers"])):
-        s = m.triggers.add()
-        for key in TRIGGER_KEYS:
-            setattr(s, key, flat[f"tr{i}.{key}"])
+        m.triggers.add(**{key: flat[f"tr{i}.{key}"] for key in TRIGGER_KEYS})
     for prefix, names, category in (
         ("pose", POSE_NAMES, "poses"),
         ("twist", TWIST_NAMES, "twists"),
         ("wrench", WRENCH_NAMES, "wrenches"),
     ):
         for i in range(pools.get(category, 0)):
-            s = getattr(m, category).add()
-            if not flat.get(f"{prefix}{i}.active", 1):
-                continue
-            for name in names:
-                setattr(s, name, flat[f"{prefix}{i}.{name}"])
+            # an inactive slot keeps its place, empty
+            active = flat.get(f"{prefix}{i}.active", 1)
+            getattr(m, category).add(
+                **({name: flat[f"{prefix}{i}.{name}"] for name in names} if active else {})
+            )
     return rec.SerializeToString()
 
 

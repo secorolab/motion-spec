@@ -82,6 +82,27 @@ class ControlChannel:
             return None
         return self.write(STEPS_OFF, "<q", max(0, pending) + max(1, int(ticks)))
 
+    def command(self, action: str, value: float | None = None) -> None:
+        """Write one of `ACTIONS`, as `control_run` takes it, to the block.
+
+        Raises:
+            ValueError: `speed` has no VALUE.
+        """
+        if action == "pause":
+            self.set_pause(True)
+        elif action == "resume":
+            self.set_pause(False)
+        elif action == "step":
+            self.set_pause(True)
+            self.request_steps(int(value or 1))
+        elif action == "speed":
+            if value is None:
+                raise ValueError(f"'speed' needs a factor, {SPEED_MIN} to {SPEED_MAX}")
+            self.set_speed(value)
+        else:
+            # re-publish the current state to ask the loop for an ack
+            self.set_pause(bool(self.paused))
+
     @property
     def seq(self) -> int | None:
         return self.read(SEQ_OFF, "<Q")
@@ -143,20 +164,7 @@ def control_run(run_dir: Path, action: str, value: float | None = None) -> dict:
         raise ValueError(f"unknown control action '{action}' -- use one of {', '.join(ACTIONS)}")
     channel = run_channel(run_dir)
     try:
-        if action == "pause":
-            channel.set_pause(True)
-        elif action == "resume":
-            channel.set_pause(False)
-        elif action == "step":
-            channel.set_pause(True)
-            channel.request_steps(int(value or 1))
-        elif action == "speed":
-            if value is None:
-                raise ValueError(f"'speed' needs a factor, {SPEED_MIN} to {SPEED_MAX}")
-            channel.set_speed(value)
-        else:
-            # re-publish the current state to ask the loop for an ack
-            channel.set_pause(bool(channel.paused))
+        channel.command(action, value)
         return {
             "available": channel.open() is not None,
             "alive": acknowledged(channel),

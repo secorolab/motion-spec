@@ -44,6 +44,36 @@ def unplaced_frames(tree: dict) -> list[dict]:
     return tree["unplaced_frames"]
 
 
+def uniform_components(distribution) -> list[dict]:
+    """The lower and upper bound of each component a uniform distribution draws."""
+    lower = distribution.get_attr(URI_DISTRIB_PRED_LOWER)
+    upper = distribution.get_attr(URI_DISTRIB_PRED_UPPER)
+    return [{"a": float(a), "b": float(b)} for a, b in zip(lower, upper)]
+
+
+def normal_components(distribution) -> list[dict]:
+    """The mean and standard deviation of each component a normal distribution draws."""
+    mean = distribution.get_attr(URI_DISTRIB_PRED_MEAN)
+    if len(mean) == 1:
+        deviations = [float(distribution.get_attr(URI_DISTRIB_PRED_STD))]
+    else:
+        covariance = np.asarray(distribution.get_attr(URI_DISTRIB_PRED_COV), dtype=float)
+        if np.any(covariance != np.diag(np.diag(covariance))):
+            raise ConstraintViolation(
+                "sampling",
+                f"'{distribution.id}' has a non-diagonal covariance; correlated components "
+                "are not drawn",
+            )
+        deviations = [math.sqrt(v) for v in np.diag(covariance)]
+    return [{"a": float(m), "b": s} for m, s in zip(mean, deviations)]
+
+
+DRAWN_DISTRIBUTIONS = {
+    URI_DISTRIB_TYPE_UNIFORM: ("uniform_real", uniform_components),
+    URI_DISTRIB_TYPE_NORMAL: ("normal", normal_components),
+}
+
+
 def sampled_quantities(
     model, trees: list[dict], placements: Collection[str] = frozenset()
 ) -> list[SampledQuantity]:
@@ -69,30 +99,12 @@ def sampled_quantities(
     result = []
     for node in nodes:
         distribution = distrib_from_sampled_quantity(node, model.graph)
-        if distribution.distrib_type == URI_DISTRIB_TYPE_UNIFORM:
-            lower = distribution.get_attr(URI_DISTRIB_PRED_LOWER)
-            upper = distribution.get_attr(URI_DISTRIB_PRED_UPPER)
-            dist = "uniform_real"
-            components = [{"a": float(a), "b": float(b)} for a, b in zip(lower, upper)]
-        elif distribution.distrib_type == URI_DISTRIB_TYPE_NORMAL:
-            mean = distribution.get_attr(URI_DISTRIB_PRED_MEAN)
-            if len(mean) == 1:
-                deviations = [float(distribution.get_attr(URI_DISTRIB_PRED_STD))]
-            else:
-                covariance = np.asarray(distribution.get_attr(URI_DISTRIB_PRED_COV), dtype=float)
-                if np.any(covariance != np.diag(np.diag(covariance))):
-                    raise ConstraintViolation(
-                        "sampling",
-                        f"'{distribution.id}' has a non-diagonal covariance; correlated components "
-                        "are not drawn",
-                    )
-                deviations = [math.sqrt(v) for v in np.diag(covariance)]
-            dist = "normal"
-            components = [{"a": float(m), "b": s} for m, s in zip(mean, deviations)]
-        else:
+        if distribution.distrib_type not in DRAWN_DISTRIBUTIONS:
             raise ConstraintViolation(
                 "sampling", f"'{distribution.id}': only uniform and normal distributions are drawn"
             )
+        dist, drawn_components = DRAWN_DISTRIBUTIONS[distribution.distrib_type]
+        components = drawn_components(distribution)
         unit = model.graph.value(node, QUDT_SCHEMA.unit)
         scale = seconds(1.0, unit) if is_duration(model, node) else si(1.0, unit)
         tree, frame = frames.get(str(node), (None, None))

@@ -32,10 +32,10 @@ from motion_spec.rdf_parser import constraint_handler, quantities, ros_messages
 from motion_spec.rdf_parser.data_access import PORT_WRITERS, bound_id
 from motion_spec.rdf_parser.views import views_by_subobject
 
-_SPATIAL_SLOT_KINDS = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
+SPATIAL_POOL_BY_TYPE = {"Pose": "poses", "VelocityTwist": "twists", "Wrench": "wrenches"}
 
 
-_RUNTIME_ROW_FIELDS = {
+RUNTIME_ROW_FIELDS = {
     "controller_internal_state": ("controller", "role", "state"),
     "control_parameter": ("value", "owner", "role", "parameter"),
     "joint_space": ("quantity_kind", "unit", "runtime", "role", "channel", "joint", "writer"),
@@ -44,7 +44,7 @@ _RUNTIME_ROW_FIELDS = {
 
 
 def runtime_row(member) -> dict:
-    fields = _RUNTIME_ROW_FIELDS.get(member.role if isinstance(member, DataValue) else None, ())
+    fields = RUNTIME_ROW_FIELDS.get(member.role if isinstance(member, DataValue) else None, ())
     return {
         "id": member.id,
         "type": member.type,
@@ -52,7 +52,7 @@ def runtime_row(member) -> dict:
     }
 
 
-def member_desc(member: str):
+def member_descriptor(member: str):
     return lambda quantity_id, axis: {
         "kind": "member",
         "id": quantity_id,
@@ -62,32 +62,35 @@ def member_desc(member: str):
 
 
 # key order inside each descriptor is load-bearing for the frame layout
-_POSE_AXIS_SAMPLES = (
+POSE_AXIS_DESCRIPTORS = (
     ("position", lambda quantity_id, axis: {"kind": "pose_pos", "id": quantity_id, "axis": axis}),
     (
         "orientation",
         lambda quantity_id, axis: {"kind": "pose_orient", "id": quantity_id, "axis": axis},
     ),
 )
-_TWIST_AXIS_SAMPLES = (("angular", member_desc("rot")), ("linear", member_desc("vel")))
-_VECTOR_AXIS_SAMPLES = (
+TWIST_AXIS_DESCRIPTORS = (
+    ("angular", member_descriptor("rot")),
+    ("linear", member_descriptor("vel")),
+)
+VECTOR_AXIS_DESCRIPTORS = (
     ("", lambda quantity_id, axis: {"kind": "vec", "id": quantity_id, "axis": axis}),
 )
-_AXIS_SAMPLES = {
-    "Position": _VECTOR_AXIS_SAMPLES,
-    "Direction": _VECTOR_AXIS_SAMPLES,
-    "FreeVector": _VECTOR_AXIS_SAMPLES,
+AXIS_DESCRIPTORS_BY_TYPE = {
+    "Position": VECTOR_AXIS_DESCRIPTORS,
+    "Direction": VECTOR_AXIS_DESCRIPTORS,
+    "FreeVector": VECTOR_AXIS_DESCRIPTORS,
     "Orientation": (
         ("", lambda quantity_id, axis: {"kind": "orientation", "id": quantity_id, "axis": axis}),
     ),
-    "Pose": _POSE_AXIS_SAMPLES,
-    "SetpointQuantity": _POSE_AXIS_SAMPLES,
-    "VelocityTwist": _TWIST_AXIS_SAMPLES,
-    "AccelerationTwist": _TWIST_AXIS_SAMPLES,
-    "PoseDifference": _TWIST_AXIS_SAMPLES,
-    "Wrench": (("torque", member_desc("torque")), ("force", member_desc("force"))),
+    "Pose": POSE_AXIS_DESCRIPTORS,
+    "SetpointQuantity": POSE_AXIS_DESCRIPTORS,
+    "VelocityTwist": TWIST_AXIS_DESCRIPTORS,
+    "AccelerationTwist": TWIST_AXIS_DESCRIPTORS,
+    "PoseDifference": TWIST_AXIS_DESCRIPTORS,
+    "Wrench": (("torque", member_descriptor("torque")), ("force", member_descriptor("force"))),
 }
-_COMPOSITE_SUPEROBJECTS = {
+COMPOSITE_SUPEROBJECTS = {
     "Pose",
     "Wrench",
     "VelocityTwist",
@@ -117,7 +120,7 @@ def scalar_descriptor(quantity: dict, quantity_id: str, data_ids, spatial_ids, i
         raise ConstraintViolation(
             "telemetry", f"quantity sampling: '{quantity_id}' belongs to incompatible MAP views"
         )
-    if next(iter(types)) in _COMPOSITE_SUPEROBJECTS:
+    if next(iter(types)) in COMPOSITE_SUPEROBJECTS:
         return {"kind": "access", "ref": quantity_id}
 
     return {"kind": "data", "id": quantity_id}
@@ -151,17 +154,17 @@ def ros_publishers(motions, standing=()) -> list:
     for ros in ros_publications(motions):
         # writers sharing a topic share the publisher member
         ros.pub_id = publisher_member(
-            by_channel, {key: getattr(ros, key) for key in _PUBLISHER_KEYS}
+            by_channel, {key: getattr(ros, key) for key in PUBLISHER_KEYS}
         )
     for publish in standing:
         publish["pub_id"] = publisher_member(
-            by_channel, {key: publish.get(key) for key in _PUBLISHER_KEYS}
+            by_channel, {key: publish.get(key) for key in PUBLISHER_KEYS}
         )
 
     return list(by_channel.values())
 
 
-_PUBLISHER_KEYS = (
+PUBLISHER_KEYS = (
     "pub_id",
     "channel",
     "cpp_type",
@@ -192,87 +195,13 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
         rate_node = graph.value(node, SENSORS["update-rate"])
         if rate_node is None or CSTR_HDL["Monitor"] in get_node_types(graph, node):
             continue
-        reported = [
-            row
-            for row in graph.objects(node, RDFS.member)
-            if graph.value(row, NS_MM_ROS["field-path"]) is None
-        ]
-        if not reported:
-            raise ConstraintViolation(
-                "communication",
-                f"'{model.id(node)}' publishes at a rate but names no quantity to report",
-            )
-        records = []
-        for row in reported:
-            value_node = graph.value(row, RDF.value)
-            record = by_id.get(model.id(value_node))
-            if record is None:
-                raise ConstraintViolation(
-                    "communication",
-                    f"'{model.id(node)}' publishes '{model.id(value_node)}', which is no data "
-                    "structure the run computes",
-                )
-            records.append((row, record))
-        kinds = {record.type for _row, record in records}
-        if len(kinds) > 1:
-            raise ConstraintViolation(
-                "communication",
-                f"'{model.id(node)}' reports {', '.join(kinds)} on one message; a "
-                "message carries one kind of quantity",
-            )
-        rate_hz = quantities.quantity(model, rate_node).value
-        if not rate_hz or rate_hz <= 0.0:
-            raise ConstraintViolation(
-                "communication",
-                f"'{model.id(node)}' publishes at {rate_hz} Hz; a rate says how often, so it is "
-                "positive",
-            )
+        records = standing_records(model, node, by_id)
+        rate_hz = ros_messages.publish_rate(model, rate_node, f"'{model.id(node)}'")
         pub_id = f"{model.id(node)}_pub".replace("-", "_")
         type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
         shape = ros_messages.standing_shape(type_name, records[0][1].type)
         entry_shape = shape["entry"]
-        if entry_shape is None and len(records) > 1:
-            raise ConstraintViolation(
-                "communication",
-                f"'{model.id(node)}' reports {len(records)} quantities on '{type_name}', which "
-                "carries one; a message reporting many holds an array of them",
-            )
-        entries = []
-        for index, (member, record) in enumerate(records):
-            entry = {
-                "pub_id": pub_id,
-                "value_id": record.id,
-                "value_type": record.type,
-                "carrier": shape["carrier"],
-            }
-            if entry_shape is None:
-                entry["payload_path"] = shape["payload_path"]
-                entries.append(entry)
-                continue
-            at = f"{entry_shape['path']}[{index}]."
-            stated_in = entry_shape["frame_path"]
-            frame_id = stated_against(record, segment_by_iri, pub_id) if stated_in else None
-            if shape["carrier"] == "Transform":
-                subject_id = segment_of(segment_by_iri, record.of.uri, pub_id)
-            else:
-                subject = graph.value(member, SOSA.hasFeatureOfInterest)
-                if subject is None:
-                    raise ConstraintViolation(
-                        "communication",
-                        f"'{record.id}' is one entry of an array the message carries, but the "
-                        "publish names no entity it reports it of, so the entry could not say "
-                        "what it is an entry for",
-                    )
-                subject_id = str(subject)
-            entry.update(
-                payload_path=f"{at}{entry_shape['payload_path']}",
-                frame_path=f"{at}{stated_in}" if stated_in else None,
-                frame_id=frame_id,
-                id_path=f"{at}{entry_shape['id_path']}",
-                id_value=subject_id,
-                auto_time=[f"{at}{path}" for path in entry_shape["auto_time"]],
-            )
-            entries.append(entry)
+        entries = standing_payloads(model, node, shape, records, pub_id, segment_by_iri)
         frames = (
             {
                 frame
@@ -282,32 +211,16 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
             if shape["frame_path"]
             else set()
         )
-        fields = []
-        for member in graph.objects(node, RDFS.member):
-            authored = graph.value(member, NS_MM_ROS["field-path"])
-            if authored is None:
-                continue
-            path = str(authored)
-            if path not in shape["leaves"]:
-                raise ConstraintViolation(
-                    "communication",
-                    f"'{path}' is not a payload field of '{shape['type_name']}'; it offers "
-                    f"{', '.join(shape['leaves']) or 'none'}",
-                )
-            fields.append({"path": path, "ref": model.id(graph.value(member, RDF.value))})
         publish = {
             "pub_id": pub_id,
             "channel": str(graph.value(node, NS_MM_ROS["channel-name"]) or ""),
             # at or above the loop rate, every cycle
             "divider": max(1, round(1.0 / (rate_hz * period_s))),
-            "entries": [
-                {key: value for key, value in entry.items() if value is not None and value != []}
-                for entry in entries
-            ],
+            "entries": entries,
             # a frame only when all entries agree on one
             "frame_id": frames.pop() if len(frames) == 1 else None,
             "resize": [{"path": entry_shape["path"], "size": len(entries)}] if entry_shape else [],
-            "fields": fields,
+            "fields": standing_fields(model, node, shape),
             "pkg": shape["package"],
             **{
                 key: shape[key]
@@ -326,6 +239,130 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
         )
 
     return standing
+
+
+def standing_records(model, node, by_id: dict) -> list[tuple]:
+    """The data structures a standing publish reports, each with the row naming it.
+
+    Raises:
+        ConstraintViolation: the publish names no quantity, names one the run does not compute,
+            or reports quantities of two kinds.
+    """
+    graph = model.graph
+    reported = [
+        row
+        for row in graph.objects(node, RDFS.member)
+        if graph.value(row, NS_MM_ROS["field-path"]) is None
+    ]
+    if not reported:
+        raise ConstraintViolation(
+            "communication",
+            f"'{model.id(node)}' publishes at a rate but names no quantity to report",
+        )
+    records = []
+    for row in reported:
+        value_node = graph.value(row, RDF.value)
+        record = by_id.get(model.id(value_node))
+        if record is None:
+            raise ConstraintViolation(
+                "communication",
+                f"'{model.id(node)}' publishes '{model.id(value_node)}', which is no data "
+                "structure the run computes",
+            )
+        records.append((row, record))
+    kinds = {record.type for _row, record in records}
+    if len(kinds) > 1:
+        raise ConstraintViolation(
+            "communication",
+            f"'{model.id(node)}' reports {', '.join(kinds)} on one message; a "
+            "message carries one kind of quantity",
+        )
+
+    return records
+
+
+def standing_payloads(
+    model, node, shape: dict, records: list[tuple], pub_id: str, segment_by_iri: dict
+) -> list[dict]:
+    """What a standing publish writes per reported quantity, its unset keys dropped: the payload
+    of a message carrying one, or one array entry each of a message carrying many.
+
+    Raises:
+        ConstraintViolation: many quantities go on a message carrying one, or an array entry
+            names no entity it reports its quantity of.
+    """
+    entry_shape = shape["entry"]
+    if entry_shape is None and len(records) > 1:
+        raise ConstraintViolation(
+            "communication",
+            f"'{model.id(node)}' reports {len(records)} quantities on '{shape['type_name']}', "
+            "which carries one; a message reporting many holds an array of them",
+        )
+    entries = []
+    for index, (member, record) in enumerate(records):
+        entry = {
+            "pub_id": pub_id,
+            "value_id": record.id,
+            "value_type": record.type,
+            "carrier": shape["carrier"],
+        }
+        if entry_shape is None:
+            entry["payload_path"] = shape["payload_path"]
+            entries.append(entry)
+            continue
+        at = f"{entry_shape['path']}[{index}]."
+        stated_in = entry_shape["frame_path"]
+        frame_id = stated_against(record, segment_by_iri, pub_id) if stated_in else None
+        if shape["carrier"] == "Transform":
+            subject_id = segment_of(segment_by_iri, record.of.uri, pub_id)
+        else:
+            subject = model.graph.value(member, SOSA.hasFeatureOfInterest)
+            if subject is None:
+                raise ConstraintViolation(
+                    "communication",
+                    f"'{record.id}' is one entry of an array the message carries, but the "
+                    "publish names no entity it reports it of, so the entry could not say "
+                    "what it is an entry for",
+                )
+            subject_id = str(subject)
+        entry.update(
+            payload_path=f"{at}{entry_shape['payload_path']}",
+            frame_path=f"{at}{stated_in}" if stated_in else None,
+            frame_id=frame_id,
+            id_path=f"{at}{entry_shape['id_path']}",
+            id_value=subject_id,
+            auto_time=[f"{at}{path}" for path in entry_shape["auto_time"]],
+        )
+        entries.append(entry)
+
+    return [
+        {key: value for key, value in entry.items() if value is not None and value != []}
+        for entry in entries
+    ]
+
+
+def standing_fields(model, node, shape: dict) -> list[dict]:
+    """The message fields a standing publish sets from model values, each by its path.
+
+    Raises:
+        ConstraintViolation: a row names a field the message does not offer.
+    """
+    graph = model.graph
+    fields = []
+    for member in graph.objects(node, RDFS.member):
+        authored = graph.value(member, NS_MM_ROS["field-path"])
+        if authored is None:
+            continue
+        path = str(authored)
+        if path not in shape["leaves"]:
+            raise ConstraintViolation(
+                "communication",
+                f"'{path}' is not a payload field of '{shape['type_name']}'; it offers "
+                f"{', '.join(shape['leaves']) or 'none'}",
+            )
+        fields.append({"path": path, "ref": model.id(graph.value(member, RDF.value))})
+
+    return fields
 
 
 def stated_against(record, segment_by_iri: dict, where: str) -> str | None:
@@ -609,6 +646,52 @@ def action_server(model, fsm) -> dict | None:
     }
 
 
+def ros_interface(
+    publishers: list,
+    server: dict | None,
+    joint_states: dict | None,
+    clock: dict | None,
+    tf: dict | None,
+    action_clients: list,
+    subscriptions: list,
+    standing_publishes: list,
+) -> dict | None:
+    """The ROS node the program runs, with the message packages it links; None when the model
+    neither publishes, serves, sends goals nor subscribes, so the program links no rclcpp.
+    """
+    sections = {
+        "action_server": server,
+        "joint_states": joint_states,
+        "clock": clock,
+        "tf": tf,
+        "action_clients": action_clients,
+        "subscriptions": subscriptions,
+        "standing": standing_publishes,
+    }
+    if not publishers and not any(sections.values()):
+        return None
+    ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
+    if any(publisher["auto_context_id"] for publisher in publishers) or server is not None:
+        ros["scenario_context_id"] = True
+    # absent rather than empty
+    ros.update({key: section for key, section in sections.items() if section})
+    packages = {publisher["pkg"] for publisher in publishers}
+    if server is not None:
+        packages.add(server["pkg"])
+    if joint_states is not None:
+        packages.add("sensor_msgs")
+    if clock is not None:
+        packages.add("rosgraph_msgs")
+    if tf is not None:
+        packages.update({"tf2_msgs", "geometry_msgs"})
+    packages.update(client["pkg"] for client in action_clients)
+    packages.update(sub["pkg"] for sub in subscriptions)
+    packages.update(publish["pkg"] for publish in standing_publishes)
+    ros["packages"] = list(packages)
+
+    return ros
+
+
 def ros_publications(motions):
     """Every monitor publish in the model, in motion order."""
     return [
@@ -630,6 +713,191 @@ def annotate_publish_rates(motions, control_period_ns: int) -> None:
     for publication in ros_publications(motions):
         if publication.rate_hz:
             publication.divider = max(1, round(1.0 / (publication.rate_hz * period_s)))
+
+
+def controller_row(controller, motion_id: str, uri_by_id: dict) -> dict:
+    """The telemetry row of one controller of a motion, its unset keys dropped."""
+    row = {
+        "id": controller.id,
+        "uri": uri_by_id.get(controller.id),
+        "motion": motion_id,
+        "type": controller.type,
+        "constraint": controller.constraint,
+        "constraint_uri": controller.constraint_uri,
+        **{
+            source: getattr(controller, source)
+            for _name, source, _required in constraint_handler.CONTROLLER_GAIN_FIELDS.get(
+                controller.type, ()
+            )
+        },
+        "error_signal": bound_id(controller.error_signal),
+        "tolerance_signal": controller.tolerance_id or None,
+        "reference_signal": (
+            bound_id(controller.reference_signal)
+            if isinstance(controller, FeedForwardController)
+            else None
+        ),
+        "measured_derivative": (
+            bound_id(controller.measured_derivative)
+            if isinstance(controller, PIDController)
+            else None
+        ),
+        "output_signal": bound_id(controller.control_signal),
+        "measured_signal": controller.measured_signal,
+        "setpoint_signal": controller.setpoint_signal,
+    }
+
+    return {key: value for key, value in row.items() if value is not None and value != []}
+
+
+def monitor_row(monitor, phase: str, motion_id: str, uri_by_id: dict, errors: dict) -> dict:
+    """The telemetry row of one monitor of a motion's phase, its unset keys dropped."""
+    edge = monitor if isinstance(monitor, EdgeMonitor) else None
+    row = {
+        "id": monitor.id,
+        "uri": uri_by_id.get(monitor.id),
+        "motion": motion_id,
+        "phase": phase,
+        "type": monitor.monitor_type,
+        "trigger": "edge" if monitor.is_edge_triggered else "level",
+        "event": edge.event if edge else None,
+        "event_uri": edge.event_uri if edge else None,
+        "event_name": edge.event_name if edge else None,
+        "flag": monitor.flag if isinstance(monitor, LevelMonitor) else None,
+        "error_signal": bound_id(monitor.error),
+        "tolerance_signal": bound_id(monitor.tolerance),
+        "constraint_ids": monitor.constraint_ids,
+        "constraint_uris": monitor.constraint_uris,
+        "watched": [
+            {
+                key: value
+                for key, value in {
+                    "id": member,
+                    "uri": uri,
+                    "error_signal": errors.get(uri),
+                    "tolerance_signal": band or None,
+                }.items()
+                if value is not None and value != []
+            }
+            for member, uri, band in zip(
+                monitor.group_constraint_ids,
+                monitor.group_constraint_uris,
+                monitor.group_constraint_tolerances,
+                strict=True,
+            )
+        ],
+        "fallback_motion": edge.fallback_motion if edge else None,
+        "debounce_signal": edge.debounce_id if edge else None,
+    }
+
+    return {key: value for key, value in row.items() if value is not None and value != []}
+
+
+def quantity_rows(model, computation, algorithm_data, uri_by_id: dict) -> list[dict]:
+    """The telemetry rows of the quantities: each data structure the computation reads, and each
+    runtime quantity, in algorithm-data order.
+    """
+    snapshot_ids = quantities.snapshot_target_ids(model)
+    structure_ids = {item.id for item in computation.data_structures}
+    rows = []
+    for item in algorithm_data:
+        if item.id in structure_ids:
+            row = {
+                "id": item.id,
+                "uri": uri_by_id.get(item.id),
+                "type": item.type,
+                "reference_value": item.reference_value if isinstance(item, Quantity) else None,
+                "value": item.value if isinstance(item, (Quantity, DataValue)) else None,
+                "authored": isinstance(
+                    item,
+                    (Quantity, FreeVector, SetpointQuantity, Orientation, Pose, SpatialCoordinate),
+                )
+                and item.provenance.authored,
+                "snapshot": item.id in snapshot_ids,
+            }
+            rows.append(
+                {key: value for key, value in row.items() if value is not None and value != []}
+            )
+        elif isinstance(item, DataValue) and item.role and item.type == "Quantity":
+            rows.append({**runtime_row(item), "uri": uri_by_id.get(item.id)})
+
+    return rows
+
+
+def quantity_parts(rows, computation, algorithm_data) -> list[tuple]:
+    """What the frame samples of the quantity rows, as `(source row, component, sample
+    descriptor)`: one part per axis of a spatial quantity, one per sampled scalar.
+    """
+    data_ids = {item.id for item in algorithm_data if item.id}
+    spatial_ids = {
+        item.id for item in algorithm_data if item.type in SPATIAL_POOL_BY_TYPE and item.id
+    }
+    indexed_views = views_by_subobject(computation.views)
+    parts = []
+    for quantity in rows:
+        quantity_id = quantity.get("id")
+        if not quantity_id or quantity_id in spatial_ids:
+            continue
+        if quantity.get("type") != "Quantity":
+            if quantity_id in data_ids:
+                parts.extend(
+                    (
+                        quantity,
+                        f"{prefix}.{name}" if prefix else name,
+                        make_descriptor(quantity_id, index),
+                    )
+                    for prefix, make_descriptor in AXIS_DESCRIPTORS_BY_TYPE.get(
+                        quantity.get("type"), ()
+                    )
+                    for index, name in enumerate("xyz")
+                )
+            continue
+        descriptor = scalar_descriptor(quantity, quantity_id, data_ids, spatial_ids, indexed_views)
+        if descriptor is not None:
+            parts.append((quantity, "", descriptor))
+
+    return parts
+
+
+SAMPLE_KIND_BY_RUNTIME_TYPE = {"Bool": "bool", "IntCounter": "int"}
+
+
+def frame_samples(sampled_parts: list[tuple], analysis, data_access) -> tuple[list, list]:
+    """The sampled parts, in frame order, split into the samples the frame log carries per tick
+    and the constants the header records once.
+
+    Raises:
+        RuntimeError: a part samples a value the analysis has no answer for.
+    """
+    logged, recorded = [], []
+    for source, component, descriptor in sampled_parts:
+        sample = {
+            **{key: value for key, value in source.items() if key != "index"},
+            "id": source["id"] if not component else f"{source['id']}.{component}",
+            "source_id": source["id"],
+            "component": component or None,
+            "type": "Scalar",
+            "source_type": source.get("type"),
+            "sample_descriptor": descriptor,
+        }
+        found = analysis.get(sample["source_id"])
+        if found is None:
+            raise RuntimeError(f"telemetry: '{sample['id']}' samples a value with no analysis")
+        if found["storage"] == "log":
+            logged.append({**sample, "cadence": found["cadence"]})
+        # a draw is recorded by the run, not the header
+        elif data_access[sample["source_id"]]["write"]["kind"] != "sampled":
+            constant = {
+                "id": sample["id"],
+                "source_id": sample["source_id"],
+                "uri": sample.get("uri"),
+                "sample_descriptor": sample["sample_descriptor"],
+            }
+            recorded.append(
+                {key: value for key, value in constant.items() if value is not None and value != []}
+            )
+
+    return logged, recorded
 
 
 def build_telemetry(
@@ -656,7 +924,7 @@ def build_telemetry(
         if function.get("type") == "ErrorEvaluator" and function.get("constraint_uri")
     }
     # unset keys are dropped: absent, not null
-    motion_rows, controller_rows, monitor_rows = [], [], []
+    motion_rows = []
     for motion in motions:
         motion_row = {
             "id": motion.id,
@@ -676,193 +944,44 @@ def build_telemetry(
         motion_rows.append(
             {key: value for key, value in motion_row.items() if value is not None and value != []}
         )
-        for controller in motion.controllers:
-            controller_row = {
-                "id": controller.id,
-                "uri": uri_by_id.get(controller.id),
-                "motion": motion.id,
-                "type": controller.type,
-                "constraint": controller.constraint,
-                "constraint_uri": controller.constraint_uri,
-                **{
-                    source: getattr(controller, source)
-                    for _name, source, _required in constraint_handler.CONTROLLER_GAIN_FIELDS.get(
-                        controller.type, ()
-                    )
-                },
-                "error_signal": bound_id(controller.error_signal),
-                "tolerance_signal": controller.tolerance_id or None,
-                "reference_signal": (
-                    bound_id(controller.reference_signal)
-                    if isinstance(controller, FeedForwardController)
-                    else None
-                ),
-                "measured_derivative": (
-                    bound_id(controller.measured_derivative)
-                    if isinstance(controller, PIDController)
-                    else None
-                ),
-                "output_signal": bound_id(controller.control_signal),
-                "measured_signal": controller.measured_signal,
-                "setpoint_signal": controller.setpoint_signal,
-            }
-            controller_rows.append(
-                {
-                    key: value
-                    for key, value in controller_row.items()
-                    if value is not None and value != []
-                }
-            )
+    controller_rows = [
+        controller_row(controller, motion.id, uri_by_id)
+        for motion in motions
+        for controller in motion.controllers
+    ]
+    monitor_rows = [
+        monitor_row(monitor, phase, motion.id, uri_by_id, errors)
+        for motion in motions
         for phase, monitors in (
             ("when", motion.when_monitors),
             ("while", motion.while_monitors),
             ("until", motion.until_monitors),
-        ):
-            for monitor in monitors:
-                edge = monitor if isinstance(monitor, EdgeMonitor) else None
-                monitor_row = {
-                    "id": monitor.id,
-                    "uri": uri_by_id.get(monitor.id),
-                    "motion": motion.id,
-                    "phase": phase,
-                    "type": monitor.monitor_type,
-                    "trigger": "edge" if monitor.is_edge_triggered else "level",
-                    "event": edge.event if edge else None,
-                    "event_uri": edge.event_uri if edge else None,
-                    "event_name": edge.event_name if edge else None,
-                    "flag": monitor.flag if isinstance(monitor, LevelMonitor) else None,
-                    "error_signal": bound_id(monitor.error),
-                    "tolerance_signal": bound_id(monitor.tolerance),
-                    "constraint_ids": monitor.constraint_ids,
-                    "constraint_uris": monitor.constraint_uris,
-                    "watched": [
-                        {
-                            key: value
-                            for key, value in {
-                                "id": member,
-                                "uri": uri,
-                                "error_signal": errors.get(uri),
-                                "tolerance_signal": band or None,
-                            }.items()
-                            if value is not None and value != []
-                        }
-                        for member, uri, band in zip(
-                            monitor.group_constraint_ids,
-                            monitor.group_constraint_uris,
-                            monitor.group_constraint_tolerances,
-                            strict=True,
-                        )
-                    ],
-                    "fallback_motion": edge.fallback_motion if edge else None,
-                    "debounce_signal": edge.debounce_id if edge else None,
-                }
-                monitor_rows.append(
-                    {
-                        key: value
-                        for key, value in monitor_row.items()
-                        if value is not None and value != []
-                    }
-                )
-    snapshot_ids = quantities.snapshot_target_ids(model)
-    structure_ids = {item.id for item in computation.data_structures}
-    quantity_rows = []
-    for item in algorithm_data:
-        if item.id in structure_ids:
-            quantity_row = {
-                "id": item.id,
-                "uri": uri_by_id.get(item.id),
-                "type": item.type,
-                "reference_value": item.reference_value if isinstance(item, Quantity) else None,
-                "value": item.value if isinstance(item, (Quantity, DataValue)) else None,
-                "authored": isinstance(
-                    item,
-                    (Quantity, FreeVector, SetpointQuantity, Orientation, Pose, SpatialCoordinate),
-                )
-                and item.provenance.authored,
-                "snapshot": item.id in snapshot_ids,
-            }
-            quantity_rows.append(
-                {
-                    key: value
-                    for key, value in quantity_row.items()
-                    if value is not None and value != []
-                }
-            )
-        elif isinstance(item, DataValue) and item.role and item.type == "Quantity":
-            quantity_rows.append({**runtime_row(item), "uri": uri_by_id.get(item.id)})
-
+        )
+        for monitor in monitors
+    ]
     telemetry = {
         "contract_version": 2,
         "control_period_ns": control_period_ns,
         "motions": motion_rows,
         "controllers": unique_by_id(controller_rows),
         "monitors": unique_by_id(monitor_rows),
-        "quantities": unique_by_id(quantity_rows),
+        "quantities": unique_by_id(quantity_rows(model, computation, algorithm_data, uri_by_id)),
     }
 
-    data_ids = {item.id for item in algorithm_data if item.id}
-    spatial_ids = {
-        item.id for item in algorithm_data if item.type in _SPATIAL_SLOT_KINDS and item.id
-    }
-    indexed_views = views_by_subobject(computation.views)
-    sampled_parts = []  # (source row, component, sample descriptor)
-    for quantity in telemetry["quantities"]:
-        quantity_id = quantity.get("id")
-        if not quantity_id or quantity_id in spatial_ids:
-            continue
-        if quantity.get("type") != "Quantity":
-            if quantity_id not in data_ids:
-                continue
-            for prefix, make_desc in _AXIS_SAMPLES.get(quantity.get("type"), ()):
-                for index, name in enumerate("xyz"):
-                    component = f"{prefix}.{name}" if prefix else name
-                    sampled_parts.append((quantity, component, make_desc(quantity_id, index)))
-            continue
-        desc = scalar_descriptor(quantity, quantity_id, data_ids, spatial_ids, indexed_views)
-        if desc is not None:
-            sampled_parts.append((quantity, "", desc))
-
-    sampled = {source.get("id") for source, _component, _desc in sampled_parts}
+    sampled_parts = quantity_parts(telemetry["quantities"], computation, algorithm_data)
+    sampled = {source.get("id") for source, _component, _descriptor in sampled_parts}
     for item in algorithm_data:
         if not item.id or item.id in sampled:
             continue
-        if item.type == "Bool":
-            sampled_parts.append((runtime_row(item), "", {"kind": "bool", "id": item.id}))
-        elif item.type == "IntCounter":
-            sampled_parts.append((runtime_row(item), "", {"kind": "int", "id": item.id}))
-        elif item.id in PORT_WRITERS:
-            sampled_parts.append((runtime_row(item), "", {"kind": "data", "id": item.id}))
+        if item.type not in SAMPLE_KIND_BY_RUNTIME_TYPE and item.id not in PORT_WRITERS:
+            continue
+        kind = SAMPLE_KIND_BY_RUNTIME_TYPE.get(item.type, "data")
+        sampled_parts.append((runtime_row(item), "", {"kind": kind, "id": item.id}))
 
-    logged, recorded = [], []
-    for source, component, desc in sampled_parts:
-        sample = {
-            **{key: value for key, value in source.items() if key != "index"},
-            "id": source["id"] if not component else f"{source['id']}.{component}",
-            "source_id": source["id"],
-            "component": component or None,
-            "type": "Scalar",
-            "source_type": source.get("type"),
-            "sample_desc": desc,
-        }
-        found = analysis.get(sample["source_id"])
-        if found is None:
-            raise RuntimeError(f"telemetry: '{sample['id']}' samples a value with no analysis")
-        if found["storage"] == "log":
-            logged.append({**sample, "cadence": found["cadence"]})
-        # a draw is recorded by the run, not the header
-        elif data_access[sample["source_id"]]["write"]["kind"] != "sampled":
-            constant = {
-                "id": sample["id"],
-                "source_id": sample["source_id"],
-                "uri": sample.get("uri"),
-                "sample_desc": sample["sample_desc"],
-            }
-            recorded.append(
-                {key: value for key, value in constant.items() if value is not None and value != []}
-            )
+    logged, recorded = frame_samples(sampled_parts, analysis, data_access)
     spatial = {"poses": [], "twists": [], "wrenches": []}
     for item in algorithm_data:
-        pool = _SPATIAL_SLOT_KINDS.get(item.type)
+        pool = SPATIAL_POOL_BY_TYPE.get(item.type)
         if item.id and pool is not None and analysis[item.id]["storage"] == "log":
             spatial[pool].append(
                 {

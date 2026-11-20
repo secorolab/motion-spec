@@ -38,23 +38,94 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
     graph = rdflib.Dataset(default_union=True)
     graph.add_graph(create_scenex_model_graph(scenex_metamodel().model_from_file(str(scenex_path))))
     model = Model(graph=graph)
-    poses = []
-    if config:
-        robot_config = tomllib.loads(config.read_text())
-        attach_by_body, _root = agents.fixed_attachments(model)
-        name_object_attachments(model, attach_by_body)
-        for assembly in agents.agent_assemblies(model, attach_by_body):
-            section = robot_config
-            for key in assembly.config_key.split("."):
-                section = section.get(key, {}) if isinstance(section, dict) else {}
-            home = section.get("home") if isinstance(section, dict) else None
-            if home:
-                poses.append(
-                    (assembly.chain_root, assembly.tip, assembly.prefix, [float(v) for v in home])
-                )
+    poses = home_poses(model, config) if config else []
     _setups, trees = agents.robot_setups(model)
-    scene = read_scene(model, trees)
+    spec = scene_spec(read_scene(model, trees))
+    env = mjk.Env.build(spec)
+    try:
+        # kept alive: the env drives a robot only while it lives
+        robots = []
+        for root, tip, prefix, home in poses:
+            robot = chain_robot(env, root, tip, prefix)
+            if robot is None:
+                print(f"  (no chain {root} -> {tip}; home pose not applied)")
+                continue
+            q = home[: robot.n_joints]
+            robot.set_joint_pos(q)
+            robot.set_control_mode(mjk.CtrlMode.POSITION)
+            robot.jnt_pos_cmd = q
+            robots.append(robot)
+        describe(spec, env)
+        if headless:
+            return
+        env.open_viewer(scenex_path.name)
+        while True:
+            env.update()
+            if not env.step():
+                break
+            env.pace()  # step() never sleeps; unpaced, the render thread starves
+    finally:
+        env.close()
 
+
+def describe(spec: mjk.SceneSpec, env: mjk.Env) -> None:
+    """Print what SPEC composed in ENV: timestep, robots and attachments, objects and cameras."""
+    print(f"timestep: {spec.timestep} s, floor at the anchor (z = {spec.floor_z} m)")
+    for robot_spec in spec.robots:
+        print(
+            f"robot: {robot_spec.path} @ "
+            f"{robot_spec.attach_to.kind} '{robot_spec.attach_to.name}'"
+        )
+        print(f"       pos {list(robot_spec.pos)} quat {list(robot_spec.quat)}")
+        for attachment_spec in robot_spec.attachments:
+            print(
+                f"  attachment: {attachment_spec.mjcf_path} @ "
+                f"{attachment_spec.attach_to.kind} '{attachment_spec.attach_to.name}'"
+            )
+            print(f"       pos {list(attachment_spec.pos)} quat {list(attachment_spec.quat)}")
+    for object_spec in spec.objects:
+        print(
+            f"object: {object_spec.name} {object_spec.mjcf_path or object_spec.shape} "
+            f"at {list(object_spec.pos)}"
+        )
+    print(f"cameras: {[env.model.camera(i).name for i in range(env.model.ncam)]}")
+
+
+def home_poses(model: Model, config: Path) -> list[tuple[str, str, str, list[float]]]:
+    """Each assembly's chain root, tip, prefix and the `home` its section of the robot CONFIG
+    states; an assembly whose section states none is left out."""
+    robot_config = tomllib.loads(config.read_text())
+    attach_by_body, _root = agents.fixed_attachments(model)
+    name_object_attachments(model, attach_by_body)
+    poses = []
+    for assembly in agents.agent_assemblies(model, attach_by_body):
+        section = robot_config
+        for key in assembly.config_key.split("."):
+            section = section.get(key, {}) if isinstance(section, dict) else {}
+        home = section.get("home") if isinstance(section, dict) else None
+        if home:
+            poses.append(
+                (assembly.chain_root, assembly.tip, assembly.prefix, [float(v) for v in home])
+            )
+    return poses
+
+
+def chain_robot(env: mjk.Env, root: str, tip: str, prefix: str) -> mjk.Robot | None:
+    """The robot driving ROOT to TIP in ENV, None when no chain joins them.
+
+    Joint names may already carry PREFIX, so the chain is tried without it too.
+    """
+    for attempt in (prefix, ""):
+        try:
+            return env.create_robot(root, tip, attempt)
+        except RuntimeError:
+            pass
+    return None
+
+
+def scene_spec(scene) -> mjk.SceneSpec:
+    """The mj_kdl_wrapper scene SCENE composes: robots and their attachments, objects, frame
+    sites and static cameras, every asset checked to be on this machine."""
     spec = mjk.SceneSpec()
     spec.timestep = scene.timestep_s
     spec.add_skybox = True
@@ -136,53 +207,4 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
         camera_spec.fovy = camera.fovy_deg
         cameras.append(camera_spec)
     spec.cameras = cameras
-
-    env = mjk.Env.build(spec)
-    try:
-        # kept alive: the env drives a robot only while it lives
-        robots = []
-        for root, tip, prefix, home in poses:
-            # joint names may already carry the prefix
-            for attempt in (prefix, ""):
-                try:
-                    robot = env.create_robot(root, tip, attempt)
-                    break
-                except RuntimeError:
-                    pass
-            else:
-                print(f"  (no chain {root} -> {tip}; home pose not applied)")
-                continue
-            q = home[: robot.n_joints]
-            robot.set_joint_pos(q)
-            robot.set_control_mode(mjk.CtrlMode.POSITION)
-            robot.jnt_pos_cmd = q
-            robots.append(robot)
-        print(f"timestep: {spec.timestep} s, floor at the anchor (z = {spec.floor_z} m)")
-        for robot_spec in spec.robots:
-            print(
-                f"robot: {robot_spec.path} @ "
-                f"{robot_spec.attach_to.kind} '{robot_spec.attach_to.name}'"
-            )
-            print(f"       pos {list(robot_spec.pos)} quat {list(robot_spec.quat)}")
-            for attachment_spec in robot_spec.attachments:
-                print(
-                    f"  attachment: {attachment_spec.mjcf_path} @ "
-                    f"{attachment_spec.attach_to.kind} '{attachment_spec.attach_to.name}'"
-                )
-                print(f"       pos {list(attachment_spec.pos)} quat {list(attachment_spec.quat)}")
-        for object_spec in spec.objects:
-            print(
-                f"object: {object_spec.name} {object_spec.mjcf_path or object_spec.shape} "
-                f"at {list(object_spec.pos)}"
-            )
-        print(f"cameras: {[env.model.camera(i).name for i in range(env.model.ncam)]}")
-        if headless:
-            return
-        env.open_viewer(scenex_path.name)
-        while True:
-            env.update()
-            if not env.step():
-                break
-            env.pace()  # step() never sleeps; unpaced, the render thread starves
-    finally:
-        env.close()
+    return spec

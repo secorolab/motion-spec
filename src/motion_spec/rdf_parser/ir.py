@@ -36,7 +36,7 @@ from motion_spec.rdf_parser.sampling import sampled_quantities
 from motion_spec.rdf_parser.scene import read_scene
 from motion_spec.rdf_parser.views import read_data_structures, read_views, views_for_access
 
-_ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
+ALL_OPERATORS = operations.OPS_GENERIC + operations.OPS_SOLVER + operations.OPS_HANDLER
 
 
 def generate_ir(model: Model, fsm: dict | None = None) -> dict:
@@ -74,11 +74,13 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     handlers, handler_steps = coordination.build_constraint_handlers(model, schedule, derivation)
     coordination.assign_event_indexes(handlers)
 
-    functions = operations.build_functions(model, _ALL_OPERATORS)
+    functions = operations.build_functions(model, ALL_OPERATORS)
     constraint_handler.augment_functions(model, derivation, functions)
     views = read_views(model)
     data_structures = read_data_structures(model)
-    constraint_handler.augment_data(model, derivation, data_structures, views)
+    constraint_handler.add_pose_errors_and_control_signals(
+        model, derivation, data_structures, views
+    )
     computation = build_indexes(model, functions, data_structures, views)
     operations.resolve_function_operands(functions, computation.indexes, data_structures)
 
@@ -125,13 +127,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         model, robots.serial_chains, control_period_ns, platform.get("uri")
     )
     algorithm_data += runtime_members
-    latches = {s.target_id: s.captured_id for motion in motions for s in motion.task_snapshots}
-    for target_id, captured_id in latches.items():
-        node = model.node_by_id.get(target_id)
-        if node is None:
-            raise RuntimeError(f"task snapshot '{target_id}' has no node to derive its guard from")
-        model.register_derived(captured_id, node, "captured", PROV.wasDerivedFrom)
-        algorithm_data.append(DataValue(id=captured_id, type="Bool", value=False))
+    coordination.add_snapshot_latches(model, motions, algorithm_data)
 
     observed_at_ids = {
         row["observed_at_id"]
@@ -207,58 +203,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         },
     }
 
-    # split by kind here, ST4 cannot filter; absent rather than empty
-    robots_by_kind = {}
-    if robots.serial_chains:
-        robots_by_kind["serial_chain"] = robots.serial_chains
-    if robots.platform_velocity or robots.platform_force:
-        drives = mobile_base.platform_drives(world_trees)
-        robots_by_kind["mobile_base"] = {
-            "velocity_solvers": robots.platform_velocity,
-            "force_solvers": robots.platform_force,
-            "drives": drives,
-            "num_drives": len(drives),
-            "wrench_by_motion": mobile_base.wrench_terms_by_motion(
-                motions, views, robots.platform_velocity, robots.platform_force
-            ),
-        }
-
-    device_kinds = {device.kind for robot in robots.serial_chains for device in robot.devices} | {
-        sensor.type for robot in robots.serial_chains for sensor in robot.sensors
-    }
-
-    resources = {
-        "robots": [*robots.serial_chains, *robots.platform_velocity, *robots.platform_force],
-        "by_kind": robots_by_kind,
-        "driven": bool(robots_by_kind) or None,
-        "base_owns_runtime": (
-            "mobile_base" in robots_by_kind and not robots.serial_chains
-        ) or None,
-        "by_id": robots.by_id,
-        "device_kinds": {kind: True for kind in device_kinds},
-        "world_observations": runtime.world_observations(robots.serial_chains),
-    }
-    if world_trees:
-        resources["world_trees"] = [
-            {
-                "name": tree["name"],
-                "cpp_name": tree["cpp_name"],
-                "namespace": tree["namespace"],
-                "header": tree["header"],
-                "sampled_frames": [
-                    {"name": s.segment, "parent": s.parent, "rotation": s.rotation, "draw": s.id}
-                    for s in sampling
-                    if s.tree == tree["cpp_name"]
-                ],
-            }
-            for tree in world_trees
-        ]
-    if world_frames:
-        resources["world_frames"] = world_frames
-    # ST4 cannot filter
-    resources["world_ports"] = {kind: rows for kind, rows in ports.items() if rows}
-    ir["resources"] = resources
-
+    ir["resources"] = resources(robots, motions, views, world_trees, world_frames, sampling, ports)
     ir["composition"] = {"scene": scene, "sampling": sampling}
 
     ir["computation"] = {
@@ -288,44 +233,90 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     server = communication.action_server(model, fsm)
     ir["communication"] = {"telemetry": telemetry}
     publishers = communication.ros_publishers(motions, standing_publishes)
-    if (
-        publishers
-        or joint_states is not None
-        or clock is not None
-        or tf is not None
-        or action_clients
-        or server is not None
-        or subscriptions
-    ):
-        packages = {publisher["pkg"] for publisher in publishers}
-        ros = {"publishers": publishers, "node_name": "motion_spec_monitor"}
-        if any(publisher["auto_context_id"] for publisher in publishers) or server is not None:
-            ros["scenario_context_id"] = True
-        if server is not None:
-            ros["action_server"] = server
-            packages.add(server["pkg"])
-        if joint_states is not None:
-            ros["joint_states"] = joint_states
-            packages.add("sensor_msgs")
-        if clock is not None:
-            ros["clock"] = clock
-            packages.add("rosgraph_msgs")
-        if tf is not None:
-            ros["tf"] = tf
-            packages.update({"tf2_msgs", "geometry_msgs"})
-        if action_clients:
-            ros["action_clients"] = action_clients
-            packages.update(client["pkg"] for client in action_clients)
-        if subscriptions:
-            ros["subscriptions"] = subscriptions
-            packages.update(sub["pkg"] for sub in subscriptions)
-        if standing_publishes:
-            ros["standing"] = standing_publishes
-            packages.update(publish["pkg"] for publish in standing_publishes)
-        ros["packages"] = list(packages)
+    ros = communication.ros_interface(
+        publishers,
+        server,
+        joint_states,
+        clock,
+        tf,
+        action_clients,
+        subscriptions,
+        standing_publishes,
+    )
+    if ros is not None:
         ir["communication"]["ros"] = ros
 
-    # last: every section above may mint a derived id
+    ir["provenance"] = provenance(model, functions, algorithm_data, data_access, telemetry)
+
+    return ir
+
+
+def resources(robots, motions, views, world_trees, world_frames, sampling, ports) -> dict:
+    """The resources section: the robots the program commands, split by kind, the devices and
+    sensors they carry, and the world trees, frames and ports the runtime builds.
+    """
+    # split by kind here, ST4 cannot filter; absent rather than empty
+    robots_by_kind = {}
+    if robots.serial_chains:
+        robots_by_kind["serial_chain"] = robots.serial_chains
+    if robots.platform_velocity or robots.platform_force:
+        drives = mobile_base.platform_drives(world_trees)
+        robots_by_kind["mobile_base"] = {
+            "velocity_solvers": robots.platform_velocity,
+            "force_solvers": robots.platform_force,
+            "drives": drives,
+            "num_drives": len(drives),
+            "wrench_by_motion": mobile_base.wrench_terms_by_motion(
+                motions, views, robots.platform_velocity, robots.platform_force
+            ),
+        }
+
+    device_kinds = {device.kind for robot in robots.serial_chains for device in robot.devices} | {
+        sensor.type for robot in robots.serial_chains for sensor in robot.sensors
+    }
+
+    section = {
+        "robots": [*robots.serial_chains, *robots.platform_velocity, *robots.platform_force],
+        "by_kind": robots_by_kind,
+        "driven": bool(robots_by_kind) or None,
+        "base_owns_runtime": (
+            "mobile_base" in robots_by_kind and not robots.serial_chains
+        ) or None,
+        "by_id": robots.by_id,
+        "device_kinds": {kind: True for kind in device_kinds},
+        "world_observations": runtime.world_observations(robots.serial_chains),
+    }
+    if world_trees:
+        section["world_trees"] = [
+            {
+                "name": tree["name"],
+                "cpp_name": tree["cpp_name"],
+                "namespace": tree["namespace"],
+                "header": tree["header"],
+                "sampled_frames": [
+                    {"name": s.segment, "parent": s.parent, "rotation": s.rotation, "draw": s.id}
+                    for s in sampling
+                    if s.tree == tree["cpp_name"]
+                ],
+            }
+            for tree in world_trees
+        ]
+    if world_frames:
+        section["world_frames"] = world_frames
+    # ST4 cannot filter
+    section["world_ports"] = {kind: rows for kind, rows in ports.items() if rows}
+
+    return section
+
+
+def provenance(model: Model, functions, algorithm_data, data_access: dict, telemetry: dict) -> dict:
+    """The provenance section: every IRI the IR names, and each derived entity with its kind, unit
+    and the entities it is computed from. Built last, since every section may mint a derived id.
+
+    Raises:
+        RuntimeError: a published id has no IRI, so a derived entity was minted without
+            registering the node it came from.
+    """
     uris = model.uri_rows()
     uri_by_id = {row["id"]: row["uri"] for row in uris if row.get("uri")}
     published = {
@@ -372,6 +363,5 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
         sources = [uri_by_id[read] for read in written_from if read in uri_by_id]
         if sources:
             row["sources"] = sources
-    ir["provenance"] = {"uris": uris, "derivations": derivations}
 
-    return ir
+    return {"uris": uris, "derivations": derivations}

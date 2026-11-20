@@ -15,6 +15,7 @@ contributes to telemetry is exported as a table for `communication.py` to read.
 from __future__ import annotations
 
 import collections
+import itertools
 from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
@@ -69,7 +70,7 @@ from motion_spec.classes.solvers import (
 from motion_spec.rdf_parser import quantities
 from motion_spec.rdf_parser.model import Model, identifier, kebab, local_name
 
-_MOBILE_PLATFORM = SolverFamily()
+MOBILE_PLATFORM_FAMILY = SolverFamily()
 
 # an unmapped algorithm is unsupported
 SOLVER_FAMILIES = {
@@ -107,10 +108,10 @@ SOLVER_FAMILIES = {
     ),
     KC_OP_EXT.InversePositionKinematics: SolverFamily(name="IPK", command_mode="position"),
     SLV_EXT.CommandForwardingSolver: SolverFamily(forwards_commands=True),
-    SLV.VelocityCompositionSolver: _MOBILE_PLATFORM,
-    SLV.ForceDistributionSolver: _MOBILE_PLATFORM,
-    SLV_EXT.VelocityDistributionSolver: _MOBILE_PLATFORM,
-    SLV_EXT.ForceCompositionSolver: _MOBILE_PLATFORM,
+    SLV.VelocityCompositionSolver: MOBILE_PLATFORM_FAMILY,
+    SLV.ForceDistributionSolver: MOBILE_PLATFORM_FAMILY,
+    SLV_EXT.VelocityDistributionSolver: MOBILE_PLATFORM_FAMILY,
+    SLV_EXT.ForceCompositionSolver: MOBILE_PLATFORM_FAMILY,
 }
 
 
@@ -238,12 +239,12 @@ class SolverIdFactory:
         return id_
 
 
-_CONTROLLER_TYPES = (
+CONTROLLER_TYPES = (
     CSTR_HDL.ImpedanceController,
     CSTR_HDL.ProportionalIntegralDerivative,
     CSTR_HDL_EXT.FeedForwardController,
 )
-_TARGET_TYPES = (GEOM_COORD.PoseCoordinate, KC_STAT.JointPositionCoordinate)
+TARGET_TYPES = (GEOM_COORD.PoseCoordinate, KC_STAT.JointPositionCoordinate)
 
 
 def is_moment_plan(model, plan) -> bool:
@@ -268,7 +269,7 @@ class ControlDirections(NamedTuple):
 
 
 # a commutative operation repeats one operand predicate
-_EXPRESSION_OPS = {
+EXPRESSION_OPERATIONS = {
     ALGO_EXT.Addition: ("add", (ALGO_EXT["in"],)),
     ALGO_EXT.Subtraction: ("subtract", (ALGO_EXT["minuend"], ALGO_EXT["subtrahend"])),
     ALGO_EXT.Multiplication: ("multiply", (ALGO_EXT["in"],)),
@@ -283,7 +284,7 @@ def expression_operation(graph, node):
     written = [
         (op, kinds)
         for op in graph.subjects(ALGO_EXT.out, node)
-        if (kinds := get_node_types(graph, op) & _EXPRESSION_OPS.keys())
+        if (kinds := get_node_types(graph, op) & EXPRESSION_OPERATIONS.keys())
     ]
     if not written:
         return None
@@ -294,7 +295,7 @@ def expression_operation(graph, node):
             "has one operation of one kind",
         )
     op, (type_,) = written[0]
-    name, predicates = _EXPRESSION_OPS[type_]
+    name, predicates = EXPRESSION_OPERATIONS[type_]
     if len(predicates) == 1:
         return name, list(graph.objects(op, predicates[0]))
     return name, [graph.value(op, predicate) for predicate in predicates]
@@ -321,7 +322,7 @@ def expression_subspace(model, node) -> str | None:
         return None
     subspace_node = graph.value(view, MAP.subspace)
     angular = subspace_node is not None and quantities.subspace(subspace_node) == Subspace.Angular
-    return _GRADIENT_OUTPUTS[GEOM_OP["angle"] if angular else GEOM_OP["distance"]]
+    return SUBSPACE_BY_GRADIENT_OPERATOR[GEOM_OP["angle"] if angular else GEOM_OP["distance"]]
 
 
 def view_axes(model, controller, constraint, view_node, target_node, *, subspace=None, axis=None):
@@ -343,7 +344,7 @@ def view_axes(model, controller, constraint, view_node, target_node, *, subspace
 
     return quantities.spatial_axes(
         controller_type=next(
-            (type_ for type_ in _CONTROLLER_TYPES if type_ in controller_types), None
+            (type_ for type_ in CONTROLLER_TYPES if type_ in controller_types), None
         ),
         subspace=subspace,
         axis=axis,
@@ -353,12 +354,12 @@ def view_axes(model, controller, constraint, view_node, target_node, *, subspace
             if CSTR.EqualityConstraint in get_node_types(graph, constraint)
             else None
         ),
-        target_type=next((type_ for type_ in _TARGET_TYPES if type_ in target_types), None),
+        target_type=next((type_ for type_ in TARGET_TYPES if type_ in target_types), None),
     )
 
 
 # a distance moves along its gradient, an angle turns about it
-_GRADIENT_OUTPUTS = {GEOM_OP["distance"]: "distance", GEOM_OP["angle"]: "rotation"}
+SUBSPACE_BY_GRADIENT_OPERATOR = {GEOM_OP["distance"]: "distance", GEOM_OP["angle"]: "rotation"}
 
 
 def operator_gradient(model, quantity):
@@ -374,7 +375,7 @@ def operator_gradient(model, quantity):
     graph = model.graph
     written = [
         (op, subspace)
-        for predicate, subspace in _GRADIENT_OUTPUTS.items()
+        for predicate, subspace in SUBSPACE_BY_GRADIENT_OPERATOR.items()
         for op in graph.subjects(predicate, quantity)
         if (op, GEOM_OP_EXT["gradient"], None) in graph
     ]
@@ -409,7 +410,7 @@ def operator_gradient(model, quantity):
     if op is not None:
         return (
             graph.value(op, GEOM_OP_EXT["gradient"]),
-            _GRADIENT_OUTPUTS[GEOM_OP["angle"]],
+            SUBSPACE_BY_GRADIENT_OPERATOR[GEOM_OP["angle"]],
             None,
             None,
         )
@@ -437,77 +438,90 @@ def authored_controller_axes(model) -> dict:
         quantity = graph.value(constraint, CSTR.quantity) if constraint is not None else None
         if constraint is None or quantity is None:
             continue
-        view = quantities.view_of(graph, quantity)
-        subspace = graph.value(view, MAP.subspace) if view is not None else None
-        rotation_op = alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, quantity)
-        if rotation_op is not None:
-            reference = graph.value(rotation_op, GEOM_OP.in2)
-            components = [graph.value(reference, GEOM_COORD[axis]) for axis in "xyz"]
-            if all(value is not None for value in components):
-                # the reference axis's rotation-vector component is always zero
-                free = max(range(3), key=lambda i: abs(float(components[i])))
-                result[controller] = ControlDirections(
-                    tuple(
-                        quantities.SpatialAxis(
-                            subspace=quantities.Subspace.Angular, axis=axis, direction=None
-                        )
-                        for index, axis in enumerate("xyz")
-                        if index != free
-                    ),
-                    view,
-                )
-                continue
-        path = graph.value(constraint, GEOM_OP_EXT.path)
-        if path is not None:
-            # tangent is timing; the normals hold the frame on the path
-            outputs = projections[path]
-            if quantity == outputs["along-speed"]:
-                axes = (quantities.SpatialAxis(Subspace.Linear, "tangent", outputs["tangent"]),)
-            elif subspace == MAP_EXT.position:
-                axes = (
-                    quantities.SpatialAxis(Subspace.Linear, "normal_a", outputs["normal-a"]),
-                    quantities.SpatialAxis(Subspace.Linear, "normal_b", outputs["normal-b"]),
-                )
-            elif subspace == MAP_EXT.orientation:
-                axes = quantities.ANGULAR_AXES
-            else:
-                raise ConstraintViolation(
-                    "control",
-                    f"Path-following constraint on '{quantity}' must control the speed along the "
-                    "path, its position, or its orientation.",
-                )
-            result[controller] = ControlDirections(axes, view)
-            continue
-        gradient, gradient_subspace, moment, norm = operator_gradient(model, quantity)
-        if gradient is not None:
-            # recomputed every cycle, so the row names the shared vector
-            axes = view_axes(
-                model,
-                controller,
-                constraint,
-                None,
-                quantity,
-                subspace=gradient_subspace,
-                axis="gradient",
-            )
-            result[controller] = ControlDirections(
-                tuple(replace(axis, direction=gradient, moment=moment) for axis in axes),
-                None,
-                norm,
-                graph.value(gradient, GEOM_COORD["as-seen-by"]),
-            )
-            continue
-        if expression_operation(graph, quantity) is not None:
-            raise ConstraintViolation(
-                "control",
-                f"controller '{model.id(controller)}' drives an expression that names no "
-                "gradient -- there is no direction to drive it along",
-            )
-        result[controller] = ControlDirections(
-            view_axes(model, controller, constraint, view, quantity), view
+        result[controller] = controller_directions(
+            model, controller, constraint, quantity, projections
         )
 
     return result
+
+
+def controller_directions(
+    model, controller, constraint, quantity, projections: dict
+) -> ControlDirections:
+    """The directions one authored controller drives, by the first authored fact that states them.
+
+    In order: a rotation alignment with a full reference axis, a path-following constraint, an
+    operator gradient, and last the view the quantity is read through.
+
+    Raises:
+        ConstraintViolation: a path constraint drives none of its path's outputs, or the quantity
+            is an expression that names no gradient.
+    """
+    graph = model.graph
+    view = quantities.view_of(graph, quantity)
+    subspace = graph.value(view, MAP.subspace) if view is not None else None
+    rotation_op = alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, quantity)
+    if rotation_op is not None:
+        reference = graph.value(rotation_op, GEOM_OP.in2)
+        components = [graph.value(reference, GEOM_COORD[axis]) for axis in "xyz"]
+        if all(value is not None for value in components):
+            # the reference axis's rotation-vector component is always zero
+            free = max(range(3), key=lambda i: abs(float(components[i])))
+            return ControlDirections(
+                tuple(
+                    quantities.SpatialAxis(
+                        subspace=quantities.Subspace.Angular, axis=axis, direction=None
+                    )
+                    for index, axis in enumerate("xyz")
+                    if index != free
+                ),
+                view,
+            )
+    path = graph.value(constraint, GEOM_OP_EXT.path)
+    if path is not None:
+        # tangent is timing; the normals hold the frame on the path
+        outputs = projections[path]
+        if quantity == outputs["along-speed"]:
+            axes = (quantities.SpatialAxis(Subspace.Linear, "tangent", outputs["tangent"]),)
+        elif subspace == MAP_EXT.position:
+            axes = (
+                quantities.SpatialAxis(Subspace.Linear, "normal_a", outputs["normal-a"]),
+                quantities.SpatialAxis(Subspace.Linear, "normal_b", outputs["normal-b"]),
+            )
+        elif subspace == MAP_EXT.orientation:
+            axes = quantities.ANGULAR_AXES
+        else:
+            raise ConstraintViolation(
+                "control",
+                f"Path-following constraint on '{quantity}' must control the speed along the "
+                "path, its position, or its orientation.",
+            )
+        return ControlDirections(axes, view)
+    gradient, gradient_subspace, moment, norm = operator_gradient(model, quantity)
+    if gradient is not None:
+        # recomputed every cycle, so the row names the shared vector
+        axes = view_axes(
+            model,
+            controller,
+            constraint,
+            None,
+            quantity,
+            subspace=gradient_subspace,
+            axis="gradient",
+        )
+        return ControlDirections(
+            tuple(replace(axis, direction=gradient, moment=moment) for axis in axes),
+            None,
+            norm,
+            graph.value(gradient, GEOM_COORD["as-seen-by"]),
+        )
+    if expression_operation(graph, quantity) is not None:
+        raise ConstraintViolation(
+            "control",
+            f"controller '{model.id(controller)}' drives an expression that names no "
+            "gradient -- there is no direction to drive it along",
+        )
+    return ControlDirections(view_axes(model, controller, constraint, view, quantity), view)
 
 
 @dataclass(frozen=True)
@@ -556,6 +570,60 @@ class SolverDerivationContext:
                 else (derived_controller(self.model, self, plan),)
             )
         return self._derived[plan]
+
+
+def check_solver_axes(model, solver, family: SolverFamily, plans: list) -> None:
+    """Reject controllers a solver's family cannot run.
+
+    Raises:
+        ConstraintViolation: the solver only reads its chain, repeats an axis its family needs
+            distinct, or has more axes than its family supports.
+    """
+    if family.read_only:
+        raise ConstraintViolation(
+            "solver",
+            f"Solver '{solver}' only reads its chain, but controller "
+            f"'{plans[0].controller}' drives it.",
+        )
+    # moment axes are f_ext directions, not solver rows
+    axes = [axis for plan in plans if not is_moment_plan(model, plan) for axis in plan.axes]
+    if family.axes_must_be_distinct:
+        duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
+        if duplicates:
+            rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
+            raise ConstraintViolation(
+                "solver", f"{family.name} solver '{solver}' repeats acceleration axis: {rendered}."
+            )
+    if family.max_axes is not None and len(axes) > family.max_axes:
+        raise ConstraintViolation(
+            "solver",
+            f"{family.name} solver '{solver}' has {len(axes)} axes; at most "
+            f"{family.max_axes} are supported.",
+        )
+
+
+def check_handler_domains(model, handler, plans: tuple, algorithms: dict) -> None:
+    """Reject a handler that drives one domain, force or pose, with both ACHD and RNE.
+
+    Raises:
+        ConstraintViolation: the handler's ACHD and RNE controllers share a domain.
+    """
+    domains = collections.defaultdict(set)
+    for plan in plans:
+        command = str(model.graph.value(plan.controller, APP["command-type"]) or "")
+        subspace = model.graph.value(plan.view, MAP.subspace) if plan.view else None
+        domains[algorithms[plan.solver].name].add(
+            "force"
+            if command in {"Force", "Torque"} or subspace in {MAP.force, MAP.torque}
+            else "pose"
+        )
+    overlap = domains["ACHD"] & domains["RNE"]
+    if overlap:
+        raise ConstraintViolation(
+            "solver",
+            f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
+            f"{', '.join(overlap)}.",
+        )
 
 
 def solver_derivation_context(model) -> SolverDerivationContext:
@@ -621,48 +689,10 @@ def solver_derivation_context(model) -> SolverDerivationContext:
     algorithms = {solver: solver_algorithm(model, solver) for solver in solver_nodes}
 
     for solver, plans in by_solver.items():
-        family = algorithms[solver]
-        if family.read_only:
-            raise ConstraintViolation(
-                "solver",
-                f"Solver '{solver}' only reads its chain, but controller "
-                f"'{plans[0].controller}' drives it.",
-            )
-        # moment axes are f_ext directions, not solver rows
-        axes = [axis for plan in plans if not is_moment_plan(model, plan) for axis in plan.axes]
-        if family.axes_must_be_distinct:
-            duplicates = [axis for axis, count in collections.Counter(axes).items() if count > 1]
-            if duplicates:
-                rendered = ", ".join(f"{axis.subspace}.{axis.axis}" for axis in duplicates)
-                raise ConstraintViolation(
-                    "solver",
-                    f"{family.name} solver '{solver}' repeats acceleration axis: "
-                    f"{rendered}.",
-                )
-        if family.max_axes is not None and len(axes) > family.max_axes:
-            raise ConstraintViolation(
-                "solver",
-                f"{family.name} solver '{solver}' has {len(axes)} axes; at most "
-                f"{family.max_axes} are supported.",
-            )
+        check_solver_axes(model, solver, algorithms[solver], plans)
 
     for handler, plans in by_handler.items():
-        domains = collections.defaultdict(set)
-        for plan in plans:
-            command = str(model.graph.value(plan.controller, APP["command-type"]) or "")
-            subspace = model.graph.value(plan.view, MAP.subspace) if plan.view else None
-            domains[algorithms[plan.solver].name].add(
-                "force"
-                if command in {"Force", "Torque"} or subspace in {MAP.force, MAP.torque}
-                else "pose"
-            )
-        overlap = domains["ACHD"] & domains["RNE"]
-        if overlap:
-            raise ConstraintViolation(
-                "solver",
-                f"Handler '{handler}' assigns ACHD and RNE to the same domain(s): "
-                f"{', '.join(overlap)}.",
-            )
+        check_handler_domains(model, handler, plans, algorithms)
 
     return SolverDerivationContext(
         model=model,
@@ -732,7 +762,7 @@ def controller_signal_id(model, context, plan) -> tuple[str, bool]:
         )
 
     return (
-        _DRIVER_ID_METHODS[family.name][1](SolverIdFactory(model, plan.controller), plan.axes[0]),
+        DRIVER_ID_METHODS[family.name][1](SolverIdFactory(model, plan.controller), plan.axes[0]),
         False,
     )
 
@@ -854,7 +884,7 @@ def derived_controller(model, context, plan, axis: quantities.SpatialAxis | None
             )
         else:
             family = context.algorithm_by_solver[plan.solver]
-            signal = family.payload(_DRIVER_ID_METHODS[family.name][1](ids, axis), axis.subspace)
+            signal = family.payload(DRIVER_ID_METHODS[family.name][1](ids, axis), axis.subspace)
         error = axis_error(ids, axis)
         measured_derivative = axis_derivative(ids, axis) if measured_source is not None else None
     else:
@@ -946,7 +976,7 @@ def derived_controller(model, context, plan, axis: quantities.SpatialAxis | None
     )
 
 
-_DRIVER_ID_METHODS = {
+DRIVER_ID_METHODS = {
     "ACHD": (SolverIdFactory.component_constraint, SolverIdFactory.component_energy),
     "RNE": (
         SolverIdFactory.component_acceleration_specification,
@@ -972,7 +1002,7 @@ def motion_drivers(model, context, solver: URIRef, chain) -> list:
     # `MotionDrivers.acceleration_constraint` has no default
     driver_slots = {"acceleration_constraint": [], "cartesian_acceleration": [], "cartesian_velocity": []}
     if family.driver_field is not None:
-        spec_method, payload_method = _DRIVER_ID_METHODS[family.name]
+        spec_method, payload_method = DRIVER_ID_METHODS[family.name]
         for plan in plans:
             if is_moment_plan(model, plan):
                 continue
@@ -1120,6 +1150,27 @@ def pose_target(model, context, solver: URIRef, driver: URIRef, chain) -> PoseTa
     )
 
 
+def set_alignment_band(model, rotation_function: dict | None, constraint) -> None:
+    """Record the band a constraint states on its alignment's rotation-vector function.
+
+    Raises:
+        ConstraintViolation: another motion already banded the same alignment differently.
+    """
+    if rotation_function is None:
+        return
+    upper = model.graph.value(constraint, CSTR["upper-threshold"])
+    band = model.id(upper) if upper is not None else None
+    # the ops are shared across motions
+    if "band" in rotation_function and rotation_function["band"] != band:
+        raise ConstraintViolation(
+            "constraint-handler",
+            f"alignment '{rotation_function['id']}' is banded differently by two "
+            f"motions ('{rotation_function['band']}' and '{band}'); state one band "
+            "for it.",
+        )
+    rotation_function["band"] = band
+
+
 def augment_functions(model, context, functions: dict) -> None:
     """Replace the graph-expanded controller functions with the authored semantic derivations.
 
@@ -1131,71 +1182,54 @@ def augment_functions(model, context, functions: dict) -> None:
     # a joint impedance runs inside the IPK solver
     for controller in context.joint_impedance_by_handler.values():
         functions.pop(model.id(controller), None)
-    for plans in context.controllers_by_handler.values():
-        for plan in plans:
-            functions.pop(model.id(plan.controller), None)
-            for controller in context.controllers_for(plan):
-                functions.pop(controller.id, None)
-                error = controller.error_signal
-                reference = (
-                    controller.reference_signal
-                    if isinstance(controller, FeedForwardController)
-                    else None
-                )
-                derivative = (
-                    controller.measured_derivative
-                    if isinstance(controller, PIDController)
-                    else None
-                )
-                functions[controller.id] = {
-                    "id": controller.id,
-                    "type": "Controller",
-                    "error_signal": error.id if isinstance(error, Quantity) else None,
-                    "reference_signal": reference.id if isinstance(reference, Quantity) else None,
-                    "measured_derivative": derivative.id if derivative is not None else None,
-                    "control_signal": controller.control_signal.id,
-                    "gradient_norm": controller.gradient_norm,
-                }
-            if len(plan.axes) <= 1:
-                continue
-            # a banded alignment's op returns only the rotation beyond the cone
-            rotation_op = alignment_op(
-                model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity
+    for plan in itertools.chain.from_iterable(context.controllers_by_handler.values()):
+        functions.pop(model.id(plan.controller), None)
+        for controller in context.controllers_for(plan):
+            functions.pop(controller.id, None)
+            error = controller.error_signal
+            reference = (
+                controller.reference_signal
+                if isinstance(controller, FeedForwardController)
+                else None
             )
-            if rotation_op is not None:
-                rotation_function = functions.get(model.id(rotation_op))
-                if rotation_function is not None:
-                    upper = graph.value(plan.constraint, CSTR["upper-threshold"])
-                    band = model.id(upper) if upper is not None else None
-                    # the ops are shared across motions
-                    if "band" in rotation_function and rotation_function["band"] != band:
-                        raise ConstraintViolation(
-                            "constraint-handler",
-                            f"alignment '{rotation_function['id']}' is banded differently by two "
-                            f"motions ('{rotation_function['band']}' and '{band}'); state one band "
-                            "for it.",
-                        )
-                    rotation_function["band"] = band
-                continue
-            target = graph.value(plan.view, MAP.superobject)
-            reference = graph.value(plan.constraint, CSTR["reference-value"])
-            reference_view = quantities.view_of(graph, reference)
-            if reference_view is not None:
-                reference = graph.value(reference_view, MAP.superobject)
-            ids = SolverIdFactory(model, plan.controller)
-            evaluator_id = ids.pose_evaluator()
-            functions[evaluator_id] = {
-                "id": evaluator_id,
-                "type": "PoseDiffEvaluator",
-                "in1": model.id(target),
-                "in2": model.id(reference),
-                "out": ids.pose_difference(),
-                # unmaterialized axis views would read a never-written 0.0
-                "errors": [ids.component_error(axis) for axis in plan.axes],
+            derivative = (
+                controller.measured_derivative if isinstance(controller, PIDController) else None
+            )
+            functions[controller.id] = {
+                "id": controller.id,
+                "type": "Controller",
+                "error_signal": error.id if isinstance(error, Quantity) else None,
+                "reference_signal": reference.id if isinstance(reference, Quantity) else None,
+                "measured_derivative": derivative.id if derivative is not None else None,
+                "control_signal": controller.control_signal.id,
+                "gradient_norm": controller.gradient_norm,
             }
+        if len(plan.axes) <= 1:
+            continue
+        # a banded alignment's op returns only the rotation beyond the cone
+        rotation_op = alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity)
+        if rotation_op is not None:
+            set_alignment_band(model, functions.get(model.id(rotation_op)), plan.constraint)
+            continue
+        target = graph.value(plan.view, MAP.superobject)
+        reference = graph.value(plan.constraint, CSTR["reference-value"])
+        reference_view = quantities.view_of(graph, reference)
+        if reference_view is not None:
+            reference = graph.value(reference_view, MAP.superobject)
+        ids = SolverIdFactory(model, plan.controller)
+        evaluator_id = ids.pose_evaluator()
+        functions[evaluator_id] = {
+            "id": evaluator_id,
+            "type": "PoseDiffEvaluator",
+            "in1": model.id(target),
+            "in2": model.id(reference),
+            "out": ids.pose_difference(),
+            # unmaterialized axis views would read a never-written 0.0
+            "errors": [ids.component_error(axis) for axis in plan.axes],
+        }
 
 
-def augment_data(model, context, data: list, views: dict) -> None:
+def add_pose_errors_and_control_signals(model, context, data: list, views: dict) -> None:
     """Add the runtime quantities and views a pose command implies, without RDF materialization.
 
     In place, on both lists: the pose differences and their per-axis error and measured-derivative
@@ -1204,37 +1238,19 @@ def augment_data(model, context, data: list, views: dict) -> None:
     graph = model.graph
     differences, errors, derivatives, signals = [], [], [], []
     derived_ids = set()
-    for plans in context.controllers_by_handler.values():
-        for plan in plans:
-            controllers = context.controllers_for(plan)
-            signals.extend(controller.control_signal for controller in controllers)
-            derived_ids.update(controller.control_signal.id for controller in controllers)
-            if len(plan.axes) <= 1:
-                continue
-            ids = SolverIdFactory(model, plan.controller)
-            rotation_op = alignment_op(
-                model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity
-            )
-            if rotation_op is not None:
-                vector = quantities.quantity(model, graph.value(rotation_op, GEOM_OP.out))
-                measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
-                for axis in plan.axes:
-                    error = axis_error(ids, axis)
-                    errors.append(error)
-                    derived_ids.add(error.id)
-                    views[error.id] = axis_view(model, vector, error, axis)
-                    if measured_source is None:
-                        continue
-                    derivative = axis_derivative(ids, axis)
-                    derivatives.append(derivative)
-                    derived_ids.add(derivative.id)
-                    views.pop(derivative.id, None)
-                    views[derivative.id] = axis_view(
-                        model, quantities.velocity_twist(model, measured_source), derivative, axis
-                    )
-                continue
+    for plan in itertools.chain.from_iterable(context.controllers_by_handler.values()):
+        controllers = context.controllers_for(plan)
+        signals.extend(controller.control_signal for controller in controllers)
+        derived_ids.update(controller.control_signal.id for controller in controllers)
+        if len(plan.axes) <= 1:
+            continue
+        ids = SolverIdFactory(model, plan.controller)
+        rotation_op = alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity)
+        if rotation_op is not None:
+            superobject = quantities.quantity(model, graph.value(rotation_op, GEOM_OP.out))
+        else:
             target = graph.value(plan.view, MAP.superobject)
-            difference = PoseDifference(
+            superobject = PoseDifference(
                 id=ids.pose_difference(),
                 quantity_kind=[
                     QuantityKind("Angle", str(NS_MM_QUDT_QTY.Angle)),
@@ -1245,25 +1261,26 @@ def augment_data(model, context, data: list, views: dict) -> None:
                 unit=["M", "RAD"],
                 provenance=Provenance(),
             )
-            differences.append(difference)
-            derived_ids.add(difference.id)
-            measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
-            for axis in plan.axes:
-                error = axis_error(ids, axis)
-                errors.append(error)
-                derived_ids.add(error.id)
-                # re-inserted: position in `views` is the emission order
+            differences.append(superobject)
+            derived_ids.add(superobject.id)
+        measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
+        for axis in plan.axes:
+            error = axis_error(ids, axis)
+            errors.append(error)
+            derived_ids.add(error.id)
+            # re-inserted: position in `views` is the emission order
+            if rotation_op is None:
                 views.pop(error.id, None)
-                views[error.id] = axis_view(model, difference, error, axis)
-                if measured_source is None:
-                    continue
-                derivative = axis_derivative(ids, axis)
-                derivatives.append(derivative)
-                derived_ids.add(derivative.id)
-                views.pop(derivative.id, None)
-                views[derivative.id] = axis_view(
-                    model, quantities.velocity_twist(model, measured_source), derivative, axis
-                )
+            views[error.id] = axis_view(model, superobject, error, axis)
+            if measured_source is None:
+                continue
+            derivative = axis_derivative(ids, axis)
+            derivatives.append(derivative)
+            derived_ids.add(derivative.id)
+            views.pop(derivative.id, None)
+            views[derivative.id] = axis_view(
+                model, quantities.velocity_twist(model, measured_source), derivative, axis
+            )
 
     data[:] = [item for item in data if item.id not in derived_ids]
     wrench_index = next(
@@ -1319,14 +1336,14 @@ def annotate_controller_signals(controllers, functions: dict, evaluators=()) -> 
 
 
 # a controller type absent here is stateless
-_PID_STATE = (
+PID_STATE_FIELDS = (
     StateField("error_integral", "Quantity", "error_integral"),
     StateField("previous_error", "Quantity", "previous_error"),
     StateField("first_sample", "Bool", "is_first_sample"),
 )
 CONTROLLER_STATE_FIELDS = {
-    "ProportionalIntegralDerivative": _PID_STATE,
-    "ImpedanceController": _PID_STATE,
+    "ProportionalIntegralDerivative": PID_STATE_FIELDS,
+    "ImpedanceController": PID_STATE_FIELDS,
 }
 
 # (step-call field, record field, required); order is the struct's field order
@@ -1402,15 +1419,15 @@ def add_control_parameters(model, functions: dict, algorithm_data: list, motions
     }
     present = {item.id for item in algorithm_data}
     for function in functions.values():
+        controller = controller_by_id.get(function.get("id"))
         # admittance parameters are already D-blocks
-        if function.get("type") != "Controller":
+        if (
+            function.get("type") != "Controller"
+            or controller is None
+            or controller.type not in CONTROLLER_GAIN_FIELDS
+        ):
             continue
-        controller = controller_by_id.get(function["id"])
-        if controller is None:
-            continue
-        gains = CONTROLLER_GAIN_FIELDS.get(controller.type)
-        if not gains:
-            continue
+        gains = CONTROLLER_GAIN_FIELDS[controller.type]
         owner_id = function["id"]
         parent = model.iri_of(owner_id)
         if parent is None:

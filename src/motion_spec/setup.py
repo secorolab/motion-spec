@@ -11,6 +11,7 @@ src/thirdparty/ holds what colcon must not build.
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import shutil
@@ -20,7 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.request import urlretrieve
 
-from motion_spec.utils import tee, total_memory, trash, usable_cores
+from motion_spec.utils import log_header, machine_facts, tee, total_memory, trash, usable_cores
+
+LOGGER = logging.getLogger(__name__)
 
 # editable install: the manifests are at the clone's root
 CHECKOUT = Path(__file__).resolve().parents[2]
@@ -345,17 +348,20 @@ def find_stst(path: str | None = None, workspace: str | None = None) -> str | No
     return str(managed) if managed.is_file() else None
 
 
-def clean_workspace(root: Path) -> list[tuple[Path, Path | None]]:
+def clean_workspace(root: Path) -> None:
     """Trash what setup wrote into ROOT: builds, installs, colcon logs and environment files.
 
-    Each trashed path with where the trash keeps it. Sources and generations stay.
+    Logs each trashed path with where the trash keeps it. Sources and generations stay.
     """
-    trashed = []
-    for name in [BUILD_DIRECTORY, INSTALL_DIRECTORY, COLCON_LOG_DIRECTORY] + list(ENVIRONMENT_FILES):
-        path = root / name
-        if path.exists() or path.is_symlink():
-            trashed.append((path, trash(path)))
-    return trashed
+    trashed = [
+        root / name
+        for name in [BUILD_DIRECTORY, INSTALL_DIRECTORY, COLCON_LOG_DIRECTORY, *ENVIRONMENT_FILES]
+        if (root / name).exists() or (root / name).is_symlink()
+    ]
+    for path in trashed:
+        where = trash(path)
+        LOGGER.info(f"trashed {path}" + (f" → {where}" if where else ""), extra={"level": "done"})
+    LOGGER.info("sources and generations left in place" if trashed else "nothing to clean")
 
 
 def package_installed(name: str, prefix: Path, checkout: Path) -> bool:
@@ -798,3 +804,171 @@ def capture_environment(script: Path) -> dict[str, str]:
 
     entries = (entry.decode(errors="replace").partition("=") for entry in done.stdout.split(b"\0"))
     return {key: value for key, separator, value in entries if separator}
+
+
+@dataclass(frozen=True)
+class SetupOptions:
+    """One setup: the workspace, the repositories it installs from which manifests, its log,
+    and how they build. DECLARED: the workspace was named on the command line."""
+
+    root: Path
+    files: list[Path]
+    selected: list[Repository]
+    log: Path
+    force: bool
+    build_type: str
+    ros: bool
+    jobs: int
+    dev: bool
+    declared: bool
+
+
+def selected_repositories(files: list[Path], repositories: tuple[str, ...]) -> list[Repository]:
+    """The entries FILES list that REPOSITORIES names, by path or name; all of them for none.
+
+    Raises:
+        OSError: a manifest does not read.
+        ValueError: a manifest is malformed, or a name is in none of them.
+    """
+    listed = manifest_in_force(files)
+    names = {r.path for r in listed} | {r.name for r in listed}
+    unknown = [n for n in repositories if n not in names]
+    if unknown:
+        raise ValueError(
+            f"not in {', '.join(str(f) for f in files)}: {', '.join(unknown)}; listed are "
+            f"{', '.join(r.name for r in listed)}"
+        )
+    return [
+        r for r in listed if not repositories or r.path in repositories or r.name in repositories
+    ]
+
+
+def announce_setup(options: SetupOptions) -> None:
+    """Head the setup's log with what it will do, and log the same."""
+    manifests = ", ".join(str(path) for path in options.files)
+    log_header(
+        options.log,
+        "setup",
+        {
+            "workspace": options.root,
+            "manifests": manifests,
+            "repositories": ", ".join(repository.name for repository in options.selected),
+            "build type": options.build_type,
+            "jobs": options.jobs,
+            "python": "editable" if options.dev else "snapshot",
+            "colcon": options.ros,
+            **machine_facts(),
+        },
+    )
+    LOGGER.info(f"workspace {options.root}")
+    LOGGER.info(f"installing into {options.root / INSTALL_DIRECTORY}")
+    LOGGER.info(f"manifests {manifests}")
+    LOGGER.info(f"console log {options.log}")
+    LOGGER.info(f"building with {options.jobs} job{'s' if options.jobs != 1 else ''}")
+
+
+def preflight(options: SetupOptions) -> None:
+    """Stop before any build when setup cannot start: a prerequisite is missing, or none of the
+    selected repositories is imported under the workspace's sources.
+
+    Raises:
+        RuntimeError: setup cannot start; each missing prerequisite is logged first.
+    """
+    sources = options.root / SOURCE_DIRECTORY
+    # setup cannot check out the code running it
+    if options.dev and sources.resolve() not in Path(__file__).resolve().parents:
+        LOGGER.warning(
+            f"--dev leaves motion-spec itself installed from {Path(__file__).parent}; "
+            f"clone it under {sources} and reinstall it with `pip install -e` "
+            "to edit it too"
+        )
+    # before any build: setup cannot install these itself
+    LOGGER.info("checking prerequisites")
+    packages, others = missing_prerequisites(options.selected, options.ros)
+    if packages or others:
+        for requirement in others:
+            LOGGER.error(requirement)
+        if packages:
+            LOGGER.error(f"apt: sudo apt-get install -y {' '.join(packages)}")
+        raise RuntimeError("setup needs these before it can start; nothing was built.")
+    if not any((sources / r.path / ".git").is_dir() for r in options.selected):
+        raise RuntimeError(
+            f"nothing imported under {sources}: run "
+            f"`vcs import {sources} < {options.files[0]}` first; nothing was built."
+        )
+
+
+def install_repositories(options: SetupOptions) -> tuple[Path, list[str]]:
+    """Build and install each selected repository in order: the interpreter the Python packages
+    went into, and the names of the repositories skipped."""
+    python = target_environment(options.root, options.ros, options.dev, options.log)
+    LOGGER.info(f"python packages into {python}")
+    if options.ros:
+        ignore_thirdparty(options.root)
+    skipped = [
+        repository.name
+        for repository in options.selected
+        if not install_repository(repository, options, python)
+    ]
+    return python, skipped
+
+
+def install_repository(repository: Repository, options: SetupOptions, python: Path) -> bool:
+    """Build and install REPOSITORY's packages, or stst; False when it is skipped."""
+    state = source_state(repository, options.root)
+    if not state.usable:
+        LOGGER.warning(f"skipped {repository.name}: {state.path} {state.reason}")
+        return False
+    if state.drift:
+        LOGGER.warning(f"{repository.name}: {state.path} {state.drift}")
+    if repository.path == STST_REPOSITORY:
+        already = not options.force and stst_installed(options.root)
+        if not already:
+            LOGGER.info("stst", extra={"level": "step"})
+        launcher = install_stst(options.root, state, force=options.force, log=options.log)
+        LOGGER.info(
+            f"stst {'already installed' if already else 'installed'}, launcher {launcher}",
+            extra={"level": "info" if already else "done"},
+        )
+        return True
+    packages = discover_packages(state.path)
+    if not packages:
+        LOGGER.warning(f"skipped {repository.name}: {state.path} holds no package to build")
+        return False
+    for package in packages:
+        if not options.force and package_installed(
+            package.name, options.root / INSTALL_DIRECTORY, state.path
+        ):
+            LOGGER.info(f"{package.name} already installed, source {state.path}")
+            continue
+        LOGGER.info(package.name, extra={"level": "step"})
+        install_package(
+            package,
+            state,
+            options.root,
+            python,
+            fresh=options.force,
+            build_type=options.build_type,
+            log=options.log,
+            ros=options.ros,
+            jobs=options.jobs,
+            dev=options.dev,
+        )
+        LOGGER.info(f"{package.name} installed, source {state.path}", extra={"level": "done"})
+    return True
+
+
+def write_setup_files(options: SetupOptions, python: Path) -> None:
+    """Write the workspace's settings sample, when it has none, and the environment file to
+    source, for PYTHON's environment.
+
+    Raises:
+        RuntimeError: the environment file cannot be written.
+    """
+    from motion_spec.config import write_sample
+
+    sample = write_sample(options.root, declared=options.declared, ros=options.ros)
+    if sample:
+        LOGGER.info(f"settings written to {sample}")
+    written = write_environment(options.root, options.ros, python)
+    LOGGER.info(f"source {written} before generating, building or running", extra={"level": "done"})

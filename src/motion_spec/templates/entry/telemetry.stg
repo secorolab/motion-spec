@@ -681,7 +681,7 @@ telemetry-monitor-sample(slot) ::= <<
 >>
 
 telemetry-quantity-sample(slot, views) ::= <<
-    pub.quantity_sample(<slot.index>, <sample-expr(slot.desc, views)>);
+    pub.quantity_sample(<slot.index>, <sample-expr(slot.descriptor, views)>);
 >>
 
 telemetry-pose-sample(slot) ::= <<

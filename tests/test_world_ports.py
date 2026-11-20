@@ -18,7 +18,7 @@ from motion_spec.classes.scene import MjcfSceneObject, MjcfSceneSpec
 from motion_spec.rdf_parser.runtime import world_ports
 
 # These scenes declare no agents, so no agent model maps a tree onto an MJCF body.
-_NO_AGENTS = SimpleNamespace(graph=Graph())
+NO_AGENTS = SimpleNamespace(graph=Graph())
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +30,7 @@ def trees() -> list[dict]:
 
 def test_a_free_body_nothing_places_fails_while_generating(trees) -> None:
     with pytest.raises(ConstraintViolation, match="free body the scene does not place"):
-        world_ports(_NO_AGENTS, trees, MjcfSceneSpec(), [], [], [], [], "mj_kdl")
+        world_ports(NO_AGENTS, trees, MjcfSceneSpec(), [], [], [], [], "mj_kdl")
 
 
 def test_a_free_body_only_the_scene_places_has_no_provider_on_hardware(trees) -> None:
@@ -42,4 +42,4 @@ def test_a_free_body_only_the_scene_places_has_no_provider_on_hardware(trees) ->
     scene = MjcfSceneSpec()
     scene.objects.append(MjcfSceneObject(id="cube", body="cube", body_iri=cube))
     with pytest.raises(ConstraintViolation, match="only a subscription can place a free body"):
-        world_ports(_NO_AGENTS, trees, scene, [], [], [], [], "robif2b")
+        world_ports(NO_AGENTS, trees, scene, [], [], [], [], "robif2b")

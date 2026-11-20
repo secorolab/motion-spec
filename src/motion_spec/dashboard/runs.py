@@ -20,7 +20,7 @@ LOG_REL = Path("logs") / "frame_log.pb"
 ENDED = {State.COMPLETE, State.CANCELED}
 LIVE_WINDOW_S = 10.0
 
-_LIFECYCLE_CACHE: dict[Path, tuple[tuple, tuple[State, Verdict]]] = {}
+LIFECYCLE_CACHE: dict[Path, tuple[tuple, tuple[State, Verdict]]] = {}
 
 
 def lifecycle(run_dir: Path) -> tuple[State, Verdict]:
@@ -29,11 +29,11 @@ def lifecycle(run_dir: Path) -> tuple[State, Verdict]:
     except OSError:
         return State.NEW, Verdict.UNAVAILABLE
     key = (stat.st_mtime_ns, stat.st_size)
-    cached = _LIFECYCLE_CACHE.get(run_dir)
+    cached = LIFECYCLE_CACHE.get(run_dir)
     if cached is not None and cached[0] == key:
         return cached[1]
     lifecycle = rec_run(run_dir).lifecycle()
-    _LIFECYCLE_CACHE[run_dir] = (key, lifecycle)
+    LIFECYCLE_CACHE[run_dir] = (key, lifecycle)
     return lifecycle
 
 

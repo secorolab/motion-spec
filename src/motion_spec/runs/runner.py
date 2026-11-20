@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -83,19 +83,7 @@ def run_cataloged(
     cwd = Path(cwd).resolve() if cwd else None
     run_id = run_id or run_dir.name
     frame_log = run_dir / FRAME_LOG
-
-    if not source_dir.exists():
-        raise RunnerError(f"{source_dir}: source directory does not exist")
-    for path in (source_dir / "contract" / HEADER_FILE, source_dir / GENERATION_DOCUMENT):
-        if not path.exists():
-            raise RunnerError(f"{path}: required generated artifact is missing")
-    if not executable.exists():
-        raise RunnerError(f"{executable}: executable does not exist")
-    validate_robot_config(source_dir, cwd)
-    if rec_run(run_dir, run_id).store.load(run_id) is not None:
-        raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
-    if frame_log.exists():
-        raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
+    check_launchable(run_dir, run_id, source_dir, executable, cwd)
     schema_hash = read_contract(source_dir / "contract" / HEADER_FILE).header.schema_hash
     model = generation_model(source_dir)
     platform = platform_facts(model.graph)
@@ -112,19 +100,7 @@ def run_cataloged(
     )
 
     try:
-        # [ros.clock]: the run publishes /clock, so bag in sim time
-        topics, use_sim_time = [], False
-        if config is not None and config.exists():
-            import tomllib
-
-            try:
-                deployment = tomllib.loads(config.read_text())
-            except tomllib.TOMLDecodeError as error:
-                raise RunnerError(f"{config}: {error}") from error
-            topics = (deployment.get("rosbag") or {}).get("topics") or []
-            if not isinstance(topics, list) or any(not isinstance(topic, str) for topic in topics):
-                raise RunnerError(f"{config}: [rosbag] `topics` must be a list of topic names")
-            use_sim_time = "clock" in (deployment.get("ros") or {})
+        topics, use_sim_time = bag_topics(config)
         with (
             rosbag_recorder(run_dir, topics, use_sim_time),
             real_camera_recorders(
@@ -145,13 +121,8 @@ def run_cataloged(
     except Exception:
         finish_rec_run(run_dir, run, Verdict.FAILED)
         raise
-    sampling = read_sampling(frame_log) if record_log and frame_log.exists() else None
-    if sampling:
-        drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
-        with run_bundle(run_dir, run_id, bundle_id) as bundle:
-            process = next(bundle.subjects(PROV.qualifiedDelegation), None)
-            for quantity, values in sampling["draws"].items():
-                record_draw(bundle, process, quantity, values, drawn_at)
+    if record_log and frame_log.exists():
+        record_draws(run_dir, run_id, bundle_id, read_sampling(frame_log))
     # 130: stopped by SIGINT/SIGTERM with complete artifacts, not a failure
     verdict = {0: Verdict.PASSED, 130: Verdict.ERROR}.get(returncode, Verdict.FAILED)
 
@@ -169,6 +140,62 @@ def run_cataloged(
         raise
     finish_rec_run(run_dir, run, verdict)
     return returncode
+
+
+def check_launchable(
+    run_dir: Path, run_id: str, source_dir: Path, executable: Path, cwd: Path | None
+) -> None:
+    """Refuse a run before it starts: a generated artifact, the executable or a valid robot
+    config is missing, or RUN_DIR already holds a run or its frame log.
+
+    Raises:
+        RunnerError: naming the first of these that fails.
+    """
+    if not source_dir.exists():
+        raise RunnerError(f"{source_dir}: source directory does not exist")
+    for path in (source_dir / "contract" / HEADER_FILE, source_dir / GENERATION_DOCUMENT):
+        if not path.exists():
+            raise RunnerError(f"{path}: required generated artifact is missing")
+    if not executable.exists():
+        raise RunnerError(f"{executable}: executable does not exist")
+    validate_robot_config(source_dir, cwd)
+    if rec_run(run_dir, run_id).store.load(run_id) is not None:
+        raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
+    frame_log = run_dir / FRAME_LOG
+    if frame_log.exists():
+        raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
+
+
+def bag_topics(config: Path | None) -> tuple[list[str], bool]:
+    """The topics the deployment CONFIG's [rosbag] names, and whether to bag them in sim time:
+    with [ros.clock] the run publishes /clock.
+
+    Raises:
+        RunnerError: CONFIG is no TOML, or its `topics` are no list of names.
+    """
+    if config is None or not config.exists():
+        return [], False
+    import tomllib
+
+    try:
+        deployment = tomllib.loads(config.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise RunnerError(f"{config}: {error}") from error
+    topics = (deployment.get("rosbag") or {}).get("topics") or []
+    if not isinstance(topics, list) or any(not isinstance(topic, str) for topic in topics):
+        raise RunnerError(f"{config}: [rosbag] `topics` must be a list of topic names")
+    return topics, "clock" in (deployment.get("ros") or {})
+
+
+def record_draws(run_dir: Path, run_id: str, bundle_id: URIRef, sampling: dict | None) -> None:
+    """Record in motion-spec's bundle of the run the values its frame log's SAMPLING drew."""
+    if not sampling:
+        return
+    drawn_at = datetime.fromtimestamp(sampling["drawn_at_ns"] / 1e9, tz=UTC)
+    with run_bundle(run_dir, run_id, bundle_id) as bundle:
+        process = next(bundle.subjects(PROV.qualifiedDelegation), None)
+        for quantity, values in sampling["draws"].items():
+            record_draw(bundle, process, quantity, values, drawn_at)
 
 
 def validate_robot_config(source_dir: Path, cwd: Path | None = None) -> None:
@@ -256,17 +283,7 @@ def rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False
     spinner = threading.Thread(target=recorder.record, daemon=True)
     spinner.start()
     try:
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            if bag_dir.exists():
-                break
-            if not spinner.is_alive():
-                raise RunnerError(
-                    f"{bag_dir}: the rosbag2 recorder stopped before it opened the bag"
-                )
-            time.sleep(0.01)
-        else:
-            raise RunnerError(f"{bag_dir}: the rosbag2 recorder did not open the bag in 30s")
+        wait_for_bag(bag_dir, spinner)
         # without the spin the bag lists topics but holds no message
         recorder.start_spin()
         yield
@@ -277,6 +294,22 @@ def rosbag_recorder(run_dir: Path, topics: list[str], use_sim_time: bool = False
             rclpy.shutdown()
         if not (bag_dir / "metadata.yaml").exists():
             print(f"rosbag: {bag_dir} has no metadata.yaml; the bag is unreadable", file=sys.stderr)
+
+
+def wait_for_bag(bag_dir: Path, spinner: threading.Thread) -> None:
+    """Wait up to 30 s for the recorder SPINNER runs to open BAG_DIR.
+
+    Raises:
+        RunnerError: the recorder stopped first, or did not open it in time.
+    """
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if bag_dir.exists():
+            return
+        if not spinner.is_alive():
+            raise RunnerError(f"{bag_dir}: the rosbag2 recorder stopped before it opened the bag")
+        time.sleep(0.01)
+    raise RunnerError(f"{bag_dir}: the rosbag2 recorder did not open the bag in 30s")
 
 
 @contextmanager
@@ -345,19 +378,20 @@ def run_executable(
         os.close(output_out)
     pump = threading.Thread(target=tee, args=(output, console), daemon=True)
     pump.start()
-    canceled_at = None
     try:
-        while True:
-            try:
-                return process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                pass
-            if canceled_at is None:
-                if run.lifecycle()[0] is State.CANCELING:
-                    process.terminate()
-                    canceled_at = time.monotonic()
-            elif time.monotonic() - canceled_at > 5:
-                process.kill()
+        return supervise(process, run)
+    finally:
+        # a grandchild may hold the pipe open
+        pump.join(timeout=5)
+        output.close()
+        console.close()
+
+
+def supervise(process: subprocess.Popen, run) -> int:
+    """PROCESS's exit code, as `wait_for_exit` waits for it; on Ctrl-C, cancel RUN and stop
+    PROCESS, and return 130."""
+    try:
+        return wait_for_exit(process, run)
     except KeyboardInterrupt:
         if run.lifecycle()[0] is State.IN_PROGRESS:
             run.cancel()
@@ -368,11 +402,20 @@ def run_executable(
             process.kill()
             process.wait()
         return 130
-    finally:
-        # a grandchild may hold the pipe open
-        pump.join(timeout=5)
-        output.close()
-        console.close()
+
+
+def wait_for_exit(process: subprocess.Popen, run) -> int:
+    """PROCESS's exit code once it exits; terminated when rec has RUN canceling, killed when it
+    has not stopped 5 s later."""
+    canceled_at = None
+    while True:
+        with suppress(subprocess.TimeoutExpired):
+            return process.wait(timeout=1)
+        if canceled_at is None and run.lifecycle()[0] is State.CANCELING:
+            process.terminate()
+            canceled_at = time.monotonic()
+        elif canceled_at is not None and time.monotonic() - canceled_at > 5:
+            process.kill()
 
 
 def tee(stream, sink) -> None:

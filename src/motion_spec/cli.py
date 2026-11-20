@@ -10,7 +10,6 @@ import logging
 import os
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -23,11 +22,35 @@ from typing import ClassVar
 
 import click
 
+from motion_spec.health import (
+    DETAILS,
+    ENVIRONMENT_DEFAULTS,
+    PROFILES,
+    SETUP_PROVIDES,
+    VERDICTS,
+    HealthCheck,
+    apt_packages,
+    check_health,
+    environment_values,
+    remedy,
+    ros_summary,
+    verdicts,
+)
 from motion_spec.setup import (
     BUILD_TYPE,
     BUILD_TYPE_VARIABLE,
     GENERATION_VARIABLE,
     WORKSPACE_VARIABLE,
+    SetupOptions,
+    announce_setup,
+    build_jobs,
+    clean_workspace,
+    install_repositories,
+    manifest_files,
+    preflight,
+    selected_repositories,
+    workspace,
+    write_setup_files,
 )
 from motion_spec.utils import (
     LEVEL_LABELS,
@@ -37,8 +60,6 @@ from motion_spec.utils import (
     SGR,
     STAMP_COLOUR,
     command_log,
-    log_header,
-    machine_facts,
     mirrored_stderr,
     show_warning,
 )
@@ -138,113 +159,40 @@ def model_rejected(exc: Exception) -> click.ClickException:
     return click.ClickException(f"the model was rejected: {exc}")
 
 
-@contextmanager
-def manual_section(formatter: click.HelpFormatter, title: str):
-    formatter.write(f"{click.style(title, bold=True)}\n")
-    formatter.indent()
-    yield
-    formatter.dedent()
-    formatter.write_paragraph()
+# \b keeps a paragraph's line breaks
+EPILOG = f"""\b
+ARTIFACTS
+  generated/source/      Authored DSL inputs.
+  generated/model/       JSON-LD graphs, FSM artifacts, and IR.
+  generated/controller/  Generated C++ and CMake project.
+  generated/contract/    Schema, frame layout, and frame-log protocol.
+  generated/provenance/  Generation and derivation provenance.
+  build/                 Reusable compiled controller.
+  runs/RUN/              Run-owned logs and provenance/.
+  latest                 Symlink to the newest generation, under
+                         ${GENERATION_VARIABLE}.
 
+\b
+ENVIRONMENT
+  {GENERATION_VARIABLE}  Where 'gen' and 'run' put a new generation when given no
+                   -o. Unset, they stop and say so. 'latest' there names the
+                   one 'rerun' takes.
 
-class MotionSpecGroup(click.Group):
-    """Render the top-level help as a Unix manual page."""
+\b
+EXAMPLES
+  Generate and build a model
+    $ motion-spec gen model.robmot
+    $ motion-spec build "$MOTION_SPEC_GEN/latest"
 
-    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
-        with manual_section(formatter, "NAME"):
-            formatter.write_text(
-                "motion-spec - validate, compile, run, and inspect motion specifications"
-            )
-        with manual_section(formatter, "SYNOPSIS"):
-            formatter.write_text("motion-spec [OPTIONS] COMMAND [ARGS]...")
-        with manual_section(formatter, "DESCRIPTION"):
-            formatter.write_text(
-                "motion-spec lowers motion-model JSON-LD to an intermediate representation, "
-                "generates a C++ controller, and records or inspects controller executions."
-            )
-        with manual_section(formatter, "WORKFLOW"):
-            formatter.write_dl(
-                [
-                    (
-                        "setup",
-                        "Install the pinned tools and libraries needed to build controllers.",
-                    ),
-                    ("install", "Install the optional DSL, dashboard, or replay features."),
-                    ("health", "Check the tools and libraries required by the selected target."),
-                    ("gen", "Generate IR or C++ from a .robmot model."),
-                    ("build", "Configure and compile a generation."),
-                    ("run", "Execute the controller and record the run."),
-                    ("rerun", "Run the last generation again, without naming it."),
-                    ("cancel", "Ask a run in progress to stop; rec records it canceled."),
-                    ("control", "Pause, resume, step or pace a simulated run in progress."),
-                    ("replay", "Verify, summarize, or recover data from a recorded run."),
-                    ("compare", "Whether two generations had the same model, inputs and tools."),
-                    ("view", "Compose a .scenex in MuJoCo and view it."),
-                ]
-            )
-        with manual_section(formatter, "ARTIFACTS"):
-            formatter.write_dl(
-                [
-                    ("generated/source/", "Authored DSL inputs."),
-                    ("generated/model/", "JSON-LD graphs, FSM artifacts, and IR."),
-                    ("generated/controller/", "Generated C++ and CMake project."),
-                    ("generated/contract/", "Schema, frame layout, and frame-log protocol."),
-                    ("generated/provenance/", "Generation and derivation provenance."),
-                    ("build/", "Reusable compiled controller."),
-                    ("runs/RUN/", "Run-owned logs and provenance/."),
-                    ("latest", f"Symlink to the newest generation, under ${GENERATION_VARIABLE}."),
-                ]
-            )
-        with manual_section(formatter, "ENVIRONMENT"):
-            formatter.write_dl(
-                [
-                    (
-                        GENERATION_VARIABLE,
-                        (
-                            "Where 'gen' and 'run' put a new generation when given no -o. "
-                            "Unset, they stop and say so. "
-                            "'latest' there names the one 'rerun' takes."
-                        ),
-                    )
-                ]
-            )
-        option_records = [
-            record for param in self.get_params(ctx) if (record := param.get_help_record(ctx))
-        ]
-        if option_records:
-            with manual_section(formatter, "OPTIONS"):
-                formatter.write_dl(option_records)
-        command_records = [
-            (name, command.help or command.get_short_help_str())
-            for name in self.list_commands(ctx)
-            if (command := self.get_command(ctx, name)) is not None and not command.hidden
-        ]
-        with manual_section(formatter, "COMMANDS"):
-            formatter.write_dl(command_records)
-        with manual_section(formatter, "EXAMPLES"):
-            examples = (
-                (
-                    "Generate and build a model",
-                    ("motion-spec gen model.robmot", 'motion-spec build "$MOTION_SPEC_GEN/latest"'),
-                ),
-                ("Generate only the IR", ("motion-spec gen ir model.robmot --name scratch",)),
-                (
-                    "Generate, build, run, and inspect",
-                    (
-                        "motion-spec run model.robmot --run-id run-1",
-                        'motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"',
-                    ),
-                ),
-            )
-            prompt = " " * (formatter.current_indent + 2) + click.style("$ ", fg="cyan")
-            for example_index, (label, commands) in enumerate(examples):
-                if example_index:
-                    formatter.write_paragraph()
-                formatter.write_text(click.style(label, bold=True))
-                for command in commands:
-                    formatter.write(f"{prompt}{command}\n")
-        with manual_section(formatter, "SEE ALSO"):
-            formatter.write_text("motion-spec COMMAND --help")
+\b
+  Generate only the IR
+    $ motion-spec gen ir model.robmot --name scratch
+
+\b
+  Generate, build, run, and inspect
+    $ motion-spec run model.robmot --run-id run-1
+    $ motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"
+"""
 
 
 INSTALLS = {"textx": "motion-spec setup motion-spec-dsl", "pyshacl": "pip install motion_spec"}
@@ -256,8 +204,6 @@ def requirements_reported():
     try:
         yield
     except ImportError as exc:
-        from motion_spec.health import DETAILS, SETUP_PROVIDES, remedy
-
         dependency = (exc.name or "").partition(".")[0]
         spec = DETAILS.get(dependency)
         install = remedy(dependency) if dependency in SETUP_PROVIDES else INSTALLS.get(dependency)
@@ -270,11 +216,15 @@ def requirements_reported():
         raise click.ClickException("\n".join(["", top, *body, "└" + "─" * width])) from exc
 
 
-@click.group(cls=MotionSpecGroup, no_args_is_help=True)
+@click.group(no_args_is_help=True, epilog=EPILOG)
 @click.version_option(package_name="motion_spec")
 @click.pass_context
 def main(ctx: click.Context) -> None:
-    """The motion-spec toolchain."""
+    """motion-spec - validate, compile, run, and inspect motion specifications.
+
+    motion-spec lowers motion-model JSON-LD to an intermediate representation, generates a C++
+    controller, and records or inspects controller executions.
+    """
     # setup installs motion-spec-dsl, so runs without it
     if ctx.invoked_subcommand != "setup":
         from rdf_utils.resolver import install_resolver
@@ -296,12 +246,15 @@ TOOL_LOGGERS = ("motion_spec", "motion_spec_dsl", "scene_dsl", "coord_dsl", "tex
 
 
 class SayHandler(logging.Handler):
-    """A library's log record, in the format every other line of the CLI is written in."""
+    """A library's log record, in the format every other line of the CLI is written in.
+
+    A record's `level` extra names a level logging has none for: `step` or `done`.
+    """
 
     LEVELS: ClassVar = {logging.WARNING: "warn", logging.ERROR: "error", logging.CRITICAL: "error"}
 
     def emit(self, record: logging.LogRecord) -> None:
-        say(self.LEVELS.get(record.levelno, "info"), record.getMessage())
+        say(getattr(record, "level", self.LEVELS.get(record.levelno, "info")), record.getMessage())
 
 
 def environment_options(command):
@@ -340,9 +293,9 @@ def run_options(command):
         type=click.Path(exists=True, file_okay=False, path_type=Path),
         help="Working directory of the executable; scene assets resolve relative to it.",
     )(command)
-    return click.option(
-        "--run-id", help="Name of this run's directory under <generation>/runs."
-    )(command)
+    return click.option("--run-id", help="Name of this run's directory under <generation>/runs.")(
+        command
+    )
 
 
 def environment(
@@ -402,7 +355,7 @@ def dashboard(
 ) -> None:
     """Browse generations, replay runs, and query them in a browser."""
     from motion_spec.dashboard.jobs import use_environment
-    from motion_spec.dashboard.server import serve
+    from motion_spec.dashboard.server import check_port, serve, serve_detached, stop_dashboards
     from motion_spec.setup import find_environment
 
     named_port = (
@@ -411,20 +364,20 @@ def dashboard(
         is not click.core.ParameterSource.DEFAULT
         else None
     )
-    if kill:
-        return stop_dashboards(named_port)
-    if restart:
-        # the port frees asynchronously
-        stop_dashboards(named_port)
-        for _ in range(50):
-            if not port_taken(port):
-                break
-            time.sleep(0.1)
+    if kill or restart:
+        try:
+            stopped = stop_dashboards(named_port)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        say("done", f"stopped {', '.join(map(str, stopped))}")
+        if kill:
+            return
     logs = (logs or generation_root()).expanduser()
-    if port_taken(port):
-        raise click.ClickException(
-            f"port {port} is already serving. Stop it, or pass --port for a second dashboard."
-        )
+    try:
+        # the port frees asynchronously
+        check_port(port, wait=5 if restart else 0)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
     script = None if no_env else (env_script or find_environment(logs))
     if not background:
         if script:
@@ -432,75 +385,14 @@ def dashboard(
             say("info", f"environment {script}")
         return serve(port, logs, sources)
 
-    destination = (log_file or logs / "dashboard.log").expanduser()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    argv = [sys.argv[0], "dashboard", "--port", str(port), "--logs", str(logs)]
-    if sources is not None:
-        argv += ["--sources", str(sources)]
-    argv += ["--env", str(script)] if script else ["--no-env"]
-    with destination.open("ab") as sink:
-        child = subprocess.Popen(argv, stdout=sink, stderr=sink, start_new_session=True)
-    say("info", f"pid {child.pid}, logging to {destination}")
-    say("info", f"stop it with: kill {child.pid}")
+    pid, destination = serve_detached(port, logs, sources, script, log_file)
+    say("info", f"pid {pid}, logging to {destination}")
+    say("info", f"stop it with: kill {pid}")
     say("done", f"dashboard http://127.0.0.1:{port}")
     click.echo(f"http://127.0.0.1:{port}")
 
 
-def stop_dashboards(port: int | None) -> None:
-    """Stop the dashboards serving, on PORT or all, and the labs they started.
-
-    Each records its pid on start, and its lab's; a lab whose dashboard had to be killed
-    outright is stopped from that record too, or the next dashboard starts a second one.
-    """
-    from motion_spec.dashboard.roots import pidfile
-
-    records = [
-        path
-        for pattern in (pidfile(port or "*"), pidfile(port or "*", "lab"))
-        for path in pattern.parent.glob(pattern.name)
-    ]
-    stopped = []
-    for path in records:
-        try:
-            pid = int(path.read_text().strip())
-        except (OSError, ValueError):
-            pass
-        else:
-            if stop(pid):
-                stopped.append(pid)
-        path.unlink(missing_ok=True)
-    if not stopped:
-        where = f" on port {port}" if port else ""
-        raise click.ClickException(f"no dashboard is serving{where}.")
-    say("done", f"stopped {', '.join(map(str, stopped))}")
-
-
-def stop(pid: int) -> bool:
-    """SIGTERM, then SIGKILL after 5 s; False when PID was already gone."""
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return False
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.2)
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
-    return True
-
-
-def port_taken(port: int) -> bool:
-    """Whether something already answers on the loopback port."""
-    with socket.socket() as probe:
-        probe.settimeout(0.2)
-        return probe.connect_ex(("127.0.0.1", port)) == 0
-
-
-@main.command()
+@main.command(short_help="Install the pinned tools and libraries needed to build controllers.")
 @click.argument("repositories", nargs=-1)
 @click.option(
     "--workspace",
@@ -577,25 +469,6 @@ def setup(
     if clean and repositories:
         raise click.UsageError("--clean takes the whole workspace's outputs; it takes no names")
     from motion_spec.config import setting
-    from motion_spec.setup import (
-        INSTALL_DIRECTORY,
-        SOURCE_DIRECTORY,
-        STST_REPOSITORY,
-        build_jobs,
-        discover_packages,
-        ignore_thirdparty,
-        install_package,
-        install_stst,
-        manifest_files,
-        manifest_in_force,
-        missing_prerequisites,
-        package_installed,
-        source_state,
-        stst_installed,
-        target_environment,
-        workspace,
-        write_environment,
-    )
 
     # a usage error: no stack
     try:
@@ -604,137 +477,50 @@ def setup(
     except (RuntimeError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
     if clean:
-        from motion_spec.setup import clean_workspace
-
-        trashed = clean_workspace(root)
-        for path, where in trashed:
-            say("done", f"trashed {path}" + (f" → {where}" if where else ""))
-        say("info", "sources and generations left in place" if trashed else "nothing to clean")
+        clean_workspace(root)
         return
     files = manifest_files(real)
     try:
-        listed = manifest_in_force(files)
+        selected = selected_repositories(files, repositories)
     except (OSError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
-    names = {r.path for r in listed} | {r.name for r in listed}
-    unknown = [n for n in repositories if n not in names]
-    if unknown:
-        raise click.UsageError(
-            f"not in {', '.join(str(f) for f in files)}: {', '.join(unknown)}; listed are "
-            f"{', '.join(r.name for r in listed)}"
-        )
-    selected = [
-        r for r in listed if not repositories or r.path in repositories or r.name in repositories
-    ]
-    jobs = build_jobs(jobs)
-    prefix = root / INSTALL_DIRECTORY
-    log = command_log(root, "setup")
-    manifests = ", ".join(str(path) for path in files)
-    # held to the end, so the final failure is logged too
-    click.get_current_context().with_resource(mirrored_stderr(log))
-    log_header(
-        log,
-        "setup",
-        {
-            "workspace": root,
-            "manifests": manifests,
-            "repositories": ", ".join(repository.name for repository in selected),
-            "build type": build_type,
-            "jobs": jobs,
-            "python": "editable" if dev else "snapshot",
-            "colcon": ros,
-            **machine_facts(),
-        },
+    options = SetupOptions(
+        root,
+        files,
+        selected,
+        command_log(root, "setup"),
+        force=force,
+        build_type=build_type,
+        ros=ros,
+        jobs=build_jobs(jobs),
+        dev=dev,
+        declared=workspace_argument is not None,
     )
-    say("info", f"workspace {root}")
-    say("info", f"installing into {prefix}")
-    say("info", f"manifests {manifests}")
-    say("info", f"console log {log}")
-    say("info", f"building with {jobs} job{'s' if jobs != 1 else ''}")
-    import motion_spec
+    # held to the end, so the final failure is logged too
+    click.get_current_context().with_resource(mirrored_stderr(options.log))
+    install_workspace(options)
 
-    # setup cannot check out the code running it
-    sources = root / SOURCE_DIRECTORY
-    if dev and sources.resolve() not in Path(motion_spec.__file__).resolve().parents:
-        say(
-            "warn",
-            f"--dev leaves motion-spec itself installed from {Path(motion_spec.__file__).parent}; "
-            f"clone it under {sources} and reinstall it with `pip install -e` "
-            "to edit it too",
-        )
-    # before any build: setup cannot install these itself
-    say("info", "checking prerequisites")
-    packages, others = missing_prerequisites(selected, ros)
-    if packages or others:
-        for requirement in others:
-            say("error", requirement)
-        if packages:
-            say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
-        raise Reported("setup needs these before it can start; nothing was built.")
-    if not any((sources / r.path / ".git").is_dir() for r in selected):
-        raise Reported(
-            f"nothing imported under {sources}: run "
-            f"`vcs import {sources} < {files[0]}` first; nothing was built."
-        )
-    skipped: list[str] = []
+
+def install_workspace(options: SetupOptions) -> None:
+    """Run the install `setup` resolved, each library failure as the CLI error that fits it.
+
+    Kept apart from the command for the four mappings: a missing prerequisite is reported,
+    a failed build is ours and shows its stack, an unwritable environment file is a usage
+    error, and a skipped repository fails the command once everything else is done.
+    """
+    announce_setup(options)
     try:
-        python = target_environment(root, ros, dev, log)
-        say("info", f"python packages into {python}")
-        if ros:
-            ignore_thirdparty(root)
-        for repository in selected:
-            state = source_state(repository, root)
-            if not state.usable:
-                say("warn", f"skipped {repository.name}: {state.path} {state.reason}")
-                skipped.append(repository.name)
-                continue
-            if state.drift:
-                say("warn", f"{repository.name}: {state.path} {state.drift}")
-            if repository.path == STST_REPOSITORY:
-                already = not force and stst_installed(root)
-                if not already:
-                    say("step", "stst")
-                launcher = install_stst(root, state, force=force, log=log)
-                say(
-                    "info" if already else "done",
-                    f"stst {'already installed' if already else 'installed'}, launcher {launcher}",
-                )
-                continue
-            packages = discover_packages(state.path)
-            if not packages:
-                say("warn", f"skipped {repository.name}: {state.path} holds no package to build")
-                skipped.append(repository.name)
-                continue
-            for package in packages:
-                if not force and package_installed(package.name, prefix, state.path):
-                    say("info", f"{package.name} already installed, source {state.path}")
-                    continue
-                say("step", package.name)
-                install_package(
-                    package,
-                    state,
-                    root,
-                    python,
-                    fresh=force,
-                    build_type=build_type,
-                    log=log,
-                    ros=ros,
-                    jobs=jobs,
-                    dev=dev,
-                )
-                say("done", f"{package.name} installed, source {state.path}")
+        preflight(options)
+    except RuntimeError as exc:
+        raise Reported(str(exc)) from exc
+    try:
+        python, skipped = install_repositories(options)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise internal_failure("setup failed", exc) from exc
-    from motion_spec.config import write_sample
-
-    sample = write_sample(root, declared=workspace_argument is not None, ros=ros)
-    if sample:
-        say("info", f"settings written to {sample}")
     try:
-        written = write_environment(root, ros, python)
+        write_setup_files(options, python)
     except RuntimeError as exc:
         raise click.UsageError(str(exc)) from exc
-    say("done", f"source {written} before generating, building or running")
     if skipped:
         say("error", f"not built: {', '.join(skipped)}")
         raise click.exceptions.Exit(1)
@@ -778,10 +564,9 @@ def examples(into: Path | None) -> None:
 
     from motion_spec.setup import SOURCE_DIRECTORY, workspace
 
-    try:
+    source = None
+    with contextlib.suppress(ImportError):
         source = Path(str(files("motion_spec_dsl") / "models"))
-    except ImportError:
-        source = None
     if source is None or not source.is_dir():
         raise click.ClickException(
             "no example models in this motion_spec_dsl: it predates the ones that ship with "
@@ -811,21 +596,21 @@ def examples(into: Path | None) -> None:
     say("done", f"{len(copied)} model file{'' if len(copied) == 1 else 's'} copied to {into}")
 
 
-@main.command()
+@main.command(short_help="Check the tools and libraries required by the selected target.")
 @click.option(
     "--profile",
     "profiles",
     multiple=True,
-    type=click.Choice(("base", "telemetry", "dsl", "codegen", "ros", "build", "runtime", "all")),
+    type=click.Choice((*PROFILES, "all")),
     default=("all",),
     show_default=True,
 )
 @click.option(
     "--target",
     "targets",
-    type=click.Choice(("mujoco", "robif2b")),
+    type=click.Choice(tuple(VERDICTS)),
     multiple=True,
-    default=("mujoco", "robif2b"),
+    default=tuple(VERDICTS),
     show_default=True,
 )
 @environment_options
@@ -833,15 +618,6 @@ def health(
     profiles: tuple[str, ...], targets: tuple[str, ...], env_script: Path | None, no_env: bool
 ) -> None:
     """Report health of selected installation profiles."""
-    from motion_spec.health import (
-        ENVIRONMENT_DEFAULTS,
-        apt_packages,
-        check_health,
-        environment_values,
-        ros_summary,
-        verdicts,
-    )
-
     # the environment a build and run get, not this shell's
     env, _ = environment(env_script, no_env)
 
@@ -892,27 +668,7 @@ def health(
             say("info", click.style(heading, bold=True, fg="blue"), err=False)
             if current_profile == "ros":
                 say("warn", ros_summary(env), err=False)
-        status = "OK" if check.ok else "ABSENT" if check.optional else "MISSING"
-        colour = "green" if check.ok else "yellow" if check.optional else "red"
-        stamp("info" if check.ok or check.optional else "error", err=False)
-        click.secho(f"{status:<7}  ", fg=colour, bold=not check.ok, nl=False)
-        click.secho(f"{check.dependency:<{dependency_width}}", fg="cyan", nl=False)
-        click.echo(f"  {check.what:<{what_width}}  {check.path or '—'}")
-        if not check.ok and not check.optional:
-            # apt packages go into the one install line below
-            fix = "" if check.apt else check.detail
-            for label, value, colour in (
-                ("why", check.why, "white"),
-                ("source", check.source, "blue"),
-                ("fix", fix, COMMAND_COLOUR),
-                ("or", check.alternative if fix else "", COMMAND_COLOUR),
-            ):
-                if not value:
-                    continue
-                stamp("error", err=False)
-                click.echo(" " * (STATUS_WIDTH + 4), nl=False)
-                click.secho(f"{label:<6} ", fg="yellow", dim=True, nl=False)
-                click.secho(value, fg=colour)
+        show_check(check, dependency_width, what_width)
     missing = sum(not check.ok and not check.optional for check in checks)
     absent = sum(not check.ok and check.optional for check in checks)
     click.echo()
@@ -939,14 +695,39 @@ def health(
         raise click.exceptions.Exit(1)
 
 
-@main.command()
+def show_check(check: HealthCheck, dependency_width: int, what_width: int) -> None:
+    """One health row and, under a check that blocks, why it is needed and how to fix it."""
+    status = "OK" if check.ok else "ABSENT" if check.optional else "MISSING"
+    colour = "green" if check.ok else "yellow" if check.optional else "red"
+    stamp("info" if check.ok or check.optional else "error", err=False)
+    click.secho(f"{status:<7}  ", fg=colour, bold=not check.ok, nl=False)
+    click.secho(f"{check.dependency:<{dependency_width}}", fg="cyan", nl=False)
+    click.echo(f"  {check.what:<{what_width}}  {check.path or '—'}")
+    if check.ok or check.optional:
+        return
+    # apt packages go into the one install line below
+    fix = "" if check.apt else check.detail
+    for label, value, colour in (
+        ("why", check.why, "white"),
+        ("source", check.source, "blue"),
+        ("fix", fix, COMMAND_COLOUR),
+        ("or", check.alternative if fix else "", COMMAND_COLOUR),
+    ):
+        if not value:
+            continue
+        stamp("error", err=False)
+        click.echo(" " * (STATUS_WIDTH + 4), nl=False)
+        click.secho(f"{label:<6} ", fg="yellow", dim=True, nl=False)
+        click.secho(value, fg=colour)
+
+
+@main.command(short_help="Generate IR or C++ from a .robmot model.")
 @click.argument("stage-or-model")
 @click.argument(
     "model", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path)
 )
 @click.option(
-    "--name",
-    help="Name the generation tree under $MOTION_SPEC_GEN; defaults to the model's stem.",
+    "--name", help="Name the generation tree under $MOTION_SPEC_GEN; defaults to the model's stem."
 )
 def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
     """Generate IR or C++ from a .robmot MODEL; CODE is the default stage."""
@@ -956,6 +737,39 @@ def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
         from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import generate_model
 
+    stage, model = stage_and_model(stage_or_model, model)
+    try:
+        generation = new_generation(model, name)
+        with mirrored_stderr(generation / LOG_DIRECTORY / "console.log"):
+            generate_model(model, generation, stage=stage)
+    except (
+        ConstraintViolation,
+        MissingAssets,
+        OSError,
+        RuntimeError,
+        subprocess.CalledProcessError,
+    ) as exc:
+        raise pipeline_failure(exc, "generation failed") from exc
+    say("done", f"generated {generation}")
+    click.echo(generation)
+
+
+def pipeline_failure(exc: Exception, failure: str) -> click.ClickException:
+    """The CLI error for a failed generation or build: the model rejected, assets missing, or
+    FAILURE for anything else."""
+    from rdf_utils.constraints import ConstraintViolation
+
+    from motion_spec.generation.codegen import MissingAssets
+
+    if isinstance(exc, ConstraintViolation):
+        return model_rejected(exc)
+    if isinstance(exc, MissingAssets):
+        return Reported(str(exc))
+    return internal_failure(failure, exc)
+
+
+def stage_and_model(stage_or_model: str, model: Path | None) -> tuple[str, Path]:
+    """What `gen` was asked for: `ir` or `code` and a MODEL, or a MODEL alone for `code`."""
     if stage_or_model in {"ir", "code"}:
         if model is None:
             raise click.UsageError(f"MODEL is required after '{stage_or_model}'")
@@ -969,21 +783,10 @@ def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
             raise click.BadParameter(f"file not found: {model}", param_hint="MODEL")
     if model.suffix != ".robmot":
         raise click.BadParameter("MODEL must be a .robmot file", param_hint="MODEL")
-    try:
-        generation = new_generation(model, name)
-        with mirrored_stderr(generation / LOG_DIRECTORY / "console.log"):
-            generate_model(model, generation, stage=stage)
-    except ConstraintViolation as exc:
-        raise model_rejected(exc) from exc
-    except MissingAssets as exc:
-        raise Reported(str(exc)) from exc
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        raise internal_failure("generation failed", exc) from exc
-    say("done", f"generated {generation}")
-    click.echo(generation)
+    return stage, model
 
 
-@main.command()
+@main.command(short_help="Configure and compile a generation.")
 @click.argument("generation", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(
     "--prefix",
@@ -1084,7 +887,7 @@ def config(initialize: bool, workspace_argument: Path | None) -> None:
         click.secho(f"  ({resolved.source})", fg="yellow", dim=True)
 
 
-@main.command()
+@main.command(short_help="Verify, summarize, or recover data from a recorded run.")
 @click.argument("log", type=click.Path(path_type=Path))
 @click.option("--jsonl", is_flag=True, help="Emit decoded frames as JSON Lines.")
 @click.option(
@@ -1110,7 +913,7 @@ def replay(log: Path, jsonl: bool, verify: bool) -> None:
         raise click.ClickException(str(exc)) from exc
 
 
-@main.command()
+@main.command(short_help="Compose a .scenex in MuJoCo and view it.")
 @click.argument("scenex", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "--config",
@@ -1133,7 +936,7 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
         raise click.ClickException(str(exc)) from exc
 
 
-@main.command()
+@main.command(short_help="Execute the controller and record the run.")
 @click.argument("input", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--prefix",
@@ -1172,7 +975,6 @@ def run(
     with requirements_reported():
         from motion_spec.generation.codegen import MissingAssets
         from motion_spec.generation.pipeline import build_generation, generate_model, new_id
-        from motion_spec.runs.provenance import built_executable
         from motion_spec.runs.runner import RunnerError, run_cataloged
         from motion_spec.runs.verify import RecordError
 
@@ -1186,25 +988,16 @@ def run(
                 say("step", "building")
                 executable = build_generation(generation, prefixes=prefixes, jobs=jobs, env=env)
                 say("done", f"built {executable}")
-        except ConstraintViolation as exc:
-            raise model_rejected(exc) from exc
-        except MissingAssets as exc:
-            raise Reported(str(exc)) from exc
-        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-            raise internal_failure("pipeline failed", exc) from exc
+        except (
+            ConstraintViolation,
+            MissingAssets,
+            OSError,
+            RuntimeError,
+            subprocess.CalledProcessError,
+        ) as exc:
+            raise pipeline_failure(exc, "pipeline failed") from exc
     else:
-        if not input.is_dir():
-            raise click.BadParameter(
-                "INPUT must be a .robmot model or a generation directory", param_hint="INPUT"
-            )
-        if prefixes or jobs is not None or name:
-            raise click.UsageError("generation and build options require a .robmot INPUT")
-        generation = input.resolve()
-        executable = built_executable(generation / "generated")
-        if executable is None:
-            raise click.ClickException(
-                f"{generation}: no build is recorded. Build it with `motion-spec build`."
-            )
+        generation, executable = recorded_build(input, prefixes, jobs, name)
         env, environment_script = environment(env_script, no_env, generation)
 
     run_dir = generation / "runs" / (run_id or new_id("run"))
@@ -1232,7 +1025,33 @@ def run(
     say("done", f"run {run_dir}")
 
 
-@main.command()
+def recorded_build(
+    input: Path, prefixes: tuple[Path, ...], jobs: int | None, name: str | None
+) -> tuple[Path, Path]:
+    """The generation directory INPUT and the executable its last build recorded, for `run`.
+
+    Raises:
+        click.ClickException: INPUT is no generation directory, takes generation or build
+            options, or records no build.
+    """
+    from motion_spec.runs.provenance import built_executable
+
+    if not input.is_dir():
+        raise click.BadParameter(
+            "INPUT must be a .robmot model or a generation directory", param_hint="INPUT"
+        )
+    if prefixes or jobs is not None or name:
+        raise click.UsageError("generation and build options require a .robmot INPUT")
+    generation = input.resolve()
+    executable = built_executable(generation / "generated")
+    if executable is None:
+        raise click.ClickException(
+            f"{generation}: no build is recorded. Build it with `motion-spec build`."
+        )
+    return generation, executable
+
+
+@main.command(short_help="Run the last generation again, without naming it.")
 @click.argument(
     "generation", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
@@ -1268,7 +1087,9 @@ def rerun(ctx: click.Context, generation: Path | None, **options) -> None:
 
 
 @main.command()
-@click.argument("run_dir", metavar="RUN", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "run_dir", metavar="RUN", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
 def cancel(run_dir: Path) -> None:
     """Ask the run in RUN, while it is in progress, to stop.
 
@@ -1284,8 +1105,10 @@ def cancel(run_dir: Path) -> None:
     say("done", f"asked {run_dir.name} to stop")
 
 
-@main.command()
-@click.argument("run_dir", metavar="RUN", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@main.command(short_help="Pause, resume, step or pace a simulated run in progress.")
+@click.argument(
+    "run_dir", metavar="RUN", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
 @click.argument("action", type=click.Choice(["pause", "resume", "step", "speed", "status"]))
 @click.argument("value", required=False, type=float)
 def control(run_dir: Path, action: str, value: float | None) -> None:
@@ -1312,7 +1135,7 @@ def control(run_dir: Path, action: str, value: float | None) -> None:
     )
 
 
-@main.command()
+@main.command(short_help="Whether two generations had the same model, inputs and tools.")
 @click.argument(
     "generation_a", metavar="GEN_A", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
@@ -1327,55 +1150,10 @@ def compare(generation_a: Path, generation_b: Path) -> None:
     are the same up to order. Exits 1 on any difference. The ROS interface definitions a model
     reads at generation are not recorded, so they are not compared.
     """
-    from rdf_utils.models.prov import get_file_path
-    from rdflib import Graph
-    from rdflib.compare import graph_diff, to_isomorphic
-    from rdflib.namespace import DCTERMS, PROV, RDF, SDO
+    from rdflib.compare import graph_diff
 
-    from motion_spec.runs.provenance import (
-        GENERATION_DOCUMENT,
-        generation_model,
-        read_generation_dataset,
-    )
-
-    recorded = []
-    for generation in (generation_a, generation_b):
-        try:
-            model_dataset = generation_model(generation / "generated").graph
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
-        # bundles hold one generation's times and ids
-        model, provenance = Graph(), Graph()
-        document = read_generation_dataset(generation / "generated" / GENERATION_DOCUMENT)
-        for graph in model_dataset.graphs():
-            if (graph.identifier, RDF.type, PROV.Bundle) in graph:
-                provenance += graph
-            else:
-                model += graph
-        for graph in document.graphs():
-            if (graph.identifier, RDF.type, PROV.Bundle) in graph:
-                provenance += graph
-        packages = {
-            str(provenance.value(package, SDO.name)): (
-                str(version),
-                str(provenance.value(package, SDO.identifier)),
-            )
-            for package, version in provenance.subject_objects(SDO.softwareVersion)
-        }
-        # inputs: hashed files no activity generated and no tool wrote
-        inputs = {}
-        for entity, digest in provenance.subject_objects(DCTERMS.identifier):
-            if (entity, PROV.wasGeneratedBy, None) in provenance or (
-                entity, PROV.wasAttributedTo, None
-            ) in provenance:
-                continue
-            try:
-                inputs[str(digest)] = get_file_path(provenance, entity) or entity
-            except ValueError:
-                inputs[str(digest)] = entity
-        recorded.append((to_isomorphic(model), packages, inputs))
-
-    (model_a, packages_a, inputs_a), (model_b, packages_b, inputs_b) = recorded
+    model_a, packages_a, inputs_a = recorded_generation(generation_a)
+    model_b, packages_b, inputs_b = recorded_generation(generation_b)
     differences = []
     if model_a != model_b:
         _, only_a, only_b = graph_diff(model_a, model_b)
@@ -1395,3 +1173,54 @@ def compare(generation_a: Path, generation_b: Path) -> None:
     for difference in differences:
         say("warn", difference)
     raise SystemExit(1)
+
+
+def recorded_generation(generation: Path) -> tuple:
+    """What `compare` compares of GENERATION: its model graph, made isomorphic, the package
+    versions and revisions its provenance records, and its input files by hash."""
+    from rdf_utils.models.prov import get_file_path
+    from rdflib import Graph
+    from rdflib.compare import to_isomorphic
+    from rdflib.namespace import DCTERMS, PROV, RDF, SDO
+
+    from motion_spec.runs.provenance import (
+        GENERATION_DOCUMENT,
+        generation_model,
+        read_generation_dataset,
+    )
+
+    try:
+        model_dataset = generation_model(generation / "generated").graph
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    # bundles hold one generation's times and ids
+    model, provenance = Graph(), Graph()
+    document = read_generation_dataset(generation / "generated" / GENERATION_DOCUMENT)
+    for graph in model_dataset.graphs():
+        if (graph.identifier, RDF.type, PROV.Bundle) in graph:
+            provenance += graph
+        else:
+            model += graph
+    for graph in document.graphs():
+        if (graph.identifier, RDF.type, PROV.Bundle) in graph:
+            provenance += graph
+    packages = {
+        str(provenance.value(package, SDO.name)): (
+            str(version),
+            str(provenance.value(package, SDO.identifier)),
+        )
+        for package, version in provenance.subject_objects(SDO.softwareVersion)
+    }
+    # inputs: hashed files no activity generated and no tool wrote
+    inputs = {}
+    for entity, digest in provenance.subject_objects(DCTERMS.identifier):
+        if (entity, PROV.wasGeneratedBy, None) in provenance or (
+            entity,
+            PROV.wasAttributedTo,
+            None,
+        ) in provenance:
+            continue
+        inputs[str(digest)] = entity
+        with contextlib.suppress(ValueError):
+            inputs[str(digest)] = get_file_path(provenance, entity) or entity
+    return to_isomorphic(model), packages, inputs

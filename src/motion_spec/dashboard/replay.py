@@ -181,19 +181,55 @@ SLOT_ROLES = {
 }
 
 
-def replay_data(run_dir: Path) -> dict:
+def header_record(run_dir: Path) -> Path | None:
+    """The generation's header record, a zero-frame log standing in for a run not yet writing."""
+    generation = run_generation(run_dir)
+    if generation is None:
+        return None
+    record = generation / roots.HEADER_REL
+    return record if record.is_file() else None
+
+
+def index_slot(index: dict, motion, pool: str, slot, fields: list) -> None:
+    """Enter where one slot's signals come from: its pooled ones, those it names, its members'."""
+    owner = (
+        slot.constraint_id
+        or str(slot.constraint_iri).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+        or slot.id
+    )
+    field = fields[slot.number]["id"] if slot.number < len(fields) else None
+    named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
+    for key in SLOT_KEYS[pool]:
+        where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
+        # skip a pooled signal mirroring one the header names
+        if field and key not in named:
+            index[f"{field}.{key}"] = where
+        if pool == "monitors":
+            index[f"{slot.id}.{key}"] = where
+    for attribute, role in SLOT_ROLES[pool]:
+        signal = getattr(slot, attribute)
+        if signal:
+            index.setdefault(
+                signal, {"motion": motion.id, "constraint": owner, "role": role, "slot": slot.id}
+            )
+    for member in slot.watched if pool == "monitors" else ():
+        if member.error_id:
+            index.setdefault(
+                member.error_id,
+                {"motion": motion.id, "constraint": member.id, "role": "error", "slot": slot.id},
+            )
+
+
+def replay_metadata(run_dir: Path) -> dict:
     """Return replay metadata without decoding the complete frame log."""
     pending = False
     try:
         run_dir, log, contract = resolve_run(run_dir)
     except RecordError:
-        # not writing yet: the generation's header record is a zero-frame log
-        generation = run_generation(run_dir)
-        record = generation / roots.HEADER_REL if generation else None
-        if record is None or not record.is_file():
+        log = header_record(run_dir)
+        if log is None:
             raise
-        log, contract = record, frame_log_pb.read_contract(record)
-        pending = True
+        contract, pending = frame_log_pb.read_contract(log), True
     constraints = source_constraints(run_dir, contract)
     health = read_health(log) or {}
     frame_count = health.get("written_frames", 0)
@@ -230,12 +266,16 @@ def replay_data(run_dir: Path) -> dict:
         constraint["monitors"] = [
             f"{name}.{key}" for name in constraint["monitors"] for key in SLOT_KEYS["monitors"]
         ]
-        for key in ("tracking", "control", "monitors", "error"):
-            constraint[key] = [
-                signal
-                for name in constraint[key]
-                for signal in ([name] if name in logged else parts.get(name, ()))
-            ]
+        constraint.update(
+            {
+                key: [
+                    signal
+                    for name in constraint[key]
+                    for signal in ([name] if name in logged else parts.get(name, ()))
+                ]
+                for key in ("tracking", "control", "monitors", "error")
+            }
+        )
         handler = constraint.pop("handler")
         spelling.setdefault(handler, constraint["motion"])
         constraint["window"] = scanned["windows"].get(indices.get(handler))
@@ -248,45 +288,8 @@ def replay_data(run_dir: Path) -> dict:
     index: dict[str, dict] = {}
     for motion in contract.header.motions:
         for pool, slots in (("constraints", motion.controllers), ("monitors", motion.monitors)):
-            fields = contract.fields[pool]
             for slot in slots:
-                owner = (
-                    slot.constraint_id
-                    or str(slot.constraint_iri).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
-                    or slot.id
-                )
-                field = fields[slot.number]["id"] if slot.number < len(fields) else None
-                named = {role for attribute, role in SLOT_ROLES[pool] if getattr(slot, attribute)}
-                for key in SLOT_KEYS[pool]:
-                    where = {"motion": motion.id, "constraint": owner, "role": key, "slot": slot.id}
-                    # skip a pooled signal mirroring one the header names
-                    if field and key not in named:
-                        index[f"{field}.{key}"] = where
-                    if pool == "monitors":
-                        index[f"{slot.id}.{key}"] = where
-                for attribute, role in SLOT_ROLES[pool]:
-                    signal = getattr(slot, attribute)
-                    if signal:
-                        index.setdefault(
-                            signal,
-                            {
-                                "motion": motion.id,
-                                "constraint": owner,
-                                "role": role,
-                                "slot": slot.id,
-                            },
-                        )
-                for member in slot.watched if pool == "monitors" else ():
-                    if member.error_id:
-                        index.setdefault(
-                            member.error_id,
-                            {
-                                "motion": motion.id,
-                                "constraint": member.id,
-                                "role": "error",
-                                "slot": slot.id,
-                            },
-                        )
+                index_slot(index, motion, pool, slot, contract.fields[pool])
     generation = run_generation(run_dir)
     return {
         "generation": (
@@ -318,7 +321,7 @@ def replay_data(run_dir: Path) -> dict:
     }
 
 
-_EVENTS: dict[str, dict] = {}
+EVENT_SCANS: dict[str, dict] = {}
 
 
 def log_events(log: Path, contract) -> dict:
@@ -329,12 +332,12 @@ def log_events(log: Path, contract) -> dict:
     monitor. A growing log resumes where the last call stopped; a finished one is not rescanned.
     """
     size = log.stat().st_size
-    scan = _EVENTS.get(str(log))
+    scan = EVENT_SCANS.get(str(log))
     if scan is None or scan["size"] > size:
-        if len(_EVENTS) > 32:
-            _EVENTS.pop(next(iter(_EVENTS)))
+        if len(EVENT_SCANS) > 32:
+            EVENT_SCANS.pop(next(iter(EVENT_SCANS)))
         fired = [event.id for event in contract.header.fsm_events]
-        scan = _EVENTS[str(log)] = {
+        scan = EVENT_SCANS[str(log)] = {
             "size": 0,
             "offset": 0,
             "index": 0,
@@ -358,118 +361,132 @@ def log_events(log: Path, contract) -> dict:
     if size <= scan["size"]:
         return scan["result"]
     scan["size"] = size
-    states, fired = scan["states"], scan["fired"]
-    constraint_pool = len(contract.fields["constraints"])
-    monitor_pool = len(contract.fields["monitors"])
-    events, windows = scan["result"]["events"], scan["result"]["windows"]
-    tally, exits = scan["result"]["tally"], scan["result"]["exits"]
-    index = scan["index"]
-    state_was, event_was, motion_was = scan["state_was"], scan["event_was"], scan["motion_was"]
-    csat_was, msat_was = scan["csat_was"], scan["msat_was"]
     with frame_log_pb.open_log(log) as fh:
         for frame, offset in frame_log_pb.raw_frames(fh, contract, scan["offset"]):
             scan["offset"] = offset
-            fired_now: list[str] = []
-            if contract.trigger_pool:
-                for entry in frame.triggers:
-                    if 0 <= entry.idx < len(fired):
-                        events.append({"frame": index, "kind": "event", "label": fired[entry.idx]})
-                        fired_now.append(fired[entry.idx])
-            elif frame.last_event != event_was:
-                event_was = frame.last_event
-                if 0 <= event_was < len(fired):
-                    events.append({"frame": index, "kind": "event", "label": fired[event_was]})
-                    fired_now.append(fired[event_was])
-            controllers, monitors = scan["by_motion"].get(frame.active_motion, ({}, {}))
-            csat = [
-                slot in controllers
-                and bool(
-                    (entry := frame_log_pb.slot(frame, "constraints", slot)) and entry.satisfied
-                )
-                for slot in range(constraint_pool)
-            ]
-            msat = [
-                slot in monitors
-                and bool((entry := frame_log_pb.slot(frame, "monitors", slot)) and entry.satisfied)
-                for slot in range(monitor_pool)
-            ]
-            # across a state or motion change slot i is another controller
-            held = frame.fsm_state == state_was and frame.active_motion == motion_was
-            _, monitors_was = scan["by_motion"].get(motion_was, ({}, {}))
-            if state_was is not None and frame.fsm_state != state_was:
-                exits.setdefault(motion_was, []).append(
-                    {
-                        "frame": index,
-                        "to_state": states[frame.fsm_state]
-                        if 0 <= frame.fsm_state < len(states)
-                        else str(frame.fsm_state),
-                        "events": list(fired_now),
-                        "monitors": [
-                            monitors_was[slot].id
-                            for slot, up in enumerate(msat_was or [])
-                            if up and slot in monitors_was
-                        ],
-                    }
-                )
-            for slot, controller in controllers.items():
-                if not controller.constraint_iri or slot >= len(csat):
-                    continue
-                goal = tally.setdefault(
-                    (frame.active_motion, "goal", slot),
-                    {
-                        "id": controller.id,
-                        "active": 0,
-                        "satisfied": 0,
-                        "first_satisfied": None,
-                        "losses": 0,
-                    },
-                )
-                goal["active"] += 1
-                if csat[slot]:
-                    goal["satisfied"] += 1
-                    if goal["first_satisfied"] is None:
-                        goal["first_satisfied"] = index
-                elif held and csat_was[slot]:
-                    goal["losses"] += 1
-            for slot, monitor in monitors.items():
-                if slot >= len(msat):
-                    continue
-                watch = tally.setdefault(
-                    (frame.active_motion, "monitor", slot),
-                    {"id": monitor.id, "active": 0, "fired": None},
-                )
-                watch["active"] += 1
-                if msat[slot] and watch["fired"] is None:
-                    watch["fired"] = index
-            if frame.fsm_state != state_was:
-                state_was = frame.fsm_state
-                label = states[state_was] if 0 <= state_was < len(states) else str(state_was)
-                events.append({"frame": index, "kind": "state", "label": label})
-            if held:
-                for slot, (now, before) in enumerate(zip(csat, csat_was)):
-                    # only goal constraints, not pure regulation
-                    if now == before or not controllers[slot].constraint_iri:
-                        continue
-                    events.append(
-                        {
-                            "frame": index,
-                            "kind": "satisfied" if now else "unsatisfied",
-                            "label": controllers[slot].id,
-                        }
-                    )
-                for slot, (now, before) in enumerate(zip(msat, msat_was)):
-                    if now and not before:
-                        events.append(
-                            {"frame": index, "kind": "monitor", "label": monitors[slot].id}
-                        )
-            motion_was, csat_was, msat_was = frame.active_motion, csat, msat
-            window = windows.setdefault(frame.active_motion, [index, index])
-            window[1] = index
-            index += 1
-    scan["index"] = index
-    scan["state_was"], scan["event_was"], scan["motion_was"] = state_was, event_was, motion_was
-    scan["csat_was"], scan["msat_was"] = csat_was, msat_was
+            scan_frame(scan, frame, contract)
     return scan["result"]
+
+
+def scan_frame(scan: dict, frame, contract) -> None:
+    """Advance a `log_events` scan by one frame, against the latches the last frame left."""
+    index = scan["index"]
+    fired_now = frame_fires(scan, frame, contract.trigger_pool)
+    controllers, monitors = scan["by_motion"].get(frame.active_motion, ({}, {}))
+    csat = [
+        slot in controllers
+        and bool((entry := frame_log_pb.slot(frame, "constraints", slot)) and entry.satisfied)
+        for slot in range(len(contract.fields["constraints"]))
+    ]
+    msat = [
+        slot in monitors
+        and bool((entry := frame_log_pb.slot(frame, "monitors", slot)) and entry.satisfied)
+        for slot in range(len(contract.fields["monitors"]))
+    ]
+    # across a state or motion change slot i is another controller
+    held = frame.fsm_state == scan["state_was"] and frame.active_motion == scan["motion_was"]
+    if frame.fsm_state != scan["state_was"]:
+        enter_state(scan, frame, fired_now)
+    tally_goals(scan, frame, controllers, csat, held)
+    for slot, monitor in monitors.items():
+        if slot >= len(msat):
+            continue
+        watch = scan["result"]["tally"].setdefault(
+            (frame.active_motion, "monitor", slot), {"id": monitor.id, "active": 0, "fired": None}
+        )
+        watch["active"] += 1
+        if msat[slot] and watch["fired"] is None:
+            watch["fired"] = index
+    if held:
+        satisfied_edges(scan, controllers, monitors, csat, msat)
+    scan["motion_was"], scan["csat_was"], scan["msat_was"] = frame.active_motion, csat, msat
+    window = scan["result"]["windows"].setdefault(frame.active_motion, [index, index])
+    window[1] = index
+    scan["index"] = index + 1
+
+
+def frame_fires(scan: dict, frame, trigger_pool) -> list[str]:
+    """Log the events a frame fired, off its trigger ring or else a change of `last_event`."""
+    events, fired, index = scan["result"]["events"], scan["fired"], scan["index"]
+    fired_now: list[str] = []
+    if trigger_pool:
+        for entry in frame.triggers:
+            if 0 <= entry.idx < len(fired):
+                events.append({"frame": index, "kind": "event", "label": fired[entry.idx]})
+                fired_now.append(fired[entry.idx])
+    elif frame.last_event != scan["event_was"]:
+        scan["event_was"] = frame.last_event
+        if 0 <= frame.last_event < len(fired):
+            events.append({"frame": index, "kind": "event", "label": fired[frame.last_event]})
+            fired_now.append(fired[frame.last_event])
+    return fired_now
+
+
+def enter_state(scan: dict, frame, fired_now: list[str]) -> None:
+    """Log the state a frame enters and, past the first, the exit from the motion it leaves."""
+    states, index, motion_was = scan["states"], scan["index"], scan["motion_was"]
+    state = frame.fsm_state
+    label = states[state] if 0 <= state < len(states) else str(state)
+    if scan["state_was"] is not None:
+        _, monitors_was = scan["by_motion"].get(motion_was, ({}, {}))
+        scan["result"]["exits"].setdefault(motion_was, []).append(
+            {
+                "frame": index,
+                "to_state": label,
+                "events": list(fired_now),
+                "monitors": [
+                    monitors_was[slot].id
+                    for slot, up in enumerate(scan["msat_was"] or [])
+                    if up and slot in monitors_was
+                ],
+            }
+        )
+    scan["state_was"] = state
+    scan["result"]["events"].append({"frame": index, "kind": "state", "label": label})
+
+
+def tally_goals(scan: dict, frame, controllers: dict, csat: list, held: bool) -> None:
+    """Count, per goal constraint of the active motion, its active and satisfied frames and losses."""
+    index = scan["index"]
+    for slot, controller in controllers.items():
+        if not controller.constraint_iri or slot >= len(csat):
+            continue
+        goal = scan["result"]["tally"].setdefault(
+            (frame.active_motion, "goal", slot),
+            {
+                "id": controller.id,
+                "active": 0,
+                "satisfied": 0,
+                "first_satisfied": None,
+                "losses": 0,
+            },
+        )
+        goal["active"] += 1
+        if csat[slot]:
+            goal["satisfied"] += 1
+            if goal["first_satisfied"] is None:
+                goal["first_satisfied"] = index
+        elif held and scan["csat_was"][slot]:
+            goal["losses"] += 1
+
+
+def satisfied_edges(scan: dict, controllers: dict, monitors: dict, csat: list, msat: list) -> None:
+    """Log each goal constraint's rise and fall and each monitor's rise since the last frame."""
+    events, index = scan["result"]["events"], scan["index"]
+    for slot, (now, before) in enumerate(zip(csat, scan["csat_was"])):
+        # only goal constraints, not pure regulation
+        if now == before or not controllers[slot].constraint_iri:
+            continue
+        events.append(
+            {
+                "frame": index,
+                "kind": "satisfied" if now else "unsatisfied",
+                "label": controllers[slot].id,
+            }
+        )
+    for slot, (now, before) in enumerate(zip(msat, scan["msat_was"])):
+        if now and not before:
+            events.append({"frame": index, "kind": "monitor", "label": monitors[slot].id})
 
 
 def run_verdict(run_dir: Path) -> dict:
@@ -501,6 +518,9 @@ def run_verdict(run_dir: Path) -> dict:
     return {"period_s": contract.header.nominal_period_ns / 1e9, "motions": motions}
 
 
+TIMING_FIELDS = {"timing.compute_ms": "compute_ns", "timing.period_ms": "period_ns"}
+
+
 def signal_reader(contract):
     """Map a signal name onto a raw frame, the way the plots read one."""
     constraint_slots = {
@@ -516,19 +536,21 @@ def signal_reader(contract):
     quantities = {field["id"]: field for field in contract.fields["quantities"]}
 
     def value(frame, name: str):
-        if name == "timing.compute_ms":
-            return frame.compute_ns / 1e6
-        if name == "timing.period_ms":
-            return frame.period_ns / 1e6
+        if name in TIMING_FIELDS:
+            return getattr(frame, TIMING_FIELDS[name]) / 1e6
         if name in quantities:
             field = quantities[name]
             gate = contract.gate.get("quantities")
             if gate is not None and field["index"] not in gate.get(frame.active_motion, ()):
                 return None
-            for index, value in zip(frame.quantity_slots, frame.quantities):
-                if index == field["index"]:
-                    return float(value)
-            return 0.0
+            return next(
+                (
+                    float(value)
+                    for index, value in zip(frame.quantity_slots, frame.quantities)
+                    if index == field["index"]
+                ),
+                0.0,
+            )
         if name in slots:
             kind, field, attribute = slots[name]
             gate = contract.gate.get(kind)
@@ -538,19 +560,19 @@ def signal_reader(contract):
         prefix, _, key = name.rpartition(".")
         if prefix in constraint_slots:
             entry = frame_log_pb.slot(frame, "constraints", constraint_slots[prefix])
-            return getattr(entry, key) if entry else 0
-        if prefix in monitor_slots:
+        elif prefix in monitor_slots:
             field, owner = monitor_slots[prefix]
             if frame.active_motion != owner:
                 return None
             entry = frame_log_pb.slot(frame, "monitors", field["index"])
-            return getattr(entry, key) if entry else 0
-        raise ValueError(f"unknown signal: {name}")
+        else:
+            raise ValueError(f"unknown signal: {name}")
+        return getattr(entry, key) if entry else 0
 
     return value
 
 
-def plot_data(run_dir: Path, names: list[str], window: tuple | None = None) -> dict:
+def plot_series(run_dir: Path, names: list[str], window: tuple | None = None) -> dict:
     """Stream and downsample requested fields without shaping complete frames.
 
     Sampling follows the window asked for, so a short motion is not missed between samples.

@@ -170,44 +170,7 @@ def generate_code(
     headers_dir.mkdir(parents=True, exist_ok=True)
 
     # runtime.hpp carries only these
-    uses = set()
-    for function in ir["computation"]["functions"].values():
-        kind = function["type"]
-        uses.add(kind)
-        if kind == "ErrorEvaluator":
-            uses.add(f"ErrorEvaluator-{function['constraint']}")
-        if kind == "VelocityProfile":
-            uses.add(
-                "PathVelocityProfile" if function.get("path_parameter") else "TargetVelocityProfile"
-            )
-        if function.get("error_normalization"):
-            uses.add("JointNormalization")
-        if function.get("controller_type"):
-            uses.add(function["controller_type"])
-    for solver in ir["resources"]["by_id"].values():
-        if solver.get("algorithm_name"):
-            uses.add(f"Solver{solver['algorithm_name']}")
-        if any(out.get("normalization") for out in solver.get("output") or ()):
-            uses.add("JointNormalization")
-    composite = {
-        item["id"]
-        for item in ir["computation"]["data"]
-        if item.get("type") in {"Pose", "VelocityTwist"}
-    }
-    for motion in ir["coordination"]["motions"]:
-        for phase in ("when", "while", "until"):
-            for monitor in motion[f"{phase}_monitors"]:
-                if (monitor.get("error") or {}).get("id") in composite or any(
-                    term.get("error_id") in composite for term in monitor["active_terms"]
-                ):
-                    uses.add("CompositeError")
-                if monitor.get("is_edge_triggered"):
-                    uses.add("SustainedEdge" if monitor.get("debounce_id") else "RisingEdge")
-                    if not monitor.get("fsm_namespace"):
-                        uses.add("ProduceEvent")
-                elif monitor.get("flag"):
-                    uses.add("Flag")
-    ir["computation"]["uses"] = dict.fromkeys(uses, True)
+    ir["computation"]["uses"] = dict.fromkeys(computation_uses(ir) | monitor_uses(ir), True)
     ir["configuration"]["name"] = program
     ir["configuration"]["config_check"] = {
         "home_key": AGENT_HOME_KEY,
@@ -260,3 +223,55 @@ def generate_code(
             for template_name, payload_path, output_path in renders
         ]
     return written
+
+
+def computation_uses(ir: dict) -> set[str]:
+    """The runtime pieces the IR's functions and solvers use, by the names runtime.hpp tests."""
+    uses = set()
+    for function in ir["computation"]["functions"].values():
+        kind = function["type"]
+        uses.add(kind)
+        if kind == "ErrorEvaluator":
+            uses.add(f"ErrorEvaluator-{function['constraint']}")
+        if kind == "VelocityProfile":
+            uses.add(
+                "PathVelocityProfile" if function.get("path_parameter") else "TargetVelocityProfile"
+            )
+        if function.get("error_normalization"):
+            uses.add("JointNormalization")
+        if function.get("controller_type"):
+            uses.add(function["controller_type"])
+    for solver in ir["resources"]["by_id"].values():
+        if solver.get("algorithm_name"):
+            uses.add(f"Solver{solver['algorithm_name']}")
+        if any(out.get("normalization") for out in solver.get("output") or ()):
+            uses.add("JointNormalization")
+    return uses
+
+
+def monitor_uses(ir: dict) -> set[str]:
+    """The runtime pieces the IR's monitors use, by the names runtime.hpp tests."""
+    composite = {
+        item["id"]
+        for item in ir["computation"]["data"]
+        if item.get("type") in {"Pose", "VelocityTwist"}
+    }
+    monitors = (
+        monitor
+        for motion in ir["coordination"]["motions"]
+        for phase in ("when", "while", "until")
+        for monitor in motion[f"{phase}_monitors"]
+    )
+    uses = set()
+    for monitor in monitors:
+        if (monitor.get("error") or {}).get("id") in composite or any(
+            term.get("error_id") in composite for term in monitor["active_terms"]
+        ):
+            uses.add("CompositeError")
+        if monitor.get("is_edge_triggered"):
+            uses.add("SustainedEdge" if monitor.get("debounce_id") else "RisingEdge")
+            if not monitor.get("fsm_namespace"):
+                uses.add("ProduceEvent")
+        elif monitor.get("flag"):
+            uses.add("Flag")
+    return uses

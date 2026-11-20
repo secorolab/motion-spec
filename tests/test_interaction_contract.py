@@ -63,7 +63,7 @@ def test_velocity_constraints_get_a_solver_row(interaction_ir: dict, motion_id, 
     assert rows <= commanded, commanded
 
 
-_ESTIMATED_WRENCH = """        wrench ext-force-est {
+ESTIMATED_WRENCH = """        wrench ext-force-est {
             ref-point:      <ft_tree.wrist_ft_body.wrist_ft_site>,
             as-seen-by:     <kinova.base_link.base_link_origin>,
             estimated-from: <agents.arm1> { gain: 30.0 Hz, filter: 0.5 },
@@ -83,7 +83,7 @@ _ESTIMATED_WRENCH = """        wrench ext-force-est {
             ),
             "",
         ),
-        ("        wrench ext-force {", _ESTIMATED_WRENCH),
+        ("        wrench ext-force {", ESTIMATED_WRENCH),
     ],
     ids=["sensor-frame-default", "estimated"],
 )

@@ -224,21 +224,7 @@ def tee(
             # else the read never sees EOF
             os.close(worker)
             worker = -1
-            while True:
-                try:
-                    chunk = os.read(controller, 65536)
-                except OSError as error:
-                    if error.errno == errno.EIO:  # child closed its end
-                        break
-                    raise
-                if not chunk:
-                    break
-                chunk = indent(chunk)
-                sys.stderr.buffer.write(chunk)
-                sys.stderr.buffer.flush()
-                sink.write(readable(chunk))
-                # two writers: flush to keep time order
-                sink.flush()
+            copy_output(controller, sink, indent, readable)
             returncode = process.wait()
             sink.write(readable(last=True))
             stamp = datetime.now(UTC).strftime("%H:%M:%S")
@@ -261,6 +247,26 @@ def tee(
     if check and returncode:
         raise subprocess.CalledProcessError(returncode, argv)
     return returncode
+
+
+def copy_output(controller: int, sink, indent, readable) -> None:
+    """Show what the child writes to the pty CONTROLLER, indented, and keep it in SINK as
+    READABLE makes it, until the child closes its end."""
+    while True:
+        try:
+            chunk = os.read(controller, 65536)
+        except OSError as error:
+            if error.errno == errno.EIO:  # child closed its end
+                return
+            raise
+        if not chunk:
+            return
+        chunk = indent(chunk)
+        sys.stderr.buffer.write(chunk)
+        sys.stderr.buffer.flush()
+        sink.write(readable(chunk))
+        # two writers: flush to keep time order
+        sink.flush()
 
 
 def trash(path: Path) -> Path | None:

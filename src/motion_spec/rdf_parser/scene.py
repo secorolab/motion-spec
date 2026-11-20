@@ -55,7 +55,62 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
     attach_by_body, _root = fixed_attachments(model)
     name_object_attachments(model, attach_by_body)
     anchor = quantities.anchor_frame(model)
+    scene.objects = scene_objects(model, attach_by_body, anchor)
 
+    assemblies = agent_assemblies(model, attach_by_body)
+    for assembly in assemblies:
+        scene.robots.append(
+            MjcfSceneRobot(
+                id=local_name(assembly.agent),
+                agent=str(assembly.agent),
+                path=assembly.urdf,
+                prefix=assembly.prefix,
+                attach_kind=assembly.attach_kind,
+                attach_name=assembly.attach_name,
+                pos=assembly.pos,
+                quat=assembly.quat,
+                attachments=assembly.attachments,
+            )
+        )
+        scene.cameras.extend(assembly.cameras)
+
+    static_bodies = {
+        body.id: body
+        for kgraph in kinematic_graphs(scene_graph(model))
+        for body in (
+            *kgraph.free_bodies.values(),
+            *(body for tree in kgraph.trees for body in tree.bodies.values()),
+        )
+    }
+    scene.frames = scene_frames(model, scene.objects, static_bodies, trees)
+    scene.static_cameras = static_cameras(model, scene, static_bodies, anchor)
+    expand_vectors(scene)
+    # unchecked, the model builds and the scene fails to assemble
+    check_attachment_sites(model, assemblies, scene, attach_by_body)
+    for obj in scene.objects:
+        if obj.path:
+            continue
+        missing = [name for name in PROCEDURAL_FIELDS if getattr(obj, name) is None]
+        if missing:
+            raise ConstraintViolation(
+                "scene",
+                f"Procedural scene object '{obj.id}' is missing required field "
+                f"'{missing[0]}'; add it to the .robmot model",
+            )
+
+    return scene
+
+
+def scene_objects(model, attach_by_body: dict, anchor) -> list[MjcfSceneObject]:
+    """The scene objects, each with its asset, placement and attachment, every host before the
+    objects bolted to it.
+
+    Raises:
+        RuntimeError: an asset is in a ROS package and ROS is not on the path.
+        ConstraintViolation: an asset states no file.
+    """
+    graph = model.graph
+    objects = []
     parent_of = {}
     for obj, models in quantities.scene_instance(model).object_models.items():
         mapped = [
@@ -85,7 +140,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             ) from missing
         if asset_path is None:
             raise ConstraintViolation("scene", f"asset '{asset}' states no file")
-        scene.objects.append(
+        objects.append(
             MjcfSceneObject(
                 id=object_id,
                 body=local_name(body),
@@ -109,34 +164,16 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             )
         )
     # hosts first: the runtime resolves a parent site as it spawns
-    scene.objects = hosts_first(scene.objects, parent_of)
+    return hosts_first(objects, parent_of)
 
-    assemblies = agent_assemblies(model, attach_by_body)
-    for assembly in assemblies:
-        scene.robots.append(
-            MjcfSceneRobot(
-                id=local_name(assembly.agent),
-                agent=str(assembly.agent),
-                path=assembly.urdf,
-                prefix=assembly.prefix,
-                attach_kind=assembly.attach_kind,
-                attach_name=assembly.attach_name,
-                pos=assembly.pos,
-                quat=assembly.quat,
-                attachments=assembly.attachments,
-            )
-        )
-        scene.cameras.extend(assembly.cameras)
 
-    body_names = {uri: name for obj in scene.objects for uri, name in obj.secondary_bodies.items()}
-    static_bodies = {
-        body.id: body
-        for kgraph in kinematic_graphs(scene_graph(model))
-        for body in (
-            *kgraph.free_bodies.values(),
-            *(body for tree in kgraph.trees for body in tree.bodies.values()),
-        )
-    }
+def scene_frames(model, objects: list, static_bodies: dict, trees) -> list[MjcfSceneFrame]:
+    """The marked frames of the static bodies, as the sites the runtime adds: placed on their
+    body, or by the tree segment a drawn frame stands for.
+    """
+    graph = model.graph
+    frames = []
+    body_names = {uri: name for obj in objects for uri, name in obj.secondary_bodies.items()}
     marked = [
         (body.id, frame)
         for body in static_bodies.values()
@@ -154,7 +191,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         site = f"{body_name}_{name}" if counts[name] > 1 else name
         if str(frame) in drawn_frames:
             tree, entry = drawn_frames[str(frame)]
-            scene.frames.append(
+            frames.append(
                 MjcfSceneFrame(
                     body=body_name,
                     name=site,
@@ -172,7 +209,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         if placement is None:
             continue
         position, orientation = placement
-        scene.frames.append(
+        frames.append(
             MjcfSceneFrame(
                 body=body_name,
                 name=site,
@@ -181,11 +218,20 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
             )
         )
+
+    return frames
+
+
+def static_cameras(model, scene: MjcfSceneSpec, static_bodies: dict, anchor) -> list:
+    """The cameras the scene mounts rather than a robot: on a marked frame's body, or in the world
+    when the camera's frame is posed against the anchor.
+    """
+    cameras = []
     frames_by_uri = {frame.uri: frame for frame in scene.frames}
     for camera in scene.cameras:
         frame = frames_by_uri.get(camera.frame_uri)
         if frame is not None:
-            scene.static_cameras.append(
+            cameras.append(
                 MjcfSceneCamera(
                     name=camera.id,
                     body=frame.body,
@@ -202,13 +248,13 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
             continue
         # a frame posed against the anchor stands in the world, not on its body
         camera_frame = URIRef(camera.frame_uri)
-        if body_of_frame(camera_frame, graph) not in static_bodies:
+        if body_of_frame(camera_frame, model.graph) not in static_bodies:
             continue
         placement = quantities.frame_placement(model, camera_frame, anchor)
         if placement is None:
             continue
         position, orientation = placement
-        scene.static_cameras.append(
+        cameras.append(
             MjcfSceneCamera(
                 name=camera.id,
                 body="",
@@ -217,21 +263,34 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
             )
         )
+
+    return cameras
+
+
+def expand_vectors(scene: MjcfSceneSpec) -> None:
+    """Expand the placement of every robot, attachment and object into its components, and the
+    geometry a procedural object states.
+    """
     for robot in scene.robots:
         for item in (robot, *robot.attachments):
-            for name, components, default in _PLACEMENT_VECTORS:
-                expand_vector(item, name, components, default)
+            expand_placement(item)
     for obj in scene.objects:
-        for name, components, default in _PLACEMENT_VECTORS:
-            expand_vector(obj, name, components, default)
+        expand_placement(obj)
         obj.has_path = bool(obj.path)
         if obj.has_path:
             continue
-        for name, components, default in _PROCEDURAL_VECTORS:
+        for name, components, default in PROCEDURAL_VECTORS:
             if getattr(obj, name) is not None:
                 expand_vector(obj, name, components, default)
 
-    # unchecked, the model builds and the scene fails to assemble
+
+def check_attachment_sites(model, assemblies, scene: MjcfSceneSpec, attach_by_body: dict) -> None:
+    """Check that each robot attached to a scene object's site attaches by a site the object's
+    asset declares.
+
+    Raises:
+        ConstraintViolation: the asset declares no site of the attachment frame's name.
+    """
     for assembly, robot in zip(assemblies, scene.robots):
         if robot.attach_kind != "Site":
             continue
@@ -252,18 +311,6 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 f"'{obj.path}' states no site for. The asset holds an attachment by a site of "
                 f"the same name; it declares {declared or 'none'}.",
             )
-    for obj in scene.objects:
-        if obj.path:
-            continue
-        missing = [name for name in _PROCEDURAL_FIELDS if getattr(obj, name) is None]
-        if missing:
-            raise ConstraintViolation(
-                "scene",
-                f"Procedural scene object '{obj.id}' is missing required field "
-                f"'{missing[0]}'; add it to the .robmot model",
-            )
-
-    return scene
 
 
 def hosts_first(objects: list, parent_of: dict) -> list:
@@ -300,16 +347,24 @@ def name_object_attachments(model, attach_by_body) -> None:
         )
 
 
-_PLACEMENT_VECTORS = (
+PLACEMENT_VECTORS = (
     ("pos", ("x", "y", "z"), None),
     ("quat", ("x", "y", "z", "w"), [0.0, 0.0, 0.0, 1.0]),
 )
-_PROCEDURAL_VECTORS = (
+PROCEDURAL_VECTORS = (
     ("size", ("x", "y", "z"), None),
     ("color", ("r", "g", "b", "a"), None),
     ("friction", ("slide", "torsion", "roll"), None),
 )
-_PROCEDURAL_FIELDS = ("size", "color", "friction", "shape", "mass")
+PROCEDURAL_FIELDS = ("size", "color", "friction", "shape", "mass")
+
+
+def expand_placement(item) -> None:
+    """Expand an item's position and orientation into their components; unset, the origin and
+    the identity.
+    """
+    for name, components, default in PLACEMENT_VECTORS:
+        expand_vector(item, name, components, default)
 
 
 def expand_vector(item, name: str, components, default) -> None:

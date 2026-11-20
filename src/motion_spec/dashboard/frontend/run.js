@@ -23,6 +23,7 @@ import {
   api,
   askConfirm,
   formatBytes,
+  onModifierKey,
   post,
   readStored,
   snack,
@@ -396,17 +397,7 @@ export async function showNotes(runPath, container = null) {
     if (pickAll.checked) notes.forEach((note) => picked.add(note.id));
     render();
   };
-  bar.querySelector(".notes-delete").onclick = async () => {
-    const count = picked.size;
-    if (
-      !(await askConfirm({
-        message: `Delete ${count} note${count === 1 ? "" : "s"}?`,
-        confirmLabel: "Delete",
-      }))
-    )
-      return;
-    save(notes.filter((note) => !picked.has(note.id)));
-  };
+  bar.querySelector(".notes-delete").onclick = () => deletePicked(picked, () => notes, save);
   const save = async (next) => {
     status.textContent = "saving…";
     try {
@@ -422,95 +413,8 @@ export async function showNotes(runPath, container = null) {
       status.textContent = `not saved: ${error.message}`;
     }
   };
-  const card = (note) => {
-    const box = document.createElement("article");
-    box.className = "note";
-    const head = document.createElement("div");
-    head.className = "note-head";
-    const pick = Object.assign(document.createElement("input"), {
-      type: "checkbox",
-      className: "pick",
-      checked: picked.has(note.id),
-      title: "Select",
-    });
-    pick.onchange = () => {
-      pick.checked ? picked.add(note.id) : picked.delete(note.id);
-      syncBar();
-    };
-    head.append(
-      pick,
-      Object.assign(document.createElement("span"), {
-        className: "note-when",
-        textContent: stampText(note.created),
-      }),
-    );
-    head.append(
-      ...note.tags.map((tag) =>
-        Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag }),
-      ),
-    );
-    if (!container && note.frame != null) {
-      const jump = document.createElement("button");
-      jump.className = "note-action";
-      jump.textContent = `Frame ${note.frame}${note.end_frame == null ? "" : `–${note.end_frame}`}`;
-      jump.onclick = () => jumpToFinding(note.frame, null, null, note.end_frame);
-      head.append(jump);
-    }
-    const edit = Object.assign(document.createElement("button"), {
-      className: "note-action",
-      textContent: "edit",
-    });
-    const remove = Object.assign(document.createElement("button"), {
-      className: "note-action",
-      textContent: "delete",
-    });
-    head.append(edit, remove);
-    const body = Object.assign(document.createElement("p"), {
-      className: "note-body",
-      textContent: note.text,
-    });
-    box.append(head, body);
-    remove.onclick = async () => {
-      if (!(await askConfirm({ message: "Delete this note?", confirmLabel: "Delete" }))) return;
-      save(notes.filter((other) => other.id !== note.id));
-    };
-    edit.onclick = () => {
-      const editor = Object.assign(document.createElement("textarea"), {
-        className: "note-text",
-        rows: 3,
-        value: note.text,
-      });
-      const editTags = Object.assign(document.createElement("input"), {
-        className: "note-tags",
-        value: note.tags.join(", "),
-        spellcheck: false,
-      });
-      const keep = Object.assign(document.createElement("button"), {
-        className: "note-action",
-        textContent: "save",
-      });
-      const drop = Object.assign(document.createElement("button"), {
-        className: "note-action",
-        textContent: "cancel",
-      });
-      const editBar = Object.assign(document.createElement("div"), {
-        className: "notes-compose-bar",
-      });
-      editBar.append(editTags, keep, drop);
-      body.replaceWith(editor, editBar);
-      editor.focus();
-      keep.onclick = () =>
-        save(
-          notes.map((other) =>
-            other.id === note.id
-              ? { ...other, text: editor.value, tags: splitTags(editTags.value) }
-              : other,
-          ),
-        );
-      drop.onclick = render;
-    };
-    return box;
-  };
+  const view = { picked, syncBar, inRun: !container, notes: () => notes };
+  const card = (note) => noteCard(note, { ...view, save, render });
   const render = () => {
     const ordered = [...notes].sort((a, b) => (a.created < b.created ? 1 : -1));
     const live = new Set(notes.map((note) => note.id));
@@ -529,17 +433,12 @@ export async function showNotes(runPath, container = null) {
   };
   const add = () => {
     if (!text.value.trim()) return;
-    const frame = frameInput?.value ? Number(frameInput.value) : null;
-    const end = endInput?.value ? Number(endInput.value) : null;
-    if (
-      frameInput &&
-      (!frameInput.checkValidity() ||
-        !endInput.checkValidity() ||
-        (end !== null && (frame === null || end < frame)))
-    ) {
+    const range = noteFrames(frameInput, endInput);
+    if (!range) {
       status.textContent = "Choose a valid frame or range within this recording.";
       return;
     }
+    const { frame, end } = range;
     save([...notes, { text: text.value, tags: splitTags(tags.value), frame, end_frame: end }]).then(
       () => {
         if (!status.textContent) {
@@ -550,10 +449,131 @@ export async function showNotes(runPath, container = null) {
     );
   };
   panel.querySelector(".note-add").onclick = add;
-  text.onkeydown = (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") add();
-  };
+  text.onkeydown = (event) => onModifierKey(event, "Enter", add);
   render();
+}
+
+// once confirmed, save the notes without the PICKED ones
+async function deletePicked(picked, notes, save) {
+  const count = picked.size;
+  if (
+    !(await askConfirm({
+      message: `Delete ${count} note${count === 1 ? "" : "s"}?`,
+      confirmLabel: "Delete",
+    }))
+  )
+    return;
+  save(notes().filter((note) => !picked.has(note.id)));
+}
+
+// one note's card in the notes panel VIEW: pick, time, tags, frame jump in a run, edit, delete
+function noteCard(note, view) {
+  const { picked, syncBar, save, render } = view;
+  const box = document.createElement("article");
+  box.className = "note";
+  const head = document.createElement("div");
+  head.className = "note-head";
+  const pick = Object.assign(document.createElement("input"), {
+    type: "checkbox",
+    className: "pick",
+    checked: picked.has(note.id),
+    title: "Select",
+  });
+  pick.onchange = () => {
+    pick.checked ? picked.add(note.id) : picked.delete(note.id);
+    syncBar();
+  };
+  head.append(
+    pick,
+    Object.assign(document.createElement("span"), {
+      className: "note-when",
+      textContent: stampText(note.created),
+    }),
+  );
+  head.append(
+    ...note.tags.map((tag) =>
+      Object.assign(document.createElement("span"), { className: "run-tag", textContent: tag }),
+    ),
+  );
+  if (view.inRun && note.frame != null) {
+    const jump = document.createElement("button");
+    jump.className = "note-action";
+    jump.textContent = `Frame ${note.frame}${note.end_frame == null ? "" : `–${note.end_frame}`}`;
+    jump.onclick = () => jumpToFinding(note.frame, null, null, note.end_frame);
+    head.append(jump);
+  }
+  const edit = Object.assign(document.createElement("button"), {
+    className: "note-action",
+    textContent: "edit",
+  });
+  const remove = Object.assign(document.createElement("button"), {
+    className: "note-action",
+    textContent: "delete",
+  });
+  head.append(edit, remove);
+  const body = Object.assign(document.createElement("p"), {
+    className: "note-body",
+    textContent: note.text,
+  });
+  box.append(head, body);
+  remove.onclick = async () => {
+    if (!(await askConfirm({ message: "Delete this note?", confirmLabel: "Delete" }))) return;
+    save(view.notes().filter((other) => other.id !== note.id));
+  };
+  edit.onclick = () =>
+    editNote(
+      note,
+      body,
+      (changes) =>
+        save(
+          view.notes().map((other) => (other.id === note.id ? { ...other, ...changes } : other)),
+        ),
+      render,
+    );
+  return box;
+}
+
+// swap NOTE's BODY for an editor; KEEP gets the edited text and tags, CANCEL redraws
+function editNote(note, body, keep, cancel) {
+  const editor = Object.assign(document.createElement("textarea"), {
+    className: "note-text",
+    rows: 3,
+    value: note.text,
+  });
+  const editTags = Object.assign(document.createElement("input"), {
+    className: "note-tags",
+    value: note.tags.join(", "),
+    spellcheck: false,
+  });
+  const save = Object.assign(document.createElement("button"), {
+    className: "note-action",
+    textContent: "save",
+  });
+  const drop = Object.assign(document.createElement("button"), {
+    className: "note-action",
+    textContent: "cancel",
+  });
+  const editBar = Object.assign(document.createElement("div"), {
+    className: "notes-compose-bar",
+  });
+  editBar.append(editTags, save, drop);
+  body.replaceWith(editor, editBar);
+  editor.focus();
+  save.onclick = () => keep({ text: editor.value, tags: splitTags(editTags.value) });
+  drop.onclick = cancel;
+}
+
+// the frame and end frame a note's fields ask for, or null when they are no range in the
+// recording; both null without the fields
+function noteFrames(frameInput, endInput) {
+  const frame = frameInput?.value ? Number(frameInput.value) : null;
+  const end = endInput?.value ? Number(endInput.value) : null;
+  const valid =
+    !frameInput ||
+    (frameInput.checkValidity() &&
+      endInput.checkValidity() &&
+      (end === null || (frame !== null && end >= frame)));
+  return valid ? { frame, end } : null;
 }
 
 function addFrameFields(panel) {

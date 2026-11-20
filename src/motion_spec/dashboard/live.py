@@ -18,8 +18,8 @@ from motion_spec.dashboard.frames import (
     read,
 )
 from motion_spec.dashboard.jobs import RUNNING, mark_stopped
-from motion_spec.dashboard.replay import log_events
-from motion_spec.dashboard.roots import HEADER_REL, trace
+from motion_spec.dashboard.replay import header_record, log_events
+from motion_spec.dashboard.roots import trace
 from motion_spec.dashboard.runs import GenerationInfo
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.runs.control import SPEED_MAX, SPEED_MIN, acknowledged, control_run, run_channel
@@ -29,7 +29,7 @@ from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import shm_name_for, shm_path
 
-_LIVE: dict[str, dict] = {}
+LIVE_SESSIONS: dict[str, dict] = {}
 
 LIVE_IDLE_S = 3.0
 
@@ -104,6 +104,27 @@ class ShmSampler(threading.Thread):
             )
             self._event, self._state = core["last_event"], core["fsm_state"]
 
+    def increment(self, cursor: int | None, names: tuple) -> tuple[int, dict]:
+        """The plot of NAMES since a poll's CURSOR, thinned to LIVE_PLOT_POINTS, and its new cursor.
+
+        A first poll's cursor is None: it starts from now.
+        """
+        if cursor is None:
+            cursor = self.taken
+        with self.lock:
+            ring, taken = list(self.ring), self.taken
+        new = ring[max(0, cursor - (taken - len(ring))) :]
+        stride = max(1, -(-len(new) // LIVE_PLOT_POINTS))
+        sampled = new[::stride]
+        rows = [
+            self.fields.extract(raw, motion, names) for _index, _step, _t, motion, raw in sampled
+        ]
+        plot = {
+            "frames": [step for _index, step, _t, _motion, _raw in sampled],
+            "series": {name: [row[at] for row in rows] for at, name in enumerate(names)},
+        }
+        return taken, plot
+
 
 def transition_rows(frame: int, core, event_was, state_was, fired: list, states: list) -> list:
     """The event and state rows FRAME adds where its `last_event` or `fsm_state` changed."""
@@ -117,7 +138,7 @@ def transition_rows(frame: int, core, event_was, state_was, fired: list, states:
     return rows
 
 
-_NOT_STARTED = {
+NOT_STARTED_STATE = {
     "started": False,
     "writing": False,
     "archived": False,
@@ -151,102 +172,54 @@ def live_sampler(run_dir: Path, contract) -> ShmSampler | None:
     return sampler
 
 
-def live_state(run_dir: Path, signals=()) -> dict:
-    """How far a run being written has got, and the states and events it has passed.
+def close_sessions() -> None:
+    """Stop following every run followed so far: its sampler, log tail and control channel."""
+    for stale in list(LIVE_SESSIONS.values()):
+        if stale.get("sampler") is not None:
+            stale["sampler"].stopped.set()
+        if stale.get("tail") is not None:
+            stale["tail"].close()
+        if stale.get("channel") is not None:
+            stale["channel"].close()
+    LIVE_SESSIONS.clear()
 
-    `signals` are served from the shared-memory sampler's ring as the increment since this
-    page's last poll; a build that publishes no block falls back to following the log. A run
-    named but not yet writing answers `started: False`.
-    """
-    session = _LIVE.get(str(run_dir))
-    if session is None:
-        log_less = False
-        try:
-            _, log, contract = resolve_run(run_dir)
-        except RecordError:
-            # with logs off, the control block comes from the generation's contract
-            started = RUNNING.get(str(run_dir))
-            if not started or started.get("recorded") is not False:
-                return _NOT_STARTED
-            generation = run_generation(run_dir)
-            log = generation / HEADER_REL if generation else None
-            if log is None or not log.is_file():
-                return _NOT_STARTED
-            contract, log_less = frame_log_pb.read_contract(log), True
-        for stale in list(_LIVE.values()):
-            if stale.get("sampler") is not None:
-                stale["sampler"].stopped.set()
-            if stale.get("tail") is not None:
-                stale["tail"].close()
-            if stale.get("channel") is not None:
-                stale["channel"].close()
-        _LIVE.clear()
-        session = _LIVE[str(run_dir)] = {
-            "log": str(log),
-            "log_less": log_less,
-            "contract": contract,
-            "sampler": live_sampler(run_dir, contract),
-            "cursor": None,
-            "tail": None,
-            "events": [],
-            "frame": 0,
-            "size": -1,
-            "state": None,
-            "event": None,
-            "motion": None,
-        }
-    log, contract = Path(session["log"]), session["contract"]
-    sampler = session["sampler"]
-    if sampler is not None and not sampler.is_alive():
-        sampler = session["sampler"] = live_sampler(run_dir, contract)
-        session["cursor"] = None
-    if sampler is not None:
-        sampler.touched = time.monotonic()
-    live = sampler if sampler is not None and sampler.reading else None
-    period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
-    if not live:
-        if session["tail"] is None:
-            session["tail"] = FrameLogTail(log)
-        states = [state.id for state in contract.header.fsm_states]
-        fired = [event.id for event in contract.header.fsm_events]
-        for logged in session["tail"].poll(max(1, round(0.05 / period))):
-            index = logged["step"]
-            session["frame"] = index
-            session["t"] = logged["t"]
-            session["motion"] = logged["active_motion"]
-            session["events"] += transition_rows(
-                index, logged, session["event"], session["state"], fired, states
-            )
-            session["event"], session["state"] = logged["last_event"], logged["fsm_state"]
-    names = tuple(signals)
-    plot = None
-    if names and live:
-        if session["cursor"] is None:
-            session["cursor"] = live.taken
-        with live.lock:
-            ring, taken = list(live.ring), live.taken
-        new = ring[max(0, session["cursor"] - (taken - len(ring))) :]
-        session["cursor"] = taken
-        stride = max(1, -(-len(new) // LIVE_PLOT_POINTS))
-        sampled = new[::stride]
-        rows = [
-            live.fields.extract(raw, motion, names) for _index, _step, _t, motion, raw in sampled
-        ]
-        plot = {
-            "frames": [step for _index, step, _t, _motion, _raw in sampled],
-            "series": {name: [row[at] for row in rows] for at, name in enumerate(names)},
-        }
-    frame = live.frame if live else session["frame"]
-    t = live.t if live else session.get("t")
-    motion = live.motion if live else session["motion"]
-    # the log keeps every tick; the sampler misses edges between samples
+
+def open_session(run_dir: Path) -> dict | None:
+    """Follow this run from now on, closing the one followed before; None while it is not started."""
+    log_less = False
     try:
-        events = list(log_events(log, contract)["events"])
-    except OSError:
-        events = []
-    if not events:
-        events = list(live.events) if live else session["events"]
-    motions = contract.header.motions
+        _, log, contract = resolve_run(run_dir)
+    except RecordError:
+        # with logs off, the control block comes from the generation's contract
+        started = RUNNING.get(str(run_dir))
+        if not started or started.get("recorded") is not False:
+            return None
+        log = header_record(run_dir)
+        if log is None:
+            return None
+        contract, log_less = frame_log_pb.read_contract(log), True
+    close_sessions()
+    session = LIVE_SESSIONS[str(run_dir)] = {
+        "log": str(log),
+        "log_less": log_less,
+        "contract": contract,
+        "sampler": live_sampler(run_dir, contract),
+        "cursor": None,
+        "tail": None,
+        "events": [],
+        "frame": 0,
+        "size": -1,
+        "state": None,
+        "event": None,
+        "motion": None,
+    }
+    return session
+
+
+def control_status(
+    session: dict, run_dir: Path, log: Path, live: ShmSampler | None
+) -> tuple[dict, bool]:
+    """The run's control block as the live page shows it, and whether the run is still writing."""
     moving = live is not None and time.monotonic() - live.advanced < LIVE_IDLE_S
     # a ping writes and waits: only an idle run gets one
     channel = session.get("channel")
@@ -281,6 +254,58 @@ def live_state(run_dir: Path, signals=()) -> dict:
     writing = alive or (moving if live else grew)
     if not control["available"] and not live and not session["log_less"]:
         writing = writing or time.time() - stat.st_mtime < LIVE_IDLE_S
+    return control, writing
+
+
+def live_state(run_dir: Path, signals=()) -> dict:
+    """How far a run being written has got, and the states and events it has passed.
+
+    `signals` are served from the shared-memory sampler's ring as the increment since this
+    page's last poll; a build that publishes no block falls back to following the log. A run
+    named but not yet writing answers `started: False`.
+    """
+    session = LIVE_SESSIONS.get(str(run_dir)) or open_session(run_dir)
+    if session is None:
+        return NOT_STARTED_STATE
+    log, contract = Path(session["log"]), session["contract"]
+    sampler = session["sampler"]
+    if sampler is not None and not sampler.is_alive():
+        sampler = session["sampler"] = live_sampler(run_dir, contract)
+        session["cursor"] = None
+    if sampler is not None:
+        sampler.touched = time.monotonic()
+    live = sampler if sampler is not None and sampler.reading else None
+    period = (contract.header.nominal_period_ns or 1_000_000) / 1e9
+    names = tuple(signals)
+    plot = None
+    if names and live:
+        session["cursor"], plot = live.increment(session["cursor"], names)
+    if live:
+        frame, t, motion = live.frame, live.t, live.motion
+    else:
+        if session["tail"] is None:
+            session["tail"] = FrameLogTail(log)
+        states = [state.id for state in contract.header.fsm_states]
+        fired = [event.id for event in contract.header.fsm_events]
+        for logged in session["tail"].poll(max(1, round(0.05 / period))):
+            index = logged["step"]
+            session["frame"] = index
+            session["t"] = logged["t"]
+            session["motion"] = logged["active_motion"]
+            session["events"] += transition_rows(
+                index, logged, session["event"], session["state"], fired, states
+            )
+            session["event"], session["state"] = logged["last_event"], logged["fsm_state"]
+        frame, t, motion = session["frame"], session.get("t"), session["motion"]
+    # the log keeps every tick; the sampler misses edges between samples
+    try:
+        events = list(log_events(log, contract)["events"])
+    except OSError:
+        events = []
+    if not events:
+        events = list(live.events) if live else session["events"]
+    motions = contract.header.motions
+    control, writing = control_status(session, run_dir, log, live)
     return {
         "started": writing if session["log_less"] else True,
         "writing": writing,

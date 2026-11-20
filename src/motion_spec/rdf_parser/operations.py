@@ -12,7 +12,9 @@ computations the model implies, what each call reads and writes, and in what ord
 from __future__ import annotations
 
 import collections
-from typing import NamedTuple
+from collections.abc import Iterator
+from itertools import chain
+from typing import Any, NamedTuple
 
 from motion_spec_dsl.vocab import (
     ALGO_EXT,
@@ -106,12 +108,17 @@ def normalize(model) -> None:
             for pose, (pose_of, reference) in frames.items()
             if pose != node and pose_of == of_frame and reference not in (of_frame, wrt_frame)
         }
-        for pose, (pose_of, shared_frame) in frames.items():
-            if pose != node and pose_of == wrt_frame and shared_frame in through_of:
-                of_in_shared, wrt_in_shared = through_of[shared_frame], pose
-                break
-        else:
+        link = next(
+            (
+                (shared_frame, through_of[shared_frame], pose)
+                for pose, (pose_of, shared_frame) in frames.items()
+                if pose != node and pose_of == wrt_frame and shared_frame in through_of
+            ),
+            None,
+        )
+        if link is None:
             continue
+        shared_frame, of_in_shared, wrt_in_shared = link
 
         inverted = model.derived_node(node, "wrt-inverse")
         emit_derived_pose(model, inverted, shared_frame, wrt_frame)
@@ -149,12 +156,12 @@ def pose_frames(model, pose) -> tuple[URIRef, URIRef]:
 
 
 # (role, type, of endpoint, wrt endpoint)
-_DERIVED_POSE_RELATIONS = (
+DERIVED_POSE_RELATIONS = (
     ("pose", URI_GEOM_TYPE_POSE, "of_frame", "wrt_frame"),
     ("position", URI_GEOM_TYPE_POSITION, "of_origin", "wrt_origin"),
     ("orientation", URI_GEOM_TYPE_ORIENT, "of_frame", "wrt_frame"),
 )
-_DERIVED_POSE_COORDINATE_TYPES = (
+DERIVED_POSE_COORDINATE_TYPES = (
     URI_GEOM_TYPE_POSE_COORD,
     URI_GEOM_TYPE_POSE_REF,
     URI_GEOM_TYPE_POSITION_COORD,
@@ -178,8 +185,8 @@ def emit_derived_pose(model, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) 
         model.derived.add((origin, RDF.type, URI_GEOM_TYPE_POINT))
         parts[role] = origin
 
-    relations = {role: URIRef(f"{node}-{role}-rel") for role, *_ in _DERIVED_POSE_RELATIONS}
-    for role, relation_type, of_role, wrt_role in _DERIVED_POSE_RELATIONS:
+    relations = {role: URIRef(f"{node}-{role}-rel") for role, *_ in DERIVED_POSE_RELATIONS}
+    for role, relation_type, of_role, wrt_role in DERIVED_POSE_RELATIONS:
         relation = relations[role]
         model.derived.add((relation, RDF.type, relation_type))
         model.derived.add((relation, RDF.type, QUDT_SCHEMA.Quantity))
@@ -192,7 +199,7 @@ def emit_derived_pose(model, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) 
     model.derived.add((relations["pose"], URI_GEOM_PRED_OF_ORIENT, relations["orientation"]))
 
     model.derived.add((node, RDF.type, QUDT_SCHEMA.Quantity))
-    for coordinate_type in _DERIVED_POSE_COORDINATE_TYPES:
+    for coordinate_type in DERIVED_POSE_COORDINATE_TYPES:
         model.derived.add((node, RDF.type, coordinate_type))
     model.derived.add((node, URI_GEOM_PRED_OF_POSE, relations["pose"]))
     model.derived.add((node, URI_GEOM_PRED_OF_POSITION, relations["position"]))
@@ -279,6 +286,33 @@ def recorded_distance_operand(graph, distance, role):
     return graph.value(usage, PROV.entity) if usage is not None else None
 
 
+def distance_endpoints(graph, distance) -> tuple:
+    """The `(start, end)` poses a distance coordinate measures between.
+
+    The recorded selections when the DSL recorded both, else the relation's two endpoints.
+
+    Raises:
+        ConstraintViolation: the coordinate states no distance, or its relation does not have
+            exactly two endpoints.
+    """
+    relation = graph.value(distance, GEOM_COORD["of"])
+    if relation is None:
+        raise ConstraintViolation(
+            "geometry", f"Distance coordinate {distance} states no linear distance."
+        )
+    start = recorded_distance_operand(graph, distance, "start")
+    end = recorded_distance_operand(graph, distance, "end")
+    if start is not None and end is not None:
+        return start, end
+    endpoints = set(graph.objects(relation, GEOM_REL["between-entities"]))
+    if len(endpoints) != 2:
+        raise ConstraintViolation(
+            "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
+        )
+    start, end = endpoints
+    return start, end
+
+
 def materialize_linear_distance_operations(model) -> None:
     """Expand authored linear-distance relations into codegen operations.
 
@@ -294,20 +328,7 @@ def materialize_linear_distance_operations(model) -> None:
     for distance in list(graph.subjects(RDF.type, GEOM_COORD.DistanceReference)):
         if next(graph.subjects(CSTR.quantity, distance), None) is None:
             continue
-        relation = graph.value(distance, GEOM_COORD["of"])
-        if relation is None:
-            raise ConstraintViolation(
-                "geometry", f"Distance coordinate {distance} states no linear distance."
-            )
-        start = recorded_distance_operand(graph, distance, "start")
-        end = recorded_distance_operand(graph, distance, "end")
-        if start is None or end is None:
-            endpoints = set(graph.objects(relation, GEOM_REL["between-entities"]))
-            if len(endpoints) != 2:
-                raise ConstraintViolation(
-                    "geometry", f"Linear distance {relation} needs exactly two pose endpoints."
-                )
-            start, end = endpoints
+        start, end = distance_endpoints(graph, distance)
         start_of, start_wrt = pose_frames(model, start)
         end_of, end_wrt = pose_frames(model, end)
 
@@ -733,7 +754,7 @@ def output_predicates(op) -> set:
 
 
 # a path has no output; its evaluator folds the geometry in
-_OPS_PATH = [
+OPS_PATH = [
     Specification(GEOM_PATH["LinearPath"], [GEOM_PATH["start"], GEOM_PATH["goal"]], []),
     Specification(
         GEOM_PATH["Circle"],
@@ -863,7 +884,7 @@ OPS_GENERIC = [
         [RBDYN_OP["wrench"]],
     ),
     Specification(MAP["View"], [MAP["superobject"]], [MAP["subobject"]]),
-    *_OPS_PATH,
+    *OPS_PATH,
     Operator(
         GEOM_OP_EXT.PathProjection,
         [GEOM_OP_EXT.path, GEOM_OP["pose"]],
@@ -925,7 +946,7 @@ OPS_SOLVER = [
 ]
 
 # outputs no operator declares
-_EXTRA_FUNCTION_OUTPUTS = {
+UNDECLARED_FUNCTION_OUTPUTS = {
     "AssignmentEvaluator": ("quantity",),
     "PathEvaluator": ("setpoint",),
     "Controller": ("control_signal",),
@@ -938,27 +959,27 @@ def function_output_fields() -> dict[str, set[str]]:
     declared outputs (a Specification writes no function at all and is skipped), plus the kinds
     above that no operator fully accounts for.
     """
-    table: dict[str, set[str]] = {}
+    fields_by_type: dict[str, set[str]] = {}
     for op in [*OPS_GENERIC, *OPS_SOLVER, *OPS_HANDLER]:
         if isinstance(op, Specification):
             continue
-        table.setdefault(op.keyword, set()).update(
+        fields_by_type.setdefault(op.keyword, set()).update(
             identifier(local_name(pred)) for pred in output_predicates(op)
         )
-    for key, extra in _EXTRA_FUNCTION_OUTPUTS.items():
-        table.setdefault(key, set()).update(extra)
+    for function_type, undeclared in UNDECLARED_FUNCTION_OUTPUTS.items():
+        fields_by_type.setdefault(function_type, set()).update(undeclared)
 
-    return table
+    return fields_by_type
 
 
-_FUNCTION_OUTPUT_FIELDS = function_output_fields()
+FUNCTION_OUTPUT_FIELDS = function_output_fields()
 
 
 def function_output_ids(function: dict) -> set[str]:
     """Data ids written by a generated function call."""
     outputs = {
         value
-        for field in _FUNCTION_OUTPUT_FIELDS.get(function.get("type", ""), ())
+        for field in FUNCTION_OUTPUT_FIELDS.get(function.get("type", ""), ())
         if isinstance((value := function.get(field)), str)
     }
     outputs.update(
@@ -976,7 +997,7 @@ def fold_path(model, node, function) -> None:
     """The geometry decides the maths; each caller samples the same curve."""
     path_node = model.graph.value(node, GEOM_OP_EXT.path)
     path_types = get_node_types(model.graph, path_node)
-    spec = next(s for s in _OPS_PATH if s.type_ in path_types)
+    spec = next(s for s in OPS_PATH if s.type_ in path_types)
     function["shape"] = spec.keyword
     for argument in [*spec.input, *spec.parameters]:
         function[identifier(local_name(argument))] = parse_argument(
@@ -1031,7 +1052,7 @@ def fold_velocity_profile(model, node, function) -> None:
         fold_path(model, node, function)
 
 
-_FUNCTION_HOOKS = {
+FOLD_BY_OPERATOR = {
     GEOM_OP_EXT.PathProjection: fold_path,
     GEOM_OP_EXT.PathTangentFrame: fold_path,
     GEOM_OP_EXT.PathEvaluator: fold_path_evaluator,
@@ -1057,7 +1078,7 @@ def build_functions(model, operators) -> dict:
             function = operator.function_step(model, node)
             if not function:
                 continue
-            hook = _FUNCTION_HOOKS.get(operator.type_)
+            hook = FOLD_BY_OPERATOR.get(operator.type_)
             if hook is not None:
                 hook(model, node, function)
             functions[model.id(node)] = function
@@ -1094,92 +1115,83 @@ class Schedule:
             start_nodes: the graph nodes whose computation the block needs
             operators: the operator tables the walk may match against
         """
-        model = self._model
-        graph = model.graph
-        pending = collections.deque()
-        data_structures = set()
-        sched = []
-        nodes_by_call = {}
+        # claimed calls in claim order, each with its node
+        nodes_by_call: dict[str, Any] = {}
+        pending = list(self.start_inputs(start_nodes, operators, nodes_by_call))
+        seen = set(pending)
+        # data_in --(in)--> call --(out)--> data_out, traversed backward.
+        by_predicates = [(output_predicates(op), op) for op in operators]
+        while pending:
+            for data_in in self.feeders(pending.pop(), by_predicates, nodes_by_call):
+                if data_in not in seen:
+                    pending.append(data_in)
+                    seen.add(data_in)
+        calls = list(reversed(nodes_by_call))
+        if len(calls) < 2:
+            return calls
+        return self.dependency_order(calls, nodes_by_call, operators)
 
+    def start_inputs(self, start_nodes, operators, nodes_by_call: dict) -> Iterator:
+        """The inputs of the calls at START_NODES, claiming the schedulable ones into
+        NODES_BY_CALL."""
+        model = self._model
         for node in start_nodes:
-            node_types = get_node_types(graph, node)
+            node_types = get_node_types(model.graph, node)
             for op in operators:
                 if op.type_ not in node_types:
                     continue
                 call = model.id(node)
                 if op.schedulable and self.claim(call):
-                    sched.append(call)
                     nodes_by_call[call] = node
-                inputs = op.operand_inputs(model, node)
-                pending.extend(inputs)
-                data_structures.update(inputs)
+                yield from op.operand_inputs(model, node)
 
-        # data_in --(in)--> call --(out)--> data_out, traversed backward.
-        by_predicates = [(output_predicates(op), op) for op in operators]
-        while pending:
-            data_out = pending.pop()
-            preds_into = set(graph.predicates(None, data_out))
-            for out_set, op in by_predicates:
-                if out_set.isdisjoint(preds_into):
-                    continue
-                step = op.scheduler_step(model, data_out)
-                for call_node in step["schedule"]:
-                    call = model.id(call_node)
-                    if call and self.claim(call):
-                        sched.append(call)
-                        nodes_by_call[call] = call_node
-                for data_in in step["data_structures"]:
-                    if data_in not in data_structures:
-                        pending.append(data_in)
-                        data_structures.add(data_in)
-
-            # a declared pose is no operator's output; follow its per-axis views
-            for view in graph.subjects(MAP["superobject"], data_out):
-                successor = graph.value(view, MAP["subobject"])
-                if (
-                    (view, MAP["axis"], None) in graph
-                    and successor is not None
-                    and successor not in data_structures
-                ):
-                    pending.append(successor)
-                    data_structures.add(successor)
-            for successor in graph.objects(data_out, CSTR["reference-value"]):
-                if successor not in data_structures:
-                    pending.append(successor)
-                    data_structures.add(successor)
-
-        sched.reverse()
-
-        if len(sched) < 2:
-            return sched
-        call_inputs: dict[str, set] = {}
-        producers_of: dict = {}
-
-        for call in sched:
-            node = nodes_by_call.get(call)
-            if node is None:
+    def feeders(self, data_out, by_predicates: list, nodes_by_call: dict) -> Iterator:
+        """The data DATA_OUT is computed from, claiming the calls that compute it into
+        NODES_BY_CALL as they are reached."""
+        model = self._model
+        graph = model.graph
+        predicates_into = set(graph.predicates(None, data_out))
+        for out_set, op in by_predicates:
+            if out_set.isdisjoint(predicates_into):
                 continue
-            inputs = set()
+            step = op.scheduler_step(model, data_out)
+            for call_node in step["schedule"]:
+                call = model.id(call_node)
+                if call and self.claim(call):
+                    nodes_by_call[call] = call_node
+            yield from step["data_structures"]
+        # a declared pose is no operator's output; follow its per-axis views
+        for view in graph.subjects(MAP["superobject"], data_out):
+            successor = graph.value(view, MAP["subobject"])
+            if (view, MAP["axis"], None) in graph and successor is not None:
+                yield successor
+        yield from graph.objects(data_out, CSTR["reference-value"])
+
+    def dependency_order(self, calls: list[str], nodes_by_call: dict, operators) -> list[str]:
+        """CALLS, each after the calls that produce its inputs."""
+        model = self._model
+        graph = model.graph
+        inputs_of: dict[str, set] = {}
+        producers_of: dict = {}
+        for call in calls:
+            node = nodes_by_call[call]
             node_types = get_node_types(graph, node)
+            inputs_of[call] = set()
             for op in operators:
                 if op.type_ not in node_types:
                     continue
-                inputs.update(op.operand_inputs(model, node))
-                if not isinstance(op, Operator):
-                    continue
-                for out in op.output:
-                    for output in graph.objects(node, out):
-                        producers_of.setdefault(output, set()).add(call)
-            call_inputs[call] = inputs
-
-        deps = {
+                inputs_of[call].update(op.operand_inputs(model, node))
+                outputs = op.output if isinstance(op, Operator) else ()
+                for output in chain.from_iterable(graph.objects(node, out) for out in outputs):
+                    producers_of.setdefault(output, set()).add(call)
+        depends_on = {
             call: {
                 producer
                 for data in inputs
                 for producer in producers_of.get(data, ())
                 if producer != call
             }
-            for call, inputs in call_inputs.items()
+            for call, inputs in inputs_of.items()
         }
         result, visiting, done = [], set(), set()
 
@@ -1188,13 +1200,13 @@ class Schedule:
             if call in done or call in visiting:
                 return
             visiting.add(call)
-            for dep in deps.get(call, ()):
+            for dep in depends_on.get(call, ()):
                 visit(dep)
             visiting.remove(call)
             done.add(call)
             result.append(call)
 
-        for call in sched:
+        for call in calls:
             visit(call)
 
         return result
@@ -1331,16 +1343,15 @@ def resolve_function_operands(functions: dict, indexes, data_structures: list) -
     data_by_id = {item.id: item for item in data_structures if item.id}
     for function in functions.values():
         shape = function.get("shape")
-        if shape == "LinearPath":
-            goal = function.get("goal")
-            if not isinstance(goal, str):
-                continue
-            if goal in indexes.pose_components and function.get("type") == "PathProjection":
-                # only the projection assigns the shared goal
+        goal = function.get("goal")
+        if shape == "LinearPath" and isinstance(goal, str):
+            # only the projection assigns the shared goal
+            assign_goal = (
+                goal in indexes.pose_components and function.get("type") == "PathProjection"
+            )
+            if assign_goal:
                 function["goal_components"] = indexes.pose_components[goal]
-                function["assign_goal"] = True
-            else:
-                function["assign_goal"] = False
+            function["assign_goal"] = assign_goal
         elif shape == "Arc":
             end = function.get("end")
             if not isinstance(end, str) or not is_pose(data_by_id.get(end)):

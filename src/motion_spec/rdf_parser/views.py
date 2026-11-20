@@ -6,6 +6,7 @@ are, and per motion the references, snapshots, pose-error groups and pose compon
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import asdict
 
 from motion_spec_dsl.vocab import (
@@ -62,7 +63,7 @@ from motion_spec.rdf_parser.quantities import (
     wrench,
 )
 
-_VIEW_SUPEROBJECTS = (
+VIEW_SUPEROBJECT_READERS = (
     (MAP_EXT["PoseCoordinateView"], pose),
     (MAP_EXT["VelocityTwistCoordinateView"], velocity_twist),
     (MAP_EXT["AccelerationTwistCoordinateView"], acceleration_twist),
@@ -70,9 +71,9 @@ _VIEW_SUPEROBJECTS = (
     (MAP_EXT["WrenchCoordinateView"], wrench),
 )
 # a 3-vector superobject's view has no coordinate-view type of its own
-_VECTOR_SUPEROBJECTS = ((GEOM_COORD["DirectionCoordinate"], direction),)
+VECTOR_SUPEROBJECT_READERS = ((GEOM_COORD["DirectionCoordinate"], direction),)
 # most specific type first
-_DATA_STRUCTURE_READERS = (
+DATA_STRUCTURE_READERS = (
     (GEOM_COORD["DirectionCoordinate"], direction),
     (GEOM_COORD["PoseCoordinate"], pose),
     (GEOM_COORD["PositionCoordinate"], position),
@@ -100,11 +101,12 @@ def read_views(model) -> dict:
     for node in graph[: RDF["type"] : MAP["View"]]:
         types = get_node_types(graph, node)
         superobject_node = graph.value(node, MAP["superobject"])
-        read = next((func for type_, func in _VIEW_SUPEROBJECTS if type_ in types), None)
+        read = next((func for type_, func in VIEW_SUPEROBJECT_READERS if type_ in types), None)
         if read is None:
             super_types = get_node_types(graph, superobject_node)
             read = next(
-                (func for type_, func in _VECTOR_SUPEROBJECTS if type_ in super_types), quantity
+                (func for type_, func in VECTOR_SUPEROBJECT_READERS if type_ in super_types),
+                quantity,
             )
         superobject = read(model, superobject_node)
         if superobject is None:
@@ -147,7 +149,7 @@ def read_data_structures(model) -> list:
     """
     own = model.node_by_id
     reader_by_node = {}
-    for type_, read in _DATA_STRUCTURE_READERS:
+    for type_, read in DATA_STRUCTURE_READERS:
         for node in model.graph[: RDF["type"] : type_]:
             if own.get(model.id(node)) != node or is_pooled_relation(model, node):
                 continue
@@ -251,8 +253,8 @@ def expanded_constraints(model, nodes) -> set:
     }
 
 
-_GROUPABLE_SUPEROBJECTS = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench"}
-_GROUP_AXIS_BY_SUBSPACE = {Subspace.Linear: ("linear", False), Subspace.Angular: ("angular", True)}
+GROUPABLE_SUPEROBJECTS = {"Pose", "VelocityTwist", "AccelerationTwist", "Wrench"}
+GROUP_AXIS_BY_SUBSPACE = {Subspace.Linear: ("linear", False), Subspace.Angular: ("angular", True)}
 
 
 def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: dict) -> list:
@@ -282,13 +284,11 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
                 f"pose-axis error grouping: quantity '{quantity_record.id}' is the subobject of "
                 "multiple MAP views",
             )
-        if not matches:
+        if not matches or matches[0].superobject.type not in GROUPABLE_SUPEROBJECTS:
             continue
         view = matches[0]
         superobject_type = view.superobject.type
-        if superobject_type not in _GROUPABLE_SUPEROBJECTS:
-            continue
-        mapping = _GROUP_AXIS_BY_SUBSPACE.get(view.subspace)
+        mapping = GROUP_AXIS_BY_SUBSPACE.get(view.subspace)
         if mapping is None and superobject_type == "Pose":
             kind = (
                 quantity_record.quantity_kind.iri if isinstance(quantity_record, Quantity) else ""
@@ -359,13 +359,14 @@ def snapshots_for_motion(
             supers_by_subobject.setdefault(subobject_id, []).append(super_id)
 
     pending = list(referenced)
-    for step in schedule:
-        for value in (functions.get(step) or {}).values():
-            pending += [
-                item
-                for item in (value if isinstance(value, list) else [value])
-                if isinstance(item, str)
-            ]
+    for value in itertools.chain.from_iterable(
+        (functions.get(step) or {}).values() for step in schedule
+    ):
+        pending += [
+            item
+            for item in (value if isinstance(value, list) else [value])
+            if isinstance(item, str)
+        ]
     seen = set()
     while pending:
         current = pending.pop()
@@ -389,38 +390,41 @@ def snapshots_for_motion(
 
     result = []
     for target_id in referenced:
-        if target_id not in indexes.snapshot_source:
-            continue
-        # re-capturing another motion's snapshot would overwrite its value
         owner = indexes.snapshot_owner.get(target_id)
-        if owner in tokens and owner != token:
-            continue
-        trigger = indexes.snapshot_trigger.get((owner, target_id))
-        source_id = indexes.snapshot_source[target_id]
-        scope = "event" if trigger else ("entry" if owner in tokens else "task")
-        writers = (
-            set()
-            if source_id in supers_by_subobject
-            else indexes.function_output.get(source_id, set())
-        )
-        if len(writers) > 1:
-            raise ConstraintViolation(
-                "coordination",
-                f"snapshot '{target_id}' captures '{source_id}', which {len(writers)} functions "
-                "write -- a capture computes its source once",
-            )
-        result.append(
-            SnapshotCapture(
-                target_id=target_id,
-                source_id=source_id,
-                scope=scope,
-                captured_id=f"{target_id}_captured" if scope == "task" else None,
-                source_function_id=next(iter(writers), None),
-                trigger_event=trigger,
-            )
-        )
+        # re-capturing another motion's snapshot would overwrite its value
+        if target_id in indexes.snapshot_source and (owner not in tokens or owner == token):
+            result.append(snapshot_capture(target_id, indexes, tokens, supers_by_subobject))
 
     return result
+
+
+def snapshot_capture(target_id: str, indexes, tokens, supers_by_subobject: dict) -> SnapshotCapture:
+    """How one snapshot target is captured: on its trigger event, on motion entry, or once per task.
+
+    Raises:
+        ConstraintViolation: several functions write the captured source.
+    """
+    owner = indexes.snapshot_owner.get(target_id)
+    trigger = indexes.snapshot_trigger.get((owner, target_id))
+    source_id = indexes.snapshot_source[target_id]
+    scope = "event" if trigger else ("entry" if owner in tokens else "task")
+    writers = (
+        set() if source_id in supers_by_subobject else indexes.function_output.get(source_id, set())
+    )
+    if len(writers) > 1:
+        raise ConstraintViolation(
+            "coordination",
+            f"snapshot '{target_id}' captures '{source_id}', which {len(writers)} functions "
+            "write -- a capture computes its source once",
+        )
+    return SnapshotCapture(
+        target_id=target_id,
+        source_id=source_id,
+        scope=scope,
+        captured_id=f"{target_id}_captured" if scope == "task" else None,
+        source_function_id=next(iter(writers), None),
+        trigger_event=trigger,
+    )
 
 
 def collect_strings(value, references: set) -> None:
@@ -503,7 +507,75 @@ def observation_ages(evaluators) -> list[dict]:
     return list(seen.values())
 
 
-_POSITION_FIELDS = ("position_x", "position_y", "position_z")
+POSITION_FIELDS = ("position_x", "position_y", "position_z")
+
+
+def coordinate_pose_components(model, item, node) -> PoseComponents | None:
+    """The components a pose's own coordinate node states, or None when it states none.
+
+    A sampled position is a runtime value, so its pose has no fixed components either.
+    """
+    coordinate = PoseCoordModel(node, model.graph, coord_policy=recorded_coord_policy)
+    if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.position_coord.types:
+        return None
+    representation = item.orientation_representation or "quaternion"
+    entry = PoseComponents(representation)
+    for name, value in zip("xyz", position_values(model, coordinate.position_coord) or ()):
+        setattr(entry, f"position_{name}", ComponentRef(value=str(value)))
+    if representation == "quaternion":
+        rotation = orientation_quaternion(model, coordinate.orientation_coord)
+        for name, value in zip("xyzw", rotation or ()):
+            setattr(entry, f"orientation_{name}", ComponentRef(value=str(value)))
+    elif representation == "relative":
+        entry.orientation_operands = item.orientation_operands
+    if all(value is None for key, value in asdict(entry).items() if key != "representation"):
+        return None
+    return entry
+
+
+def component_ref(component, subobject_id: str) -> ComponentRef:
+    """A pose component as the pose reads it: its reference, its authored value, or the view's id."""
+    if isinstance(component, Quantity) and component.reference_value:
+        return ComponentRef(ref=component.reference_value)
+    if isinstance(component, (Quantity, DataValue)) and component.value is not None:
+        return ComponentRef(value=str(component.value))
+    return ComponentRef(ref=subobject_id)
+
+
+def check_pose_components(pose_id: str, parts: PoseComponents, pose_record) -> None:
+    """Check a pose has every component its representation needs, and order its Euler factors.
+
+    Raises:
+        ConstraintViolation: a position or orientation component is missing.
+    """
+    is_pose = isinstance(pose_record, Pose)
+    euler_axes_sequence = pose_record.euler_axes_sequence if is_pose else None
+    orientation_axes = {"quaternion": "xyzw", "euler": euler_axes_sequence or ""}.get(
+        parts.representation, ""
+    )
+    required = POSITION_FIELDS + tuple(f"orientation_{name}" for name in orientation_axes)
+    missing = [name for name in required if getattr(parts, name) is None]
+    if missing:
+        raise ConstraintViolation(
+            "geometry",
+            f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}.",
+        )
+    if parts.representation != "euler":
+        return
+    sequence = euler_axes_sequence or "xyz"
+    factors = [
+        {"axis": name, "component": getattr(parts, f"orientation_{name}")}
+        for name in sequence
+        if getattr(parts, f"orientation_{name}") is not None
+    ]
+    if len(factors) != len(sequence):
+        raise ConstraintViolation(
+            "geometry", f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'."
+        )
+    # extrinsic: last rotation multiplies on the left; intrinsic reverses the order
+    parts.euler_factors = (
+        factors if is_pose and pose_record.euler_intrinsic else list(reversed(factors))
+    )
 
 
 def build_pose_components(model, views: dict, data: list) -> dict:
@@ -516,35 +588,19 @@ def build_pose_components(model, views: dict, data: list) -> dict:
     for item in data:
         if item.type != "Pose" or item.id not in pose_nodes:
             continue
-        coordinate = PoseCoordModel(
-            pose_nodes[item.id], model.graph, coord_policy=recorded_coord_policy
-        )
-        if URI_DISTRIB_TYPE_SAMPLED_QUANTITY in coordinate.position_coord.types:
-            continue
-        representation = item.orientation_representation or "quaternion"
-        entry = PoseComponents(representation)
-        values = position_values(model, coordinate.position_coord)
-        if values is not None:
-            for name, value in zip("xyz", values):
-                setattr(entry, f"position_{name}", ComponentRef(value=str(value)))
-        if representation == "quaternion":
-            rotation = orientation_quaternion(model, coordinate.orientation_coord)
-            for name, value in zip("xyzw", rotation or ()):
-                setattr(entry, f"orientation_{name}", ComponentRef(value=str(value)))
-        elif representation == "relative":
-            entry.orientation_operands = item.orientation_operands
-        if any(
-            value is not None for key, value in asdict(entry).items() if key != "representation"
-        ):
+        entry = coordinate_pose_components(model, item, pose_nodes[item.id])
+        if entry is not None:
             components[item.id] = entry
 
     snapshot_ids = snapshot_target_ids(model)
     for view in views.values():
         superobject = view.superobject
         # a snapshot pose is captured whole at runtime
-        if superobject.type != "Pose" or superobject.id in snapshot_ids:
-            continue
-        if not (superobject.provenance.authored or superobject.euler_axes_sequence):
+        if (
+            superobject.type != "Pose"
+            or superobject.id in snapshot_ids
+            or not (superobject.provenance.authored or superobject.euler_axes_sequence)
+        ):
             continue
         component_axis = str(view.axis.value if view.axis else "").lower()
         subobject_id = view.subobject.id
@@ -555,46 +611,14 @@ def build_pose_components(model, views: dict, data: list) -> dict:
         if representation == "relative":
             entry.orientation_operands = superobject.orientation_operands
         prefix = "position" if view.subspace == Subspace.Linear else "orientation"
-        component = data_by_id.get(subobject_id)
-        if isinstance(component, Quantity) and component.reference_value:
-            component_ref = ComponentRef(ref=component.reference_value)
-        elif isinstance(component, (Quantity, DataValue)) and component.value is not None:
-            component_ref = ComponentRef(value=str(component.value))
-        else:
-            component_ref = ComponentRef(ref=subobject_id)
-        setattr(entry, f"{prefix}_{component_axis}", component_ref)
+        setattr(
+            entry,
+            f"{prefix}_{component_axis}",
+            component_ref(data_by_id.get(subobject_id), subobject_id),
+        )
 
     for pose_id, parts in components.items():
-        pose_record = data_by_id.get(pose_id)
-        is_pose = isinstance(pose_record, Pose)
-        euler_axes_sequence = pose_record.euler_axes_sequence if is_pose else None
-        orientation_axes = {"quaternion": "xyzw", "euler": euler_axes_sequence or ""}.get(
-            parts.representation, ""
-        )
-        required = _POSITION_FIELDS + tuple(f"orientation_{name}" for name in orientation_axes)
-        missing = [name for name in required if getattr(parts, name) is None]
-        if missing:
-            raise ConstraintViolation(
-                "geometry",
-                f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}.",
-            )
-        if parts.representation != "euler":
-            continue
-        sequence = euler_axes_sequence or "xyz"
-        factors = [
-            {"axis": name, "component": getattr(parts, f"orientation_{name}")}
-            for name in sequence
-            if getattr(parts, f"orientation_{name}") is not None
-        ]
-        if len(factors) != len(sequence):
-            raise ConstraintViolation(
-                "geometry",
-                f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'.",
-            )
-        # extrinsic: last rotation multiplies on the left; intrinsic reverses the order
-        parts.euler_factors = (
-            factors if is_pose and pose_record.euler_intrinsic else list(reversed(factors))
-        )
+        check_pose_components(pose_id, parts, data_by_id.get(pose_id))
 
     return components
 

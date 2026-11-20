@@ -20,7 +20,6 @@ from motion_spec.runs.provenance import (
     rec_run,
     run_generation,
 )
-from motion_spec.telemetry.frame_log_pb import HEADER_FILE
 
 FRAME_LOG = "logs/frame_log.pb"
 PROV_TYPES = (PROV.Entity, PROV.Activity, PROV.Agent)
@@ -65,6 +64,8 @@ def verify_run(run_dir: Path | str) -> Path:
     """
     from rec.stores.file_store import FileStore
 
+    from motion_spec.telemetry.frame_log_pb import HEADER_FILE
+
     run_dir = Path(run_dir)
     generation = run_generation(run_dir)
     if generation is None:
@@ -79,31 +80,9 @@ def verify_run(run_dir: Path | str) -> Path:
         raise RecordError(run_dir, *errors)
 
     install_resolver()
-    provenance = parse_rdf(rdflib.Dataset(default_union=True), provenance_path)
-    model_document = kept_dsl_document(generated)
-    if model_document is not None and model_document.is_file():
-        model = parse_rdf(rdflib.Dataset(), model_document)
-        for bundle in model.graphs():
-            if (None, RDF.type, PROV.Bundle) in bundle:
-                provenance.add_graph(bundle)
+    provenance = generation_provenance(generated, provenance_path)
     rec = parse_rdf(rdflib.Dataset(default_union=True), rec_path)
-
-    # per bundle: each states its own file locations and hashes
-    for graph in rec.graphs():
-        recorded = dict(graph.subject_objects(DCTERMS.identifier))
-        rehashed = rdflib.Graph()
-        rehashed += (triple for triple in graph if triple[1] != DCTERMS.identifier)
-        for entity, digest in recorded.items():
-            path = get_file_path(graph, entity)
-            # an invalidated file is already gone
-            if (entity, PROV.wasInvalidatedBy, None) in graph or path is None:
-                continue
-            if not path.exists():
-                errors.append(f"{path}: missing")
-                continue
-            add_file_hash(rehashed, entity)
-            if rehashed.value(entity, DCTERMS.identifier) != digest:
-                errors.append(f"{path}: content differs from the recorded one")
+    errors = [error for graph in rec.graphs() for error in rehash_errors(graph)]
     if errors:
         raise RecordError(run_dir, *errors)
 
@@ -140,6 +119,44 @@ def verify_run(run_dir: Path | str) -> Path:
         except SHACLViolation as exc:
             raise RecordError(run_dir, f"{label}: {exc}") from exc
     return generation
+
+
+def generation_provenance(generated: Path, provenance_path: Path) -> rdflib.Dataset:
+    """The generation's provenance document at PROVENANCE_PATH, with the bundles of the DSL's
+    document GENERATED keeps.
+
+    Raises:
+        RecordError: either does not parse.
+    """
+    provenance = parse_rdf(rdflib.Dataset(default_union=True), provenance_path)
+    model_document = kept_dsl_document(generated)
+    if model_document is not None and model_document.is_file():
+        model = parse_rdf(rdflib.Dataset(), model_document)
+        for bundle in model.graphs():
+            if (None, RDF.type, PROV.Bundle) in bundle:
+                provenance.add_graph(bundle)
+    return provenance
+
+
+def rehash_errors(bundle: rdflib.Graph) -> list[str]:
+    """Every file BUNDLE hashes that is gone or whose content no longer has that hash; each
+    bundle states its own file locations and hashes."""
+    errors = []
+    recorded = dict(bundle.subject_objects(DCTERMS.identifier))
+    rehashed = rdflib.Graph()
+    rehashed += (triple for triple in bundle if triple[1] != DCTERMS.identifier)
+    for entity, digest in recorded.items():
+        path = get_file_path(bundle, entity)
+        # an invalidated file is already gone
+        if (entity, PROV.wasInvalidatedBy, None) in bundle or path is None:
+            continue
+        if not path.exists():
+            errors.append(f"{path}: missing")
+            continue
+        add_file_hash(rehashed, entity)
+        if rehashed.value(entity, DCTERMS.identifier) != digest:
+            errors.append(f"{path}: content differs from the recorded one")
+    return errors
 
 
 def parse_rdf(dataset: rdflib.Dataset, path: Path) -> rdflib.Dataset:

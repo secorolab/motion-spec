@@ -164,15 +164,20 @@ export function appendConsole(pre, text) {
   if (follow) pre.scrollTop = pre.scrollHeight;
 }
 
+// reset, bold, normal intensity, default colour
+const SGR_EFFECTS = {
+  0: () => [],
+  1: (classes) => [...classes.filter((c) => c !== "ansi-b"), "ansi-b"],
+  22: (classes) => classes.filter((c) => c !== "ansi-b"),
+  39: (classes) => classes.filter((c) => c === "ansi-b"),
+};
+
 function sgrClasses(classes, escape) {
   for (const code of escape
     .slice(2, -1)
     .split(";")
     .map((n) => Number(n || 0))) {
-    if (code === 0) classes = [];
-    else if (code === 1) classes = [...classes.filter((c) => c !== "ansi-b"), "ansi-b"];
-    else if (code === 22) classes = classes.filter((c) => c !== "ansi-b");
-    else if (code === 39) classes = classes.filter((c) => c === "ansi-b");
+    if (SGR_EFFECTS[code]) classes = SGR_EFFECTS[code](classes);
     else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
       classes = [
         ...classes.filter((c) => !c.startsWith("ansi-3") && !c.startsWith("ansi-9")),

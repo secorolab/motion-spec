@@ -53,9 +53,9 @@ def local_name(node) -> str | None:
     return None if node is None else split_uri(str(node))[1]
 
 
-_TEMPORAL_UNITS = {NS_MM_QUDT_UNIT["SEC"], NS_MM_QUDT_UNIT["MilliSEC"]}
+TEMPORAL_UNITS = {NS_MM_QUDT_UNIT["SEC"], NS_MM_QUDT_UNIT["MilliSEC"]}
 # the DSL never rescales; a unit absent here is already SI
-_SI_EQUIVALENT = {
+SI_EQUIVALENT = {
     NS_MM_QUDT_UNIT["CentiM"]: (NS_MM_QUDT_UNIT["M"], 1e-2),
     NS_MM_QUDT_UNIT["MilliM"]: (NS_MM_QUDT_UNIT["M"], 1e-3),
     NS_MM_QUDT_UNIT["DEG"]: (NS_MM_QUDT_UNIT["RAD"], math.pi / 180.0),
@@ -68,7 +68,7 @@ _SI_EQUIVALENT = {
 
 def si_unit(unit):
     """The SI unit `unit` converts to; `unit` itself when it already is SI."""
-    return _SI_EQUIVALENT.get(unit, (unit, 1.0))[0]
+    return SI_EQUIVALENT.get(unit, (unit, 1.0))[0]
 
 
 def length_unit(coordinate):
@@ -94,7 +94,7 @@ def length_unit(coordinate):
 
 def si(value: float, unit) -> float:
     """`value`, authored in `unit`, on SI. A unit with no SI equivalent is already SI."""
-    return value * _SI_EQUIVALENT.get(unit, (unit, 1.0))[1]
+    return value * SI_EQUIVALENT.get(unit, (unit, 1.0))[1]
 
 
 def seconds(value: float, unit) -> float:
@@ -103,12 +103,12 @@ def seconds(value: float, unit) -> float:
     Raises:
         ConstraintViolation: `unit` is not a duration unit, so the value has no reading as one.
     """
-    if unit not in _TEMPORAL_UNITS:
+    if unit not in TEMPORAL_UNITS:
         raise ConstraintViolation("units", f"'{unit}' is not a duration this can read")
     return si(value, unit)
 
 
-class _DerivedIri(NamedTuple):
+class DerivedIri(NamedTuple):
     """One registry row: the IRI minted for an id, and where it came from."""
 
     uri: str
@@ -132,7 +132,7 @@ class Model:
         self._ids: dict = {}
         self._app_nodes: dict[str, URIRef] = {}
         self._walked = False
-        self._derived: dict[str, _DerivedIri] = {}
+        self._derived: dict[str, DerivedIri] = {}
         self.derived = self.graph.graph(URIRef(uuid4().urn))
 
     def id(self, node) -> str:
@@ -249,7 +249,7 @@ class Model:
                 )
 
             return uri
-        self._derived[id_] = _DerivedIri(uri, parent_iri, relation, list(types))
+        self._derived[id_] = DerivedIri(uri, parent_iri, relation, list(types))
 
         return uri
 

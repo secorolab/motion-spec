@@ -50,6 +50,58 @@ class DriveUnit:
     type: str = field(default="DriveUnit")
 
 
+def drive_unit(pivot: dict, wheels: list[dict]) -> DriveUnit:
+    """The drive unit a pivot segment forms with its two wheel segments.
+
+    Raises:
+        ConstraintViolation: the wheels share one point, or the axle sits on the pivot axis.
+    """
+    origin = np.asarray(pivot["joint"]["origin"], dtype=float)
+    axis = np.asarray(pivot["joint"]["axis"], dtype=float)
+
+    first, second = (np.asarray(w["joint"]["origin"], dtype=float) for w in wheels)
+    separation = float(np.linalg.norm(first - second))
+    if separation == 0.0:
+        raise ConstraintViolation(
+            "kinematics",
+            f"drive unit '{pivot['joint']['name']}' has its two wheel joints at one "
+            "point, so it has no differential drive",
+        )
+
+    pivot_axis = axis / np.linalg.norm(axis)
+    # a castor trails: the drive rolls away from its axle
+    midpoint = 0.5 * (first + second)
+    trail = midpoint - (midpoint @ pivot_axis) * pivot_axis
+    castor_offset = float(np.linalg.norm(trail))
+    if castor_offset == 0.0:
+        raise ConstraintViolation(
+            "kinematics",
+            f"drive unit '{pivot['joint']['name']}' puts its axle on the pivot axis, "
+            "so it has no castor to trail and no rolling direction to steer",
+        )
+    longitudinal = -trail / castor_offset
+    transverse = np.cross(pivot_axis, longitudinal)
+
+    right, left = sorted(
+        wheels, key=lambda w: float(np.asarray(w["joint"]["origin"], dtype=float) @ transverse)
+    )
+
+    hub_signs = [
+        -float(np.sign(np.asarray(right["joint"]["axis"], dtype=float) @ transverse)),
+        float(np.sign(np.asarray(left["joint"]["axis"], dtype=float) @ transverse)),
+    ]
+
+    return DriveUnit(
+        pivot_joint=local_name(pivot["joint"]["iri"]),
+        wheels=[local_name(right["joint"]["iri"]), local_name(left["joint"]["iri"])],
+        attachment=[float(origin[0]), float(origin[1])],
+        wheel_distance=separation / 2.0,
+        castor_offset=castor_offset,
+        pivot_offset=float(np.arctan2(longitudinal[1], longitudinal[0])),
+        hub_signs=hub_signs,
+    )
+
+
 def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
     """The drive units of the one platform in the scene.
 
@@ -65,62 +117,11 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
             if segment["joint"] and segment["joint"]["axis"] is not None:
                 children.setdefault(segment["parent"], []).append(segment)
         for body in [tree["root"], *(segment["name"] for segment in tree["segments"])]:
-            units = []
-            for pivot in children.get(body, ()):
-                wheels = children.get(pivot["name"], ())
-                if len(wheels) != 2:
-                    continue
-
-                origin = np.asarray(pivot["joint"]["origin"], dtype=float)
-                axis = np.asarray(pivot["joint"]["axis"], dtype=float)
-
-                first, second = (np.asarray(w["joint"]["origin"], dtype=float) for w in wheels)
-                separation = float(np.linalg.norm(first - second))
-                if separation == 0.0:
-                    raise ConstraintViolation(
-                        "kinematics",
-                        f"drive unit '{pivot['joint']['name']}' has its two wheel joints at one "
-                        "point, so it has no differential drive",
-                    )
-
-                pivot_axis = axis / np.linalg.norm(axis)
-                # a castor trails: the drive rolls away from its axle
-                midpoint = 0.5 * (first + second)
-                trail = midpoint - (midpoint @ pivot_axis) * pivot_axis
-                castor_offset = float(np.linalg.norm(trail))
-                if castor_offset == 0.0:
-                    raise ConstraintViolation(
-                        "kinematics",
-                        f"drive unit '{pivot['joint']['name']}' puts its axle on the pivot axis, "
-                        "so it has no castor to trail and no rolling direction to steer",
-                    )
-                longitudinal = -trail / castor_offset
-                transverse = np.cross(pivot_axis, longitudinal)
-
-                right, left = sorted(
-                    wheels,
-                    key=lambda w: float(np.asarray(w["joint"]["origin"], dtype=float) @ transverse),
-                )
-
-                hub_signs = [
-                    -float(np.sign(np.asarray(right["joint"]["axis"], dtype=float) @ transverse)),
-                    float(np.sign(np.asarray(left["joint"]["axis"], dtype=float) @ transverse)),
-                ]
-
-                units.append(
-                    DriveUnit(
-                        pivot_joint=local_name(pivot["joint"]["iri"]),
-                        wheels=[
-                            local_name(right["joint"]["iri"]),
-                            local_name(left["joint"]["iri"]),
-                        ],
-                        attachment=[float(origin[0]), float(origin[1])],
-                        wheel_distance=separation / 2.0,
-                        castor_offset=castor_offset,
-                        pivot_offset=float(np.arctan2(longitudinal[1], longitudinal[0])),
-                        hub_signs=hub_signs,
-                    )
-                )
+            units = [
+                drive_unit(pivot, children[pivot["name"]])
+                for pivot in children.get(body, ())
+                if len(children.get(pivot["name"], ())) == 2
+            ]
             if units:
                 return units
     raise ConstraintViolation(
@@ -130,7 +131,7 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
     )
 
 
-_COORDINATE_BY_COMPONENT = {
+COORDINATE_INDEX_BY_COMPONENT = {
     (Subspace.Linear, Axis.X): 0,
     (Subspace.Linear, Axis.Y): 1,
     (Subspace.Angular, Axis.Z): 2,
@@ -138,7 +139,50 @@ _COORDINATE_BY_COMPONENT = {
 
 
 # hddc2b's input order
-_PLATFORM_WRENCH_COMPONENTS = (("force", "x"), ("force", "y"), ("torque", "z"))
+PLATFORM_WRENCH_COMPONENTS = (("force", "x"), ("force", "y"), ("torque", "z"))
+
+
+def commanded_wrenches(force_solvers) -> dict:
+    """The wrench each force-distribution controller commands, with the world keys of its frames.
+
+    `local` names the rotated copy a wrench needs when its frame is not the platform's.
+    """
+    wrench_by_controller = {}
+    for solver in force_solvers:
+        platform_frame = solver.force.as_seen_by
+        platform_key = solver.world_keys.get(
+            platform_frame.uri if platform_frame is not None else None
+        )
+        for spec in solver.forces:
+            if not spec.force.id:
+                continue
+            frame = spec.force.as_seen_by
+            frame_key = solver.world_keys.get(frame.uri if frame is not None else None)
+            rotated = frame_key and platform_key and frame_key != platform_key
+            wrench_by_controller[spec.controller] = {
+                "wrench": spec.force.id,
+                "local": f"pltf_{spec.force.id}" if rotated else None,
+                "frame_index": frame_key,
+                "platform_index": platform_key,
+            }
+    return wrench_by_controller
+
+
+def platform_coordinate(controller, by_subobject: dict, platform_ids: set) -> int | None:
+    """The platform wrench coordinate a controller closes on, or None when it closes on none.
+
+    Raises:
+        ConstraintViolation: the controller's measured quantity is read by several views.
+    """
+    measured = by_subobject.get(controller.measured_signal, ())
+    if len(measured) > 1:
+        raise ConstraintViolation(
+            "control",
+            f"controller '{controller.id}' measures a quantity {len(measured)} views read",
+        )
+    if not measured or measured[0].superobject.id not in platform_ids:
+        return None
+    return COORDINATE_INDEX_BY_COMPONENT.get((measured[0].subspace, measured[0].axis))
 
 
 def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -> list[dict]:
@@ -159,21 +203,7 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
         solver.force.id for solver in force_solvers
     }
     by_subobject = views_by_subobject(views)
-    wrench_by_controller = {}
-    for solver in force_solvers:
-        platform_frame = solver.force.as_seen_by
-        platform_key = solver.world_keys.get(
-            platform_frame.uri if platform_frame is not None else None
-        )
-        for spec in solver.forces:
-            if not spec.force.id:
-                continue
-            frame = spec.force.as_seen_by
-            wrench_by_controller[spec.controller] = (
-                spec.force.id,
-                solver.world_keys.get(frame.uri if frame is not None else None),
-                platform_key,
-            )
+    wrench_by_controller = commanded_wrenches(force_solvers)
 
     rows = []
     for motion in motions:
@@ -184,37 +214,14 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
                 continue
             commanded = wrench_by_controller.get(controller.id)
             if commanded is not None:
-                wrench, frame_key, platform_key = commanded
-                local = (
-                    f"pltf_{wrench}"
-                    if frame_key and platform_key and frame_key != platform_key
-                    else None
-                )
                 terms.extend(
-                    {
-                        "wrench": wrench,
-                        "local": local,
-                        "frame_index": frame_key,
-                        "platform_index": platform_key,
-                        "subspace": subspace,
-                        "axis": axis,
-                        "coordinate": index,
-                    }
-                    for index, (subspace, axis) in enumerate(_PLATFORM_WRENCH_COMPONENTS)
+                    {**commanded, "subspace": subspace, "axis": axis, "coordinate": index}
+                    for index, (subspace, axis) in enumerate(PLATFORM_WRENCH_COMPONENTS)
                 )
                 continue
-            measured = by_subobject.get(controller.measured_signal, ())
-            if len(measured) > 1:
-                raise ConstraintViolation(
-                    "control",
-                    f"controller '{controller.id}' measures a quantity {len(measured)} views read",
-                )
-            if not measured or measured[0].superobject.id not in platform_ids:
-                continue
-            coordinate = _COORDINATE_BY_COMPONENT.get((measured[0].subspace, measured[0].axis))
-            if coordinate is None:
-                continue
-            terms.append({"signal": signal, "coordinate": coordinate})
+            coordinate = platform_coordinate(controller, by_subobject, platform_ids)
+            if coordinate is not None:
+                terms.append({"signal": signal, "coordinate": coordinate})
         if terms:
             rotations = list({term["local"]: term for term in terms if term.get("local")}.values())
             rows.append({"index": motion.index, "terms": terms, "rotations": rotations})

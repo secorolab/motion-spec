@@ -4,7 +4,7 @@
 
 /** CodeMirror, imported once, themed to the page, and told which lines changed since HEAD. */
 
-import { $, post, snack } from "./core.js";
+import { $, onModifierKey, post, snack } from "./core.js";
 
 let codemirror = null;
 
@@ -104,23 +104,39 @@ function tokyoNightStyle(HighlightStyle, tags) {
   ]);
 }
 
+// tried in order before any word: a match is the token, whatever the state
+const LEADING_TOKENS = [
+  [/^\/\/.*/, "comment"],
+  [/^\/\*[\s\S]*?(\*\/|$)/, "comment"],
+  [/^"(?:[^"\\]|\\.)*"?/, "string"],
+  [/^'(?:[^'\\]|\\.)*'?/, "string"],
+  [/^<[^<>\n]*>?/, "typeName"],
+  [/^-?\d+(?:\.\d+)?(?:e-?\d+)?(?:\s*[a-zA-Z]+(?:\^-?\d)?(?:\/[a-zA-Z]+(?:\^-?\d)?)*\b)?/, "number"],
+];
+const DEPTH_CHANGE = { "(": 1, ")": -1 };
+
+// a word that is neither a property nor a bracketed kind
+function wordToken(stream, state) {
+  if (state.depth > 0) return null;
+  const kind = state.kind;
+  state.kind = false;
+  if (kind) return "variableName";
+  // declares when a name then `=` or `{` follows; a bare `{` opens an unnamed block
+  if (stream.match(/^\s*\{/, false)) return "keyword";
+  if (stream.match(/^\s+(?:\([^)]*\)\s*)?[A-Za-z_][\w-]*\s*[={]/, false)) {
+    state.kind = true;
+    return "keyword";
+  }
+  return null;
+}
+
 function structuralMode(StreamLanguage) {
   return StreamLanguage.define({
     // kind: the last word declares, so the next is its name; depth: inside `(ns=..)`
     startState: () => ({ kind: false, depth: 0 }),
     token(stream, state) {
-      if (stream.match(/^\/\/.*/)) return "comment";
-      if (stream.match(/^\/\*/)) {
-        stream.match(/^[\s\S]*?(\*\/|$)/);
-        return "comment";
-      }
-      if (stream.match(/^"(?:[^"\\]|\\.)*"?/)) return "string";
-      if (stream.match(/^'(?:[^'\\]|\\.)*'?/)) return "string";
-      if (stream.match(/^<[^<>\n]*>?/)) return "typeName";
-      if (stream.match(/^-?\d+(?:\.\d+)?(?:e-?\d+)?/)) {
-        stream.match(/^\s*[a-zA-Z]+(?:\^-?\d)?(?:\/[a-zA-Z]+(?:\^-?\d)?)*\b/);
-        return "number";
-      }
+      const leading = LEADING_TOKENS.find(([pattern]) => stream.match(pattern));
+      if (leading) return leading[1];
       if (stream.match(/^[A-Za-z_][\w-]*(?:[ \t]+[A-Za-z_][\w-]*)*(?=[ \t]*:)/)) {
         state.kind = false;
         return "propertyName";
@@ -134,24 +150,10 @@ function structuralMode(StreamLanguage) {
         state.kind = true;
         return "keyword";
       }
-      const word = stream.match(/^[A-Za-z_][\w-]*/);
-      if (word) {
-        if (state.depth > 0) return null;
-        const kind = state.kind;
-        state.kind = false;
-        if (kind) return "variableName";
-        // declares when a name then `=` or `{` follows; a bare `{` opens an unnamed block
-        if (stream.match(/^\s*\{/, false)) return "keyword";
-        if (stream.match(/^\s+(?:\([^)]*\)\s*)?[A-Za-z_][\w-]*\s*[={]/, false)) {
-          state.kind = true;
-          return "keyword";
-        }
-        return null;
-      }
+      if (stream.match(/^[A-Za-z_][\w-]*/)) return wordToken(stream, state);
       const mark = stream.match(/^[{}[\](),]/);
       if (mark) {
-        if (mark[0] === "(") state.depth += 1;
-        if (mark[0] === ")") state.depth = Math.max(0, state.depth - 1);
+        state.depth = Math.max(0, state.depth + (DEPTH_CHANGE[mark[0]] ?? 0));
         return "punctuation";
       }
       if (stream.match(/^[=.]/)) return "operator";
@@ -162,44 +164,38 @@ function structuralMode(StreamLanguage) {
   });
 }
 
-function myersInsertions(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const max = n + m;
+// whether the path onto diagonal K at edit distance D comes down from K + 1, not across from K - 1
+function fromAbove(v, k, d) {
+  return k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1));
+}
+
+// per edit distance, the furthest x reached on each diagonal; the last reaches the end of both
+function myersTrace(a, b) {
   let v = new Map([[1, 0]]);
   const trace = [];
-  let dEnd = -1;
-  outer: for (let d = 0; d <= max; d += 1) {
+  for (let d = 0; d <= a.length + b.length; d += 1) {
     trace.push(v);
     const next = new Map(v);
     for (let k = -d; k <= d; k += 2) {
-      let x;
-      if (k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1))) {
-        x = v.get(k + 1) ?? 0;
-      } else {
-        x = (v.get(k - 1) ?? 0) + 1;
-      }
-      let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) {
-        x += 1;
-        y += 1;
-      }
+      let x = fromAbove(v, k, d) ? (v.get(k + 1) ?? 0) : (v.get(k - 1) ?? 0) + 1;
+      while (x < a.length && x - k < b.length && a[x] === b[x - k]) x += 1;
       next.set(k, x);
-      if (x >= n && y >= m) {
-        dEnd = d;
-        break outer;
-      }
+      if (x >= a.length && x - k >= b.length) return trace;
     }
     v = next;
   }
+  return trace;
+}
+
+function myersInsertions(a, b) {
+  const trace = myersTrace(a, b);
   const added = new Set();
-  let x = n;
-  let y = m;
-  for (let d = dEnd; d > 0; d -= 1) {
+  let x = a.length;
+  let y = b.length;
+  for (let d = trace.length - 1; d > 0; d -= 1) {
     const vPrev = trace[d];
     const k = x - y;
-    const prevK =
-      k === -d || (k !== d && (vPrev.get(k - 1) ?? -1) < (vPrev.get(k + 1) ?? -1)) ? k + 1 : k - 1;
+    const prevK = fromAbove(vPrev, k, d) ? k + 1 : k - 1;
     const prevX = vPrev.get(prevK) ?? 0;
     const prevY = prevX - prevK;
     while (x > prevX && y > prevY) {
@@ -214,6 +210,37 @@ function myersInsertions(a, b) {
     }
   }
   return added;
+}
+
+// the 1-based numbers of the lines NOW has that WAS does not, diffing only between their
+// shared head and tail
+function insertedLines(was, now) {
+  let head = 0;
+  while (head < now.length && head < was.length && now[head] === was[head]) head += 1;
+  let tail = 0;
+  while (
+    tail < now.length - head &&
+    tail < was.length - head &&
+    now[now.length - 1 - tail] === was[was.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+  const before = was.slice(head, was.length - tail);
+  const after = now.slice(head, now.length - tail);
+  if (!after.length) return [];
+  return [...myersInsertions(before, after)].map((index) => head + index + 1);
+}
+
+// mark the line a saved source's CHECK failed on, through PROBLEM, and say why in the banner
+function showCheck(target, check, problem) {
+  problem.line = check && !check.ok && check.line ? check.line : null;
+  target.dispatch({}); // empty dispatch redraws the mark
+  const banner = $(".syntax-state");
+  if (!banner) return;
+  banner.hidden = !check || check.ok;
+  if (!check || check.ok) return;
+  banner.textContent = check.line ? `line ${check.line}: ${check.message}` : check.message;
+  banner.onclick = () => revealLine(check.line);
 }
 
 export async function mountEditor(
@@ -260,7 +287,7 @@ export async function mountEditor(
       save.hidden = false;
       save.textContent = "saved";
       setTimeout(() => dirty(false), 1200);
-      showCheck(target, check);
+      showCheck(target, check, problem);
     } catch (error) {
       snack(error.message);
       dirty(true);
@@ -285,40 +312,13 @@ export async function mountEditor(
     },
     { decorations: (plugin) => plugin.decorations },
   );
-  const showCheck = (target, check) => {
-    problem.line = check && !check.ok && check.line ? check.line : null;
-    target.dispatch({}); // empty dispatch redraws the mark
-    const banner = $(".syntax-state");
-    if (!banner) return;
-    banner.hidden = !check || check.ok;
-    if (!check || check.ok) return;
-    banner.textContent = check.line ? `line ${check.line}: ${check.message}` : check.message;
-    banner.onclick = () => revealLine(check.line);
-  };
   holder.style.setProperty("--head", `${$(".viewer-top")?.offsetHeight ?? 60}px`);
   // baseline is git HEAD, else the open-time text
   const was = (gitHead ?? text).split("\n");
   const changedLine = Decoration.line({ class: "cm-changedLine" });
-  const marked = (doc) => {
-    const now = doc.toString().split("\n");
-    let head = 0;
-    while (head < now.length && head < was.length && now[head] === was[head]) head += 1;
-    let tail = 0;
-    while (
-      tail < now.length - head &&
-      tail < was.length - head &&
-      now[now.length - 1 - tail] === was[was.length - 1 - tail]
-    ) {
-      tail += 1;
-    }
-    const before = was.slice(head, was.length - tail);
-    const after = now.slice(head, now.length - tail);
-    if (!after.length) return [];
-    return [...myersInsertions(before, after)].map((index) => head + index + 1);
-  };
   const changes = (doc) =>
     Decoration.set(
-      marked(doc)
+      insertedLines(was, doc.toString().split("\n"))
         .sort((left, right) => left - right)
         .map((n) => changedLine.range(doc.line(n).from)),
     );
@@ -489,20 +489,19 @@ export async function mountEditor(
   mounted = view;
   dirty(false);
   if (save) save.onclick = () => write(view);
-  holder.addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "s") {
-      event.preventDefault();
-      write(view);
-    }
-  });
+  holder.addEventListener("keydown", (event) => onModifierKey(event, "s", () => write(view)));
   // parse all now, or scrolling flashes plain text; the budget is a backstop
   forceParsing(view, view.state.doc.length, 150);
-  if (line && line <= view.state.doc.lines) {
-    const at = view.state.doc.line(line).from;
-    view.dispatch({
-      selection: { anchor: at },
-      effects: EditorView.scrollIntoView(at, { y: "center" }),
-    });
-  }
+  centerLine(view, line, EditorView);
   view.focus();
+}
+
+// put the cursor on LINE, scrolled to the middle of the view
+function centerLine(view, line, EditorView) {
+  if (!line || line > view.state.doc.lines) return;
+  const at = view.state.doc.line(line).from;
+  view.dispatch({
+    selection: { anchor: at },
+    effects: EditorView.scrollIntoView(at, { y: "center" }),
+  });
 }

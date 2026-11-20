@@ -42,7 +42,7 @@ from motion_spec.runs.replay import resolve_run
 from motion_spec.runs.verify import RecordError
 
 
-def generation_info(path: Path) -> dict:
+def generation_summary(path: Path) -> dict:
     layout = GenerationInfo(path, roots.GENERATIONS).layout
     provenance = read_generation_dataset(path / "generated" / GENERATION_DOCUMENT)
     began = provenance.value(provenance.value(predicate=PROV.hadActivity), TIME.hasBeginning)
@@ -195,7 +195,7 @@ def workspace_twin(generated: Path, provenance: Dataset, copy: Node) -> str | No
 
 def generation_details(path: Path) -> dict:
     """Add authored motion metadata without slowing the generation sidebar."""
-    details = generation_info(path)
+    details = generation_summary(path)
     generated = path / "generated"
     provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
     kept = kept_sources(provenance)
@@ -233,7 +233,7 @@ def generation_details(path: Path) -> dict:
 # a larger file locks the browser's editor
 GENERATED_MAX_BYTES = 2_000_000
 
-_TEXT_CONTROL = {9, 10, 13}
+TEXT_CONTROL_BYTES = {9, 10, 13}
 
 
 def read_generated(path: Path) -> dict:
@@ -243,7 +243,7 @@ def read_generated(path: Path) -> dict:
         head = handle.read(GENERATED_MAX_BYTES)
     # a protobuf log has few NULs, so count every control byte
     block = head[:8192]
-    control = sum(1 for byte in block if byte < 32 and byte not in _TEXT_CONTROL)
+    control = sum(1 for byte in block if byte < 32 and byte not in TEXT_CONTROL_BYTES)
     if b"\0" in block or control > len(block) * 0.02:
         return {"absolute": str(path), "size": size, "binary": True, "text": ""}
     return {
@@ -367,7 +367,7 @@ def run_notes(path: Path) -> list[str]:
     return list(dict.fromkeys(tag for note in notes for tag in note.get("tags") or []))
 
 
-def run_info(path: Path) -> dict:
+def run_summary(path: Path) -> dict:
     info = RunInfo(path)
     health = info.health or {}
     try:

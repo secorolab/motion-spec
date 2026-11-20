@@ -24,12 +24,13 @@ from motion_spec.generation.artifacts import (
     field_names_and_format,
 )
 from motion_spec.rdf_parser.constraint_handler import SOLVER_FAMILIES
-from motion_spec.rdf_parser.data_access import analyse_data_access, build_data_access
+from motion_spec.rdf_parser.data_access import (
+    STORAGE_BY_CADENCE,
+    analyse_data_access,
+    build_data_access,
+)
 from motion_spec.runs.verify import RecordError
 from motion_spec.telemetry import frame_log_pb
-
-# The storage table, restated so the test pins the contract rather than the implementation's constant.
-STORAGE_BY_CADENCE = {"never": "absent", "init": "record", "tick": "log"}
 
 
 @pytest.fixture
@@ -107,8 +108,13 @@ def two_motions() -> tuple[dict, list, dict, list, list, dict]:
         "controllers": [],
         "monitors": [],
         "quantity_samples": [
-            {"id": item.id, "source_id": item.id, "source_type": item.type, "sample_desc": desc}
-            for item, desc in zip(
+            {
+                "id": item.id,
+                "source_id": item.id,
+                "source_type": item.type,
+                "sample_descriptor": descriptor,
+            }
+            for item, descriptor in zip(
                 algorithm_data[1:],
                 (
                     {"kind": "data", "id": "arc_only_error"},

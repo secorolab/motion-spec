@@ -32,7 +32,7 @@ from motion_spec_dsl.vocab import (
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import get_node_types
 from rdflib import Literal
-from rdflib.namespace import RDF, SDO
+from rdflib.namespace import PROV, RDF, SDO
 from scene_dsl.rdf_parser.common import ensure_one_typed_subject_uri
 
 from motion_spec.classes.constraints import ConstraintTransition, GuardedMotion
@@ -45,7 +45,12 @@ from motion_spec.classes.handlers import (
     LevelMonitor,
     Monitor,
 )
-from motion_spec.classes.motion import ForwardedCommandStep, MotionSolverSlice, MotionUnit
+from motion_spec.classes.motion import (
+    DataValue,
+    ForwardedCommandStep,
+    MotionSolverSlice,
+    MotionUnit,
+)
 from motion_spec.rdf_parser import perturbations, quantities
 from motion_spec.rdf_parser.agents import scene_kinematics
 from motion_spec.rdf_parser.constraint_handler import (
@@ -76,7 +81,7 @@ from motion_spec.rdf_parser.views import (
     snapshots_for_motion,
 )
 
-_PHASES = ("when", "while", "until")
+MOTION_PHASES = ("when", "while", "until")
 
 
 def constraint_transition(model, node) -> ConstraintTransition:
@@ -124,7 +129,7 @@ def guarded_motion(model, node) -> GuardedMotion:
 
 
 # no solver error: codegen compares the world clock to the threshold, in seconds
-_ELAPSED_RELATIONS = (
+ELAPSED_RELATIONS = (
     (CSTR["GreaterThanConstraint"], ">=", CSTR["threshold"]),
     (CSTR["EqualityConstraint"], "==", CSTR["reference-value"]),
 )
@@ -170,7 +175,7 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
                 )
             observed_at = model.id(begin)
         operator, predicate = next(
-            ((op, pred) for type_, op, pred in _ELAPSED_RELATIONS if type_ in types),
+            ((op, pred) for type_, op, pred in ELAPSED_RELATIONS if type_ in types),
             ("<", CSTR["threshold"]),
         )
         threshold = quantities.duration_seconds(model, graph.value(constraint_node, predicate))
@@ -195,7 +200,7 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
 
 
 @reader
-def monitor_entry(model, node) -> Monitor:
+def monitor_record(model, node) -> Monitor:
     """A monitor: a level flag its constraint sets continuously, or an edge event it fires once."""
     graph = model.graph
     handler = ensure_one_typed_subject_uri(
@@ -296,7 +301,7 @@ def build_constraint_handlers(model, schedule, derivation):
             guarded_motion(model, graph.value(node, CSTR_HDL["motion"])),
             [constraint_evaluator(model, item) for item in graph[node : CSTR_HDL["evaluators"]]],
             [],
-            [monitor_entry(model, item) for item in graph[node : CSTR_HDL["monitors"]]],
+            [monitor_record(model, item) for item in graph[node : CSTR_HDL["monitors"]]],
             order_by_node[node],
         )
         plans = derivation.controllers_by_handler.get(node, ())
@@ -351,28 +356,28 @@ class PhaseNodes:
 
     def __init__(self, model, handler_node, motion_node):
         graph = model.graph
-        self.raw = {phase: set(graph[motion_node : MOT[phase]]) for phase in _PHASES}
+        self.raw = {phase: set(graph[motion_node : MOT[phase]]) for phase in MOTION_PHASES}
         self.constraints = {
             phase: expanded_constraints(model, nodes) if phase != "while" else nodes
             for phase, nodes in self.raw.items()
         }
-        self.evaluators = {phase: [] for phase in _PHASES}
+        self.evaluators = {phase: [] for phase in MOTION_PHASES}
         for node in graph[handler_node : CSTR_HDL["evaluators"]]:
             constraint = graph.value(node, CSTR_HDL["constraint"])
-            phase = next((p for p in _PHASES if constraint in self.constraints[p]), None)
+            phase = next((p for p in MOTION_PHASES if constraint in self.constraints[p]), None)
             if phase is not None:
                 self.evaluators[phase].append(node)
 
         self.watched = {
             phase: {graph.value(node, CSTR_HDL["constraint"]) for node in self.evaluators[phase]}
-            for phase in _PHASES
+            for phase in MOTION_PHASES
         }
         self.errors = {
             phase: {graph.value(node, CSTR_HDL["error"]) for node in self.evaluators[phase]}
             - {None}
-            for phase in _PHASES
+            for phase in MOTION_PHASES
         }
-        self.monitors = {phase: [] for phase in _PHASES}
+        self.monitors = {phase: [] for phase in MOTION_PHASES}
         for node in graph[handler_node : CSTR_HDL["monitors"]]:
             phase = self.monitor_phase(graph, node)
             if phase is not None:
@@ -386,10 +391,10 @@ class PhaseNodes:
                 if monitored <= self.raw[phase]:
                     return phase
 
-            return next((p for p in _PHASES if monitored & self.watched[p]), None)
+            return next((p for p in MOTION_PHASES if monitored & self.watched[p]), None)
         error = graph.value(node, CSTR_HDL["error"])
 
-        return next((p for p in _PHASES if error in self.errors[p]), None)
+        return next((p for p in MOTION_PHASES if error in self.errors[p]), None)
 
 
 def append_new(steps: list, candidates) -> None:
@@ -397,6 +402,184 @@ def append_new(steps: list, candidates) -> None:
     for step in candidates:
         if step not in steps:
             steps.append(step)
+
+
+def chain_solver_slices(handler, serial_chains, solver_ids: set) -> list[MotionSolverSlice]:
+    """The serial-chain solvers a handler runs, each driven through its one motion driver there.
+
+    Raises:
+        ConstraintViolation: a solver carries other than one motion driver of the handler.
+    """
+    slices = []
+    for solver in serial_chains:
+        if solver.id not in solver_ids or not solver.motion_drivers:
+            continue
+        owned = [driver for driver in solver.motion_drivers if driver.handler == handler.id]
+        if len(owned) != 1:
+            raise ConstraintViolation(
+                "coordination",
+                f"solver '{solver.id}' carries {len(owned)} motion drivers of handler "
+                f"'{handler.id}' -- a handler drives a solver through one",
+            )
+        slices.append(
+            MotionSolverSlice(
+                id=solver.id,
+                solver_id=solver.id,
+                output=solver.output,
+                motion_driver=owned[0],
+                read_only=solver.algorithm.read_only,
+            )
+        )
+
+    return slices
+
+
+def leading_and_trailing(model, nodes, grouped_nodes: list, active_plans) -> tuple[list, list]:
+    """The while evaluators outside a pose-axis group, split by when they run: leading ones
+    feed a feedback law, trailing ones have no plan or a feed-forward one.
+    """
+    graph = model.graph
+    by_constraint = {plan.constraint: plan for plan in active_plans}
+    leading, trailing = [], []
+    for node in nodes:
+        if node in grouped_nodes:
+            continue
+        plan = by_constraint.get(graph.value(node, CSTR_HDL.constraint))
+        if plan is None or CSTR_HDL_EXT.FeedForwardController in get_node_types(
+            graph, plan.controller
+        ):
+            trailing.append(node)
+        else:
+            leading.append(node)
+
+    return leading, trailing
+
+
+def append_alignment_steps(model, active: list, constraints, active_plans, scope) -> None:
+    """Append the alignment ops of the while constraints and, for each multi-axis plan aligned
+    otherwise, its reference interpolation and pose evaluator.
+
+    The backward walk never reaches alignment ops: each motion names them itself.
+    """
+    graph = model.graph
+    for constraint in constraints:
+        quantity = graph.value(constraint, CSTR.quantity)
+        if quantity is None:
+            continue
+        drive_op = alignment_op(
+            model, GEOM_OP_EXT.RotationVectorFromDirections, quantity
+        ) or alignment_op(model, GEOM_OP_EXT.AngleGradientFromDirections, quantity)
+        if drive_op is not None:
+            append_new(
+                active,
+                [model.id(op) for op in alignment_chain_ops(model, quantity)]
+                + [model.id(drive_op)],
+            )
+    for plan in active_plans:
+        if (
+            len(plan.axes) <= 1
+            or alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity)
+            is not None
+        ):
+            continue
+        reference_view = quantities.view_of(
+            graph, graph.value(plan.constraint, CSTR["reference-value"])
+        )
+        interpolation = next(
+            graph.subjects(GEOM_OP.out, graph.value(reference_view, MAP.superobject)), None
+        )
+        if interpolation is not None:
+            append_new(active, scope.of([interpolation], OPS_GENERIC + OPS_HANDLER))
+        append_new(active, [SolverIdFactory(model, plan.controller).pose_evaluator()])
+
+
+def commanded_force_nodes(
+    model, handler, handler_node, chain_solvers, function_input: dict
+) -> list:
+    """The cartesian-force rows of the handler's motion drivers whose force a control law of the
+    handler computes, directly or through any chain of functions.
+    """
+    graph = model.graph
+    control_outputs = {controller.control_signal.id for controller in handler.controllers}
+    force_nodes = []
+    driver_nodes = [
+        model.node_by_id[solver.motion_driver.id]
+        for solver in chain_solvers
+        if solver.motion_driver.id in model.node_by_id
+    ]
+    driver_nodes.extend(
+        driver
+        for solver_node in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
+        if (solver_node, RDF.type, SLV["ForceDistributionSolver"]) in graph
+        for driver in graph[solver_node : SLV["motion-drivers"]]
+    )
+    for driver_node in driver_nodes:
+        for node in graph[driver_node : SLV["cartesian-force"]]:
+            force = graph.value(node, SLV["force"])
+            if force is None:
+                continue
+            force_id = model.id(force)
+            feeding: set[str] = set()
+            pending = set(function_input.get(force_id, ()))
+            while pending:
+                feeding |= pending
+                pending = {
+                    item for value in pending for item in function_input.get(value, ())
+                } - feeding
+            if ({force_id} | feeding) & control_outputs:
+                force_nodes.append(node)
+
+    return force_nodes
+
+
+def forwarded_commands(
+    model, derivation, active_plans, chain_solvers, solvers_by_id: dict, holders: dict
+) -> list[ForwardedCommandStep]:
+    """The commands passed straight to a joint, one per active plan whose solver forwards them,
+    each sent by the runtime owning the joint's tree.
+
+    Raises:
+        ConstraintViolation: the joint belongs to no tree the handler's runtimes own.
+    """
+    graph = model.graph
+    commands = []
+    for plan in active_plans:
+        if not derivation.algorithm_by_solver[plan.solver].forwards_commands:
+            continue
+        quantity = graph.value(plan.constraint, CSTR.quantity)
+        view = quantities.view_of(graph, quantity)
+        target = graph.value(
+            graph.value(view, MAP.superobject) if view is not None else quantity,
+            KC_STAT["of-joint"],
+        )
+        runtime = next(
+            (
+                solvers_by_id[slice_.solver_id]
+                for slice_ in chain_solvers
+                if any(
+                    tree in holders.get(target, ())
+                    for tree in solvers_by_id[slice_.solver_id].runtime.owned_trees or ()
+                )
+            ),
+            None,
+        )
+        if runtime is None:
+            raise ConstraintViolation(
+                "coordination",
+                "command forwarding: joint "
+                f"'{model.label(target) if target is not None else target}' belongs to no "
+                "kinematic tree this handler's runtimes own",
+            )
+        commands.append(
+            ForwardedCommandStep(
+                f"cmd-fwd-{model.id(plan.controller)}",
+                derivation.controllers_for(plan)[0].control_signal,
+                f"{runtime.runtime.prefix}{model.label(target)}",
+                runtime.id,
+            )
+        )
+
+    return commands
 
 
 def build_motions(model, handlers, robots, computation, derivation, fsm):
@@ -425,29 +608,10 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         solver_ids = {model.id(plan.solver) for plan in plans} | {
             model.id(solver) for solver in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
         }
-        chain_solvers = []
-        for solver in robots.serial_chains:
-            if solver.id not in solver_ids or not solver.motion_drivers:
-                continue
-            owned = [driver for driver in solver.motion_drivers if driver.handler == handler.id]
-            if len(owned) != 1:
-                raise ConstraintViolation(
-                    "coordination",
-                    f"solver '{solver.id}' carries {len(owned)} motion drivers of handler "
-                    f"'{handler.id}' -- a handler drives a solver through one",
-                )
-            chain_solvers.append(
-                MotionSolverSlice(
-                    id=solver.id,
-                    solver_id=solver.id,
-                    output=solver.output,
-                    motion_driver=owned[0],
-                    read_only=solver.algorithm.read_only,
-                )
-            )
+        chain_solvers = chain_solver_slices(handler, robots.serial_chains, solver_ids)
         evaluators = {
             name: [constraint_evaluator(model, node) for node in phase.evaluators[name]]
-            for name in _PHASES
+            for name in MOTION_PHASES
         }
         groups = pose_axis_error_groups_for_motion(
             model, dict(zip(phase.evaluators["while"], evaluators["while"])), computation.views
@@ -478,18 +642,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             if step not in grouped_ids
         ]
 
-        by_constraint = {plan.constraint: plan for plan in active_plans}
-        leading, trailing = [], []
-        for node in live["while"]:
-            if node in grouped_nodes:
-                continue
-            plan = by_constraint.get(graph.value(node, CSTR_HDL.constraint))
-            if plan is None or CSTR_HDL_EXT.FeedForwardController in get_node_types(
-                graph, plan.controller
-            ):
-                trailing.append(node)
-            else:
-                leading.append(node)
+        leading, trailing = leading_and_trailing(model, live["while"], grouped_nodes, active_plans)
 
         controller_ids = {controller.id for controller in active_controllers} | {
             model.id(plan.controller) for plan in active_plans
@@ -499,36 +652,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             for step in scope.of(leading, OPS_GENERIC + OPS_HANDLER)
             if step not in controller_ids
         ]
-        # the backward walk never reaches alignment ops: each motion names them itself
-        for constraint in phase.constraints["while"]:
-            quantity = graph.value(constraint, CSTR.quantity)
-            if quantity is None:
-                continue
-            drive_op = alignment_op(
-                model, GEOM_OP_EXT.RotationVectorFromDirections, quantity
-            ) or alignment_op(model, GEOM_OP_EXT.AngleGradientFromDirections, quantity)
-            if drive_op is not None:
-                append_new(
-                    active,
-                    [model.id(op) for op in alignment_chain_ops(model, quantity)]
-                    + [model.id(drive_op)],
-                )
-        for plan in active_plans:
-            if (
-                len(plan.axes) <= 1
-                or alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity)
-                is not None
-            ):
-                continue
-            reference_view = quantities.view_of(
-                graph, graph.value(plan.constraint, CSTR["reference-value"])
-            )
-            interpolation = next(
-                graph.subjects(GEOM_OP.out, graph.value(reference_view, MAP.superobject)), None
-            )
-            if interpolation is not None:
-                append_new(active, scope.of([interpolation], OPS_GENERIC + OPS_HANDLER))
-            append_new(active, [SolverIdFactory(model, plan.controller).pose_evaluator()])
+        append_alignment_steps(model, active, phase.constraints["while"], active_plans, scope)
         gradient_units = [
             unit
             for plan in active_plans
@@ -544,35 +668,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             ),
         )
         append_new(active, [model.id(node) for node in leading])
-        control_outputs = {controller.control_signal.id for controller in handler.controllers}
-        force_nodes = []
-        driver_nodes = [
-            model.node_by_id[solver.motion_driver.id]
-            for solver in chain_solvers
-            if solver.motion_driver.id in model.node_by_id
-        ]
-        driver_nodes.extend(
-            driver
-            for solver_node in graph.objects(handler_node, CSTR_HDL_EXT["runs-solver"])
-            if (solver_node, RDF.type, SLV["ForceDistributionSolver"]) in graph
-            for driver in graph[solver_node : SLV["motion-drivers"]]
+        force_nodes = commanded_force_nodes(
+            model, handler, handler_node, chain_solvers, function_input
         )
-        for driver_node in driver_nodes:
-            for node in graph[driver_node : SLV["cartesian-force"]]:
-                force = graph.value(node, SLV["force"])
-                if force is None:
-                    continue
-                force_id = model.id(force)
-                feeding: set[str] = set()
-                pending = list(function_input.get(force_id, ()))
-                while pending:
-                    item = pending.pop()
-                    if item in feeding:
-                        continue
-                    feeding.add(item)
-                    pending.extend(function_input.get(item, ()))
-                if ({force_id} | feeding) & control_outputs:
-                    force_nodes.append(node)
         # claimed here, emitted after the control laws it reads
         commanded_force = scope.of(force_nodes, OPS_GENERIC + OPS_SOLVER + OPS_HANDLER)
         active.extend(scope.of(trailing, OPS_GENERIC + OPS_HANDLER))
@@ -605,44 +703,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         when_ages = observation_ages(evaluators["when"])
         active_ages = observation_ages(evaluators["while"] + evaluators["until"])
         monitors = {
-            name: [monitor_entry(model, node) for node in phase.monitors[name]] for name in _PHASES
+            name: [monitor_record(model, node) for node in phase.monitors[name]]
+            for name in MOTION_PHASES
         }
-        forwarded_commands = []
-        for plan in active_plans:
-            if not derivation.algorithm_by_solver[plan.solver].forwards_commands:
-                continue
-            quantity = graph.value(plan.constraint, CSTR.quantity)
-            view = quantities.view_of(graph, quantity)
-            target = graph.value(
-                graph.value(view, MAP.superobject) if view is not None else quantity,
-                KC_STAT["of-joint"],
-            )
-            runtime = next(
-                (
-                    solvers_by_id[slice_.solver_id]
-                    for slice_ in chain_solvers
-                    if any(
-                        tree in holders.get(target, ())
-                        for tree in solvers_by_id[slice_.solver_id].runtime.owned_trees or ()
-                    )
-                ),
-                None,
-            )
-            if runtime is None:
-                raise ConstraintViolation(
-                    "coordination",
-                    "command forwarding: joint "
-                    f"'{model.label(target) if target is not None else target}' belongs to no "
-                    "kinematic tree this handler's runtimes own",
-                )
-            forwarded_commands.append(
-                ForwardedCommandStep(
-                    f"cmd-fwd-{model.id(plan.controller)}",
-                    derivation.controllers_for(plan)[0].control_signal,
-                    f"{runtime.runtime.prefix}{model.label(target)}",
-                    runtime.id,
-                )
-            )
         runs_in = graph.value(handler_node, CSTR_HDL_EXT["runs-in-state"])
         unit = MotionUnit(
             id=handler.id,
@@ -670,7 +733,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             serial_chain_solvers=chain_solvers,
             pose_axis_error_groups=groups,
             while_pre_schedule=while_pre,
-            forwarded_commands=forwarded_commands,
+            forwarded_commands=forwarded_commands(
+                model, derivation, active_plans, chain_solvers, solvers_by_id, holders
+            ),
             snapshots=snapshots_for_motion(
                 evaluators["while"] + evaluators["when"] + evaluators["until"],
                 handler.motion.while_ + handler.motion.when + handler.motion.until,
@@ -710,7 +775,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
     for motion in motions:
         set_motion_conditions(motion)
         for group in motion.pose_axis_error_groups:
-            for flag, types in _GROUP_TYPE_FLAGS.items():
+            for flag, types in SUPEROBJECT_TYPES_BY_FLAG.items():
                 setattr(group, flag, group.superobject_type in types)
         annotate_controller_signals(
             motion.controllers, computation.functions, motion.while_evaluators
@@ -758,11 +823,26 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
     return motions, meta
 
 
-_GROUP_TYPE_FLAGS = {
+SUPEROBJECT_TYPES_BY_FLAG = {
     "is_pose": ("Pose",),
     "is_twist": ("VelocityTwist", "AccelerationTwist"),
     "is_wrench": ("Wrench",),
 }
+
+
+def add_snapshot_latches(model, motions, algorithm_data: list) -> None:
+    """Give each task snapshot the latch its guard sets once the value is captured.
+
+    Raises:
+        RuntimeError: a snapshot's target has no node to derive the latch from.
+    """
+    latches = {s.target_id: s.captured_id for motion in motions for s in motion.task_snapshots}
+    for target_id, captured_id in latches.items():
+        node = model.node_by_id.get(target_id)
+        if node is None:
+            raise RuntimeError(f"task snapshot '{target_id}' has no node to derive its guard from")
+        model.register_derived(captured_id, node, "captured", PROV.wasDerivedFrom)
+        algorithm_data.append(DataValue(id=captured_id, type="Bool", value=False))
 
 
 def annotate_sensor_dependencies(motions, computation) -> None:

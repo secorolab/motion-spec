@@ -193,7 +193,7 @@ def is_constraint_aggregate(model, node) -> bool:
     return bool({CSTR_EXT.ConstraintDisjunction, CSTR_EXT.ConstraintConjunction} & types)
 
 
-_SUBSPACES = {
+SUBSPACE_BY_TERM = {
     MAP["position"]: Subspace.Linear,
     MAP_EXT["position"]: Subspace.Linear,
     MAP_EXT["orientation"]: Subspace.Angular,
@@ -208,7 +208,7 @@ _SUBSPACES = {
     MAP_EXT["linear"]: Subspace.Linear,
     MAP_EXT["angular"]: Subspace.Angular,
 }
-_AXES = {
+AXIS_BY_TERM = {
     MAP["x"]: Axis.X,
     MAP["y"]: Axis.Y,
     MAP["z"]: Axis.Z,
@@ -298,21 +298,21 @@ def spatial_axes(
     return ()
 
 
-_XYZ_PREDICATES = (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
+XYZ_PREDICATES = (URI_GEOM_PRED_X, URI_GEOM_PRED_Y, URI_GEOM_PRED_Z)
 
 
 def subspace(node) -> Subspace:
     """The linear or angular half a view predicate selects."""
-    if node not in _SUBSPACES:
+    if node not in SUBSPACE_BY_TERM:
         raise ConstraintViolation("geometry", f"unknown subspace {node}")
-    return _SUBSPACES[node]
+    return SUBSPACE_BY_TERM[node]
 
 
 def axis(node) -> Axis:
     """The Cartesian axis a view predicate selects."""
-    if node not in _AXES:
+    if node not in AXIS_BY_TERM:
         raise ConstraintViolation("geometry", f"unknown axis {node}")
-    return _AXES[node]
+    return AXIS_BY_TERM[node]
 
 
 def position_values(model, coordinate) -> list[float] | None:
@@ -346,7 +346,7 @@ def parse_xyz(model, node) -> list[float] | None:
     same predicates off a plain node -- a direction, a free vector, a gravity triple.
     """
     graph = model.graph
-    values = [graph.value(node, predicate) for predicate in _XYZ_PREDICATES]
+    values = [graph.value(node, predicate) for predicate in XYZ_PREDICATES]
     if any(value is None for value in values):
         return None
     unit = graph.value(node, QUDT_SCHEMA["unit"])
@@ -406,7 +406,7 @@ def orientation(model, node) -> Orientation:
 
     axes = graph.value(coordinate.id, URI_GEOM_PRED_AXES_SEQ)
     if orientation_composition(model, coordinate.id) is not None or (
-        coordinate.types & _RESOLVED_ROTATION
+        coordinate.types & RESOLVED_ROTATION_TYPES
     ):
         unit = model.id(NS_MM_QUDT_UNIT.UNITLESS)
     else:
@@ -448,8 +448,8 @@ def optional_pose_reference(model, node):
     return None
 
 
-_RESOLVED_ROTATION = {URI_GEOM_TYPE_QUATERNION, URI_GEOM_TYPE_DIRECTION_COSINE_XYZ}
-_LITERAL_ROTATION = _RESOLVED_ROTATION | {URI_GEOM_TYPE_ANGLES_ABG}
+RESOLVED_ROTATION_TYPES = {URI_GEOM_TYPE_QUATERNION, URI_GEOM_TYPE_DIRECTION_COSINE_XYZ}
+LITERAL_ROTATION_TYPES = RESOLVED_ROTATION_TYPES | {URI_GEOM_TYPE_ANGLES_ABG}
 
 
 def orientation_composition(model, node):
@@ -518,7 +518,7 @@ def relative_orientation(model, node) -> list[dict]:
         if URI_GEOM_TYPE_POSE_COORD in types:
             operands.append({"pose": model.id(operand_node)})
             continue
-        if not types & _LITERAL_ROTATION:
+        if not types & LITERAL_ROTATION_TYPES:
             raise ConstraintViolation(
                 "geometry",
                 f"Relative orientation operand '{operand_node}' is neither a pose nor an "
@@ -621,7 +621,7 @@ def pose(model, node) -> Pose:
     else:
         components = (coordinate.position_coord, coordinate.orientation_coord)
         literal_rotation = coordinate.orientation_coord.types & (
-            _RESOLVED_ROTATION | {URI_GEOM_TYPE_EULER_ANGLES}
+            RESOLVED_ROTATION_TYPES | {URI_GEOM_TYPE_EULER_ANGLES}
         )
         composed_and_viewed = orientation_composition(
             model, coordinate.orientation_coord.id
@@ -886,73 +886,86 @@ def goal_status_act(model, node):
     return acts[0] if acts else None
 
 
+def viewed_node(model, node):
+    """The node a quantity is read from: a MAP view's subobject, or its sampling, else NODE itself.
+
+    A view onto a pooled relation's position or orientation half reads the sampling its
+    superobject selects; a single-axis view names its own scalar.
+    """
+    graph = model.graph
+    viewed = graph.value(node, MAP.subobject)
+    if viewed is None:
+        return node
+    # the superobject pins which sampling of a pooled relation is meant
+    superobject = graph.value(node, MAP.superobject)
+    subspace = graph.value(node, MAP.subspace)
+    if superobject is None or (node, MAP.axis, None) in graph:
+        return viewed
+    if (
+        subspace == MAP_EXT.position
+        and URI_GEOM_TYPE_POSITION_COORD in get_node_types(graph, superobject)
+        or subspace == MAP_EXT.orientation
+        and URI_GEOM_TYPE_ORIENT_COORD in get_node_types(graph, superobject)
+    ):
+        return superobject
+    if subspace not in (MAP_EXT.position, MAP_EXT.orientation):
+        return viewed
+    component = local_name(subspace)
+    usage = graph.value(rdflib.URIRef(f"{superobject}-{component}-selection"), PROV.qualifiedUsage)
+    chosen = graph.value(usage, PROV.entity) if usage is not None else None
+    return chosen if chosen is not None else viewed
+
+
+def reference_pose(model, node) -> Pose:
+    """A snapshot or reference pose: its frames, stated or derived, and no authored values."""
+    graph = model.graph
+    of_node = graph.value(node, GEOM_REL["of"])
+    wrt_node = graph.value(node, GEOM_REL["with-respect-to"])
+    seen_node = graph.value(node, GEOM_COORD["as-seen-by"])
+    if of_node is None or wrt_node is None or seen_node is None:
+        inherited_of, inherited_wrt, inherited_seen = derived_reference_frames(model, node)
+        of_node = of_node or inherited_of
+        wrt_node = wrt_node or inherited_wrt
+        seen_node = seen_node or inherited_seen
+
+    return Pose(
+        model.id(node),
+        pose_endpoint(model, of_node),
+        pose_endpoint(model, wrt_node),
+        [
+            QuantityKind(model.id(kind), str(kind))
+            for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]
+        ],
+        frame(model, seen_node) if seen_node is not None else None,
+        [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
+        None,
+        provenance=value_provenance(model, node),
+    )
+
+
+# first match wins
+GEOMETRY_READERS = (
+    (URI_GEOM_TYPE_POSE_COORD, pose),
+    (URI_GEOM_TYPE_POSE, reference_pose),
+    (URI_GEOM_TYPE_POSITION, position),
+    (URI_GEOM_TYPE_ORIENT, orientation),
+    (GEOM_COORD["VelocityTwistCoordinate"], velocity_twist),
+)
+
+
 @reader
 def quantity(model, node):
     """The quantity at a node, dispatching on its RDF type."""
     graph = model.graph
-    viewed = graph.value(node, MAP.subobject)
-    if viewed is not None:
-        # the superobject pins which sampling of a pooled relation is meant
-        superobject = graph.value(node, MAP.superobject)
-        subspace = graph.value(node, MAP.subspace)
-        if (node, MAP.axis, None) in graph:
-            # a single-axis view names its own scalar
-            superobject = None
-        if superobject is None:
-            node = viewed
-        elif (
-            subspace == MAP_EXT.position
-            and URI_GEOM_TYPE_POSITION_COORD in get_node_types(graph, superobject)
-            or subspace == MAP_EXT.orientation
-            and URI_GEOM_TYPE_ORIENT_COORD in get_node_types(graph, superobject)
-        ):
-            node = superobject
-        elif subspace in (MAP_EXT.position, MAP_EXT.orientation):
-            component = local_name(subspace)
-            usage = graph.value(
-                rdflib.URIRef(f"{superobject}-{component}-selection"), PROV.qualifiedUsage
-            )
-            chosen = graph.value(usage, PROV.entity) if usage is not None else None
-            node = chosen if chosen is not None else viewed
-        else:
-            node = viewed
+    node = viewed_node(model, node)
     if goal_status_act(model, node) is not None:
         return GoalStatus(model.id(node))
     if is_duration(model, node):
         return duration_quantity(model, node)
     types = get_node_types(graph, node)
-    if URI_GEOM_TYPE_POSE_COORD in types:
-        return pose(model, node)
-    if URI_GEOM_TYPE_POSE in types:
-        # snapshot or reference pose: frames, no authored values
-        of_node = graph.value(node, GEOM_REL["of"])
-        wrt_node = graph.value(node, GEOM_REL["with-respect-to"])
-        seen_node = graph.value(node, GEOM_COORD["as-seen-by"])
-        if of_node is None or wrt_node is None or seen_node is None:
-            inherited_of, inherited_wrt, inherited_seen = derived_reference_frames(model, node)
-            of_node = of_node or inherited_of
-            wrt_node = wrt_node or inherited_wrt
-            seen_node = seen_node or inherited_seen
-
-        return Pose(
-            model.id(node),
-            pose_endpoint(model, of_node),
-            pose_endpoint(model, wrt_node),
-            [
-                QuantityKind(model.id(kind), str(kind))
-                for kind in graph[node : QUDT_SCHEMA["hasQuantityKind"]]
-            ],
-            frame(model, seen_node) if seen_node is not None else None,
-            [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-            None,
-            provenance=value_provenance(model, node),
-        )
-    if URI_GEOM_TYPE_POSITION in types:
-        return position(model, node)
-    if URI_GEOM_TYPE_ORIENT in types:
-        return orientation(model, node)
-    if GEOM_COORD["VelocityTwistCoordinate"] in types:
-        return velocity_twist(model, node)
+    read = next((read for type_, read in GEOMETRY_READERS if type_ in types), None)
+    if read is not None:
+        return read(model, node)
 
     kind_node = graph.value(node, QUDT_SCHEMA.hasQuantityKind)
     kind = QuantityKind(model.id(kind_node), str(kind_node))
@@ -1049,7 +1062,7 @@ def normalization(model, node) -> dict | None:
     return bounds
 
 
-_AUTHORED_VALUE_PREDICATES = (
+AUTHORED_VALUE_PREDICATES = (
     QUDT_SCHEMA["value"],
     CSTR["reference-value"],
     URI_GEOM_PRED_X,
@@ -1070,7 +1083,7 @@ def is_authored(model, node) -> bool:
     # a path parameter's value is only its start; the traversal drives it
     if (None, GEOM_OP_EXT["path-parameter"], node) in model.graph:
         return False
-    return any((node, predicate, None) in model.graph for predicate in _AUTHORED_VALUE_PREDICATES)
+    return any((node, predicate, None) in model.graph for predicate in AUTHORED_VALUE_PREDICATES)
 
 
 def value_provenance(model, node) -> Provenance:

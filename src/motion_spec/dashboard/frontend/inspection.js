@@ -62,19 +62,22 @@ function applyView(view, preset = false) {
         zoom: plot.zoom,
       });
     }
-    if (!preset) {
-      if (Number.isInteger(view.frame)) seek(view.frame);
-      $$(".video-pick")
-        .find((pick) => pick.dataset.camera === view.camera)
-        ?.click();
-      $$(".replay-tabs button")
-        .find((button) => button.dataset.panel === view.panel)
-        ?.click();
-    }
+    if (!preset) applyViewPosition(view);
     if (missing.size) snack(`Unavailable signals skipped: ${[...missing].join(", ")}`);
   } finally {
     state.restoringInspection = false;
   }
+}
+
+// the frame, camera and panel a saved view was left at
+function applyViewPosition(view) {
+  if (Number.isInteger(view.frame)) seek(view.frame);
+  $$(".video-pick")
+    .find((pick) => pick.dataset.camera === view.camera)
+    ?.click();
+  $$(".replay-tabs button")
+    .find((button) => button.dataset.panel === view.panel)
+    ?.click();
 }
 
 /** An explicit moment in a shared URL takes precedence over the local cursor. */

@@ -162,6 +162,7 @@ def generate_model(
     from motion_spec.runs.provenance import (
         DERIVED_DOCUMENT,
         GENERATION_DOCUMENT,
+        add_delegation,
         add_package,
         build_derivation_document,
         record_code_generation,
@@ -221,8 +222,9 @@ def generate_model(
         raise RuntimeError(f"generated RDF failed SHACL validation:\n{report}")
     ir_path = model_dir / "ir.json"
     started = datetime.now(UTC)
-    ir = json.loads(json.dumps(generate_ir(loaded.model, fsm), cls=DataclassJSONEncoder))
-    ir_path.write_text(json.dumps(ir, indent=4))
+    ir_text = json.dumps(generate_ir(loaded.model, fsm), cls=DataclassJSONEncoder, indent=4)
+    ir_path.write_text(ir_text)
+    ir = json.loads(ir_text)
     derived_path = generated / DERIVED_DOCUMENT
     derived_path.parent.mkdir(parents=True, exist_ok=True)
     authored = [
@@ -259,11 +261,17 @@ def generate_model(
         written_code = generate_code(
             ir_path, controller_dir, generated / "contract", stst, fsm, generation.parent.name
         )
-        fsm_graphs = [graph_id for source, _, graph_id in loaded.imports if source.suffix == ".fsm"]
         record_code_generation(
             record,
             generation,
-            [ir_entity, *(written[graph_id] for graph_id in fsm_graphs)],
+            [
+                ir_entity,
+                *(
+                    written[graph_id]
+                    for source, _, graph_id in loaded.imports
+                    if source.suffix == ".fsm"
+                ),
+            ],
             written_code,
             started=started,
             ended=datetime.now(UTC),
@@ -272,7 +280,6 @@ def generate_model(
             if source.suffix == ".scenex":
                 bundle_id, info = loaded.bundles["scene_dsl"]
                 header, namespace = loaded.model.scene_headers[graph_id]
-                (controller_dir / "headers").mkdir(exist_ok=True)
                 record_graph_to_text(
                     dataset,
                     graph_id,
@@ -301,12 +308,7 @@ def generate_model(
     for key in ("motion_spec_dsl", *loaded.bundles):
         tool = get_py_pkg_info(key).purl
         add_agent(record, tool, (PROV.SoftwareAgent,), key)
-        # not blank: rdflib's JSON-LD compaction drops blank nodes behind `@id` terms
-        delegation = URIRef(uuid4().urn)
-        record.add((tool, PROV.qualifiedDelegation, delegation))
-        record.add((delegation, RDF.type, PROV.Delegation))
-        record.add((delegation, PROV.agent, motion_spec))
-        record.add((delegation, PROV.hadActivity, generation_activity))
+        add_delegation(record, tool, motion_spec, generation_activity)
     # the DSL's bundle stays in the DSL's document
     document = rdflib.Dataset()
     for graph in dataset.graphs():

@@ -114,7 +114,7 @@ def read(model, node, chains) -> Perturbation:
         )
     target_pose = next(iter(poses), None)
 
-    for _slice_id, solver in chains:
+    for _, solver in chains:
         if str(body) in (solver.chain.world_segments or {}):
             body_name = f"{solver.runtime.prefix}{local_name(body)}"
             break

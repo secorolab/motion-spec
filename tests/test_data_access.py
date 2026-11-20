@@ -322,7 +322,7 @@ def test_a_gated_slot_belongs_to_its_own_motions_case(schema: dict) -> None:
 
 
 def test_a_log_without_an_embedded_descriptor_is_rejected(tmp_path: Path, schema: dict) -> None:
-    stale = frame_log_pb.record_class()()
+    stale = frame_log_pb.record_class_of(frame_log_pb.descriptor_set())()
     stale.header.schema_hash = schema["schema_hash"]  # a header carrying identity only
     log = tmp_path / "frame_log.pb"
     with log.open("wb") as fh:

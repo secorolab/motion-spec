@@ -27,48 +27,47 @@ def chain_for_iri(trees: list[dict], chain_iri: str) -> dict:
     """The generated C++ builders, MuJoCo joints and segment lookups for one declared chain."""
     for tree in trees:
         for chain in tree["chains"]:
-            if chain["iri"] == chain_iri:
-                # the world model binds measurements to segments, not joints
-                segment_by_joint = {
-                    segment["joint"]["name"]: segment["name"]
-                    for segment in tree["segments"]
-                    if segment["joint"] is not None
-                }
-                joint_segments = []
-                for joint in chain["joints"]:
-                    if joint["name"] not in segment_by_joint:
-                        raise ConstraintViolation(
-                            "kinematics",
-                            f"chain '{chain['name']}' articulates joint '{joint['name']}', which "
-                            f"no segment of tree '{tree['name']}' carries",
-                        )
-                    joint_segments.append(segment_by_joint[joint["name"]])
-                # a body's root frame has no segment: resolve it through its chain placement
-                world_segments = {
-                    tree["root_iri"]: tree["root"],
-                    **{segment["iri"]: segment["name"] for segment in tree["segments"]},
-                }
-                name_by_index = {
-                    0: chain["root"],
-                    **{index: world_segments[body] for body, index in chain["bodies"].items()},
-                }
-                for iri, placement in chain["frames"].items():
-                    if iri not in world_segments and placement["index"] in name_by_index:
-                        world_segments[iri] = name_by_index[placement["index"]]
-                return {
-                    "name": chain["cpp_name"],
-                    "tree": tree["cpp_name"],
-                    "namespace": tree["namespace"],
-                    "joints": [joint["local_name"] for joint in chain["joints"]],
-                    "joint_segments": joint_segments,
-                    "frames": chain["frames"],
-                    "bodies": chain["bodies"],
-                    "tip_segment": chain["tip_index"],
-                    "world_root": chain["root"],
-                    "world_tip": chain["tip"],
-                    "tree_root": tree["root"],
-                    "world_segments": world_segments,
-                }
+            if chain["iri"] != chain_iri:
+                continue
+            # the world model binds measurements to segments, not joints
+            segment_by_joint = {
+                segment["joint"]["name"]: segment["name"]
+                for segment in tree["segments"]
+                if segment["joint"] is not None
+            }
+            for joint in chain["joints"]:
+                if joint["name"] not in segment_by_joint:
+                    raise ConstraintViolation(
+                        "kinematics",
+                        f"chain '{chain['name']}' articulates joint '{joint['name']}', which "
+                        f"no segment of tree '{tree['name']}' carries",
+                    )
+            # a body's root frame has no segment: resolve it through its chain placement
+            world_segments = {
+                tree["root_iri"]: tree["root"],
+                **{segment["iri"]: segment["name"] for segment in tree["segments"]},
+            }
+            name_by_index = {
+                0: chain["root"],
+                **{index: world_segments[body] for body, index in chain["bodies"].items()},
+            }
+            for iri, placement in chain["frames"].items():
+                if iri not in world_segments and placement["index"] in name_by_index:
+                    world_segments[iri] = name_by_index[placement["index"]]
+            return {
+                "name": chain["cpp_name"],
+                "tree": tree["cpp_name"],
+                "namespace": tree["namespace"],
+                "joints": [joint["local_name"] for joint in chain["joints"]],
+                "joint_segments": [segment_by_joint[joint["name"]] for joint in chain["joints"]],
+                "frames": chain["frames"],
+                "bodies": chain["bodies"],
+                "tip_segment": chain["tip_index"],
+                "world_root": chain["root"],
+                "world_tip": chain["tip"],
+                "tree_root": tree["root"],
+                "world_segments": world_segments,
+            }
     return {
         "name": "",
         "tree": "",

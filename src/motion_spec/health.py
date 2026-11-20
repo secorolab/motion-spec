@@ -83,23 +83,23 @@ APT_PACKAGES = {
     "action_msgs": ("ros-$ROS_DISTRO-action-msgs",),
     "rclcpp_action": ("ros-$ROS_DISTRO-rclcpp-action",),
 }
-_REMEDIES = {
+REMEDIES = {
     "rosidl_runtime_py": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "rosidl_pycommon": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_index_python": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "ament_package": "source /opt/ros/$ROS_DISTRO/setup.bash",
     "yaml": "uv venv --python /usr/bin/python3 --system-site-packages <venv>",
 }
-_PROVIDED_AS = {"STSTv4": "stst", "orocos_kinematics_dynamics": "orocos_kdl"}
+PROVIDED_AS = {"STSTv4": "stst", "orocos_kinematics_dynamics": "orocos_kdl"}
 SETUP_PROVIDES: dict[str, str] = {}
-_DEVICE_PACKAGES: set[str] = set()
+DEVICE_PACKAGES: set[str] = set()
 # missing means the flag was off: rebuild, not checkout
-_ROBIF2B_DEVICE_FLAGS = {
+ROBIF2B_DEVICE_FLAGS = {
     "robif2b::robotiq_gripper": "ENABLE_ROBOTIQ_GRIPPER",
     "robif2b::robotiq_ft_sensor": "ENABLE_ROBOTIQ_FT",
     "robif2b::kinova_gen3": "ENABLE_KORTEX",
 }
-_PREFIX = "$MOTION_SPEC_PREFIX"
+PREFIX = "$MOTION_SPEC_PREFIX"
 
 
 def installed_ros_distros() -> list[str]:
@@ -165,10 +165,10 @@ def remedy(dependency: str, env: dict[str, str] | None = None) -> str:
     if dependency in APT_PACKAGES:
         packages = " ".join(APT_PACKAGES[dependency])
         return f"apt install {packages}".replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
-    if dependency in _REMEDIES:
-        return _REMEDIES[dependency].replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
+    if dependency in REMEDIES:
+        return REMEDIES[dependency].replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")
     if dependency in SETUP_PROVIDES:
-        real = "--real " if dependency in _DEVICE_PACKAGES else ""
+        real = "--real " if dependency in DEVICE_PACKAGES else ""
         return f"motion-spec setup {real}{SETUP_PROVIDES[dependency]}"
 
     return f"install {dependency} and expose its prefix through CMAKE_PREFIX_PATH"
@@ -179,7 +179,7 @@ def cmake_build(package: str, *options: str) -> str:
     flags = "".join(f" {option}" for option in options)
     return (
         f"cmake -S <{package} checkout> -B build/{package} "
-        f"-DCMAKE_INSTALL_PREFIX={_PREFIX} -DCMAKE_PREFIX_PATH={_PREFIX}{flags} && "
+        f"-DCMAKE_INSTALL_PREFIX={PREFIX} -DCMAKE_PREFIX_PATH={PREFIX}{flags} && "
         f"cmake --build build/{package} --target install"
     )
 
@@ -188,13 +188,12 @@ def installed_options(package: str) -> tuple[str, ...]:
     """PACKAGE's cmake arguments from the workspace colcon.meta, else the shipped one."""
     from motion_spec.setup import COLCON_META, cmake_arguments, workspace
 
+    shipped = Path(__file__).parent / COLCON_META
     try:
         meta = workspace() / COLCON_META
     except RuntimeError:
-        meta = Path(__file__).parent / COLCON_META
-    if not meta.is_file():
-        meta = Path(__file__).parent / COLCON_META
-    return cmake_arguments(meta, package)
+        meta = shipped
+    return cmake_arguments(meta if meta.is_file() else shipped, package)
 
 
 @dataclass(frozen=True)
@@ -347,19 +346,20 @@ def manifest_sources() -> None:
     """Fill in where each dependency `setup` provides comes from, as the manifests pin it."""
     from motion_spec.setup import manifest_files, manifest_in_force, read_manifest
 
-    real = {r.name for r in read_manifest(manifest_files(real=True)[-1])}
-    for repository in manifest_in_force(manifest_files(real=True)):
-        dependency = _PROVIDED_AS.get(repository.name, repository.name.replace("-", "_"))
+    files = manifest_files(real=True)
+    real = {r.name for r in read_manifest(files[-1])}
+    for repository in manifest_in_force(files):
+        dependency = PROVIDED_AS.get(repository.name, repository.name.replace("-", "_"))
         SETUP_PROVIDES[dependency] = repository.name
         DETAILS[dependency]["source"] = repository.url.removesuffix(".git")
         if repository.name in real:
-            _DEVICE_PACKAGES.add(dependency)
+            DEVICE_PACKAGES.add(dependency)
 
 
 manifest_sources()
 
 
-_PROBE = """
+PROBE = """
 import importlib.util, json, sys
 
 found = {}
@@ -380,7 +380,7 @@ def module_path(name: str, env: dict[str, str] | None = None) -> str | None:
     if env is not None:
         # a sourced ROS puts its packages on the path only through ENV
         done = subprocess.run(
-            [sys.executable, "-c", _PROBE, name],
+            [sys.executable, "-c", PROBE, name],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -400,9 +400,7 @@ def module_path(name: str, env: dict[str, str] | None = None) -> str | None:
         return None
     if spec is None:
         return None
-    if spec.origin:
-        return spec.origin
-    return next(iter(spec.submodule_search_locations or ()), None)
+    return spec.origin or next(iter(spec.submodule_search_locations or ()), None)
 
 
 def module_what(path: str | None) -> str:
@@ -412,11 +410,9 @@ def module_what(path: str | None) -> str:
     site-packages, and both mean the same thing to a reader: edits here take effect.
     The distribution's own `direct_url.json` names only the first of the two.
     """
-    if path is None:
+    if path is None or not {"site-packages", "dist-packages"}.isdisjoint(Path(path).parts):
         return "Python module"
-    parts = Path(path).parts
-    installed = "site-packages" in parts or "dist-packages" in parts
-    return "Python module" if installed else "Python module, editable"
+    return "Python module, editable"
 
 
 def stst_jar(launcher: str) -> bool:
@@ -487,7 +483,7 @@ def cmake_package_path(
             return (build / "package").read_text().strip() or str(build)
         try:
             target = (build / "target").read_text().strip()
-        except (OSError, FileNotFoundError):
+        except OSError:
             return None
         if env is not None:
             # ENV's LD_LIBRARY_PATH decides, not ours
@@ -762,23 +758,31 @@ def check_health(
                     remedy("ffmpeg"),
                 )
             )
-        from motion_spec.setup import shipped_pin
+            from motion_spec.setup import shipped_pin
 
-        # the generated CMakeLists requires the pinned version
-        for target, packages in (
-            ("mujoco", (("mj_kdl_wrapper", shipped_pin("mj_kdl_wrapper").version.lstrip("v")),)),
-            ("robif2b", ROBIF2B_BUILD_PACKAGES),
-        ):
-            if target not in targets:
-                continue
-            for package in packages:
-                name, version = package if isinstance(package, tuple) else (package, None)
+            # the generated CMakeLists requires the pinned version
+            version = shipped_pin("mj_kdl_wrapper").version.lstrip("v")
+            on_progress(len(checks), "mj_kdl_wrapper")
+            path = cmake_package_path("mj_kdl_wrapper", version=version, env=env)
+            checks.append(
+                HealthCheck(
+                    "build[mujoco]",
+                    f"mj_kdl_wrapper {version}",
+                    "CMake package",
+                    path,
+                    path is not None,
+                    remedy("mj_kdl_wrapper"),
+                    name="mj_kdl_wrapper",
+                )
+            )
+        if "robif2b" in targets:
+            for name in ROBIF2B_BUILD_PACKAGES:
                 on_progress(len(checks), name)
-                path = cmake_package_path(name, version=version, env=env)
+                path = cmake_package_path(name, env=env)
                 checks.append(
                     HealthCheck(
-                        f"build[{target}]",
-                        f"{name} {version}" if version else name,
+                        "build[robif2b]",
+                        name,
                         "CMake package",
                         path,
                         path is not None,
@@ -807,15 +811,15 @@ def check_health(
             for package, cmake_target in runtime_targets[target]:
                 on_progress(len(checks), cmake_target)
                 path = cmake_package_path(package, load_target=cmake_target, env=env)
-                flag = _ROBIF2B_DEVICE_FLAGS.get(cmake_target)
+                flag = ROBIF2B_DEVICE_FLAGS.get(cmake_target)
                 checks.append(
                     HealthCheck(
                         f"runtime[{target}]",
-                        cmake_target if package != cmake_target else package,
+                        cmake_target,
                         "shared library",
                         path,
                         path is not None,
-                        remedy(cmake_target.partition("::")[0])
+                        remedy(package)
                         if flag is None
                         else f'add "-D{flag}=ON" to robif2b in colcon.meta, then '
                         "motion-spec setup --real --force robif2b",
@@ -826,18 +830,17 @@ def check_health(
         bare = check.name or check.dependency
         name = bare.partition("::")[0]
         spec = DETAILS.get(check.dependency) or DETAILS.get(name) or {}
-        alternative = check.alternative
-        if not alternative:
-            flag = _ROBIF2B_DEVICE_FLAGS.get(bare)
-            if flag:
-                alternative = cmake_build("robif2b", *installed_options("robif2b"), f"-D{flag}=ON")
-            elif name in SETUP_PROVIDES:
-                alternative = cmake_build(name, *installed_options(name))
+        flag = ROBIF2B_DEVICE_FLAGS.get(bare)
+        alternative = ""
+        if flag:
+            alternative = cmake_build("robif2b", *installed_options("robif2b"), f"-D{flag}=ON")
+        elif name in SETUP_PROVIDES:
+            alternative = cmake_build(name, *installed_options(name))
         enriched.append(
             dataclasses.replace(
                 check,
-                why=spec.get("why", check.why),
-                source=spec.get("source", check.source),
+                why=spec.get("why", ""),
+                source=spec.get("source", ""),
                 alternative=alternative,
                 apt=tuple(
                     package.replace("$ROS_DISTRO", ros_distro(env) or "$ROS_DISTRO")

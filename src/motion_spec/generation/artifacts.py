@@ -8,6 +8,8 @@ import json
 import re
 from pathlib import Path
 
+from motion_spec.telemetry import frame_log_pb
+
 # readers refuse any other version
 FRAME_LAYOUT_VERSION = 5
 FIELD_BYTES = 8
@@ -39,68 +41,29 @@ CSLOT = [
 MSLOT = [("active", "q"), ("value", "d"), ("satisfied", "q"), ("sat_t", "d")]
 DSLOT = [("seq", "Q"), ("success", "q")]
 TSLOT = [("kind", "q"), ("idx", "q"), ("fsm_state", "q"), ("t", "d"), ("wall_ns", "q")]
-PSLOT = [
-    ("active", "q"),
-    ("px", "d"),
-    ("py", "d"),
-    ("pz", "d"),
-    ("qx", "d"),
-    ("qy", "d"),
-    ("qz", "d"),
-    ("qw", "d"),
-]
-VSLOT = [
-    ("active", "q"),
-    ("lx", "d"),
-    ("ly", "d"),
-    ("lz", "d"),
-    ("ax", "d"),
-    ("ay", "d"),
-    ("az", "d"),
-]
-KSLOT = [
-    ("active", "q"),
-    ("fx", "d"),
-    ("fy", "d"),
-    ("fz", "d"),
-    ("tx", "d"),
-    ("ty", "d"),
-    ("tz", "d"),
-]
+PSLOT = [("active", "q"), *((name, "d") for name in frame_log_pb.POSE_NAMES)]
+VSLOT = [("active", "q"), *((name, "d") for name in frame_log_pb.TWIST_NAMES)]
+KSLOT = [("active", "q"), *((name, "d") for name in frame_log_pb.WRENCH_NAMES)]
 
 
 def field_names_and_format(pools: dict) -> tuple[str, list[str]]:
     """Struct format string and flat field names for a runtime frame, given the per-category pool sizes."""
-    fmt = "<" + "".join(code for _, code in HEADER)
-    names = [name for name, _ in HEADER]
-    for idx in range(pools["constraints"]):
-        fmt += "".join(code for _, code in CSLOT)
-        names.extend(f"c{idx}.{name}" for name, _ in CSLOT)
-    for idx in range(pools["monitors"]):
-        fmt += "".join(code for _, code in MSLOT)
-        names.extend(f"m{idx}.{name}" for name, _ in MSLOT)
-    fmt += "d" * pools["quantities"]
-    names.extend(f"q{idx}" for idx in range(pools["quantities"]))
-    for idx in range(pools["devices"]):
-        fmt += "".join(code for _, code in DSLOT)
-        names.extend(f"device{idx}.{name}" for name, _ in DSLOT)
-    for idx in range(pools["triggers"]):
-        fmt += "".join(code for _, code in TSLOT)
-        names.extend(f"tr{idx}.{name}" for name, _ in TSLOT)
-    fmt += "q"
-    names.append("trigger_count")
-    for prefix, slot, key in (
-        ("pose", PSLOT, "poses"),
-        ("twist", VSLOT, "twists"),
-        ("wrench", KSLOT, "wrenches"),
-    ):
-        for idx in range(pools[key]):
-            fmt += "".join(code for _, code in slot)
-            names.extend(f"{prefix}{idx}.{name}" for name, _ in slot)
-    return fmt, names
+    fields = list(HEADER)
+    fields += [(f"c{i}.{name}", code) for i in range(pools["constraints"]) for name, code in CSLOT]
+    fields += [(f"m{i}.{name}", code) for i in range(pools["monitors"]) for name, code in MSLOT]
+    fields += [(f"q{i}", "d") for i in range(pools["quantities"])]
+    fields += [(f"device{i}.{name}", code) for i in range(pools["devices"]) for name, code in DSLOT]
+    fields += [(f"tr{i}.{name}", code) for i in range(pools["triggers"]) for name, code in TSLOT]
+    fields.append(("trigger_count", "q"))
+    fields += [(f"pose{i}.{name}", code) for i in range(pools["poses"]) for name, code in PSLOT]
+    fields += [(f"twist{i}.{name}", code) for i in range(pools["twists"]) for name, code in VSLOT]
+    fields += [
+        (f"wrench{i}.{name}", code) for i in range(pools["wrenches"]) for name, code in KSLOT
+    ]
+    return "<" + "".join(code for _, code in fields), [name for name, _ in fields]
 
 
-_VECTOR_FIELDS = {
+VECTOR_FIELDS = {
     "Position": "position",
     "Pose": "position",
     "Direction": "direction",
@@ -118,7 +81,7 @@ def signal_id(value) -> str | None:
 
 
 # operand keys in read order; a numeric literal here is a value, not an id
-_EVALUATOR_OPERANDS = {
+EVALUATOR_OPERANDS = {
     "PoseDiffEvaluator": ("in1", "in2"),
     "ErrorEvaluator": (
         "quantity",
@@ -135,12 +98,12 @@ def evaluator_terms(evaluators: dict, error_id: str | None) -> dict:
 
     Empty when no function produces this error: a slot says what the run computes, never a guess.
     """
-    function = evaluators.get(error_id) if error_id else None
+    function = evaluators.get(error_id)
     if function is None:
         return {}
     operands = [
         value
-        for key in _EVALUATOR_OPERANDS.get(function.get("type"), ())
+        for key in EVALUATOR_OPERANDS.get(function.get("type"), ())
         if isinstance(value := function.get(key), str)
     ]
     difference_id = signal_id(function.get("out"))
@@ -157,8 +120,6 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
     uri_by_id = {row["id"]: row["uri"] for row in ir["provenance"]["uris"] if row["uri"]}
     evaluators: dict = {}
     for function in ir["computation"]["functions"].values():
-        if not isinstance(function, dict):
-            continue
         for error in (function.get("error"), *(function.get("errors") or ())):
             error_id = signal_id(error)
             if error_id and evaluators.setdefault(error_id, function) != function:
@@ -186,7 +147,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
             )
         transitions = []
         for transition in fsm_ir["transitions_table"]:
-            events = transition_events.get(transition["id"]) or []
+            events = transition_events.get(transition["id"], [])
             sole_event = events[0] if len(events) == 1 else None
             transitions.append(
                 {
@@ -290,18 +251,20 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
                     **evaluator_terms(evaluators, error_id),
                 }
             )
-        monitor_sources = []
-        for phase in ("while", "until"):
-            monitor_sources.extend(
-                (phase, monitor, motion) for monitor in motion[f"{phase}_monitors"]
-            )
-        for gate_motion_id in motion["fsm_when_gate_motions"]:
-            gate_motion = motion_by_id.get(gate_motion_id)
-            if gate_motion is None:
-                continue
-            monitor_sources.extend(
-                ("when", monitor, gate_motion) for monitor in gate_motion["when_monitors"]
-            )
+        gate_motions = [
+            motion_by_id[gate_id]
+            for gate_id in motion["fsm_when_gate_motions"]
+            if gate_id in motion_by_id
+        ]
+        monitor_sources = [
+            (phase, monitor, motion)
+            for phase in ("while", "until")
+            for monitor in motion[f"{phase}_monitors"]
+        ] + [
+            ("when", monitor, gate_motion)
+            for gate_motion in gate_motions
+            for monitor in gate_motion["when_monitors"]
+        ]
         monitor_slots = []
         for idx, (phase, monitor, owner) in enumerate(monitor_sources):
             # watched constraints are only on the published row
@@ -363,7 +326,7 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
         elif kind in {"data", "access", "bool", "int"}:
             value = item.get("value")
         elif kind == "vec":
-            values = item.get(_VECTOR_FIELDS.get(item["type"], ""))
+            values = item.get(VECTOR_FIELDS.get(item["type"], ""))
             value = values[desc["axis"]] if values is not None else None
         else:
             value = None
@@ -401,18 +364,12 @@ def build_schema(ir: dict, *, ir_path: Path, fsm_ir: dict | None) -> dict:
         for camera in ir["composition"]["scene"]["cameras"]
     ]
 
-    gated_slots = [
-        ("quantities", quantity["index"], quantity.get("cadence")) for quantity in quantities
-    ] + [
-        (category, row["index"], row["cadence"])
-        for category, rows in spatial.items()
-        for row in rows
-    ]
-    for category, slot_index, cadence in gated_slots:
-        for motion_id in cadence["motions"] if isinstance(cadence, dict) else ():
-            entry = by_motion.get(motion_id)
-            if entry is not None:
-                entry.setdefault(category, []).append(slot_index)
+    for category, rows in {"quantities": quantities, **spatial}.items():
+        for row in rows:
+            if not isinstance(row["cadence"], dict):
+                continue
+            for motion_id in row["cadence"]["motions"]:
+                by_motion[motion_id].setdefault(category, []).append(row["index"])
     max_controllers = max((len(entry["controllers"]) for entry in by_motion.values()), default=0)
     max_monitors = max((len(entry["monitors"]) for entry in by_motion.values()), default=0)
     pools = {
@@ -520,30 +477,23 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
             )
         monitors = []
         for slot in entry["monitors"]:
+            monitor = {
+                "index": slot["index"],
+                "uri_comment": re.sub(r"[\r\n]|\*/", " ", slot["uri"] or ""),
+                "has_active": slot["has_active"],
+            }
             if slot["has_active"]:
-                monitors.append(
-                    {
-                        "index": slot["index"],
-                        "uri_comment": re.sub(r"[\r\n]|\*/", " ", slot["uri"] or ""),
-                        "has_active": True,
-                        "active_terms": slot["active_terms"],
-                        "active_any": slot["active_any"],
-                    }
-                )
+                monitor |= {"active_terms": slot["active_terms"], "active_any": slot["active_any"]}
             else:
                 for role in ("error_signal", "tolerance_signal"):
                     if slot.get(role) and slot[role] not in data_ids:
                         raise ValueError(f"telemetry {role} '{slot[role]}' names no shared field")
-                monitors.append(
-                    {
-                        "index": slot["index"],
-                        "uri_comment": re.sub(r"[\r\n]|\*/", " ", slot["uri"] or ""),
-                        "has_active": False,
-                        "value_signal": slot["error_signal"] or None,
-                        "composite_error": slot["composite_error"],
-                        "tolerance_signal": slot.get("tolerance_signal") or None,
-                    }
-                )
+                monitor |= {
+                    "value_signal": slot["error_signal"] or None,
+                    "composite_error": slot["composite_error"],
+                    "tolerance_signal": slot.get("tolerance_signal") or None,
+                }
+            monitors.append(monitor)
         cases.append(
             {
                 "index": entry["index"],
@@ -572,8 +522,6 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
     (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
     header_record = build_frame_log_header_record(schema)
     # the record the runtime writes first, readable before any run
-    from motion_spec.telemetry import frame_log_pb
-
     with (output_dir / "frame_log_header.pb").open("wb") as fh:
         frame_log_pb.write_delimited(fh, header_record)
     header_bytes = [f"0x{byte:02x}" for byte in header_record]
@@ -595,7 +543,7 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
     }
 
 
-_SLOT_SIGNAL_FIELDS = (
+SLOT_SIGNAL_FIELDS = (
     ("error_id", "error_signal"),
     ("output_id", "output_signal"),
     ("measured_id", "measured_signal"),
@@ -622,7 +570,9 @@ def fill_slot(slot, slot_entry: dict) -> None:
     if len(ids) == 1:
         slot.constraint_id = ids[0]
     carried = slot.DESCRIPTOR.fields_by_name
-    for field, key in _SLOT_SIGNAL_FIELDS:
+    if "constraint_iris" in carried:
+        slot.constraint_iris.extend(iris)
+    for field, key in SLOT_SIGNAL_FIELDS:
         if field in carried:
             setattr(slot, field, slot_entry.get(key) or "")
     slot.operand_ids.extend(slot_entry.get("operand_ids") or ())
@@ -634,9 +584,7 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     Built here, once, rather than assembled by generated C++: every field is known at generation
     time, so the runtime only has to write these bytes out verbatim.
     """
-    from motion_spec.telemetry import frame_log_pb
-
-    rec = frame_log_pb.record_class()()
+    rec = frame_log_pb.record_class_of(frame_log_pb.descriptor_set())()
     header = rec.header
     header.format_version = frame_log_pb.FORMAT_VERSION
     header.schema_hash = schema["schema_hash"]
@@ -651,14 +599,11 @@ def build_frame_log_header_record(schema: dict) -> bytes:
     header.nominal_period_ns = schema["control_period_ns"] or 0
     header.fsm_namespace = fsm["namespace"] or ""
 
-    spatial = schema["spatial"]
-    for category, entries in (
-        ("quantities", schema["quantities"]),
-        ("poses", spatial["poses"]),
-        ("twists", spatial["twists"]),
-        ("wrenches", spatial["wrenches"]),
-        ("devices", schema["devices"]),
-    ):
+    for category, entries in {
+        "quantities": schema["quantities"],
+        **schema["spatial"],
+        "devices": schema["devices"],
+    }.items():
         for entry in entries:
             slot = getattr(header, category).add()
             slot.number, slot.id = entry["index"], entry["id"]
@@ -683,10 +628,6 @@ def build_frame_log_header_record(schema: dict) -> bytes:
             fill_slot(slot, slot_entry)
             slot.event_iri = slot_entry["event_uri"] or ""
             slot.phase = slot_entry["phase"]
-            slot.constraint_iris.extend(
-                slot_entry.get("constraint_uris")
-                or ([uri] if (uri := slot_entry.get("constraint_uri")) else [])
-            )
             for member in slot_entry["watched"]:
                 watched = slot.watched.add()
                 watched.id = member["id"]

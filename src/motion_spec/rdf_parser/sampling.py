@@ -58,13 +58,13 @@ def sampled_quantities(
     }
     nodes = list(model.graph.subjects(RDF.type, URI_DISTRIB_TYPE_SAMPLED_QUANTITY))
     sampled = {str(node) for node in nodes}
-    for coord in (coord for coord in frames if coord not in sampled):
-        _, frame = frames[coord]
-        raise ConstraintViolation(
-            "sampling",
-            f"frame '{frame['iri']}' has no position, and '{coord}' is not a sampled quantity, "
-            f"so nothing places it",
-        )
+    for coord, (_, frame) in frames.items():
+        if coord not in sampled:
+            raise ConstraintViolation(
+                "sampling",
+                f"frame '{frame['iri']}' has no position, and '{coord}' is not a sampled "
+                f"quantity, so nothing places it",
+            )
     result = []
     for node in nodes:
         distribution = distrib_from_sampled_quantity(node, model.graph)

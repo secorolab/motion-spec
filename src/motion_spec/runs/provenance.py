@@ -146,6 +146,16 @@ def add_package(graph: Graph, key: str) -> URIRef:
     return info.purl
 
 
+def add_delegation(graph: Graph, delegate: URIRef, responsible: URIRef, activity: URIRef) -> None:
+    """DELEGATE acted on behalf of RESPONSIBLE in ACTIVITY: a qualified `prov:Delegation`."""
+    # not blank: rdflib's JSON-LD compaction drops blank nodes behind `@id` terms
+    delegation = URIRef(uuid4().urn)
+    graph.add((delegate, PROV.qualifiedDelegation, delegation))
+    graph.add((delegation, RDF.type, PROV.Delegation))
+    graph.add((delegation, PROV.agent, responsible))
+    graph.add((delegation, PROV.hadActivity, activity))
+
+
 def read_generation_dataset(document: Path) -> Dataset:
     """The generation document as a dataset; empty when it has not been written yet."""
     from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
@@ -227,8 +237,7 @@ def record_build(
         if (path := get_file_path(dataset, entity)) is not None
         and path.is_relative_to(controller.resolve())
     }
-    motion_spec = get_py_pkg_info("motion_spec").purl
-    bundle = dataset.graph(create_bundle(dataset, motion_spec))
+    bundle = dataset.graph(create_bundle(dataset, get_py_pkg_info("motion_spec").purl))
     roots = {generated.parent.resolve(): add_directory_location(bundle, generated.parent)}
     target = capture_file_prov(bundle, executable, roots=roots)
     activity = load_transformation_prov(
@@ -307,7 +316,7 @@ def record_run_file(
     file's modification time, and return the entity."""
     roots = {generation.resolve(): add_directory_location(bundle, generation)}
     entity = capture_file_prov(bundle, path, roots=roots)
-    # not blank: rdflib's JSON-LD compaction drops blank nodes behind `@id` terms
+    # not blank, see add_delegation
     qualified = URIRef(uuid4().urn)
     if generated:
         bundle.add((entity, PROV.wasGeneratedBy, run))
@@ -352,17 +361,17 @@ def record_execution(
         load_pkg_prov(bundle, PackageInfo(name=backend, purl=runtime))
     process = URIRef(uuid4().urn)
     add_agent(bundle, process, (PROV.SoftwareAgent,), executable.name)
-    for responsible in (motion_spec, runtime):
-        # not blank, see record_run_file
-        delegation = URIRef(uuid4().urn)
-        bundle.add((process, PROV.qualifiedDelegation, delegation))
-        bundle.add((delegation, RDF.type, PROV.Delegation))
-        bundle.add((delegation, PROV.agent, responsible))
-        bundle.add((delegation, PROV.hadActivity, run))
+    add_delegation(bundle, process, motion_spec, run)
+    add_delegation(bundle, process, runtime, run)
+    bundle.add((run, RDF.type, PROV.Activity))
+    bundle.add((run, RDF.type, URI_PROV_EXT_TYPE_EXECUTION))
+    bundle.add((run, PROV.wasAssociatedWith, motion_spec))
+    bundle.add((run, PROV.wasAssociatedWith, process))
     for agent in set(generation.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
         add_agent(bundle, agent, (URI_AGN_TYPE_MOD_AGN,), str(generation.value(agent, SDO.name)))
+        bundle.add((run, PROV.wasAssociatedWith, agent))
     # rdf-utils names one file entity per location
-    executable_path = Path(executable).resolve()
+    executable_path = executable.resolve()
     built = next(
         (
             entity
@@ -372,7 +381,6 @@ def record_execution(
         ),
         None,
     )
-    used = [] if built is None else [built]
     # located, not hashed: later generation steps add to the record
     generation_dir = generated.resolve().parent
     record = add_file_entity(
@@ -380,17 +388,13 @@ def record_execution(
         add_directory_location(bundle, generation_dir),
         generation_document.resolve().relative_to(generation_dir),
     )
-    for entity in used:
-        bundle.add((entity, PROV.has_provenance, record))
+    if built is not None:
+        bundle.add((built, PROV.has_provenance, record))
+        bundle.add((run, PROV.used, built))
     if platform_facts.get("uri"):
-        used.append(URIRef(platform_facts["uri"]))
-        add_entity(bundle, used[-1])
-    bundle.add((run, RDF.type, PROV.Activity))
-    bundle.add((run, RDF.type, URI_PROV_EXT_TYPE_EXECUTION))
-    for entity in used:
-        bundle.add((run, PROV.used, entity))
-    for agent in (motion_spec, process, *bundle.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
-        bundle.add((run, PROV.wasAssociatedWith, agent))
+        platform = URIRef(platform_facts["uri"])
+        add_entity(bundle, platform)
+        bundle.add((run, PROV.used, platform))
 
 
 def record_draw(bundle: Graph, agent: URIRef, quantity: str, values, drawn_at) -> None:

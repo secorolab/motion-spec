@@ -65,14 +65,13 @@ target_link_libraries(<configuration.name> PRIVATE
 <if(communication.ros.action_clients || communication.ros.action_server)>
     rclcpp_action::rclcpp_action
 <endif>
-    Threads::Threads
 <communication.ros.packages:{pkg |     ${<pkg>_TARGETS\}}; separator="\n">
 <endif>
 )
 find_package(Protobuf REQUIRED)
 target_sources(<configuration.name> PRIVATE frame_log.pb.cc)
 target_include_directories(<configuration.name> PRIVATE ${Protobuf_INCLUDE_DIRS})
-target_link_libraries(<configuration.name> PRIVATE Threads::Threads protobuf::libprotobuf)
+target_link_libraries(<configuration.name> PRIVATE protobuf::libprotobuf)
 target_compile_options(<configuration.name> PRIVATE -Wall -Wextra -ftemplate-depth=2048)
 >>
 

@@ -122,31 +122,27 @@ alpha-frame(specification, solver_state, column, owner) ::= <<
 >>
 
 assign-spatial-direction(specification, solver_state, column, owner) ::= <<
-<if(specification.direction)><if(specification.base_aligned)>    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = data.<specification.direction.id>.x();
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = data.<specification.direction.id>.y();
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.direction.id>.z();<if(specification.moment_direction)>
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = data.<specification.moment_direction.id>.x();
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = data.<specification.moment_direction.id>.y();
-    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = data.<specification.moment_direction.id>.z();<endif><else>    {
+<if(specification.direction)><if(specification.base_aligned)><direction-rows(solver_state, column, subspace-to-runtime-subspace.(specification.subspace), {data.<specification.direction.id>})><if(specification.moment_direction)>
+<direction-rows(solver_state, column, other-runtime-subspace.(specification.subspace), {data.<specification.moment_direction.id>})><endif><else>    {
 <alpha-frame(specification, solver_state, column, owner)>
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * data.<specification.direction.id>;
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];<if(specification.moment_direction)>
+    <direction-rows(solver_state, column, subspace-to-runtime-subspace.(specification.subspace), {alpha_axis_<solver_state>_<column>})><if(specification.moment_direction)>
         const KDL::Vector alpha_moment_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * data.<specification.moment_direction.id>;
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_moment_<solver_state>_<column>[0];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_moment_<solver_state>_<column>[1];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<other-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_moment_<solver_state>_<column>[2];<endif>
+    <direction-rows(solver_state, column, other-runtime-subspace.(specification.subspace), {alpha_moment_<solver_state>_<column>})><endif>
     }<endif><else><if(specification.base_aligned)>    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::<specification.axis>), <column>) = 1.0;<else>    {
 <alpha-frame(specification, solver_state, column, owner)>
         const KDL::Vector alpha_axis_<solver_state>_<column> =
             alpha_frame_<solver_state>_<column>.M * KDL::Vector(<axis-to-vector.(specification.axis)>);
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::X), <column>) = alpha_axis_<solver_state>_<column>[0];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Y), <column>) = alpha_axis_<solver_state>_<column>[1];
-        robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace-to-runtime-subspace.(specification.subspace)>, motion_spec::runtime::Axis::Z), <column>) = alpha_axis_<solver_state>_<column>[2];
+    <direction-rows(solver_state, column, subspace-to-runtime-subspace.(specification.subspace), {alpha_axis_<solver_state>_<column>})>
     }<endif><endif>
+>>
+
+direction-rows(solver_state, column, subspace, vector) ::= <<
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace>, motion_spec::runtime::Axis::X), <column>) = <vector>.x();
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace>, motion_spec::runtime::Axis::Y), <column>) = <vector>.y();
+    robot.<solver_state>_state.spatial_directions(motion_spec::runtime::constraint_row(motion_spec::runtime::<subspace>, motion_spec::runtime::Axis::Z), <column>) = <vector>.z();
 >>
 
 assign-acceleration-constraint(constraint, solver_state, column, owner) ::= <<

@@ -43,8 +43,7 @@ def command_log(root: Path, command: str) -> Path:
     return root / STATE_DIRECTORY / LOG_DIRECTORY / f"{stamp}Z-{command}.log"
 
 
-
-class _Mirror:
+class Mirror:
     """Everything written to a stream, written to a file as well."""
 
     def __init__(self, stream, sink):
@@ -78,12 +77,12 @@ def indenter():
 
     def indent(chunk: bytes) -> bytes:
         nonlocal fresh
-        out = []
-        for number, line in enumerate(chunk.split(b"\n")):
-            starts = fresh or number > 0
-            out.append((pad if starts and line and not STAMPED.match(line) else b"") + line)
+        indented = b"\n".join(
+            pad + line if (fresh or number) and line and not STAMPED.match(line) else line
+            for number, line in enumerate(chunk.split(b"\n"))
+        )
         fresh = chunk.endswith(b"\n")
-        return b"\n".join(out)
+        return indented
 
     return indent
 
@@ -149,8 +148,9 @@ def total_memory() -> int | None:
 def machine_facts() -> dict[str, object]:
     """What about this machine decides whether a build finishes or takes it down."""
     memory = total_memory()
+    host = os.uname()
     return {
-        "host": f"{os.uname().nodename} {os.uname().sysname} {os.uname().release}",
+        "host": f"{host.nodename} {host.sysname} {host.release}",
         "cpus": f"{usable_cores()} of {os.cpu_count()} usable",
         "memory": "unknown" if memory is None else f"{memory / 1024**3:.1f} GiB",
     }
@@ -178,7 +178,7 @@ def mirrored_stderr(log: Path | None):
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("ab") as sink:
         previous = sys.stderr
-        sys.stderr = _Mirror(previous, sink)
+        sys.stderr = Mirror(previous, sink)
         try:
             yield
         finally:

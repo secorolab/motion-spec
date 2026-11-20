@@ -22,20 +22,28 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
     """
     namespace = fsm["name"].lower() if fsm else None
     events = fsm["event_uris"] if fsm else {}
+    event_by_uri = {uri: token for token, uri in events.items()}
     step_event = "E_STEP" if "E_STEP" in events else None
     transitions = {row["id"]: row for row in (fsm.get("transitions_table", []) if fsm else [])}
+    # a transition no reaction names is not an edge
+    state_by_event, outgoing, fired_by_state, step_transitions = {}, {}, {}, []
+    for reaction in fsm["reactions_table"] if fsm else []:
+        transition = transitions.get(reaction["do_transition"])
+        if transition is None:
+            continue
+        source, target = transition["from_state"], transition["to_state"]
+        state_by_event[reaction["when_event"]] = source
+        outgoing.setdefault(source, set()).add(target)
+        if source == target:
+            fired_by_state.setdefault(source, set()).update(reaction["fires_events"])
+        if reaction["when_event"] == step_event:
+            step_transitions.append({"from": source, "to": target})
     meta = {
         "cpp_namespace": namespace,
         "header": f"{fsm['name']}.hpp" if fsm else None,
         "start_state": fsm["start_state"] if fsm else None,
         "step_event": step_event,
-        "step_transitions": [
-            {"from": transition["from_state"], "to": transition["to_state"]}
-            for reaction in (fsm.get("reactions_table", []) if fsm else [])
-            if reaction["when_event"] == step_event
-            for transition in [transitions.get(reaction["do_transition"])]
-            if transition
-        ],
+        "step_transitions": step_transitions,
     }
     if namespace is None:
         # without an FSM, a motion with no until is never left
@@ -47,16 +55,10 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 "FSM, so nothing can end them; add an 'until' condition or coordinate the model "
                 "with an FSM",
             )
-        resolve_occurrence_events(motions, fsm, namespace)
+        resolve_occurrence_events(motions, event_by_uri, namespace)
 
         return meta
 
-    event_by_uri = {uri: token for token, uri in events.items()}
-    state_by_event = {
-        reaction["when_event"]: transitions[reaction["do_transition"]]["from_state"]
-        for reaction in fsm["reactions_table"]
-        if reaction["do_transition"] in transitions
-    }
     units_by_motion: dict[str, list] = {}
     for motion in motions:
         units_by_motion.setdefault(motion.motion_id, []).append(motion)
@@ -113,20 +115,18 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
                 )
             snapshot.trigger_event = trigger
             snapshot.fsm_namespace = namespace
-        gated = [(monitor, False) for monitor in [*motion.until_monitors, *motion.while_monitors]]
-        gated += [(monitor, True) for monitor in motion.when_monitors]
-        for monitor, when_gate in gated:
-            # a monitor-owned event keeps its own stub
-            event_name = event_by_uri.get(monitor.event_uri)
-            if not monitor.is_edge_triggered or event_name is None:
+        for monitor in motion.until_monitors + motion.while_monitors:
+            event_name = wire_monitor_event(monitor, event_by_uri, namespace)
+            if event_name is None:
                 continue
-            monitor.fsm_namespace = namespace
-            monitor.event_name = event_name
             state = state_by_event.get(event_name)
-            if not when_gate:
-                if state and not motion.fsm_state:
-                    motion.fsm_state = state
+            if state and not motion.fsm_state:
+                motion.fsm_state = state
+        for monitor in motion.when_monitors:
+            event_name = wire_monitor_event(monitor, event_by_uri, namespace)
+            if event_name is None:
                 continue
+            state = state_by_event.get(event_name)
             if not monitor.fallback_motion:
                 raise ConstraintViolation(
                     "coordination",
@@ -177,20 +177,10 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
             if motion.id not in fallback.fsm_when_gate_motions:
                 fallback.fsm_when_gate_motions.append(motion.id)
 
-    self_state = {
-        row["id"]: row["from_state"]
-        for row in fsm.get("transitions_table", [])
-        if row["from_state"] == row["to_state"]
-    }
-    fired_by_state: dict = {}
-    for row in fsm.get("reactions_table", []):
-        state = self_state.get(row["do_transition"])
-        if state is not None:
-            fired_by_state.setdefault(state, set()).update(row["fires_events"])
     for motion in motions:
         motion.reentry_events = list(fired_by_state.get(motion.fsm_state, ()))
 
-    resolve_occurrence_events(motions, fsm, namespace)
+    resolve_occurrence_events(motions, event_by_uri, namespace)
 
     # an unbound motion never steps: a torque-controlled arm at zero torque falls
     orphaned = [
@@ -206,14 +196,8 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
             "declares no monitor firing an FSM event is never stepped.",
         )
 
-    passed_through = {transition["from"] for transition in meta["step_transitions"]}
+    passed_through = {transition["from"] for transition in step_transitions}
     bound = {motion.fsm_state for motion in motions} | passed_through | {fsm["end_state"]}
-    # a transition no reaction names is not an edge
-    outgoing: dict = {}
-    for reaction in fsm["reactions_table"]:
-        transition = transitions.get(reaction["do_transition"])
-        if transition is not None:
-            outgoing.setdefault(transition["from_state"], set()).add(transition["to_state"])
     reached = {fsm["start_state"]}
     pending = [fsm["start_state"]]
     while pending:
@@ -235,7 +219,19 @@ def apply_fsm_wiring(motions, fsm, solvers) -> dict:
     return meta
 
 
-def resolve_occurrence_events(motions, fsm, namespace) -> None:
+def wire_monitor_event(monitor, event_by_uri: dict, namespace) -> str | None:
+    """Name MONITOR's event as the FSM does; None when it raises no FSM event."""
+    # a monitor-owned event keeps its own stub
+    if not monitor.is_edge_triggered:
+        return None
+    event_name = event_by_uri.get(monitor.event_uri)
+    if event_name is not None:
+        monitor.fsm_namespace = namespace
+        monitor.event_name = event_name
+    return event_name
+
+
+def resolve_occurrence_events(motions, token_by_uri: dict, namespace) -> None:
     """Resolve each announced event to the enum token the generated FSM names it by.
 
     A monitor announces events it need not fire itself, so the tokens come from the FSM's own
@@ -245,7 +241,6 @@ def resolve_occurrence_events(motions, fsm, namespace) -> None:
         ConstraintViolation: a monitor announces an event no imported FSM declares, so there is
             no table to read the IRI from.
     """
-    token_by_uri = {uri: token for token, uri in (fsm or {}).get("event_uris", {}).items()}
     for motion in motions:
         for monitor in [*motion.when_monitors, *motion.while_monitors, *motion.until_monitors]:
             ros = monitor.ros
@@ -275,13 +270,14 @@ def apply_fsm_gate_calls(motions, namespace) -> None:
         return
     by_id = {motion.id: motion for motion in motions}
     for motion in motions:
-        if motion.has_when_gate:
-            hold = by_id[motion.when_gate_hold["id"]]
-            motion.when_gate_hold = {
-                "id": hold.id,
-                "index": hold.index,
-                "needs_events": hold.step_needs_events,
-            }
+        if not motion.has_when_gate:
+            continue
+        hold = by_id[motion.when_gate_hold["id"]]
+        motion.when_gate_hold = {
+            "id": hold.id,
+            "index": hold.index,
+            "needs_events": hold.step_needs_events,
+        }
     for fallback in motions:
         fallback.fsm_when_gate_calls = [
             {
@@ -291,7 +287,5 @@ def apply_fsm_gate_calls(motions, namespace) -> None:
                 "needs_robot": gate.when_needs_robot,
                 "needs_events": gate.when_needs_events,
             }
-            for gate_id in fallback.fsm_when_gate_motions
-            if gate_id in by_id
-            for gate in [by_id[gate_id]]
+            for gate in map(by_id.get, fallback.fsm_when_gate_motions)
         ]

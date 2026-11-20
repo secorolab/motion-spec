@@ -44,7 +44,7 @@ from motion_spec.utils import (
 )
 
 
-class _Reported(click.ClickException):
+class Reported(click.ClickException):
     """A failure already phrased for the reader, shown in the same format as every other line."""
 
     def show(self, file=None) -> None:
@@ -67,9 +67,10 @@ def internal_failure(what: str, exc: Exception) -> click.ClickException:
 def stamp(level: str, err: bool = True) -> None:
     """The prefix every line carries, for one assembled in pieces."""
     click.echo(
-        f"{SGR}{STAMP_COLOUR}m{time.strftime(LOG_DATEFMT)}{RESET}  ", nl=False, err=err
+        f"{SGR}{STAMP_COLOUR}m{time.strftime(LOG_DATEFMT)}{RESET}  {LEVEL_LABELS[level]} ",
+        nl=False,
+        err=err,
     )
-    click.echo(LEVEL_LABELS[level] + " ", nl=False, err=err)
 
 
 def say(level: str, message: str = "", err: bool = True) -> None:
@@ -82,9 +83,9 @@ def say(level: str, message: str = "", err: bool = True) -> None:
 
 
 # width of `  STATUS   `, the indent of a health row's detail lines
-_STATUS_WIDTH = 11
+STATUS_WIDTH = 11
 # a hue no name, source or status uses
-_COMMAND_COLOUR = 180
+COMMAND_COLOUR = 180
 LATEST_LINK = "latest"
 
 
@@ -98,20 +99,19 @@ def new_generation(model: Path, name: str | None = None) -> Path:
     """
     from motion_spec.generation.pipeline import create_generation_dir
 
-    generation = create_generation_dir(model, generation_root(), name)
+    base = generation_root()
+    generation = create_generation_dir(model, base, name)
     say("info", f"generation {generation}")
     # relative, and replaced atomically so it is never missing
-    base = generation_root()
     link = base / LATEST_LINK
+    pending = base / f".{LATEST_LINK}.new"
     try:
-        target = os.path.relpath(generation, base)
-        pending = link.with_name(f".{LATEST_LINK}.new")
         pending.unlink(missing_ok=True)
-        pending.symlink_to(target, target_is_directory=True)
+        pending.symlink_to(os.path.relpath(generation, base), target_is_directory=True)
         os.replace(pending, link)
     except OSError:
         # a convenience: never fails the generation
-        link.with_name(f".{LATEST_LINK}.new").unlink(missing_ok=True)
+        pending.unlink(missing_ok=True)
 
     return generation
 
@@ -214,45 +214,40 @@ class MotionSpecGroup(click.Group):
         if option_records:
             with manual_section(formatter, "OPTIONS"):
                 formatter.write_dl(option_records)
-        command_records = []
-        for name in self.list_commands(ctx):
-            command = self.get_command(ctx, name)
-            if command is not None and not command.hidden:
-                command_records.append((name, command.help or command.get_short_help_str()))
+        command_records = [
+            (name, command.help or command.get_short_help_str())
+            for name in self.list_commands(ctx)
+            if (command := self.get_command(ctx, name)) is not None and not command.hidden
+        ]
         with manual_section(formatter, "COMMANDS"):
             formatter.write_dl(command_records)
         with manual_section(formatter, "EXAMPLES"):
             examples = (
                 (
                     "Generate and build a model",
-                    (
-                        ("motion-spec gen model.robmot",),
-                        ('motion-spec build "$MOTION_SPEC_GEN/latest"',),
-                    ),
+                    ("motion-spec gen model.robmot", 'motion-spec build "$MOTION_SPEC_GEN/latest"'),
                 ),
-                ("Generate only the IR", (("motion-spec gen ir model.robmot --name scratch",),)),
+                ("Generate only the IR", ("motion-spec gen ir model.robmot --name scratch",)),
                 (
                     "Generate, build, run, and inspect",
                     (
-                        ("motion-spec run model.robmot --run-id run-1",),
-                        ('motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"',),
+                        "motion-spec run model.robmot --run-id run-1",
+                        'motion-spec replay "$MOTION_SPEC_GEN/latest/runs/run-1"',
                     ),
                 ),
             )
-            indent = " " * (formatter.current_indent + 2)
+            prompt = " " * (formatter.current_indent + 2) + click.style("$ ", fg="cyan")
             for example_index, (label, commands) in enumerate(examples):
+                if example_index:
+                    formatter.write_paragraph()
                 formatter.write_text(click.style(label, bold=True))
                 for command in commands:
-                    for index, line in enumerate(command):
-                        prompt = click.style("$ ", fg="cyan") if index == 0 else "  "
-                        formatter.write(f"{indent}{prompt}{line}\n")
-                if example_index < len(examples) - 1:
-                    formatter.write_paragraph()
+                    formatter.write(f"{prompt}{command}\n")
         with manual_section(formatter, "SEE ALSO"):
             formatter.write_text("motion-spec COMMAND --help")
 
 
-_INSTALLS = {"textx": "motion-spec setup motion-spec-dsl", "pyshacl": "pip install motion_spec"}
+INSTALLS = {"textx": "motion-spec setup motion-spec-dsl", "pyshacl": "pip install motion_spec"}
 
 
 @contextmanager
@@ -265,7 +260,7 @@ def requirements_reported():
 
         dependency = (exc.name or "").partition(".")[0]
         spec = DETAILS.get(dependency)
-        install = remedy(dependency) if dependency in SETUP_PROVIDES else _INSTALLS.get(dependency)
+        install = remedy(dependency) if dependency in SETUP_PROVIDES else INSTALLS.get(dependency)
         if spec is None or install is None:
             raise
         rows = [("why", spec["why"]), ("source", spec["source"]), ("install", install)]
@@ -285,10 +280,10 @@ def main(ctx: click.Context) -> None:
         from motion_spec_dsl.rdf_parser.manifest import install_metamodel_resolver
 
         install_metamodel_resolver()
-    handler = _SayHandler()
-    for name in _TOOL_LOGGERS:
+    handler = SayHandler()
+    for name in TOOL_LOGGERS:
         logger = logging.getLogger(name)
-        if any(isinstance(existing, _SayHandler) for existing in logger.handlers):
+        if any(isinstance(existing, SayHandler) for existing in logger.handlers):
             continue
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
@@ -297,16 +292,16 @@ def main(ctx: click.Context) -> None:
 
 
 # only these, so third-party loggers stay quiet
-_TOOL_LOGGERS = ("motion_spec", "motion_spec_dsl", "scene_dsl", "coord_dsl", "textx")
+TOOL_LOGGERS = ("motion_spec", "motion_spec_dsl", "scene_dsl", "coord_dsl", "textx")
 
 
-class _SayHandler(logging.Handler):
+class SayHandler(logging.Handler):
     """A library's log record, in the format every other line of the CLI is written in."""
 
-    _LEVELS: ClassVar = {logging.WARNING: "warn", logging.ERROR: "error", logging.CRITICAL: "error"}
+    LEVELS: ClassVar = {logging.WARNING: "warn", logging.ERROR: "error", logging.CRITICAL: "error"}
 
     def emit(self, record: logging.LogRecord) -> None:
-        say(self._LEVELS.get(record.levelno, "info"), record.getMessage())
+        say(self.LEVELS.get(record.levelno, "info"), record.getMessage())
 
 
 def environment_options(command):
@@ -329,29 +324,25 @@ def environment_options(command):
 
 def run_options(command):
     """What one run of a built controller takes, for `run` and `rerun` alike."""
-    for option in reversed(
-        (
-            click.option("--run-id", help="Name of this run's directory under <generation>/runs."),
-            click.option(
-                "--cwd",
-                type=click.Path(exists=True, file_okay=False, path_type=Path),
-                help="Working directory of the executable; scene assets resolve relative to it.",
-            ),
-            click.option(
-                "--record",
-                "record",
-                multiple=True,
-                metavar="CAMERA",
-                help="Record this camera to MP4 beside the log. Simulations render declared "
-                "cameras; real runs record their declared ROS image topics. Repeatable.",
-            ),
-            click.option(
-                "--no-log", is_flag=True, help="Do not write the frame log; the run has no replay."
-            ),
-        )
-    ):
-        command = option(command)
-    return command
+    command = click.option(
+        "--no-log", is_flag=True, help="Do not write the frame log; the run has no replay."
+    )(command)
+    command = click.option(
+        "--record",
+        "record",
+        multiple=True,
+        metavar="CAMERA",
+        help="Record this camera to MP4 beside the log. Simulations render declared "
+        "cameras; real runs record their declared ROS image topics. Repeatable.",
+    )(command)
+    command = click.option(
+        "--cwd",
+        type=click.Path(exists=True, file_okay=False, path_type=Path),
+        help="Working directory of the executable; scene assets resolve relative to it.",
+    )(command)
+    return click.option(
+        "--run-id", help="Name of this run's directory under <generation>/runs."
+    )(command)
 
 
 def environment(
@@ -415,14 +406,16 @@ def dashboard(
     from motion_spec.setup import find_environment
 
     named_port = (
-        click.get_current_context().get_parameter_source("port")
+        port
+        if click.get_current_context().get_parameter_source("port")
         is not click.core.ParameterSource.DEFAULT
+        else None
     )
     if kill:
-        return stop_dashboards(port if named_port else None)
+        return stop_dashboards(named_port)
     if restart:
         # the port frees asynchronously
-        stop_dashboards(port if named_port else None)
+        stop_dashboards(named_port)
         for _ in range(50):
             if not port_taken(port):
                 break
@@ -471,9 +464,10 @@ def stop_dashboards(port: int | None) -> None:
         try:
             pid = int(path.read_text().strip())
         except (OSError, ValueError):
-            pid = None
-        if pid is not None and stop(pid):
-            stopped.append(pid)
+            pass
+        else:
+            if stop(pid):
+                stopped.append(pid)
         path.unlink(missing_ok=True)
     if not stopped:
         where = f" on port {port}" if port else ""
@@ -622,16 +616,20 @@ def setup(
         listed = manifest_in_force(files)
     except (OSError, ValueError) as exc:
         raise click.UsageError(str(exc)) from exc
-    unknown = [n for n in repositories if not any(n in (r.path, r.name) for r in listed)]
+    names = {r.path for r in listed} | {r.name for r in listed}
+    unknown = [n for n in repositories if n not in names]
     if unknown:
         raise click.UsageError(
             f"not in {', '.join(str(f) for f in files)}: {', '.join(unknown)}; listed are "
             f"{', '.join(r.name for r in listed)}"
         )
-    selected = [r for r in listed if not repositories or {r.path, r.name} & set(repositories)]
+    selected = [
+        r for r in listed if not repositories or r.path in repositories or r.name in repositories
+    ]
     jobs = build_jobs(jobs)
     prefix = root / INSTALL_DIRECTORY
     log = command_log(root, "setup")
+    manifests = ", ".join(str(path) for path in files)
     # held to the end, so the final failure is logged too
     click.get_current_context().with_resource(mirrored_stderr(log))
     log_header(
@@ -639,7 +637,7 @@ def setup(
         "setup",
         {
             "workspace": root,
-            "manifests": ", ".join(str(path) for path in files),
+            "manifests": manifests,
             "repositories": ", ".join(repository.name for repository in selected),
             "build type": build_type,
             "jobs": jobs,
@@ -650,7 +648,7 @@ def setup(
     )
     say("info", f"workspace {root}")
     say("info", f"installing into {prefix}")
-    say("info", f"manifests {', '.join(str(path) for path in files)}")
+    say("info", f"manifests {manifests}")
     say("info", f"console log {log}")
     say("info", f"building with {jobs} job{'s' if jobs != 1 else ''}")
     import motion_spec
@@ -672,9 +670,9 @@ def setup(
             say("error", requirement)
         if packages:
             say("error", f"apt: sudo apt-get install -y {' '.join(packages)}")
-        raise _Reported("setup needs these before it can start; nothing was built.")
+        raise Reported("setup needs these before it can start; nothing was built.")
     if not any((sources / r.path / ".git").is_dir() for r in selected):
-        raise _Reported(
+        raise Reported(
             f"nothing imported under {sources}: run "
             f"`vcs import {sources} < {files[0]}` first; nothing was built."
         )
@@ -752,11 +750,10 @@ def install(features: tuple[str, ...]) -> None:
     """Install optional FEATURES of motion-spec."""
     if not features:
         raise click.UsageError("name at least one feature")
-    requirements = [f"motion_spec[{','.join(features)}]"]
     from motion_spec.setup import installer
 
     try:
-        result = subprocess.run([*installer(), *requirements], check=False)
+        result = subprocess.run([*installer(), f"motion_spec[{','.join(features)}]"], check=False)
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
     if result.returncode:
@@ -783,7 +780,7 @@ def examples(into: Path | None) -> None:
 
     try:
         source = Path(str(files("motion_spec_dsl") / "models"))
-    except (ImportError, ModuleNotFoundError):
+    except ImportError:
         source = None
     if source is None or not source.is_dir():
         raise click.ClickException(
@@ -907,13 +904,13 @@ def health(
             for label, value, colour in (
                 ("why", check.why, "white"),
                 ("source", check.source, "blue"),
-                ("fix", fix, _COMMAND_COLOUR),
-                ("or", check.alternative if fix else "", _COMMAND_COLOUR),
+                ("fix", fix, COMMAND_COLOUR),
+                ("or", check.alternative if fix else "", COMMAND_COLOUR),
             ):
                 if not value:
                     continue
                 stamp("error", err=False)
-                click.echo(" " * (_STATUS_WIDTH + 4), nl=False)
+                click.echo(" " * (STATUS_WIDTH + 4), nl=False)
                 click.secho(f"{label:<6} ", fg="yellow", dim=True, nl=False)
                 click.secho(value, fg=colour)
     missing = sum(not check.ok and not check.optional for check in checks)
@@ -937,7 +934,7 @@ def health(
         click.echo()
         say("info", click.style("Install what apt provides, in one line:", fg="blue"), False)
         stamp("info", err=False)
-        click.secho(f"sudo apt-get install -y {' '.join(packages)}", fg=_COMMAND_COLOUR)
+        click.secho(f"sudo apt-get install -y {' '.join(packages)}", fg=COMMAND_COLOUR)
     if missing:
         raise click.exceptions.Exit(1)
 
@@ -979,7 +976,7 @@ def gen(stage_or_model: str, model: Path | None, name: str | None) -> None:
     except ConstraintViolation as exc:
         raise model_rejected(exc) from exc
     except MissingAssets as exc:
-        raise _Reported(str(exc)) from exc
+        raise Reported(str(exc)) from exc
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         raise internal_failure("generation failed", exc) from exc
     say("done", f"generated {generation}")
@@ -1129,7 +1126,6 @@ def view(scenex: Path, config: Path | None, headless: bool) -> None:
         raise click.ClickException(str(exc)) from exc
 
 
-
 @main.command()
 @click.argument("input", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -1186,7 +1182,7 @@ def run(
         except ConstraintViolation as exc:
             raise model_rejected(exc) from exc
         except MissingAssets as exc:
-            raise _Reported(str(exc)) from exc
+            raise Reported(str(exc)) from exc
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             raise internal_failure("pipeline failed", exc) from exc
     else:
@@ -1344,12 +1340,14 @@ def compare(generation_a: Path, generation_b: Path) -> None:
         # bundles hold one generation's times and ids
         model, provenance = Graph(), Graph()
         document = read_generation_dataset(generation / "generated" / GENERATION_DOCUMENT)
-        for dataset in (model_dataset, document):
-            for graph in dataset.graphs():
-                if (graph.identifier, RDF.type, PROV.Bundle) in graph:
-                    provenance += graph
-                elif dataset is model_dataset:
-                    model += graph
+        for graph in model_dataset.graphs():
+            if (graph.identifier, RDF.type, PROV.Bundle) in graph:
+                provenance += graph
+            else:
+                model += graph
+        for graph in document.graphs():
+            if (graph.identifier, RDF.type, PROV.Bundle) in graph:
+                provenance += graph
         packages = {
             str(provenance.value(package, SDO.name)): (
                 str(version),
@@ -1360,15 +1358,14 @@ def compare(generation_a: Path, generation_b: Path) -> None:
         # inputs: hashed files no activity generated and no tool wrote
         inputs = {}
         for entity, digest in provenance.subject_objects(DCTERMS.identifier):
-            if (entity, PROV.wasGeneratedBy, None) not in provenance and (
-                entity,
-                PROV.wasAttributedTo,
-                None,
-            ) not in provenance:
-                try:
-                    inputs[str(digest)] = get_file_path(provenance, entity) or entity
-                except ValueError:
-                    inputs[str(digest)] = entity
+            if (entity, PROV.wasGeneratedBy, None) in provenance or (
+                entity, PROV.wasAttributedTo, None
+            ) in provenance:
+                continue
+            try:
+                inputs[str(digest)] = get_file_path(provenance, entity) or entity
+            except ValueError:
+                inputs[str(digest)] = entity
         recorded.append((to_isomorphic(model), packages, inputs))
 
     (model_a, packages_a, inputs_a), (model_b, packages_b, inputs_b) = recorded

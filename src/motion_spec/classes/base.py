@@ -52,9 +52,11 @@ def unique_by_id(items: list) -> list:
         if key is None:
             result.append(item)
             continue
-        first = first_by_id.setdefault(key, item)
-        if first is item:
+        if key not in first_by_id:
+            first_by_id[key] = item
             result.append(item)
-        elif first != item:
-            raise ValueError(f"id '{key}' names two different records:\n  {first!r}\n  {item!r}")
+        elif first_by_id[key] != item:
+            raise ValueError(
+                f"id '{key}' names two different records:\n  {first_by_id[key]!r}\n  {item!r}"
+            )
     return result

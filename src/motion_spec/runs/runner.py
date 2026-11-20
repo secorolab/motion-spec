@@ -41,7 +41,7 @@ from motion_spec.runs.provenance import (
     run_bundle,
 )
 from motion_spec.runs.ros_video import RosImageRecorder, real_camera_recordings
-from motion_spec.runs.verify import verify_run
+from motion_spec.runs.verify import FRAME_LOG, verify_run
 from motion_spec.telemetry.frame_log_pb import (
     LOG_SUFFIX,
     ctrl_shm_name,
@@ -77,8 +77,9 @@ def run_cataloged(
     run_dir = Path(run_dir)
     source_dir = Path(source_dir)
     executable = Path(executable).resolve()
+    cwd = Path(cwd).resolve() if cwd else None
     run_id = run_id or run_dir.name
-    frame_log = run_dir / "logs" / "frame_log.pb"
+    frame_log = run_dir / FRAME_LOG
 
     if not source_dir.exists():
         raise RunnerError(f"{source_dir}: source directory does not exist")
@@ -87,7 +88,7 @@ def run_cataloged(
             raise RunnerError(f"{path}: required generated artifact is missing")
     if not executable.exists():
         raise RunnerError(f"{executable}: executable does not exist")
-    validate_robot_config(source_dir, Path(cwd).resolve() if cwd else None)
+    validate_robot_config(source_dir, cwd)
     if rec_run(run_dir, run_id).store.load(run_id) is not None:
         raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
     if frame_log.exists():
@@ -131,7 +132,7 @@ def run_cataloged(
         ):
             returncode = run_executable(
                 executable,
-                cwd=Path(cwd).resolve() if cwd else None,
+                cwd=cwd,
                 frame_log=frame_log,
                 run_id=run_id,
                 run=run,
@@ -206,11 +207,10 @@ def start_rec_run(
     run.start()
     with run_bundle(run_dir, run_id) as bundle:
         inputs = [config] if config is not None else []
-        script = Path(environment_script or "")
-        if script.is_file():
-            kept = run_dir / "files" / f"environment{script.suffix}"
+        if environment_script is not None and environment_script.is_file():
+            kept = run_dir / "files" / f"environment{environment_script.suffix}"
             kept.parent.mkdir(exist_ok=True)
-            shutil.copy2(script, kept)
+            shutil.copy2(environment_script, kept)
             inputs.append(kept)
         for path in inputs:
             if path.exists():
@@ -321,11 +321,10 @@ def run_executable(
     if record:
         env["MOTION_SPEC_RECORD_CAMERAS"] = ",".join(record)
         env["MOTION_SPEC_RECORD_DIR"] = str(frame_log.parent.resolve())
-    command = [str(executable)]
     console = (frame_log.parent / "console.log").open("w", encoding="utf-8", errors="replace")
     try:
         process = subprocess.Popen(
-            command,
+            [str(executable)],
             cwd=str(cwd) if cwd else None,
             env=env,
             stdout=subprocess.PIPE,
@@ -392,7 +391,7 @@ def record_outputs(run_dir: Path, run, bundle_id: URIRef, *, recorded: bool = Tr
     """
     import zstandard
 
-    frame_log = run_dir / "logs" / "frame_log.pb"
+    frame_log = run_dir / FRAME_LOG
     generation = run_dir.parents[1]
     with run_bundle(run_dir, run.id, bundle_id) as bundle:
         if recorded and frame_log.is_file():

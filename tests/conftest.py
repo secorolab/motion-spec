@@ -82,7 +82,7 @@ def source_tree(tmp_path: Path) -> Path:
     (path / GENERATION_DOCUMENT).write_text(dataset.serialize(format=DatasetFormat.JSON_LD))
     flat = {name: 0 for name in field_names_and_format(SCHEMA["pools"])[1]} | FRAME
     # The writer closes its log with its own account of the frames it was handed.
-    health = frame_log_pb.record_class()()
+    health = frame_log_pb.record_class_of(frame_log_pb.descriptor_set())()
     health.health.attempted_frames = health.health.accepted_frames = 1
     health.health.written_frames = 1
     health.health.complete = True

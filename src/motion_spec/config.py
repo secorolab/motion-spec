@@ -121,20 +121,12 @@ def write_sample(root: Path, declared: bool = False, ros: bool = False) -> Path 
     from motion_spec.formats import FORMATS
     from motion_spec.health import ros_distro
 
-    declared_root = root if declared else None
-    newline = "\n"
     version = FORMATS["config"].current
     found = ros_distro()
     distro_key = f'distro = "{found}"' if found else '# distro = "jazzy"'
     ros_key = f"workspace = {'true' if ros else 'false'}"
-    workspace_keys = newline.join(
-        f"{code:<42} # {note}"
-        for code, note in (
-            (f'root = "{declared_root}"' if declared_root else '# root = "."', "$MOTION_SPEC_WS"),
-            ('generations = "generations"', "$MOTION_SPEC_GEN"),
-            (f'environment = "setup-motion-spec.{shell()}"', "$MOTION_SPEC_ENV"),
-        )
-    )
+    root_key = f'root = "{root}"' if declared else '# root = "."'
+    environment_key = f'environment = "setup-motion-spec.{shell()}"'
     path.write_text(f"""\
 # motion-spec workspace settings.
 #
@@ -146,7 +138,9 @@ def write_sample(root: Path, declared: bool = False, ros: bool = False) -> Path 
 version = {version}
 
 [workspace]
-{workspace_keys}
+{root_key:<42} # $MOTION_SPEC_WS
+generations = "generations"                # $MOTION_SPEC_GEN
+{environment_key:<42} # $MOTION_SPEC_ENV
 
 [ros]
 {ros_key:<42} # true: CMake packages build with colcon

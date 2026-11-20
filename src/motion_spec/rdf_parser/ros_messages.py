@@ -135,23 +135,11 @@ def detect_shape(type_name: str, pose_path: str) -> dict:
     detections_path, detection = sole(
         repeated_leaves(action.Result), "repeated message fields", f"{type_name} result"
     )
-    headers = [
-        name for name, element, _many, _nested in fields(detection) if element == _HEADER_TYPE
-    ]
-    element_name = type_name_of(detection)
-    ids = [
-        name
-        for name, element, many, nested in fields(detection)
-        if not many and element in _STRING_TYPES
-    ]
 
     return {
         "targets_path": sole(goal_targets, "repeated string fields", f"{type_name} goal"),
         "detections_path": detections_path,
-        "id_path": sole(ids, "string fields", element_name),
-        "frame_path": f"{sole(headers, f'{_HEADER_TYPE!r} fields', element_name)}.{_FRAME_FIELD}",
-        "pose_path": detection_pose(detection, element_name, pose_path),
-        "pose_container": pose_path.partition(".")[0],
+        **detection_paths(detection, pose_path),
     }
 
 
@@ -169,36 +157,37 @@ def observation_shape(type_name: str, pose_path: str) -> dict:
     root = message_class(type_name)
     package, cpp_type, include = cpp_names(root)
     detections_path, detection = sole(repeated_leaves(root), "repeated message fields", type_name)
-    headers = [
-        name for name, element, _many, _nested in fields(detection) if element == _HEADER_TYPE
-    ]
-    element_name = type_name_of(detection)
-    ids = [
-        name
-        for name, element, many, nested in fields(detection)
-        if not many and element in _STRING_TYPES
-    ]
-    header = sole(headers, f"'{_HEADER_TYPE}' fields", element_name)
 
     return {
         "package": package,
         "cpp_type": cpp_type,
         "include": include,
         "detections_path": detections_path,
-        "id_path": sole(ids, "string fields", element_name),
-        "frame_path": f"{header}.{_FRAME_FIELD}",
-        "pose_path": detection_pose(detection, element_name, pose_path),
-        "pose_container": pose_path.partition(".")[0],
+        **detection_paths(detection, pose_path),
     }
 
 
-def detection_pose(detection, element_name: str, pose_path: str) -> str:
-    """The accessor from one detection to the pose it reports, off the two fields the model named.
+def detection_paths(detection, pose_path: str) -> dict:
+    """Per detection, which object it is, which frame it arrived in, and the accessor to the pose
+    it reports, off the two fields the model named.
 
     Raises:
-        ConstraintViolation: the model states no pose, names a field the detection does not
-            repeat, or names one holding no single pose.
+        ConstraintViolation: the detection offers not exactly one string field or one header, or
+            the model states no pose, names a field the detection does not repeat, or names one
+            holding no single pose.
     """
+    element_name = type_name_of(detection)
+    detection_fields = fields(detection)
+    ids = [
+        name
+        for name, element, many, _nested in detection_fields
+        if not many and element in _STRING_TYPES
+    ]
+    id_path = sole(ids, "string fields", element_name)
+    headers = [
+        name for name, element, _many, _nested in detection_fields if element == _HEADER_TYPE
+    ]
+    header = sole(headers, f"'{_HEADER_TYPE}' fields", element_name)
     container, _, field = pose_path.partition(".")
     if not field:
         raise ConstraintViolation(
@@ -208,7 +197,7 @@ def detection_pose(detection, element_name: str, pose_path: str) -> str:
         )
     entries = [
         element
-        for name, element, many, nested in fields(detection)
+        for name, element, many, nested in detection_fields
         if name == container and many and nested
     ]
     if not entries:
@@ -230,7 +219,12 @@ def detection_pose(detection, element_name: str, pose_path: str) -> str:
     # the named field may wrap the pose, e.g. with a covariance
     descent = descend_to(message_class(carried[0]), _POSE_TYPE, f"{container}.{field}")
 
-    return f"{container}[0].{field}{'.' + descent if descent else ''}"
+    return {
+        "id_path": id_path,
+        "frame_path": f"{header}.{_FRAME_FIELD}",
+        "pose_path": f"{container}[0].{field}{'.' + descent if descent else ''}",
+        "pose_container": container,
+    }
 
 
 def sole(candidates: list, what: str, where: str):
@@ -387,7 +381,8 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
             f"reports {', '.join(_PAYLOAD_TYPES)}",
         )
     root = message_class(type_name)
-    holders = [root, *(entry for _path, entry in repeated_leaves(root))]
+    arrays = repeated_leaves(root)
+    holders = [root, *(entry for _path, entry in arrays)]
     for carrier in carriers:
         if any(type_name_of(holder) == carrier or paths_to(holder, carrier) for holder in holders):
             wanted = carrier
@@ -396,12 +391,13 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
         wanted = carriers[0]
     package, _cpp_type, include = cpp_names(root)
     shape = shape_of(root, type_name, package, include)
-    carries_one = (
-        type_name_of(root) == wanted or paths_to(root, wanted) or not repeated_leaves(root)
-    )
-    entry = None
-    if not carries_one:
-        entry_path, entry_class = sole(repeated_leaves(root), "repeated message fields", type_name)
+    if type_name_of(root) == wanted or paths_to(root, wanted) or not arrays:
+        entry = None
+        payload_descent = descend_to(root, wanted, type_name)
+        payload_path = f"{payload_descent}." if payload_descent else ""
+    else:
+        payload_path = ""
+        entry_path, entry_class = sole(arrays, "repeated message fields", type_name)
         entry_name = type_name_of(entry_class)
         entry_package, entry_cpp_type, entry_include = cpp_names(entry_class)
         entry_fields = shape_of(entry_class, entry_name, entry_package, entry_include)
@@ -420,10 +416,6 @@ def standing_shape(type_name: str, quantity_type: str) -> dict:
             "frame_path": frame_path(entry_class),
             "auto_time": [path for path, kind in entry_fields["auto"].items() if kind == "time"],
         }
-    payload_path = ""
-    if not entry:
-        payload_descent = descend_to(root, wanted, type_name)
-        payload_path = f"{payload_descent}." if payload_descent else ""
 
     return {
         **shape,

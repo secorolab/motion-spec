@@ -292,15 +292,12 @@ def agent_assemblies(model, attach_by_body) -> list:
         for asset in models.values()
         for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_KTREE)
     }
-    body_names_by_tree = {
-        tree: {
-            local_name(body)
-            for scene_tree in trees
-            for body in scene_tree.bodies
-            if tree in holders[body]
-        }
-        for tree in bound_model_trees
-    }
+    body_names_by_tree = {tree: set() for tree in bound_model_trees}
+    for scene_tree in trees:
+        for body in scene_tree.bodies:
+            for tree in holders[body]:
+                if tree in body_names_by_tree:
+                    body_names_by_tree[tree].add(local_name(body))
     bindings_by_agent = {}
     for agent, models in instance.agent_models.items():
         rows = []
@@ -324,7 +321,6 @@ def agent_assemblies(model, attach_by_body) -> list:
     bindings = [row for rows in bindings_by_agent.values() for row in rows]
 
     result = []
-    chainless = []
     for agent, own in bindings_by_agent.items():
         if not own:
             continue
@@ -349,12 +345,18 @@ def agent_assemblies(model, attach_by_body) -> list:
             root_binding = own[0]
             root_frame = root_frame_of(root_binding["tree"], graph).id
             root_body = body_of_frame(root_frame, graph)
-            attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
-            attach_kind, attach_name, _frame, _parent, _host_frame = attachment
-            position, orientation = quantities.placement_of(
-                model, attachment, quantities.anchor_frame(model)
+        else:
+            scene_tree, chain = serial
+            root_binding = next(
+                binding for binding in own if binding["tree"] in holders[chain.root_body]
             )
-            chainless.append(len(result))
+            root_frame, root_body = chain.root_frame, chain.root_body
+        attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
+        attach_kind, attach_name, _frame, _parent, _host_frame = attachment
+        position, orientation = quantities.placement_of(
+            model, attachment, quantities.anchor_frame(model)
+        )
+        if serial is None:
             result.append(
                 AgentAssembly(
                     agent=agent,
@@ -380,16 +382,11 @@ def agent_assemblies(model, attach_by_body) -> list:
                 )
             )
             continue
-        scene_tree, chain = serial
-        root_binding = next(
-            binding for binding in own if binding["tree"] in holders[chain.root_body]
-        )
         tip_binding = next(
             (binding for binding in bindings if binding["tree"] in holders[chain.tip_body]),
             root_binding,
         )
-        root_frame, tip_frame = chain.root_frame, chain.tip_frame
-        root_body, tip_body = chain.root_body, chain.tip_body
+        tip_frame, tip_body = chain.tip_frame, chain.tip_body
         duplicate_root = (
             sum(local_name(root_body) in names for names in body_names_by_tree.values()) > 1
         )
@@ -399,8 +396,8 @@ def agent_assemblies(model, attach_by_body) -> list:
         for joint in scene_tree.path(chain):
             child = child_by_joint[joint]
             parent = scene_tree.parent[child]
-            frames = (scene_tree.joints[joint].frame_on(body) for body in (parent, child))
-            path.append((parent, child, *frames, joint))
+            between = scene_tree.joints[joint]
+            path.append((parent, child, between.frame_on(parent), between.frame_on(child), joint))
         # two arms must not claim each other's models
         chain_bodies = [root_body, tip_body, *(body for edge in path for body in edge[:2])]
         chain_bindings = [
@@ -416,19 +413,12 @@ def agent_assemblies(model, attach_by_body) -> list:
                 chain_tip_body = parent_body
                 break
 
-        attachment = attach_by_body.get(root_body, ("World", "", root_frame, None, None))
-        attach_kind, attach_name, _frame, _parent, _host_frame = attachment
-        position, orientation = quantities.placement_of(
-            model, attachment, quantities.anchor_frame(model)
-        )
         agent_device = next(iter(graph.subjects(EXEC["realizes"], agent)), None)
         agent_key = config_key(model, agent, agent, "")
         hosted_cameras = cameras(model, hosted, runtime_prefix)
-        owners = [agent]
-        for binding in chain_bindings:
-            owner = agent_by_tree.get(binding["tree"])
-            if owner is not None and owner not in owners:
-                owners.append(owner)
+        owners = dict.fromkeys(
+            [agent, *(agent_by_tree[binding["tree"]] for binding in chain_bindings)]
+        )
         bound = [(owner, "") for owner in owners]
         bound += [(sensor, f"{runtime_prefix}{local_name(sensor)}") for sensor in hosted]
         devices = []
@@ -530,25 +520,27 @@ def agent_assemblies(model, attach_by_body) -> list:
 
     carried = {
         tree
-        for index, assembly in enumerate(result)
-        if index not in chainless
+        for assembly in result
+        if assembly.serial_chain is not None
         for tree in assembly.owned_trees
     }
     kept = [
         assembly
-        for index, assembly in enumerate(result)
-        if index not in chainless or not carried.intersection(assembly.owned_trees)
+        for assembly in result
+        if assembly.serial_chain is not None or not carried.intersection(assembly.owned_trees)
     ]
 
     def hosts(assembly) -> int:
         """How many assemblies this one is mounted on, through the sites the runtime resolves."""
-        parent = attach_by_body.get(assembly.root_body, (None, None, None, None, None))[3]
+        attachment = attach_by_body.get(assembly.root_body)
+        if attachment is None or attachment[3] is None:
+            return 0
+        parent = attachment[3]
         host = next(
             (
                 other
                 for other in kept
                 if other is not assembly
-                and parent is not None
                 and any(tree in holders[parent] for tree in other.owned_trees)
             ),
             None,
@@ -644,9 +636,9 @@ def robot_setups(model):
     """Per-robot chain setups, sourced from the scene-dsl graph.
 
     Returns:
-        `(setups_by_node, ordered, trees)`: the setup for each robot's abstract agent node -- the
-        target of a solver's `agn:of-agent` -- the same setups in declaration order, and every
-        distinct scene tree, which the one world model is built from
+        `(setups_by_node, trees)`: the setup for each robot's abstract agent node -- the target
+        of a solver's `agn:of-agent` -- and every distinct scene tree, which the one world model
+        is built from
     """
     from motion_spec.generation.scene_kdl import chain_for_iri
 
@@ -661,7 +653,7 @@ def robot_setups(model):
         )
     attach_by_body, _root = fixed_attachments(model)
 
-    setups_by_node, ordered = {}, []
+    setups_by_node = {}
     for assembly in agent_assemblies(model, attach_by_body):
         if assembly.serial_chain is None:
             continue
@@ -707,9 +699,8 @@ def robot_setups(model):
             agent=assembly.agent,
         )
         setups_by_node[assembly.agent] = setup
-        ordered.append(setup)
 
-    return setups_by_node, ordered, trees
+    return setups_by_node, trees
 
 
 def tree_segments(model, setups, trees=()) -> dict:
@@ -722,35 +713,19 @@ def tree_segments(model, setups, trees=()) -> dict:
     where the body's segment is, so it resolves to that segment as it does on a chain.
     """
     graph = model.graph
-    exact_names = []
-    for tree in trees:
-        exact_names.append((tree["root_iri"], tree["root"]))
-        root = URIRef(tree["root_iri"])
-        if GEOM_ENT.RigidBody in get_node_types(graph, root):
-            exact_names.append((root_frame_of(root, graph).id, tree["root"]))
-        for segment in tree["segments"]:
-            exact_names.append((segment["iri"], segment["name"]))
-            body = URIRef(segment["iri"])
-            if GEOM_ENT.RigidBody in get_node_types(graph, body):
-                exact_names.append((root_frame_of(body, graph).id, segment["name"]))
-    placed_names = [
-        (iri, segment)
+    exact = {tree["root_iri"]: tree["root"] for tree in trees}
+    exact |= {segment["iri"]: segment["name"] for tree in trees for segment in tree["segments"]}
+    exact |= {
+        str(root_frame_of(URIRef(iri), graph).id): name
+        for iri, name in exact.items()
+        if GEOM_ENT.RigidBody in get_node_types(graph, URIRef(iri))
+    }
+    placed = {
+        iri: segment
         for setup in setups.values()
         for iri, segment in setup.chain.world_segments.items()
-    ]
-    exact: dict[str, str] = {}
-    placed: dict[str, str] = {}
-    for named, names in ((exact, exact_names), (placed, placed_names)):
-        for iri, name in names:
-            if named is placed and str(iri) in exact:
-                continue
-            if named.setdefault(str(iri), name) != name:
-                raise ConstraintViolation(
-                    "kinematics",
-                    f"'{iri}' is named both '{named[str(iri)]}' and '{name}' in the world model -- "
-                    "an element is one segment",
-                )
-    return {**placed, **exact}
+    }
+    return placed | exact
 
 
 def placed_on_chain(carrier) -> tuple[tuple[object, bool], ...]:
@@ -939,46 +914,42 @@ def observes_in_frame(model, node, type_, chain, runtime_prefix, owned_trees, ag
         )
 
         return owned, frame_node
-    if frame_node is not None:
-        frame_body = body_of_frame(frame_node, graph)
-        on_this_chain = any(tree in owned_trees for tree in holders.get(frame_body, ()))
-        runtime_frame = local_name(frame_body)
-        if on_this_chain:
-            runtime_frame = f"{runtime_prefix}{local_name(frame_body)}"
-        # a twist or pose seen by a frame on this chain is this chain's to answer
-        if runtime_frame != chain.root and type_ in (
-            GEOM_COORD.VelocityTwistCoordinate,
-            GEOM_COORD.PoseCoordinate,
-        ):
-            if not on_this_chain:
-                # still ours when the observed thing sits on this chain
-                endpoint = (
-                    quantities.pose(model, node).of
-                    if type_ == GEOM_COORD.PoseCoordinate
-                    else quantities.velocity_twist(model, node).of
-                )
-                return (endpoint.uri in chain.frames or endpoint.uri in chain.bodies, frame_node)
-            return on_this_chain, frame_node
-
-        return runtime_frame == chain.root, frame_node
-
-    return True, frame_node
+    if frame_node is None:
+        return True, frame_node
+    frame_body = body_of_frame(frame_node, graph)
+    on_this_chain = any(tree in owned_trees for tree in holders.get(frame_body, ()))
+    prefix = runtime_prefix if on_this_chain else ""
+    if f"{prefix}{local_name(frame_body)}" == chain.root:
+        return True, frame_node
+    if type_ not in (GEOM_COORD.VelocityTwistCoordinate, GEOM_COORD.PoseCoordinate):
+        return False, frame_node
+    # a twist or pose seen by a frame on this chain is this chain's to answer
+    if on_this_chain:
+        return True, frame_node
+    # still ours when the observed thing sits on this chain
+    endpoint = (
+        quantities.pose(model, node).of
+        if type_ == GEOM_COORD.PoseCoordinate
+        else quantities.velocity_twist(model, node).of
+    )
+    return endpoint.uri in chain.frames or endpoint.uri in chain.bodies, frame_node
 
 
 def runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     """One observation with its frames and names rewritten the way the runtime knows them."""
+    runtime = (setup.runtime.prefix, setup.runtime.owned_trees)
     if type_ in quantities.JOINT_QUANTITY_TYPES:
         return replace(output, joint_name=f"{setup.runtime.prefix}{output.joint_name}")
     if type_ == GEOM_COORD.VelocityTwistCoordinate:
-        seen_by = runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
+        seen_by = runtime_frame(model, frame_node, *runtime)
         return replace(output, as_seen_by=seen_by, seen_by_root=seen_by.id == setup.chain.root)
     if type_ == GEOM_COORD.PoseCoordinate and frame_node is not None:
-        seen_by = runtime_frame(model, frame_node, setup.runtime.prefix, setup.runtime.owned_trees)
+        seen_by = runtime_frame(model, frame_node, *runtime)
         if seen_by.id == setup.chain.root:
             wrt_node = PoseCoordModel(
                 node, model.graph, coord_policy=recorded_coord_policy
             ).relation.wrt_id
-            wrt = runtime_frame(model, wrt_node, setup.runtime.prefix, setup.runtime.owned_trees)
+            wrt = runtime_frame(model, wrt_node, *runtime)
             if wrt.id == setup.chain.root:
                 return output
             return replace(output, relative_to_frame=wrt, seen_by_root=True)
@@ -993,25 +964,25 @@ def runtime_output(model, output, type_, node, frame_node, setup: _ChainSetup):
     graph = model.graph
     relation = graph.value(node, RBDYN_COORD["of-wrench"])
     reference_node = graph.value(relation, RBDYN_ENT["reference-point"])
-    runtime = (setup.runtime.prefix, setup.runtime.owned_trees)
     if output.estimator is not None:
-        return replace(
-            output,
-            estimator=replace(
+        renamed = {
+            "estimator": replace(
                 output.estimator, agent=f"{setup.runtime.prefix}{output.estimator.agent}"
-            ),
-            reference_point=replace(
-                output.reference_point, id=runtime_frame(model, reference_node, *runtime).id
-            ),
-            as_seen_by=runtime_frame(model, frame_node, *runtime),
+            )
+        }
+    else:
+        observation = ensure_one_typed_subject_uri(
+            graph, node, SOSA.observedProperty, SOSA.Observation
         )
-    observation = ensure_one_typed_subject_uri(graph, node, SOSA.observedProperty, SOSA.Observation)
-    sensor_frame_node = graph.value(graph.value(observation, SOSA.madeBySensor), SENSORS.frame)
+        sensor_frame_node = graph.value(graph.value(observation, SOSA.madeBySensor), SENSORS.frame)
+        renamed = {
+            "sensor_name": f"{setup.runtime.prefix}{output.sensor_name}",
+            "sensor_frame": runtime_frame(model, sensor_frame_node, *runtime),
+        }
 
     return replace(
         output,
-        sensor_name=f"{setup.runtime.prefix}{output.sensor_name}",
-        sensor_frame=runtime_frame(model, sensor_frame_node, *runtime),
+        **renamed,
         reference_point=replace(
             output.reference_point, id=runtime_frame(model, reference_node, *runtime).id
         ),
@@ -1124,14 +1095,12 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
         # Vereshchagin root acceleration; RNE's opposite-sign gravity is derived later
         gravity_node = graph.value(node, SLV.gravity)
         # copies: several solver nodes may share one agent's setup
+        chain = replace(setup.chain)
         solver = SolverWithInputAndOutput(
             id=model.id(node),
-            motion_drivers=[
-                constraint_handler.authored_motion_drivers(model, driver)
-                for driver in graph[node : SLV["motion-drivers"]]
-            ],
+            motion_drivers=constraint_handler.motion_drivers(model, derivation, node, chain),
             output=outputs,
-            chain=replace(setup.chain),
+            chain=chain,
             hardware=replace(setup.hardware),
             runtime=replace(setup.runtime),
             sensors=setup.sensors,
@@ -1147,9 +1116,6 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
                 if torque_limit is not None
                 else None
             ),
-        )
-        solver.motion_drivers = constraint_handler.motion_drivers(
-            model, derivation, node, solver.chain
         )
         observations = []
         for type_, read in _WORLD_OUTPUTS:
@@ -1176,11 +1142,8 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
                 observations.append(output)
         observed = unique_by_id(observations)
         observed_ids = {out.id for out in observed}
-        solver.output = [
-            out
-            for out in [*(out for out in solver.output if out.id not in observed_ids), *observed]
-            if out.id not in detect_pose_ids
-        ]
+        kept = [out for out in solver.output if out.id not in observed_ids]
+        solver.output = [out for out in kept + observed if out.id not in detect_pose_ids]
         # a direction in a moving frame must be turned into the root's axes
         root_body = body_name(solver.chain.root)
         for driver in solver.motion_drivers:
@@ -1226,11 +1189,11 @@ def build_robots(model, schedule, setups, derivation, backend: str, detect_pose_
         steps.extend(schedule.of([node, *driven], OPS_GENERIC + OPS_SOLVER))
 
     for type_, label in _UNIMPLEMENTED_PLATFORM_ALGORITHMS:
-        unsupported = list(graph.subjects(RDF.type, type_))
-        if unsupported:
+        unsupported = next(graph.subjects(RDF.type, type_), None)
+        if unsupported is not None:
             raise ConstraintViolation(
                 "solver",
-                f"Mobile-platform solver '{unsupported[0]}' uses algorithm '{label}', which the "
+                f"Mobile-platform solver '{unsupported}' uses algorithm '{label}', which the "
                 "motion-spec code generator does not implement yet. Use velocity-composition or "
                 "force-distribution instead.",
             )

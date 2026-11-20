@@ -55,7 +55,7 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     platform = deployment.read_platform(model)
     platform_config = deployment.platform_config(platform)
     backend = platform["backend"]
-    setups, _ordered, world_trees = agents.robot_setups(model)
+    setups, world_trees = agents.robot_setups(model)
     scene = read_scene(model, world_trees)
     derivation = constraint_handler.solver_derivation_context(model)
     sampling = sampled_quantities(
@@ -328,16 +328,23 @@ def generate_ir(model: Model, fsm: dict | None = None) -> dict:
     # last: every section above may mint a derived id
     uris = model.uri_rows()
     uri_by_id = {row["id"]: row["uri"] for row in uris if row.get("uri")}
-    published = [(value_id, "data_access") for value_id in data_access]
-    published += [(entry["write"].get("id"), "data_access.write") for entry in data_access.values()]
-    for family in ("motions", "controllers", "monitors", "quantities", "quantity_samples"):
-        published += [(row.get("source_id") or row.get("id"), family) for row in telemetry[family]]
-    for pool, rows in telemetry["spatial_samples"].items():
-        published += [(row["id"], f"spatial_samples.{pool}") for row in rows]
+    published = {
+        "data_access": data_access,
+        "data_access.write": [entry["write"].get("id") for entry in data_access.values()],
+        **{
+            family: [row.get("source_id") or row.get("id") for row in telemetry[family]]
+            for family in ("motions", "controllers", "monitors", "quantities", "quantity_samples")
+        },
+        **{
+            f"spatial_samples.{pool}": [row["id"] for row in rows]
+            for pool, rows in telemetry["spatial_samples"].items()
+        },
+    }
     unresolved: dict[str, set] = {}
-    for value_id, origin in published:
-        if isinstance(value_id, str) and value_id and value_id not in uri_by_id:
-            unresolved.setdefault(value_id, set()).add(origin)
+    for origin, value_ids in published.items():
+        for value_id in value_ids:
+            if isinstance(value_id, str) and value_id and value_id not in uri_by_id:
+                unresolved.setdefault(value_id, set()).add(origin)
     if unresolved:
         details = "\n".join(
             f"  '{value_id}' (from {', '.join(origins)})"

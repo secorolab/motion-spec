@@ -12,7 +12,6 @@ computations the model implies, what each call reads and writes, and in what ord
 from __future__ import annotations
 
 import collections
-import itertools
 from typing import NamedTuple
 
 from motion_spec_dsl.rdf_parser.vocab import (
@@ -107,13 +106,12 @@ def normalize(model) -> None:
             for pose, (pose_of, reference) in frames.items()
             if pose != node and pose_of == of_frame and reference not in (of_frame, wrt_frame)
         }
-        for pose, (pose_of, reference) in frames.items():
-            if pose != node and pose_of == wrt_frame and reference in through_of:
-                of_in_shared, wrt_in_shared = through_of[reference], pose
+        for pose, (pose_of, shared_frame) in frames.items():
+            if pose != node and pose_of == wrt_frame and shared_frame in through_of:
+                of_in_shared, wrt_in_shared = through_of[shared_frame], pose
                 break
         else:
             continue
-        _, shared_frame = frames[wrt_in_shared]
 
         inverted = model.derived_node(node, "wrt-inverse")
         emit_derived_pose(model, inverted, shared_frame, wrt_frame)
@@ -186,8 +184,8 @@ def emit_derived_pose(model, node: URIRef, of_frame: URIRef, wrt_frame: URIRef) 
         model.derived.add((relation, URI_GEOM_PRED_OF, parts[of_role]))
         model.derived.add((relation, URI_GEOM_PRED_WRT, parts[wrt_role]))
     model.derived.add((relations["position"], QUDT_SCHEMA.hasQuantityKind, URI_QUDT_QK_LENGTH))
-    for reference_type in (URI_GEOM_TYPE_POSITION_REF, URI_GEOM_TYPE_ORIENT_REF):
-        model.derived.add((relations["pose"], RDF.type, reference_type))
+    model.derived.add((relations["pose"], RDF.type, URI_GEOM_TYPE_POSITION_REF))
+    model.derived.add((relations["pose"], RDF.type, URI_GEOM_TYPE_ORIENT_REF))
     model.derived.add((relations["pose"], URI_GEOM_PRED_OF_POSITION, relations["position"]))
     model.derived.add((relations["pose"], URI_GEOM_PRED_OF_ORIENT, relations["orientation"]))
 
@@ -249,19 +247,17 @@ def invert(model, owner: URIRef, suffix: str, pose: URIRef, out: URIRef) -> None
     model.derived.add((operation, GEOM_OP.out, out))
 
 
-def compose_path(model, owner: URIRef, path, start_wrt: URIRef):
+def compose_path(model, owner: URIRef, path):
     """Emit the invert/compose operations along `path`; return the composed pose, or None."""
     current = None
-    current_wrt = start_wrt
     for index, (pose, inverted) in enumerate(path):
-        pose_of, pose_wrt = pose_frames(model, pose)
         step = pose
-        step_of, step_wrt = pose_of, pose_wrt
+        step_of, step_wrt = pose_frames(model, pose)
         if inverted:
             step = model.derived_node(owner, f"path-{index}-inverse")
-            emit_derived_pose(model, step, pose_wrt, pose_of)
+            step_of, step_wrt = step_wrt, step_of
+            emit_derived_pose(model, step, step_of, step_wrt)
             invert(model, owner, f"path-{index}-invert", pose, step)
-            step_of, step_wrt = pose_wrt, pose_of
         if current is None:
             current = step
             current_wrt = step_wrt
@@ -320,7 +316,7 @@ def materialize_linear_distance_operations(model) -> None:
                     "geometry",
                     f"Linear distance {distance} has no pose path from {start_wrt} to {end_wrt}.",
                 )
-        current = compose_path(model, distance, path, start_wrt)
+        current = compose_path(model, distance, path)
 
         end_in_start_reference = end
         if current is not None:
@@ -372,11 +368,12 @@ def materialize_pose_reference_transforms(model) -> None:
     for constraint in list(graph.subjects(RDF.type, CSTR.EqualityConstraint)):
         quantity = graph.value(constraint, CSTR.quantity)
         reference = graph.value(constraint, CSTR["reference-value"])
-        if quantity is None or reference is None:
-            continue
-        if GEOM_REL.Pose not in get_node_types(graph, quantity):
-            continue
-        if GEOM_REL.Pose not in get_node_types(graph, reference):
+        if (
+            quantity is None
+            or reference is None
+            or GEOM_REL.Pose not in get_node_types(graph, quantity)
+            or GEOM_REL.Pose not in get_node_types(graph, reference)
+        ):
             continue
         try:
             target_of, target_wrt = pose_frames(model, quantity)
@@ -400,7 +397,7 @@ def materialize_pose_reference_transforms(model) -> None:
                 f"Equality constraint {constraint} has no pose path from "
                 f"{target_wrt} to {source_wrt}.",
             )
-        current = compose_path(model, constraint, path, target_wrt)
+        current = compose_path(model, constraint, path)
 
         reference_in_target = model.derived_node(constraint, "reference-in-target")
         emit_derived_pose(model, reference_in_target, source_of, target_wrt)
@@ -546,19 +543,12 @@ def authored_error_normalization(model, constraint_id) -> dict | None:
     """The interval a controller states its error is read into, for the controller driving this
     constraint. Authored beats derived: a model that says which turn is not second-guessed.
     """
+    from motion_spec.rdf_parser.quantities import normalization
+
     graph = model.graph
     for controller in graph.subjects(CSTR_HDL["constraint"], constraint_id):
-        interval = graph.value(controller, ALGO_EXT["normalization"])
-        if interval is None:
-            continue
-        bounds = {}
-        for edge in ("lower", "upper"):
-            bound = graph.value(interval, ALGO_EXT[f"{edge}-bound"])
-            value = graph.value(bound, QUDT_SCHEMA.value) if bound is not None else None
-            if value is None:
-                return None
-            bounds[edge] = float(value.toPython())
-        return bounds
+        if (controller, ALGO_EXT["normalization"], None) in graph:
+            return normalization(model, controller)
     return None
 
 
@@ -629,8 +619,9 @@ class ErrorEvaluator:
         quantity = graph.value(constraint_id, CSTR["quantity"])
         if goal_status_act(model, quantity) is not None:
             return None
+        types = get_node_types(graph, constraint_id)
         for operator in self.cstr_op:
-            if operator.type_ not in get_node_types(graph, constraint_id):
+            if operator.type_ not in types:
                 continue
             function = {
                 "id": model.id(node),
@@ -645,12 +636,10 @@ class ErrorEvaluator:
                 authored = authored_error_normalization(model, constraint_id)
                 if authored is not None:
                     function["error_normalization"] = authored
-                else:
-                    joint = (
-                        graph.value(quantity, KC_STAT["of-joint"]) if quantity is not None else None
-                    )
-                    if joint in continuous_joints(model):
-                        function["angular_wrap"] = True
+                elif quantity is not None and graph.value(
+                    quantity, KC_STAT["of-joint"]
+                ) in continuous_joints(model):
+                    function["angular_wrap"] = True
             fill_function_args(graph, function, model.id, operator, node, constraint_id)
 
             return function
@@ -658,7 +647,7 @@ class ErrorEvaluator:
         # an unevaluated bound would be silently ignored
         stated = [
             local_name(type_)
-            for type_ in get_node_types(graph, constraint_id)
+            for type_ in types
             if type_ != CSTR["Constraint"] and (type_ in CSTR or type_ in CSTR_EXT)
         ]
         raise ConstraintViolation(
@@ -985,16 +974,12 @@ def fold_path(model, node, function) -> None:
     """The geometry decides the maths; each caller samples the same curve."""
     path_node = model.graph.value(node, GEOM_OP_EXT.path)
     path_types = get_node_types(model.graph, path_node)
-    spec = next((s for s in _OPS_PATH if s.type_ in path_types), None)
-    fields = {}
-    if spec is not None:
-        fields["type"] = spec.keyword
-        for argument in [*spec.input, *spec.parameters]:
-            fields[identifier(local_name(argument))] = parse_argument(
-                model.graph, path_node, argument, model.id
-            )
-    function["shape"] = fields.pop("type")
-    function.update(fields)
+    spec = next(s for s in _OPS_PATH if s.type_ in path_types)
+    function["shape"] = spec.keyword
+    for argument in [*spec.input, *spec.parameters]:
+        function[identifier(local_name(argument))] = parse_argument(
+            model.graph, path_node, argument, model.id
+        )
 
 
 def fold_path_evaluator(model, node, function) -> None:
@@ -1005,14 +990,7 @@ def fold_path_evaluator(model, node, function) -> None:
     fold_path(model, node, function)
 
 
-class _FilterBinding(NamedTuple):
-    """What an admittance or velocity-profile filter's output is bound to."""
-
-    constraint: object
-    controller: object
-
-
-def filter_controller(model, node, function) -> _FilterBinding:
+def filter_controller(model, node, function) -> tuple:
     """The constraint a filter's output drives, and the controller that drives it."""
     graph = model.graph
     reference = graph.value(node, ALGO_EXT.out)
@@ -1031,12 +1009,13 @@ def filter_controller(model, node, function) -> _FilterBinding:
             "computation", f"{function['type']} '{function['id']}' constraint has no controller."
         )
 
-    return _FilterBinding(constraint, controller)
+    return constraint, controller
 
 
 def fold_admittance(model, node, function) -> None:
     """An admittance filter keeps state, so it names the controller that owns it."""
-    function["controller"] = model.id(filter_controller(model, node, function).controller)
+    _, controller = filter_controller(model, node, function)
+    function["controller"] = model.id(controller)
 
 
 def fold_velocity_profile(model, node, function) -> None:
@@ -1129,9 +1108,9 @@ class Schedule:
                 if op.schedulable and self.claim(call):
                     sched.append(call)
                     nodes_by_call[call] = node
-                for data_in in op.operand_inputs(model, node):
-                    pending.append(data_in)
-                    data_structures.add(data_in)
+                inputs = op.operand_inputs(model, node)
+                pending.extend(inputs)
+                data_structures.update(inputs)
 
         # data_in --(in)--> call --(out)--> data_out, traversed backward.
         by_predicates = [(output_predicates(op), op) for op in operators]
@@ -1153,15 +1132,16 @@ class Schedule:
                         data_structures.add(data_in)
 
             # a declared pose is no operator's output; follow its per-axis views
-            view_subobjects = (
-                graph.value(view, MAP["subobject"])
-                for view in graph.subjects(MAP["superobject"], data_out)
-                if (view, MAP["axis"], None) in graph
-            )
-            for successor in itertools.chain(
-                (node for node in view_subobjects if node is not None),
-                graph.objects(data_out, CSTR["reference-value"]),
-            ):
+            for view in graph.subjects(MAP["superobject"], data_out):
+                successor = graph.value(view, MAP["subobject"])
+                if (
+                    (view, MAP["axis"], None) in graph
+                    and successor is not None
+                    and successor not in data_structures
+                ):
+                    pending.append(successor)
+                    data_structures.add(successor)
+            for successor in graph.objects(data_out, CSTR["reference-value"]):
                 if successor not in data_structures:
                     pending.append(successor)
                     data_structures.add(successor)
@@ -1178,13 +1158,15 @@ class Schedule:
             if node is None:
                 continue
             inputs = set()
-            node_types = get_node_types(model.graph, node)
+            node_types = get_node_types(graph, node)
             for op in operators:
                 if op.type_ not in node_types:
                     continue
                 inputs.update(op.operand_inputs(model, node))
-                for out in op.output if isinstance(op, Operator) else ():
-                    for output in model.graph.objects(node, out):
+                if not isinstance(op, Operator):
+                    continue
+                for out in op.output:
+                    for output in graph.objects(node, out):
                         producers_of.setdefault(output, set()).add(call)
             call_inputs[call] = inputs
 
@@ -1310,22 +1292,16 @@ def path_projections_for_motion(schedule: list, functions: dict) -> list[dict]:
         one entry per projection call, in schedule order, carrying its path parameter and the
         along-path speed measured beside it
     """
-    calls = {"PathProjection": [], "TwistToLinearVelocityAlong": []}
-    for call in schedule:
-        function = functions.get(call)
-        if (
-            isinstance(function, dict)
-            and function.get("type") in calls
-            and call not in calls[function["type"]]
-        ):
-            calls[function["type"]].append(call)
+    types = {call: functions[call].get("type") for call in schedule if call in functions}
+    projections = [call for call, type_ in types.items() if type_ == "PathProjection"]
+    speeds = [call for call, type_ in types.items() if type_ == "TwistToLinearVelocityAlong"]
     return [
         {
             "id": call,
             "parameter": functions[call]["path_parameter"],
             "along_speed": functions[speed]["along_speed"],
         }
-        for call, speed in zip(calls["PathProjection"], calls["TwistToLinearVelocityAlong"])
+        for call, speed in zip(projections, speeds)
     ]
 
 
@@ -1334,12 +1310,10 @@ def is_pose(item) -> bool:
     if isinstance(item, Pose):
         return True
     if isinstance(item, (Quantity, FreeVector, SetpointQuantity, Position, Orientation)):
-        kinds = [item.quantity_kind]
-    elif isinstance(item, (Direction, SpatialCoordinate)):
-        kinds = item.quantity_kind
-    else:
-        kinds = []
-    return any(kind.iri == str(GEOM_REL.Pose) for kind in kinds)
+        return item.quantity_kind.iri == str(GEOM_REL.Pose)
+    if isinstance(item, (Direction, SpatialCoordinate)):
+        return any(kind.iri == str(GEOM_REL.Pose) for kind in item.quantity_kind)
+    return False
 
 
 def resolve_function_operands(functions: dict, indexes, data_structures: list) -> None:

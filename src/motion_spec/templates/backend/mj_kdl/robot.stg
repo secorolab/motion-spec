@@ -118,30 +118,19 @@ world-port-wrench-cmd(port)     ::= "&mj_body_wrench_<port.slot>->wrench"
 
 // Every non-robot primitive the model reads or pushes, resolved once against the compiled scene.
 scene-state-setup(world_ports) ::= <<
-<world_ports.free_roots:{port |     mj_kdl::SceneFreeBodySlot *mj_free_root_<port.slot> = mj_kdl::bind_scene_free_body(&mj_env.scene, "<port.mapping>");
-    if (!mj_free_root_<port.slot>) {
-        std::cerr \<\< "bind_scene_free_body() failed for '<port.mapping>'\\n";
+<world_ports.free_roots:{port | <scene-port-bind(port, "SceneFreeBodySlot", "mj_free_root", "bind_scene_free_body")>}; separator="\n">
+<world_ports.joints:{port | <scene-port-bind(port, "SceneJointSlot", "mj_scene_joint", "bind_scene_joint")>}; separator="\n">
+<world_ports.aux_cmds:{port | <scene-port-bind(port, "SceneActuatorSlot", "mj_actuator", "bind_scene_actuator")>}; separator="\n">
+<world_ports.wrench_cmds:{port | <scene-port-bind(port, "SceneWrenchSlot", "mj_body_wrench", "bind_scene_wrench")>}; separator="\n">
+>>
+
+scene-port-bind(port, slot_type, name, bind) ::= <<
+    mj_kdl::<slot_type> *<name>_<port.slot> = mj_kdl::<bind>(&mj_env.scene, "<port.mapping>");
+    if (!<name>_<port.slot>) {
+        std::cerr \<\< "<bind>() failed for '<port.mapping>'\\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
-    \}}; separator="\n">
-<world_ports.joints:{port |     mj_kdl::SceneJointSlot *mj_scene_joint_<port.slot> = mj_kdl::bind_scene_joint(&mj_env.scene,"<port.mapping>");
-    if (!mj_scene_joint_<port.slot>) {
-        std::cerr \<\< "bind_scene_joint() failed for '<port.mapping>'\\n";
-        mj_kdl::cleanup(&mj_env);
-        return 1;
-    \}}; separator="\n">
-<world_ports.aux_cmds:{port |     mj_kdl::SceneActuatorSlot *mj_actuator_<port.slot> = mj_kdl::bind_scene_actuator(&mj_env.scene,"<port.mapping>");
-    if (!mj_actuator_<port.slot>) {
-        std::cerr \<\< "bind_scene_actuator() failed for '<port.mapping>'\\n";
-        mj_kdl::cleanup(&mj_env);
-        return 1;
-    \}}; separator="\n">
-<world_ports.wrench_cmds:{port |     mj_kdl::SceneWrenchSlot *mj_body_wrench_<port.slot> = mj_kdl::bind_scene_wrench(&mj_env.scene,"<port.mapping>");
-    if (!mj_body_wrench_<port.slot>) {
-        std::cerr \<\< "bind_scene_wrench() failed for '<port.mapping>'\\n";
-        mj_kdl::cleanup(&mj_env);
-        return 1;
-    \}}; separator="\n">
+    \}
 >>
 
 // The simulator's own gravity, turned into the chain root's axes the world poses are stated in.
@@ -197,21 +186,13 @@ robot-init(solver) ::= <<
 <if(solver.runtime.owner)>    mj_kdl::Robot mj_<solver.runtime.id>{};
 <if(solver.hardware.tool_body)>    mj_kdl::ToolFrameSpec mj_tool_<solver.runtime.id>{};
 <solver.sensors:{s |<({mj-sensor-<s.type>})(solver, s)>
-}>    KDL::Chain built_chain_<solver.runtime.id>{};
+}><endif>    KDL::Chain built_chain_<solver.runtime.id>{};
     if (!<solver.chain.namespace>::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
         std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
         mj_kdl::cleanup(&mj_env);
         return 1;
     \}
-    if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>", &mj_tool_<solver.runtime.id>); !_s) {
-<else>    KDL::Chain built_chain_<solver.runtime.id>{};
-    if (!<solver.chain.namespace>::make_chain_<solver.chain.name>(world_tree_<solver.chain.tree>, &built_chain_<solver.runtime.id>)) {
-        std::cerr \<\< "make_chain_<solver.chain.name>() failed for runtime <solver.runtime.id>\n";
-        mj_kdl::cleanup(&mj_env);
-        return 1;
-    \}
-    if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>"); !_s) {
-<endif>
+    if (const auto _s = mj_kdl::init_robot_from_chain(&mj_<solver.runtime.id>, &mj_env, built_chain_<solver.runtime.id>, {<solver.chain.joints:{j |"<j>"}; separator=", ">\}, "<solver.runtime.prefix>"<if(solver.hardware.tool_body)>, &mj_tool_<solver.runtime.id><endif>); !_s) {
         std::cerr \<\< "init_robot_from_chain() failed for runtime <solver.runtime.id>: " \<\< _s.error \<\< "\n";
         mj_kdl::cleanup(&mj_env);
         return 1;

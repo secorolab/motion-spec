@@ -52,7 +52,7 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
                 poses.append(
                     (assembly.chain_root, assembly.tip, assembly.prefix, [float(v) for v in home])
                 )
-    _setups, _ordered, trees = agents.robot_setups(model)
+    _setups, trees = agents.robot_setups(model)
     scene = read_scene(model, trees)
 
     spec = mjk.SceneSpec()
@@ -148,8 +148,8 @@ def view(scenex_path: Path, config: Path | None, headless: bool) -> None:
                     robot = env.create_robot(root, tip, attempt)
                     break
                 except RuntimeError:
-                    robot = None
-            if robot is None:
+                    pass
+            else:
                 print(f"  (no chain {root} -> {tip}; home pose not applied)")
                 continue
             q = home[: robot.n_joints]

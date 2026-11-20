@@ -37,15 +37,13 @@ FORMATS = {
 def check(name: str, version: int, path) -> str | None:
     """Raise when VERSION cannot be read, or return what to warn about when it is not current."""
     known = FORMATS[name]
-    if version > known.current:
-        raise ValueError(
-            f"{path}: {known.file} version {version}, and this motion-spec reads "
-            f"{known.supported}. It was written by a newer motion-spec."
+    if not known.oldest <= version <= known.current:
+        remedy = (
+            "It was written by a newer motion-spec." if version > known.current else "Regenerate it."
         )
-    if version < known.oldest:
         raise ValueError(
             f"{path}: {known.file} version {version}, and this motion-spec reads "
-            f"{known.supported}. Regenerate it."
+            f"{known.supported}. {remedy}"
         )
     if version < known.current:
         return (

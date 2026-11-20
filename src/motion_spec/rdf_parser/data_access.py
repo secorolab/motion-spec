@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
-from typing import NamedTuple
 
 from rdf_utils.models.vocab import (
     URI_TIME_PRED_AFTER_EVT,
@@ -166,14 +165,7 @@ def bound_id(value):
     return value.id
 
 
-class _ValueOwners(NamedTuple):
-    """Which motions write each value, and which values a per-motion block is responsible for."""
-
-    owners: dict
-    block_ids: dict
-
-
-def owners_by_value(motions, functions: dict, serial_chain_solvers) -> _ValueOwners:
+def owners_by_value(motions, functions: dict, serial_chain_solvers) -> tuple[dict, dict]:
     """Which motions write each value, and which values the per-motion blocks -- rather than any
     schedule -- are responsible for.
 
@@ -223,7 +215,7 @@ def owners_by_value(motions, functions: dict, serial_chain_solvers) -> _ValueOwn
         owners.setdefault(data_id, set()).add(motion_id)
         if kind is not None:
             block_ids[kind].add(data_id)
-    return _ValueOwners(owners, block_ids)
+    return owners, block_ids
 
 
 def superobjects_by_view(views) -> dict[str, set]:
@@ -231,10 +223,9 @@ def superobjects_by_view(views) -> dict[str, set]:
     several superobjects, and it is rewritten whenever any of them is."""
     superobjects_of: dict[str, set] = {}
     for view in (views or {}).values():
-        if view.subobject.id == view.superobject.id:
-            continue
-        if view.subobject.id and view.superobject.id:
-            superobjects_of.setdefault(view.subobject.id, set()).add(view.superobject.id)
+        sub_id, super_id = view.subobject.id, view.superobject.id
+        if sub_id and super_id and sub_id != super_id:
+            superobjects_of.setdefault(sub_id, set()).add(super_id)
     return superobjects_of
 
 
@@ -281,32 +272,22 @@ def build_data_access(
     for solver in platform_force_solvers:
         if solver.force.id:
             solver_by_output.setdefault(solver.force.id, set()).add(solver.id)
-    block_ids = owners_by_value(motions, functions, serial_chain_solvers).block_ids
-    perceived_by_output = {
-        **{
-            written_id: {"kind": "action", "id": client["act_id"]}
-            for motion in motions
-            for client in motion.action_clients
-            for written_id in (
-                client["status_id"],
-                *(row["pose_id"] for row in client["written_poses"]),
-                *(
-                    row["observed_at_id"]
-                    for row in client["written_poses"]
-                    if row.get("observed_at_id")
-                ),
-            )
-        },
-        **{
-            written_id: {"kind": "subscription", "id": sub["sub_id"]}
-            for sub in subscriptions
-            for row in sub["written_poses"]
-            for written_id in (
-                row["pose_id"],
-                *((row["observed_at_id"],) if row.get("observed_at_id") else ()),
-            )
-        },
-    }
+    _owners, block_ids = owners_by_value(motions, functions, serial_chain_solvers)
+    perceived_by_output = {}
+    for motion in motions:
+        for client in motion.action_clients:
+            writer = {"kind": "action", "id": client["act_id"]}
+            perceived_by_output[client["status_id"]] = writer
+            for row in client["written_poses"]:
+                perceived_by_output[row["pose_id"]] = writer
+                if row.get("observed_at_id"):
+                    perceived_by_output[row["observed_at_id"]] = writer
+    for sub in subscriptions:
+        writer = {"kind": "subscription", "id": sub["sub_id"]}
+        for row in sub["written_poses"]:
+            perceived_by_output[row["pose_id"]] = writer
+            if row.get("observed_at_id"):
+                perceived_by_output[row["observed_at_id"]] = writer
     config_pose_ids = {entry["id"] for entry in config_poses}
 
     data_access = {}
@@ -417,14 +398,15 @@ def build_data_access(
     for solver in serial_chain_solvers:
         reads.append((solver.gravity_source, "solver", solver.id, "gravity"))
         saturation = solver.torque_saturation
-        if saturation is not None:
-            for bound, quantity in (
-                ("maximum", saturation.maximum),
-                ("lower", saturation.lower),
-                ("upper", saturation.upper),
-            ):
-                if quantity is not None:
-                    reads.append((quantity.id, "solver", solver.id, f"torque_saturation.{bound}"))
+        if saturation is None:
+            continue
+        for bound, quantity in (
+            ("maximum", saturation.maximum),
+            ("lower", saturation.lower),
+            ("upper", saturation.upper),
+        ):
+            if quantity is not None:
+                reads.append((quantity.id, "solver", solver.id, f"torque_saturation.{bound}"))
     readers_by_id: dict[str, list] = {}
     for data_id, kind, reader_id, port in reads:
         reader = {"kind": kind, "id": reader_id, "port": port}
@@ -454,7 +436,7 @@ def analyse_data_access(
         RuntimeError: a value is read but never written -- a broken binding that would feed its
             reader a zero forever.
     """
-    owners = owners_by_value(motions, functions, serial_chain_solvers).owners
+    owners, _block_ids = owners_by_value(motions, functions, serial_chain_solvers)
     items = {item.id: item for item in algorithm_data if item.id}
     analysis = {}
     for value_id, entry in data_access.items():

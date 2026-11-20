@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
-from itertools import chain
 from pathlib import Path
 
 from motion_spec.classes.base import DataclassJSONEncoder
@@ -41,7 +40,7 @@ def write_payload(path: Path, payload) -> None:
     """Write a template payload, with empty lists read as absent."""
     readable = for_templates(json.loads(json.dumps(payload, cls=DataclassJSONEncoder)))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(readable, cls=DataclassJSONEncoder, indent=4) + "\n")
+    path.write_text(json.dumps(readable, indent=4) + "\n")
 
 
 def render_template(
@@ -125,9 +124,11 @@ def asset_nodes(node) -> Iterator[dict]:
     if isinstance(node, dict):
         if isinstance(node.get("path"), str) and node["path"].endswith(".xml"):
             yield node
-        yield from chain.from_iterable(asset_nodes(value) for value in node.values())
+        for value in node.values():
+            yield from asset_nodes(value)
     elif isinstance(node, list):
-        yield from chain.from_iterable(asset_nodes(value) for value in node)
+        for value in node:
+            yield from asset_nodes(value)
 
 
 def generate_code(
@@ -184,25 +185,22 @@ def generate_code(
             uses.add("JointNormalization")
         if function.get("controller_type"):
             uses.add(function["controller_type"])
-    solvers = (ir["resources"].get("by_id") or {}).values()
-    for solver in solvers:
+    for solver in ir["resources"]["by_id"].values():
         if solver.get("algorithm_name"):
             uses.add(f"Solver{solver['algorithm_name']}")
         if any(out.get("normalization") for out in solver.get("output") or ()):
             uses.add("JointNormalization")
     composite = {
         item["id"]
-        for item in ir["computation"].get("data") or ()
+        for item in ir["computation"]["data"]
         if item.get("type") in {"Pose", "VelocityTwist"}
     }
     for motion in ir["coordination"]["motions"]:
         for phase in ("when", "while", "until"):
-            for monitor in motion.get(f"{phase}_monitors") or ():
-                error_signals = [
-                    (monitor.get("error") or {}).get("id"),
-                    *(term.get("error_id") for term in monitor.get("active_terms") or ()),
-                ]
-                if composite.intersection(error_signals):
+            for monitor in motion[f"{phase}_monitors"]:
+                if (monitor.get("error") or {}).get("id") in composite or any(
+                    term.get("error_id") in composite for term in monitor["active_terms"]
+                ):
                     uses.add("CompositeError")
                 if monitor.get("is_edge_triggered"):
                     uses.add("SustainedEdge" if monitor.get("debounce_id") else "RisingEdge")
@@ -216,56 +214,55 @@ def generate_code(
         "home_key": AGENT_HOME_KEY,
         "pose_fields": list(CONFIG_POSE_FIELDS),
     }
-    scratch = tempfile.TemporaryDirectory(prefix="motion-spec-stst-")
-    payload_dir = Path(scratch.name)
-    ir_payload_path = payload_dir / "ir.json"
-    write_payload(ir_payload_path, ir)
-    root = f"backend/{ir['configuration']['backend']}/main"
+    with tempfile.TemporaryDirectory(prefix="motion-spec-stst-") as scratch:
+        payload_dir = Path(scratch)
+        ir_payload_path = payload_dir / "ir.json"
+        write_payload(ir_payload_path, ir)
+        root = f"backend/{ir['configuration']['backend']}/main"
 
-    shutil.copyfile(frame_log_pb.PROTO, contract_dir / "frame_log.proto")
-    frame_log_pb.run_protoc(f"--cpp_out={output_dir}")
-    written += [
-        contract_dir / "frame_log.proto",
-        output_dir / "frame_log.pb.h",
-        output_dir / "frame_log.pb.cc",
-    ]
-    renders = [
-        ("telemetry_header", ir_payload_path, output_dir / "telemetry.hpp"),
-        ("telemetry_model_header", ir_payload_path, output_dir / "telemetry_model.hpp"),
-        ("frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"),
-        ("runtime_header", ir_payload_path, headers_dir / "runtime.hpp"),
-        ("controller_runtime_header", ir_payload_path, headers_dir / "controllers.hpp"),
-        ("algorithm_data_header", ir_payload_path, headers_dir / "algorithm_data.hpp"),
-    ]
-    if ir["resources"]["by_kind"].get("mobile_base"):
-        renders.append(
-            ("mobile_base_cycle_header", ir_payload_path, headers_dir / "mobile_base_cycle.hpp")
-        )
-    for motion in ir["coordination"]["motions"]:
-        payload_path = payload_dir / f"{motion['id']}.json"
-        write_payload(
-            payload_path,
-            {
-                "motion": motion,
-                "functions": ir["computation"]["functions"],
-                "views": ir["computation"]["views"],
-                "solvers": ir["resources"]["by_id"],
-            },
-        )
-        renders.append(("motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"))
-    renders += [
-        ("main_source", ir_payload_path, output_dir / "main.cpp"),
-        ("cmake_project", ir_payload_path, output_dir / "CMakeLists.txt"),
-        ("robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"),
-    ]
-    if ir["configuration"]["backend"] == "robif2b":
-        renders += [
-            ("device_io_header", ir_payload_path, output_dir / "device_io.hpp"),
-            ("config_check", ir_payload_path, output_dir / CONFIG_CHECK),
+        shutil.copyfile(frame_log_pb.PROTO, contract_dir / "frame_log.proto")
+        frame_log_pb.run_protoc(f"--cpp_out={output_dir}")
+        written += [
+            contract_dir / "frame_log.proto",
+            output_dir / "frame_log.pb.h",
+            output_dir / "frame_log.pb.cc",
         ]
-    written += [
-        render_template(stst_bin, root, template_name, payload_path, output_path)
-        for template_name, payload_path, output_path in renders
-    ]
-    scratch.cleanup()
+        renders = [
+            ("telemetry_header", ir_payload_path, output_dir / "telemetry.hpp"),
+            ("telemetry_model_header", ir_payload_path, output_dir / "telemetry_model.hpp"),
+            ("frame_layout_header", ir_payload_path, output_dir / "frame_layout.h"),
+            ("runtime_header", ir_payload_path, headers_dir / "runtime.hpp"),
+            ("controller_runtime_header", ir_payload_path, headers_dir / "controllers.hpp"),
+            ("algorithm_data_header", ir_payload_path, headers_dir / "algorithm_data.hpp"),
+        ]
+        if ir["resources"]["by_kind"].get("mobile_base"):
+            renders.append(
+                ("mobile_base_cycle_header", ir_payload_path, headers_dir / "mobile_base_cycle.hpp")
+            )
+        for motion in ir["coordination"]["motions"]:
+            payload_path = payload_dir / f"{motion['id']}.json"
+            write_payload(
+                payload_path,
+                {
+                    "motion": motion,
+                    "functions": ir["computation"]["functions"],
+                    "views": ir["computation"]["views"],
+                    "solvers": ir["resources"]["by_id"],
+                },
+            )
+            renders.append(("motion_header", payload_path, headers_dir / f"{motion['id']}.hpp"))
+        renders += [
+            ("main_source", ir_payload_path, output_dir / "main.cpp"),
+            ("cmake_project", ir_payload_path, output_dir / "CMakeLists.txt"),
+            ("robot_config_header", ir_payload_path, output_dir / "robot_config.hpp"),
+        ]
+        if ir["configuration"]["backend"] == "robif2b":
+            renders += [
+                ("device_io_header", ir_payload_path, output_dir / "device_io.hpp"),
+                ("config_check", ir_payload_path, output_dir / CONFIG_CHECK),
+            ]
+        written += [
+            render_template(stst_bin, root, template_name, payload_path, output_path)
+            for template_name, payload_path, output_path in renders
+        ]
     return written

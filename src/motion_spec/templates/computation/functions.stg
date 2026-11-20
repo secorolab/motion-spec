@@ -15,7 +15,12 @@ data.<function.quantity> = <access-expr(function.reference_value, views)>;
 // error_normalization: the controller states the interval its error is read into.
 // angular_wrap: the joint is continuous, so the error is the shortest arc, never the long way round.
 emit-call-ErrorEvaluator-EqualityConstraint(function, views) ::= <<
-data.<function.error> = <if(function.error_normalization)>motion_spec::runtime::normalize_joint_position(motion_spec::runtime::evaluate_equality_constraint(<access-expr(function.reference_value, views)>, <access-expr(function.quantity, views)>), <function.error_normalization.lower>, <function.error_normalization.upper>)<elseif(function.angular_wrap)>motion_spec::runtime::wrap_angle(motion_spec::runtime::evaluate_equality_constraint(<access-expr(function.reference_value, views)>, <access-expr(function.quantity, views)>))<else>motion_spec::runtime::evaluate_equality_constraint(<access-expr(function.reference_value, views)>, <access-expr(function.quantity, views)>)<endif>;
+{
+    const auto _error = motion_spec::runtime::evaluate_equality_constraint(<access-expr(function.reference_value, views)>, <access-expr(function.quantity, views)>);
+<if(function.error_normalization)>    data.<function.error> = motion_spec::runtime::normalize_joint_position(_error, <function.error_normalization.lower>, <function.error_normalization.upper>);
+<elseif(function.angular_wrap)>    data.<function.error> = motion_spec::runtime::wrap_angle(_error);
+<else>    data.<function.error> = _error;
+<endif>}
 >>
 
 emit-call-ErrorEvaluator-GreaterThanConstraint(function, views) ::= <<

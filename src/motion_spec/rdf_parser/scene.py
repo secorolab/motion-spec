@@ -148,14 +148,13 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
     drawn_frames = {
         entry["iri"]: (tree["cpp_name"], entry) for tree in trees for entry in unplaced_frames(tree)
     }
-    frames = []
     for body, frame in marked:
         name = local_name(frame)
         body_name = body_names.get(str(body), local_name(body))
         site = f"{body_name}_{name}" if counts[name] > 1 else name
         if str(frame) in drawn_frames:
             tree, entry = drawn_frames[str(frame)]
-            frames.append(
+            scene.frames.append(
                 MjcfSceneFrame(
                     body=body_name,
                     name=site,
@@ -172,7 +171,7 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
         # left out rather than invent a spot at the body's origin
         if position is None:
             continue
-        frames.append(
+        scene.frames.append(
             MjcfSceneFrame(
                 body=body_name,
                 name=site,
@@ -181,7 +180,6 @@ def read_scene(model, trees=()) -> MjcfSceneSpec:
                 **dict(zip(("quat_x", "quat_y", "quat_z", "quat_w"), orientation)),
             )
         )
-    scene.frames = frames
     frames_by_uri = {frame.uri: frame for frame in scene.frames}
     for camera in scene.cameras:
         frame = frames_by_uri.get(camera.frame_uri)
@@ -285,7 +283,7 @@ def name_object_attachments(model, attach_by_body) -> None:
         for asset in models.values()
         for mapping in get_kinematic_mappings(asset, URI_GEOM_TYPE_RIGID_BODY)
     }
-    for body, (kind, _name, _frame, parent_body, host_frame) in list(attach_by_body.items()):
+    for body, (kind, _name, _frame, parent_body, host_frame) in attach_by_body.items():
         if kind != "Site" or parent_body not in object_ids_by_body:
             continue
         # the root frame: the one the placement is composed against

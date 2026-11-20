@@ -207,11 +207,12 @@ def views_for_access(
         # a constraint may name the view itself
         indexed.setdefault(view.id, view)
         subobject_id = view.subobject.id
-        if not subobject_id or subobject_id in direct_ids:
-            continue
-        if subobject_id == view.superobject.id:
-            continue
-        if (view.superobject.id, subobject_id) in bound_into_pose:
+        if (
+            not subobject_id
+            or subobject_id in direct_ids
+            or subobject_id == view.superobject.id
+            or (view.superobject.id, subobject_id) in bound_into_pose
+        ):
             continue
         previous = indexed.setdefault(subobject_id, view)
         if previous is view or previous is None:
@@ -267,11 +268,11 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
     groups: dict[str, PoseErrorRegroup] = {}
     indexed = views_by_subobject({key: view for key, view in views.items() if view.axis is not None})
     for node, evaluator in evaluators_by_node.items():
-        if CSTR_HDL["ErrorEvaluator"] not in get_node_types(model.graph, node):
-            continue
-        if not isinstance(evaluator.constraint.parameter, EqualityConstraint):
-            continue
-        if evaluator.error is None:
+        if (
+            CSTR_HDL["ErrorEvaluator"] not in get_node_types(model.graph, node)
+            or not isinstance(evaluator.constraint.parameter, EqualityConstraint)
+            or evaluator.error is None
+        ):
             continue
         quantity_record = evaluator.constraint.quantity
         matches = indexed.get(quantity_record.id, ())
@@ -296,7 +297,7 @@ def pose_axis_error_groups_for_motion(model, evaluators_by_node: dict, views: di
                 "rotation" in quantity_record.id
             ):
                 mapping = ("angular", True)
-        if mapping is None or view.axis is None:
+        if mapping is None:
             continue
         half, is_angular = mapping
 
@@ -422,6 +423,18 @@ def snapshots_for_motion(
     return result
 
 
+def collect_strings(value, references: set) -> None:
+    """Collect every string a value holds, however deeply nested, into REFERENCES."""
+    if isinstance(value, str):
+        references.add(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            collect_strings(item, references)
+    elif isinstance(value, list):
+        for item in value:
+            collect_strings(item, references)
+
+
 def collect_motion_references(motion, functions: dict) -> set[str]:
     """Every id a motion references, including through the functions its schedules run.
 
@@ -430,21 +443,9 @@ def collect_motion_references(motion, functions: dict) -> set[str]:
         which is what the callers restrict a global table down to
     """
     references: set[str] = set()
-
-    def visit(value) -> None:
-        """Collect every string a value holds, however deeply nested."""
-        if isinstance(value, str):
-            references.add(value)
-        elif isinstance(value, dict):
-            for item in value.values():
-                visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-
-    visit(asdict(motion))
+    collect_strings(asdict(motion), references)
     for step in [*motion.when_schedule, *motion.while_schedule, *motion.until_schedule]:
-        visit(functions.get(step))
+        collect_strings(functions.get(step), references)
 
     return references
 
@@ -452,25 +453,14 @@ def collect_motion_references(motion, functions: dict) -> set[str]:
 def collect_motion_input_references(motion, functions: dict) -> set[str]:
     """Every value the motion's computations and captures read, excluding solver outputs."""
     references: set[str] = set()
-
-    def visit(value) -> None:
-        if isinstance(value, str):
-            references.add(value)
-        elif isinstance(value, dict):
-            for item in value.values():
-                visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-
     for step in [
         *motion.when_schedule,
         *motion.while_pre_schedule,
         *motion.while_schedule,
         *motion.until_schedule,
     ]:
-        visit(functions.get(step))
-    visit([asdict(snapshot) for snapshot in motion.snapshots])
+        collect_strings(functions.get(step), references)
+    collect_strings([asdict(snapshot) for snapshot in motion.snapshots], references)
     return references
 
 
@@ -504,11 +494,12 @@ def observation_ages(evaluators) -> list[dict]:
     """A phase's observation-age clocks: the coordinate each writes and the instant it counts from."""
     seen = {}
     for evaluator in evaluators:
-        if evaluator.is_elapsed and evaluator.observed_at_id:
-            coordinate = elapsed_coordinate_id(evaluator)
-            seen.setdefault(
-                coordinate, {"coordinate": coordinate, "observed_at": evaluator.observed_at_id}
-            )
+        if not evaluator.is_elapsed or not evaluator.observed_at_id:
+            continue
+        coordinate = elapsed_coordinate_id(evaluator)
+        seen.setdefault(
+            coordinate, {"coordinate": coordinate, "observed_at": evaluator.observed_at_id}
+        )
     return list(seen.values())
 
 
@@ -540,7 +531,7 @@ def build_pose_components(model, views: dict, data: list) -> dict:
             rotation = orientation_quaternion(model, coordinate.orientation_coord)
             for name, value in zip("xyzw", rotation or ()):
                 setattr(entry, f"orientation_{name}", ComponentRef(value=str(value)))
-        if representation == "relative":
+        elif representation == "relative":
             entry.orientation_operands = item.orientation_operands
         if any(
             value is not None for key, value in asdict(entry).items() if key != "representation"
@@ -577,36 +568,33 @@ def build_pose_components(model, views: dict, data: list) -> dict:
         pose_record = data_by_id.get(pose_id)
         is_pose = isinstance(pose_record, Pose)
         euler_axes_sequence = pose_record.euler_axes_sequence if is_pose else None
-        if parts.representation == "quaternion":
-            required = _POSITION_FIELDS + tuple(f"orientation_{name}" for name in "xyzw")
-        elif parts.representation == "euler":
-            required = _POSITION_FIELDS + tuple(
-                f"orientation_{name}" for name in (euler_axes_sequence or "")
-            )
-        else:
-            required = _POSITION_FIELDS
+        orientation_axes = {"quaternion": "xyzw", "euler": euler_axes_sequence or ""}.get(
+            parts.representation, ""
+        )
+        required = _POSITION_FIELDS + tuple(f"orientation_{name}" for name in orientation_axes)
         missing = [name for name in required if getattr(parts, name) is None]
         if missing:
             raise ConstraintViolation(
                 "geometry",
                 f"Declared pose '{pose_id}' is missing required components: {', '.join(missing)}.",
             )
-        if parts.representation == "euler":
-            sequence = euler_axes_sequence or "xyz"
-            factors = [
-                {"axis": name, "component": getattr(parts, f"orientation_{name}")}
-                for name in sequence
-                if getattr(parts, f"orientation_{name}") is not None
-            ]
-            if len(factors) != len(sequence):
-                raise ConstraintViolation(
-                    "geometry",
-                    f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'.",
-                )
-            # extrinsic: last rotation multiplies on the left; intrinsic reverses the order
-            parts.euler_factors = (
-                factors if is_pose and pose_record.euler_intrinsic else list(reversed(factors))
+        if parts.representation != "euler":
+            continue
+        sequence = euler_axes_sequence or "xyz"
+        factors = [
+            {"axis": name, "component": getattr(parts, f"orientation_{name}")}
+            for name in sequence
+            if getattr(parts, f"orientation_{name}") is not None
+        ]
+        if len(factors) != len(sequence):
+            raise ConstraintViolation(
+                "geometry",
+                f"Euler pose '{pose_id}' has no component for every axis of '{sequence}'.",
             )
+        # extrinsic: last rotation multiplies on the left; intrinsic reverses the order
+        parts.euler_factors = (
+            factors if is_pose and pose_record.euler_intrinsic else list(reversed(factors))
+        )
 
     return components
 

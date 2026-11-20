@@ -35,17 +35,13 @@ class AdmittanceFilter {
             if (outside_engage_band) {
                 mode_ = Mode::COMPLY;
                 entered_comply_ = true;
-            } else {
-                // Brake the last compliant velocity instead of removing its setpoint in one
-                // control tick. The exact zero below prevents the exponential tail from drifting.
-                const double decay = std::max(0.0, 1.0 - damping * dt / mass);
-                vel_ *= decay;
-                if (std::abs(vel_) \< 0.001) vel_ = 0.0;
-                offset_ += vel_ * dt;
-                return vel_;
             }
         } else if (std::abs(force) \<= release_threshold) {
             mode_ = Mode::IDLE_HOLD;
+        }
+        if (mode_ == Mode::IDLE_HOLD) {
+            // Brake the last compliant velocity instead of removing its setpoint in one
+            // control tick. The exact zero below prevents the exponential tail from drifting.
             const double decay = std::max(0.0, 1.0 - damping * dt / mass);
             vel_ *= decay;
             if (std::abs(vel_) \< 0.001) vel_ = 0.0;
@@ -273,9 +269,7 @@ controller-reset-ProportionalIntegralDerivative(motion_id, controller, resamples
 <motion_id>_state_instance.<controller.id>.reset(<if(!resamples)>true<endif>);
 >>
 
-controller-reset-ImpedanceController(motion_id, controller, resamples) ::= <<
-<motion_id>_state_instance.<controller.id>.reset(<if(!resamples)>true<endif>);
->>
+controller-reset-ImpedanceController ::= controller-reset-ProportionalIntegralDerivative
 
 controller-reset-FeedForwardController(motion_id, controller, resamples) ::= <<
 <motion_id>_state_instance.<controller.id>.reset();

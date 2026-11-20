@@ -76,7 +76,6 @@ from motion_spec.rdf_parser.views import (
 )
 
 _PHASES = ("when", "while", "until")
-_PHASE_PREDICATES = {"when": MOT["when"], "while": MOT["while"], "until": MOT["until"]}
 
 
 def constraint_transition(model, node) -> ConstraintTransition:
@@ -144,9 +143,8 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
         reference = graph.value(constraint_node, CSTR["reference-value"])
         goal_status = str(graph.value(reference, RDF.value))
 
-    is_elapsed = constraint_node is not None and CSTR_EXT["TimeConstraint"] in get_node_types(
-        graph, constraint_node
-    )
+    types = get_node_types(graph, constraint_node) if constraint_node is not None else set()
+    is_elapsed = CSTR_EXT["TimeConstraint"] in types
     operator, threshold, elapsed_tolerance, observed_at = None, None, None, None
     if is_elapsed:
         # from sosa:phenomenonTime when the interval starts at one, else from entry
@@ -170,7 +168,6 @@ def constraint_evaluator(model, node) -> ConstraintEvaluator:
                     "be filled.",
                 )
             observed_at = model.id(begin)
-        types = get_node_types(graph, constraint_node)
         operator, predicate = next(
             ((op, pred) for type_, op, pred in _ELAPSED_RELATIONS if type_ in types),
             ("<", CSTR["threshold"]),
@@ -205,25 +202,18 @@ def monitor_entry(model, node):
     )
     motion = graph.value(handler, CSTR_HDL.motion) if handler is not None else None
     monitored = set(graph.objects(node, CSTR_HDL.constraint))
-    sections = {
-        phase: set(graph.objects(motion, _PHASE_PREDICATES[phase])) if motion is not None else set()
-        for phase in ("when", "until")
-    }
-    aggregate = len(monitored) > 1 or any(
-        quantities.is_constraint_aggregate(model, item) for item in monitored
-    )
-    is_until_aggregate = aggregate and monitored == sections["until"]
-    is_when_aggregate = aggregate and monitored == sections["when"]
     expressions = [item for item in monitored if quantities.is_constraint_aggregate(model, item)]
-    if not expressions:
-        group_ids, group_uris, group_bands, group_any = [], [], [], False
-    elif len(expressions) > 1:
+    in_section = (len(monitored) > 1 or bool(expressions)) and motion is not None
+    is_until_aggregate = in_section and monitored == set(graph[motion : MOT["until"]])
+    is_when_aggregate = in_section and monitored == set(graph[motion : MOT["when"]])
+    if len(expressions) > 1:
         raise ConstraintViolation(
             "coordination",
             f"a monitor watches {len(expressions)} constraint groups -- it watches one condition",
         )
-    else:
-        expression = expressions[0]
+    group_ids, group_uris, group_bands, group_any = [], [], [], False
+    if expressions:
+        (expression,) = expressions
         members = list(graph[expression : CSTR_EXT["has-constraint"]])
         bands = [graph.value(member, CSTR_EXT["tolerance"]) for member in members]
         group_ids = [model.id(member) for member in members]
@@ -295,17 +285,18 @@ def build_constraint_handlers(model, schedule, derivation):
     """
     graph = model.graph
     handlers, steps = [], []
-    for node in sorted(
-        graph.subjects(RDF.type, CSTR_HDL["ConstraintHandler"]),
-        key=lambda item: int(graph.value(item, APP.order, default=Literal(0)).value),
-    ):
+    order_by_node = {
+        node: int(graph.value(node, APP.order, default=Literal(0)).value)
+        for node in graph.subjects(RDF.type, CSTR_HDL["ConstraintHandler"])
+    }
+    for node in sorted(order_by_node, key=order_by_node.get):
         handler = ConstraintHandler(
             model.id(node),
             guarded_motion(model, graph.value(node, CSTR_HDL["motion"])),
             [constraint_evaluator(model, item) for item in graph[node : CSTR_HDL["evaluators"]]],
             [],
             [monitor_entry(model, item) for item in graph[node : CSTR_HDL["monitors"]]],
-            int(graph.value(node, APP.order, default=Literal(0)).value),
+            order_by_node[node],
         )
         plans = derivation.controllers_by_handler.get(node, ())
         handler.controllers = [
@@ -357,14 +348,12 @@ class PhaseNodes:
     signal it reads instead, which is the only other thing tying it to a phase.
     """
 
-    def __init__(self, model, handler, handler_node, motion_node):
+    def __init__(self, model, handler_node, motion_node):
         graph = model.graph
-        self.raw = {phase: set(graph[motion_node : _PHASE_PREDICATES[phase]]) for phase in _PHASES}
+        self.raw = {phase: set(graph[motion_node : MOT[phase]]) for phase in _PHASES}
         self.constraints = {
-            phase: expanded_constraints(model, self.raw[phase])
-            if phase != "while"
-            else set(self.raw[phase])
-            for phase in _PHASES
+            phase: expanded_constraints(model, nodes) if phase != "while" else nodes
+            for phase, nodes in self.raw.items()
         }
         self.evaluators = {phase: [] for phase in _PHASES}
         for node in graph[handler_node : CSTR_HDL["evaluators"]]:
@@ -375,7 +364,6 @@ class PhaseNodes:
 
         self.watched = {
             phase: {graph.value(node, CSTR_HDL["constraint"]) for node in self.evaluators[phase]}
-            - {None}
             for phase in _PHASES
         }
         self.errors = {
@@ -388,17 +376,6 @@ class PhaseNodes:
             phase = self.monitor_phase(graph, node)
             if phase is not None:
                 self.monitors[phase].append(node)
-        # an unphased item is excluded by intent; an undeclared one is refused
-        for kind, by_phase, declared_predicate in (
-            ("evaluators", self.evaluators, CSTR_HDL["evaluators"]),
-            ("monitors", self.monitors, CSTR_HDL["monitors"]),
-        ):
-            declared = set(graph[handler_node:declared_predicate])
-            classified = {node for phase in _PHASES for node in by_phase[phase]}
-            if not classified <= declared:
-                raise ValueError(
-                    f"Handler {handler.id}: classified {kind} not a subset of handler {kind}"
-                )
 
     def monitor_phase(self, graph, node) -> str | None:
         """The phase a monitor belongs to, by what it watches or, failing that, what it reads."""
@@ -430,19 +407,15 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
     """
     graph = model.graph
     motions = []
-    tokens = {
-        model.id(graph.value(model.node_by_id[handler.id], CSTR_HDL["motion"]))
-        for handler in handlers
-    }
+    tokens = {handler.motion.id for handler in handlers}
     solvers_by_id = robots.by_id
     owner = computation.indexes.function_owner
     function_input = computation.indexes.function_input
     _trees, holders = scene_kinematics(model)
     for handler in handlers:
         handler_node = model.node_by_id[handler.id]
-        motion_node = graph.value(handler_node, CSTR_HDL["motion"])
-        token = model.id(motion_node)
-        phase = PhaseNodes(model, handler, handler_node, motion_node)
+        token = handler.motion.id
+        phase = PhaseNodes(model, handler_node, graph.value(handler_node, CSTR_HDL["motion"]))
         plans = derivation.controllers_by_handler.get(handler_node, ())
         active_plans = [plan for plan in plans if plan.constraint in phase.constraints["while"]]
         active_controllers = [
@@ -480,17 +453,14 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         )
 
         scope = Schedule(model)
-        live = {"until": [], "while": []}
-        for kind, nodes in live.items():
-            for node in phase.evaluators[kind]:
-                constraint = graph.value(node, CSTR_HDL["constraint"])
-                if constraint is not None and CSTR_EXT["TimeConstraint"] in get_node_types(
-                    graph, constraint
-                ):
-                    continue
-                quantity = graph.value(constraint, CSTR["quantity"])
-                if quantities.goal_status_act(model, quantity) is None:
-                    nodes.append(node)
+        live = {
+            kind: [
+                node
+                for node, evaluator in zip(phase.evaluators[kind], evaluators[kind], strict=True)
+                if not evaluator.is_elapsed and evaluator.goal_status is None
+            ]
+            for kind in ("until", "while")
+        }
 
         # until first, or its monitor reads the previous tick's value
         until = scope.of(live["until"], OPS_GENERIC + OPS_HANDLER)
@@ -576,11 +546,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         control_outputs = {controller.control_signal.id for controller in handler.controllers}
         force_nodes = []
         driver_nodes = [
-            node
-            for node in (
-                model.node_by_id.get(solver.motion_driver.id) for solver in chain_solvers
-            )
-            if node is not None
+            model.node_by_id[solver.motion_driver.id]
+            for solver in chain_solvers
+            if solver.motion_driver.id in model.node_by_id
         ]
         driver_nodes.extend(
             driver
@@ -608,7 +576,8 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         commanded_force = scope.of(force_nodes, OPS_GENERIC + OPS_SOLVER + OPS_HANDLER)
         active.extend(scope.of(trailing, OPS_GENERIC + OPS_HANDLER))
         append_new(active, [model.id(node) for node in trailing])
-        for node in perturbations.nodes(model, handler_node):
+        perturbation_nodes = perturbations.nodes(model, handler_node)
+        for node in perturbation_nodes:
             gate = perturbations.evaluator_nodes(model, node)
             append_new(active, scope.of(gate, OPS_GENERIC + OPS_HANDLER))
             append_new(
@@ -619,9 +588,8 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         when_scope = Schedule(model)
         when_live = [
             node
-            for node in phase.evaluators["when"]
-            if (constraint := graph.value(node, CSTR_HDL["constraint"])) is None
-            or CSTR_EXT["TimeConstraint"] not in get_node_types(graph, constraint)
+            for node, evaluator in zip(phase.evaluators["when"], evaluators["when"], strict=True)
+            if not evaluator.is_elapsed
         ]
         when = when_scope.of(when_live, OPS_GENERIC + OPS_HANDLER)
         when.extend(model.id(node) for node in when_live if when_scope.claim(model.id(node)))
@@ -635,9 +603,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         active_elapsed = elapsed_coordinate_ids(evaluators["while"] + evaluators["until"])
         when_ages = observation_ages(evaluators["when"])
         active_ages = observation_ages(evaluators["while"] + evaluators["until"])
-        when_monitors = [monitor_entry(model, node) for node in phase.monitors["when"]]
-        while_monitors = [monitor_entry(model, node) for node in phase.monitors["while"]]
-        until_monitors = [monitor_entry(model, node) for node in phase.monitors["until"]]
+        monitors = {
+            name: [monitor_entry(model, node) for node in phase.monitors[name]] for name in _PHASES
+        }
         forwarded_commands = []
         for plan in active_plans:
             if not derivation.algorithm_by_solver[plan.solver].forwards_commands:
@@ -688,9 +656,9 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
             while_evaluators=evaluators["while"],
             until_evaluators=evaluators["until"],
             controllers=active_controllers,
-            when_monitors=when_monitors,
-            while_monitors=while_monitors,
-            until_monitors=until_monitors,
+            when_monitors=monitors["when"],
+            while_monitors=monitors["while"],
+            until_monitors=monitors["until"],
             when_schedule=when,
             while_schedule=active,
             until_schedule=until,
@@ -719,7 +687,7 @@ def build_motions(model, handlers, robots, computation, derivation, fsm):
         motions.append(unit)
         chains = [(slice_.id, solvers_by_id[slice_.solver_id]) for slice_ in chain_solvers]
         records = []
-        for node in perturbations.nodes(model, handler_node):
+        for node in perturbation_nodes:
             record = perturbations.read(model, node, chains)
             record.terms = [
                 evaluator_term(constraint_evaluator(model, evaluator))
@@ -828,24 +796,21 @@ def evaluator_term(evaluator) -> dict:
         }
 
     if evaluator.is_elapsed:
-        operator = evaluator.elapsed_op or ">="
-        threshold = evaluator.elapsed_threshold_s or 0.0
         elapsed_id = elapsed_coordinate_id(evaluator)
-        if operator == "==":
-            tolerance = evaluator.elapsed_tolerance_s or 0.0
-
+        threshold = f"{evaluator.elapsed_threshold_s:.6f}"
+        if evaluator.elapsed_op == "==":
             return {
                 "kind": "elapsed-eq",
                 "elapsed_id": elapsed_id,
-                "threshold": f"{threshold:.6f}",
-                "tolerance": f"{tolerance:.6f}",
+                "threshold": threshold,
+                "tolerance": f"{evaluator.elapsed_tolerance_s:.6f}",
             }
 
         return {
             "kind": "elapsed",
             "elapsed_id": elapsed_id,
-            "op": operator,
-            "threshold": f"{threshold:.6f}",
+            "op": evaluator.elapsed_op,
+            "threshold": threshold,
         }
 
     term = {
@@ -891,11 +856,10 @@ def set_motion_conditions(motion) -> None:
         ("until", motion.until_evaluators, motion.until_monitors),
         ("when", motion.when_evaluators, motion.when_monitors),
     ):
-        terms = [
-            evaluator_term(evaluator)
-            for evaluator in evaluators
-            if evaluator.error or evaluator.is_elapsed
+        evaluable = [
+            evaluator for evaluator in evaluators if evaluator.error or evaluator.is_elapsed
         ]
+        terms = [evaluator_term(evaluator) for evaluator in evaluable]
         # by constraint: goal-status items on one act share a status slot
         direct_by_constraint = {
             evaluator.constraint.id: evaluator_term(evaluator)
@@ -903,22 +867,24 @@ def set_motion_conditions(motion) -> None:
             if (evaluator.is_elapsed or evaluator.goal_status) and evaluator.error
         }
         for monitor in monitors:
-            group_ids = set(monitor.group_constraint_ids or ())
+            group_ids = set(monitor.group_constraint_ids)
             if group_ids:
                 stamp_terms(
                     monitor,
                     [
                         evaluator_term(evaluator)
-                        for evaluator in evaluators
+                        for evaluator in evaluable
                         if evaluator.constraint.id in group_ids
-                        and (evaluator.error or evaluator.is_elapsed)
                     ],
-                    bool(monitor.group_any),
+                    monitor.group_any,
                     f"the '{phase}' group in motion '{motion.id}'",
                 )
                 continue
             # a flat section in an archived graph means a conjunction
-            if monitor.is_until_aggregate if phase == "until" else monitor.is_when_aggregate:
+            is_aggregate = (
+                monitor.is_until_aggregate if phase == "until" else monitor.is_when_aggregate
+            )
+            if is_aggregate:
                 stamp_terms(monitor, terms, False, f"the whole '{phase}' section of '{motion.id}'")
                 continue
             direct = [

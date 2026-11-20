@@ -84,43 +84,44 @@ def read_platform(model) -> dict:
             sensor with no device bound.
     """
     platform = platform_facts(model.graph)
-    if not platform["simulated"]:
-        real = URIRef(platform["uri"]) if platform["uri"] is not None else None
-        reject_scene_objects_on_hardware(model, real)
-        if real is not None:
-            bound = {
-                str(model.graph.value(device, SDO.model) or "")
-                for device in model.graph.subjects(EXEC["realizes"], None)
-            }
-            undriven = [name for name in bound if name not in DRIVEN_DEVICES]
-            if undriven:
-                raise ConstraintViolation(
-                    "platform",
-                    f"no backend support for device(s): {', '.join(undriven)}. "
-                    f"Driven: {', '.join(DRIVEN_DEVICES)}. Remove the binding, or add "
-                    "the driver templates before binding it.",
-                )
-            # on hardware an unbound sensor reads uninitialised memory
-            unbound = [
-                local_name(sensor)
-                for sensor in set(model.graph.objects(None, SOSA.madeBySensor))
-                if (None, EXEC["realizes"], sensor) not in model.graph
-            ]
-            if unbound:
-                raise ConstraintViolation(
-                    "platform",
-                    "real-world execution reads sensor(s) with no device bound: "
-                    f"{', '.join(unbound)}. Bind one in the platform block, or stop reading the "
-                    "sensor.",
-                )
-    elif platform["backend"] is None:
+    if platform["simulated"]:
+        if platform["backend"] is None:
+            raise ConstraintViolation(
+                "platform", f"Unsupported simulation platform '{platform['name']}'."
+            )
+        return platform
+    if platform["uri"] is None:
+        return platform
+    reject_scene_objects_on_hardware(model)
+    bound = {
+        str(model.graph.value(device, SDO.model) or "")
+        for device in model.graph.subjects(EXEC["realizes"], None)
+    }
+    undriven = [name for name in bound if name not in DRIVEN_DEVICES]
+    if undriven:
         raise ConstraintViolation(
-            "platform", f"Unsupported simulation platform '{platform['name']}'."
+            "platform",
+            f"no backend support for device(s): {', '.join(undriven)}. "
+            f"Driven: {', '.join(DRIVEN_DEVICES)}. Remove the binding, or add "
+            "the driver templates before binding it.",
+        )
+    # on hardware an unbound sensor reads uninitialised memory
+    unbound = [
+        local_name(sensor)
+        for sensor in set(model.graph.objects(None, SOSA.madeBySensor))
+        if (None, EXEC["realizes"], sensor) not in model.graph
+    ]
+    if unbound:
+        raise ConstraintViolation(
+            "platform",
+            "real-world execution reads sensor(s) with no device bound: "
+            f"{', '.join(unbound)}. Bind one in the platform block, or stop reading the "
+            "sensor.",
         )
     return platform
 
 
-def reject_scene_objects_on_hardware(model, context) -> None:
+def reject_scene_objects_on_hardware(model) -> None:
     """Reject a scene object a constraint is stated on and nothing observes: on hardware its pose
     would come from a simulator that is not running.
 
@@ -128,8 +129,6 @@ def reject_scene_objects_on_hardware(model, context) -> None:
     is left alone: no run-time value is read off it. So is one a perception source observes,
     which is the case the simulator was standing in for.
     """
-    if context is None:
-        return
     graph = model.graph
     constrained = entities_from(
         graph,
@@ -411,24 +410,25 @@ def ros_tf(
             )
     observed: dict[str, None] = {}
     for camera in cameras:
-        if camera.topic:
-            # perception places the camera and the frames posed against it
-            frames = [URIRef(camera.frame_uri)]
-            for frame in frames:
-                for posed, _pose in relation_neighbors(
-                    frame, URI_GEOM_TYPE_POSE, model.graph, reverse=True
-                ):
-                    if posed not in frames:
-                        frames.append(posed)
-            for frame in frames:
-                segment = world_index.get(str(frame))
-                if segment is None:
-                    raise ConstraintViolation(
-                        "platform",
-                        f"[{ROS_TF_KEY}]: camera '{camera.id}' is observed on '{camera.topic}' but "
-                        f"'{frame}' is no segment of a built tree",
-                    )
-                observed.setdefault(segment, None)
+        if not camera.topic:
+            continue
+        # perception places the camera and the frames posed against it
+        frames = [URIRef(camera.frame_uri)]
+        for frame in frames:
+            for posed, _pose in relation_neighbors(
+                frame, URI_GEOM_TYPE_POSE, model.graph, reverse=True
+            ):
+                if posed not in frames:
+                    frames.append(posed)
+        for frame in frames:
+            segment = world_index.get(str(frame))
+            if segment is None:
+                raise ConstraintViolation(
+                    "platform",
+                    f"[{ROS_TF_KEY}]: camera '{camera.id}' is observed on '{camera.topic}' but "
+                    f"'{frame}' is no segment of a built tree",
+                )
+            observed.setdefault(segment, None)
     return {
         "config_key": ROS_TF_KEY,
         "anchor": anchor,

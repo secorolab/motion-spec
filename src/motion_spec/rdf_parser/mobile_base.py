@@ -103,9 +103,8 @@ def platform_drives(world_trees: list[dict]) -> list[DriveUnit]:
                 )
 
                 hub_signs = [
-                    mirrored
-                    * float(np.sign(np.asarray(w["joint"]["axis"], dtype=float) @ transverse))
-                    for mirrored, w in ((-1.0, right), (1.0, left))
+                    -float(np.sign(np.asarray(right["joint"]["axis"], dtype=float) @ transverse)),
+                    float(np.sign(np.asarray(left["joint"]["axis"], dtype=float) @ transverse)),
                 ]
 
                 units.append(
@@ -167,13 +166,14 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
             platform_frame.uri if platform_frame is not None else None
         )
         for spec in solver.forces:
-            if spec.force.id:
-                frame = spec.force.as_seen_by
-                wrench_by_controller[spec.controller] = (
-                    spec.force.id,
-                    solver.world_keys.get(frame.uri if frame is not None else None),
-                    platform_key,
-                )
+            if not spec.force.id:
+                continue
+            frame = spec.force.as_seen_by
+            wrench_by_controller[spec.controller] = (
+                spec.force.id,
+                solver.world_keys.get(frame.uri if frame is not None else None),
+                platform_key,
+            )
 
     rows = []
     for motion in motions:
@@ -209,10 +209,9 @@ def wrench_terms_by_motion(motions, views, velocity_solvers, force_solvers=()) -
                     "control",
                     f"controller '{controller.id}' measures a quantity {len(measured)} views read",
                 )
-            view = measured[0] if measured else None
-            if view is None or view.superobject.id not in platform_ids:
+            if not measured or measured[0].superobject.id not in platform_ids:
                 continue
-            coordinate = _COORDINATE_BY_COMPONENT.get((view.subspace, view.axis))
+            coordinate = _COORDINATE_BY_COMPONENT.get((measured[0].subspace, measured[0].axis))
             if coordinate is None:
                 continue
             terms.append({"signal": signal, "coordinate": coordinate})

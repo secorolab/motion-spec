@@ -332,27 +332,28 @@ def view_axes(model, controller, constraint, view_node, target_node, *, subspace
     half a quantity is driven in when it has no view to read them off, and are ignored otherwise.
     """
     graph = model.graph
-    target = graph.value(view_node, MAP.superobject) if view_node is not None else target_node
+    target = target_node
+    if view_node is not None:
+        target = graph.value(view_node, MAP.superobject)
+        subspace = local_name(graph.value(view_node, MAP.subspace))
+        axis = local_name(graph.value(view_node, MAP.axis))
     command_type = graph.value(controller, APP["command-type"])
+    controller_types = get_node_types(graph, controller)
+    target_types = get_node_types(graph, target)
 
     return quantities.spatial_axes(
         controller_type=next(
-            (type_ for type_ in _CONTROLLER_TYPES if type_ in get_node_types(graph, controller)),
-            None,
+            (type_ for type_ in _CONTROLLER_TYPES if type_ in controller_types), None
         ),
-        subspace=local_name(graph.value(view_node, MAP.subspace))
-        if view_node is not None
-        else subspace,
-        axis=local_name(graph.value(view_node, MAP.axis)) if view_node is not None else axis,
+        subspace=subspace,
+        axis=axis,
         command_type=str(command_type) if command_type is not None else None,
         relation=(
             CSTR.EqualityConstraint
             if CSTR.EqualityConstraint in get_node_types(graph, constraint)
             else None
         ),
-        target_type=next(
-            (type_ for type_ in _TARGET_TYPES if type_ in get_node_types(graph, target)), None
-        ),
+        target_type=next((type_ for type_ in _TARGET_TYPES if type_ in target_types), None),
     )
 
 
@@ -703,6 +704,7 @@ def controller_signal_id(model, context, plan) -> tuple[str, bool]:
     if authored is not None:
         return model.id(authored), False
     target = graph.value(plan.view, MAP.superobject) if plan.view is not None else plan.quantity
+    family = context.algorithm_by_solver[plan.solver]
     signal_id = None
     joint_torque = False
     if is_moment_plan(model, plan):
@@ -710,10 +712,7 @@ def controller_signal_id(model, context, plan) -> tuple[str, bool]:
     # only a command straight to a device is named `cmd_`
     elif CSTR_HDL.ImpedanceController in types or command_type == "Force":
         signal_id = f"force_{controller_id}"
-    elif (
-        CSTR_HDL_EXT.FeedForwardController in types
-        and context.algorithm_by_solver[plan.solver].payload_field != "velocity"
-    ):
+    elif CSTR_HDL_EXT.FeedForwardController in types and family.payload_field != "velocity":
         signal_id = f"cmd_{controller_id}"
     elif command_type == "Torque" and KC_STAT.JointPositionCoordinate in get_node_types(
         graph, target
@@ -723,7 +722,6 @@ def controller_signal_id(model, context, plan) -> tuple[str, bool]:
     if signal_id is not None:
         model.register_derived(signal_id, str(plan.controller), "output", PROV.wasDerivedFrom)
         return signal_id, joint_torque
-    family = context.algorithm_by_solver[plan.solver]
     if family.driver_field is None:
         raise ConstraintViolation(
             "solver", f"Solver '{plan.solver}' does not accept acceleration signals."
@@ -774,22 +772,26 @@ def axis_view(model, superobject, subobject, axis: quantities.SpatialAxis) -> Vi
     )
 
 
+SATURATION_BOUNDS = (
+    ALGO_EXT["maximum-absolute-value"],
+    ALGO_EXT["lower-bound"],
+    ALGO_EXT["upper-bound"],
+)
+
+
+def saturation_bounds(model, node) -> list:
+    """The maximum-absolute, lower and upper bound a saturation states, None where it states none."""
+    bounds = []
+    for predicate in SATURATION_BOUNDS:
+        bound = model.graph.value(node, predicate)
+        bounds.append(quantities.quantity(model, bound) if bound is not None else None)
+    return bounds
+
+
 def saturation_for_signal(model, node, signal) -> Saturation | None:
     if node is None:
         return None
-    bounds = [
-        model.graph.value(node, predicate)
-        for predicate in (
-            ALGO_EXT["maximum-absolute-value"],
-            ALGO_EXT["lower-bound"],
-            ALGO_EXT["upper-bound"],
-        )
-    ]
-    maximum, lower, upper = (
-        quantities.quantity(model, bound) if bound is not None else None for bound in bounds
-    )
-
-    return Saturation(model.id(node), signal, signal, maximum, lower, upper)
+    return Saturation(model.id(node), signal, signal, *saturation_bounds(model, node))
 
 
 def whole_controller_signal(model, context, plan, types):
@@ -967,9 +969,10 @@ def motion_drivers(model, context, solver: URIRef, chain) -> list:
     """
     plans = context.controllers_by_solver.get(solver, ())
     family = context.algorithm_by_solver[solver]
-    driven = family.driver_field is not None
-    accelerations = []
-    if driven:
+    # `MotionDrivers.acceleration_constraint` has no default
+    driver_slots = {"acceleration_constraint": [], "cartesian_acceleration": [], "cartesian_velocity": []}
+    if family.driver_field is not None:
+        spec_method, payload_method = _DRIVER_ID_METHODS[family.name]
         for plan in plans:
             if is_moment_plan(model, plan):
                 continue
@@ -980,11 +983,10 @@ def motion_drivers(model, context, solver: URIRef, chain) -> list:
             )
             frame_node = model.graph.value(target, GEOM_COORD["as-seen-by"]) or plan.gradient_frame
             frame = quantities.frame(model, frame_node) if frame_node is not None else None
+            ids = SolverIdFactory(model, plan.controller)
             for axis in plan.axes:
-                ids = SolverIdFactory(model, plan.controller)
-                spec_method, payload_method = _DRIVER_ID_METHODS[family.name]
                 spec_id, payload_id = spec_method(ids, axis), payload_method(ids, axis)
-                accelerations.append(
+                driver_slots[family.driver_field].append(
                     AccelerationConstraint(
                         id=spec_id,
                         subspace=axis.subspace,
@@ -1003,10 +1005,6 @@ def motion_drivers(model, context, solver: URIRef, chain) -> list:
                         **{family.payload_field: family.payload(payload_id, axis.subspace)},
                     )
                 )
-    # `MotionDrivers.acceleration_constraint` has no default
-    driver_slots = {"acceleration_constraint": [], "cartesian_acceleration": [], "cartesian_velocity": []}
-    if driven:
-        driver_slots[family.driver_field] = accelerations
 
     return [
         MotionDrivers(
@@ -1095,9 +1093,9 @@ def pose_target(model, context, solver: URIRef, driver: URIRef, chain) -> PoseTa
     for name, predicate in (("stiffness", CSTR_HDL.stiffness), ("damping", CSTR_HDL.damping)):
         nodes = list(graph.objects(impedance, predicate)) if impedance is not None else []
         by_joint = {
-            split_uri(graph.value(node, KC_STAT["of-joint"]))[1]: float(graph.value(node, QUDT_SCHEMA.value))
+            split_uri(joint)[1]: float(graph.value(node, QUDT_SCHEMA.value))
             for node in nodes
-            if graph.value(node, KC_STAT["of-joint"]) is not None
+            if (joint := graph.value(node, KC_STAT["of-joint"])) is not None
         }
         unknown = set(by_joint) - set(chain.joints)
         if unknown or (by_joint and len(by_joint) != len(chain.joints)):
@@ -1132,7 +1130,6 @@ def augment_functions(model, context, functions: dict) -> None:
         functions.pop(model.id(controller), None)
     for plans in context.controllers_by_handler.values():
         for plan in plans:
-            ids = SolverIdFactory(model, plan.controller)
             functions.pop(model.id(plan.controller), None)
             for controller in context.controllers_for(plan):
                 functions.pop(controller.id, None)
@@ -1159,7 +1156,9 @@ def augment_functions(model, context, functions: dict) -> None:
             if len(plan.axes) <= 1:
                 continue
             # a banded alignment's op returns only the rotation beyond the cone
-            rotation_op = alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, graph.value(plan.constraint, CSTR.quantity))
+            rotation_op = alignment_op(
+                model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity
+            )
             if rotation_op is not None:
                 rotation_function = functions.get(model.id(rotation_op))
                 if rotation_function is not None:
@@ -1180,8 +1179,10 @@ def augment_functions(model, context, functions: dict) -> None:
             reference_view = quantities.view_of(graph, reference)
             if reference_view is not None:
                 reference = graph.value(reference_view, MAP.superobject)
-            functions[ids.pose_evaluator()] = {
-                "id": ids.pose_evaluator(),
+            ids = SolverIdFactory(model, plan.controller)
+            evaluator_id = ids.pose_evaluator()
+            functions[evaluator_id] = {
+                "id": evaluator_id,
                 "type": "PoseDiffEvaluator",
                 "in1": model.id(target),
                 "in2": model.id(reference),
@@ -1208,7 +1209,9 @@ def augment_data(model, context, data: list, views: dict) -> None:
             if len(plan.axes) <= 1:
                 continue
             ids = SolverIdFactory(model, plan.controller)
-            rotation_op = alignment_op(model, GEOM_OP_EXT.RotationVectorFromDirections, graph.value(plan.constraint, CSTR.quantity))
+            rotation_op = alignment_op(
+                model, GEOM_OP_EXT.RotationVectorFromDirections, plan.quantity
+            )
             if rotation_op is not None:
                 vector = quantities.quantity(model, graph.value(rotation_op, GEOM_OP.out))
                 measured_source = graph.value(plan.controller, CSTR_HDL["measured-velocity"])
@@ -1444,17 +1447,7 @@ def saturation(model, node) -> Saturation:
         ConstraintViolation: the node is not a Saturation.
     """
     graph = model.graph
-    bounds = [
-        graph.value(node, predicate)
-        for predicate in (
-            ALGO_EXT["maximum-absolute-value"],
-            ALGO_EXT["lower-bound"],
-            ALGO_EXT["upper-bound"],
-        )
-    ]
-    maximum, lower, upper = (
-        quantities.quantity(model, bound) if bound is not None else None for bound in bounds
-    )
+    maximum, lower, upper = saturation_bounds(model, node)
 
     return Saturation(
         model.id(node),
@@ -1485,26 +1478,6 @@ def cartesian_force_specification(model, node) -> CartesianForceSpecification:
         quantities.wrench(model, model.graph.value(node, SLV["force"])),
         quantities.simplicial_complex(model, model.graph.value(node, SLV["attached-to"])),
         model.id(model.graph.value(node, PROV.wasDerivedFrom)),
-    )
-
-
-def authored_motion_drivers(model, node) -> MotionDrivers:
-    """The drivers a solver authors directly, before its controllers are derived."""
-    cartesian = [
-        cartesian_force_specification(model, force)
-        for force in model.graph[node : SLV["cartesian-force"]]
-    ]
-
-    return MotionDrivers(
-        id=model.id(node),
-        acceleration_constraint=[],
-        cartesian_force=cartesian,
-        joint_force=[
-            joint_force_specification(model, force)
-            for force in model.graph[node : SLV["joint-force"]]
-        ],
-        has_cartesian_force=bool(cartesian),
-        handler=model.id(model.graph.value(node, PROV.wasDerivedFrom)),
     )
 
 

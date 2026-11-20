@@ -99,31 +99,28 @@ _COMPOSITE_SUPEROBJECTS = {
 
 def scalar_descriptor(quantity: dict, quantity_id: str, data_ids, spatial_ids, indexed_views):
     """How a scalar quantity is sampled: as a literal, through a view, or off its own field."""
-    viewed = quantity_id in indexed_views
-    if quantity.get("value") is not None and quantity_id not in data_ids and not viewed:
-        return {"kind": "literal", "value": str(quantity["value"])}
-    if viewed:
-        views = indexed_views[quantity_id]
-        if not all(view.axis is not None for view in views):
-            # a directionless view would repeat its logged superobject slot
-            if quantity_id in data_ids and not any(
-                view.direction is None and view.superobject.id in spatial_ids for view in views
-            ):
-                return {"kind": "data", "id": quantity_id}
-            return None
-        types = {view.superobject.type for view in views}
-        if len(types) != 1:
-            raise ConstraintViolation(
-                "telemetry", f"quantity sampling: '{quantity_id}' belongs to incompatible MAP views"
-            )
-        if next(iter(types)) in _COMPOSITE_SUPEROBJECTS:
-            return {"kind": "access", "ref": quantity_id}
+    if quantity_id not in indexed_views:
+        if quantity.get("value") is not None and quantity_id not in data_ids:
+            return {"kind": "literal", "value": str(quantity["value"])}
 
-        return {"kind": "data", "id": quantity_id}
-    if quantity_id in data_ids:
-        return {"kind": "data", "id": quantity_id}
+        return {"kind": "data", "id": quantity_id} if quantity_id in data_ids else None
+    views = indexed_views[quantity_id]
+    if not all(view.axis is not None for view in views):
+        # a directionless view would repeat its logged superobject slot
+        if quantity_id in data_ids and not any(
+            view.direction is None and view.superobject.id in spatial_ids for view in views
+        ):
+            return {"kind": "data", "id": quantity_id}
+        return None
+    types = {view.superobject.type for view in views}
+    if len(types) != 1:
+        raise ConstraintViolation(
+            "telemetry", f"quantity sampling: '{quantity_id}' belongs to incompatible MAP views"
+        )
+    if next(iter(types)) in _COMPOSITE_SUPEROBJECTS:
+        return {"kind": "access", "ref": quantity_id}
 
-    return None
+    return {"kind": "data", "id": quantity_id}
 
 
 def publisher_member(by_channel: dict, entry: dict) -> str:
@@ -233,13 +230,13 @@ def ros_standing(model, data_structures, control_period_ns: int, segment_by_iri:
         pub_id = f"{model.id(node)}_pub".replace("-", "_")
         type_name = str(graph.value(node, NS_MM_ROS["type-name"]) or "")
         shape = ros_messages.standing_shape(type_name, records[0][1].type)
-        if shape["entry"] is None and len(records) > 1:
+        entry_shape = shape["entry"]
+        if entry_shape is None and len(records) > 1:
             raise ConstraintViolation(
                 "communication",
                 f"'{model.id(node)}' reports {len(records)} quantities on '{type_name}', which "
                 "carries one; a message reporting many holds an array of them",
             )
-        entry_shape = shape["entry"]
         entries = []
         for index, (member, record) in enumerate(records):
             entry = {
@@ -429,7 +426,7 @@ def ros_subscriptions(model, segment_by_iri: dict) -> list:
     written = quantities.perceived_written_poses(model)
     subscriptions = []
     for node in graph.subjects(RDF["type"], NS_MM_ROS["Topic"]):
-        rows = written.get(str(node)) or []
+        rows = written.get(str(node))
         if not rows:
             continue
         sub_id = model.id(node)
@@ -658,24 +655,26 @@ def build_telemetry(
         for function in computation.functions.values()
         if function.get("type") == "ErrorEvaluator" and function.get("constraint_uri")
     }
+    # unset keys are dropped: absent, not null
     motion_rows, controller_rows, monitor_rows = [], [], []
     for motion in motions:
+        motion_row = {
+            "id": motion.id,
+            "uri": uri_by_id.get(motion.id),
+            "motion": motion.motion_id,
+            "motion_uri": uri_by_id.get(motion.motion_id),
+            "controllers": [controller.id for controller in motion.controllers],
+            "monitors": [
+                monitor.id
+                for monitor in (
+                    *motion.when_monitors,
+                    *motion.while_monitors,
+                    *motion.until_monitors,
+                )
+            ],
+        }
         motion_rows.append(
-            {
-                "id": motion.id,
-                "uri": uri_by_id.get(motion.id),
-                "motion": motion.motion_id,
-                "motion_uri": uri_by_id.get(motion.motion_id),
-                "controllers": [controller.id for controller in motion.controllers],
-                "monitors": [
-                    monitor.id
-                    for monitor in (
-                        *motion.when_monitors,
-                        *motion.while_monitors,
-                        *motion.until_monitors,
-                    )
-                ],
-            }
+            {key: value for key, value in motion_row.items() if value is not None and value != []}
         )
         for controller in motion.controllers:
             controller_row = {
@@ -707,7 +706,13 @@ def build_telemetry(
                 "measured_signal": controller.measured_signal,
                 "setpoint_signal": controller.setpoint_signal,
             }
-            controller_rows.append(controller_row)
+            controller_rows.append(
+                {
+                    key: value
+                    for key, value in controller_row.items()
+                    if value is not None and value != []
+                }
+            )
         for phase, monitors in (
             ("when", motion.when_monitors),
             ("while", motion.while_monitors),
@@ -744,23 +749,20 @@ def build_telemetry(
                         for member, uri, band in zip(
                             monitor.group_constraint_ids,
                             monitor.group_constraint_uris,
-                            monitor.group_constraint_tolerances
-                            or [""] * len(monitor.group_constraint_ids),
-                            strict=False,
+                            monitor.group_constraint_tolerances,
+                            strict=True,
                         )
                     ],
                     "fallback_motion": edge.fallback_motion if edge else None,
                     "debounce_signal": edge.debounce_id if edge else None,
                 }
-                monitor_rows.append(monitor_row)
-    # unset keys are dropped: absent, not null
-    motion_rows, controller_rows, monitor_rows = (
-        [
-            {key: value for key, value in row.items() if value is not None and value != []}
-            for row in rows
-        ]
-        for rows in (motion_rows, controller_rows, monitor_rows)
-    )
+                monitor_rows.append(
+                    {
+                        key: value
+                        for key, value in monitor_row.items()
+                        if value is not None and value != []
+                    }
+                )
     snapshot_ids = quantities.snapshot_target_ids(model)
     structure_ids = {item.id for item in computation.data_structures}
     quantity_rows = []
@@ -809,11 +811,12 @@ def build_telemetry(
         if not quantity_id or quantity_id in spatial_ids:
             continue
         if quantity.get("type") != "Quantity":
+            if quantity_id not in data_ids:
+                continue
             for prefix, make_desc in _AXIS_SAMPLES.get(quantity.get("type"), ()):
-                if quantity_id in data_ids:
-                    for index, name in enumerate("xyz"):
-                        component = f"{prefix}.{name}" if prefix else name
-                        sampled_parts.append((quantity, component, make_desc(quantity_id, index)))
+                for index, name in enumerate("xyz"):
+                    component = f"{prefix}.{name}" if prefix else name
+                    sampled_parts.append((quantity, component, make_desc(quantity_id, index)))
             continue
         desc = scalar_descriptor(quantity, quantity_id, data_ids, spatial_ids, indexed_views)
         if desc is not None:

@@ -89,10 +89,9 @@ def read_manifest(path: Path) -> list[Repository]:
 
 def manifest_files(real: bool = False) -> list[Path]:
     """The manifests a setup reads: the base one, then the real layer."""
-    names = [MANIFEST, *([REAL_MANIFEST] if real else [])]
     return [
         packaged if (packaged := Path(__file__).parent / name).exists() else CHECKOUT / name
-        for name in names
+        for name in ([MANIFEST, REAL_MANIFEST] if real else [MANIFEST])
     ]
 
 
@@ -163,24 +162,13 @@ def package_name(directory: Path, cmake: bool) -> str:
     return directory.name
 
 
-def package_dependencies(package: Package) -> set[str]:
-    import xml.etree.ElementTree as ET
-
-    manifest = package.path / "package.xml"
-    if not manifest.is_file():
-        return set()
-    root = ET.parse(manifest).getroot()
-    return {
-        (element.text or "").strip()
-        for element in (*root.iter("depend"), *root.iter("build_depend"))
-    }
-
-
 def discover_packages(checkout: Path) -> list[Package]:
     """The packages a checkout holds, as colcon finds them: its root, else each subdirectory.
 
     Subdirectories come in package.xml dependency order, so python_orocos_kdl follows orocos_kdl.
     """
+    import xml.etree.ElementTree as ET
+
     at_root = package_at(checkout)
     if at_root is not None:
         return [at_root]
@@ -190,11 +178,20 @@ def discover_packages(checkout: Path) -> list[Package]:
         if directory.is_dir() and not directory.name.startswith(".")
         if (package := package_at(directory)) is not None
     ]
+    dependencies = {}
+    for package in found:
+        manifest = package.path / "package.xml"
+        elements = ET.parse(manifest).getroot().iter() if manifest.is_file() else ()
+        dependencies[package] = {
+            (element.text or "").strip()
+            for element in elements
+            if element.tag in {"depend", "build_depend"}
+        }
     ordered: list[Package] = []
-    pending = list(found)
+    pending = found
     while pending:
         names = {package.name for package in pending}
-        ready = [p for p in pending if not (package_dependencies(p) & names)] or pending[:1]
+        ready = [p for p in pending if not (dependencies[p] & names)] or pending[:1]
         ordered.extend(ready)
         pending = [p for p in pending if p not in ready]
     return ordered
@@ -247,16 +244,15 @@ def generations_root() -> Path:
     return Path(chosen).expanduser()
 
 
-def ignore_thirdparty(root: Path) -> Path:
+def ignore_thirdparty(root: Path) -> None:
     """Create the third-party subtree, marked so `colcon build` does not descend into it."""
     directory = root / SOURCE_DIRECTORY / THIRDPARTY_DIRECTORY
     directory.mkdir(parents=True, exist_ok=True)
     (directory / COLCON_IGNORE).touch()
-    return directory
 
 
 def missing_prerequisites(
-    repositories: list[Repository], ros: bool = False, targets: tuple[str, ...] = ("mujoco",)
+    repositories: list[Repository], ros: bool = False
 ) -> tuple[list[str], list[str]]:
     """What must be installed before setup starts: `(apt packages, other requirements)`.
 
@@ -272,20 +268,21 @@ def missing_prerequisites(
     )
 
     # scoped: only STST needs Ant
-    needed = []
+    profiles = []
     if any(
         not Path(repository.path).is_relative_to(THIRDPARTY_DIRECTORY)
         for repository in repositories
     ):
-        needed.append("build")
+        profiles.append("build")
     if any(repository.path == STST_REPOSITORY for repository in repositories):
-        needed.append("codegen")
-    profiles = (*needed, *(("ros",) if ros and needed else ()))
+        profiles.append("codegen")
+    if ros and profiles:
+        profiles.append("ros")
     packages = (
         apt_packages(
             check_health(
                 profiles,
-                targets if "build" in profiles else (),
+                ("mujoco",) if "build" in profiles else (),
                 on_progress=lambda done, dependency: None,
             )
         )
@@ -342,10 +339,10 @@ def find_stst(path: str | None = None, workspace: str | None = None) -> str | No
         return on_path
     if workspace is None and path is None:
         workspace = os.environ.get(WORKSPACE_VARIABLE)
-    managed = (
-        Path(workspace).expanduser() / INSTALL_DIRECTORY / "bin" / "stst" if workspace else None
-    )
-    return str(managed) if managed and managed.is_file() else None
+    if not workspace:
+        return None
+    managed = Path(workspace).expanduser() / INSTALL_DIRECTORY / "bin" / "stst"
+    return str(managed) if managed.is_file() else None
 
 
 def clean_workspace(root: Path) -> list[tuple[Path, Path | None]]:
@@ -353,13 +350,12 @@ def clean_workspace(root: Path) -> list[tuple[Path, Path | None]]:
 
     Each trashed path with where the trash keeps it. Sources and generations stay.
     """
-    outputs = (
-        root / BUILD_DIRECTORY,
-        root / INSTALL_DIRECTORY,
-        root / COLCON_LOG_DIRECTORY,
-        *(root / name for name in ENVIRONMENT_FILES),
-    )
-    return [(path, trash(path)) for path in outputs if path.exists() or path.is_symlink()]
+    trashed = []
+    for name in [BUILD_DIRECTORY, INSTALL_DIRECTORY, COLCON_LOG_DIRECTORY] + list(ENVIRONMENT_FILES):
+        path = root / name
+        if path.exists() or path.is_symlink():
+            trashed.append((path, trash(path)))
+    return trashed
 
 
 def package_installed(name: str, prefix: Path, checkout: Path) -> bool:
@@ -381,12 +377,11 @@ def package_installed(name: str, prefix: Path, checkout: Path) -> bool:
 def stst_installed(root: Path) -> bool:
     """Whether ROOT carries a usable stst: a launcher without its jar is a half-finished one."""
     prefix = root / INSTALL_DIRECTORY
-    if (
-        not (prefix / "bin" / "stst").is_file()
-        or not (prefix / MANAGED / ".stst-managed").is_file()
-    ):
-        return False
-    return (root / SOURCE_DIRECTORY / STST_REPOSITORY / "build" / "jar" / "stst.jar").is_file()
+    return (
+        (prefix / "bin" / "stst").is_file()
+        and (prefix / MANAGED / ".stst-managed").is_file()
+        and (root / SOURCE_DIRECTORY / STST_REPOSITORY / "build" / "jar" / "stst.jar").is_file()
+    )
 
 
 def install_stst(
@@ -456,19 +451,6 @@ def source_state(pinned: Repository, root: Path) -> SourceState:
             else "is missing; vcs import the manifests into src/ first"
         )
         return SourceState(repository, False, reason)
-    # remote first: a local branch may be stale
-    commit = next(
-        (
-            found
-            for candidate in (f"origin/{pinned.version}", pinned.version)
-            if (
-                found := git(
-                    repository, "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"
-                )
-            )
-        ),
-        None,
-    )
     head = git(repository, "rev-parse", "HEAD")
     if head is None:
         return SourceState(repository, False, "is a git checkout with no commit")
@@ -479,6 +461,10 @@ def source_state(pinned: Repository, root: Path) -> SourceState:
             ref=head,
             drift="has uncommitted changes; building them, and rebuilding on every run",
         )
+    # remote first: a local branch may be stale
+    commit = git(
+        repository, "rev-parse", "--verify", "--quiet", f"origin/{pinned.version}^{{commit}}"
+    ) or git(repository, "rev-parse", "--verify", "--quiet", f"{pinned.version}^{{commit}}")
     # an existing checkout is built as it stands; drift is reported, never reset
     if commit is None or head != commit:
         described = git(repository, "describe", "--all", "--always", "HEAD") or head
@@ -622,7 +608,7 @@ def installer(python: Path | None = None) -> list[str]:
 
 # PyKDL must share mj_kdl_wrapper's pybind11 to share its types
 PYBIND11_REQUIREMENT = "pybind11>=2.13"
-_EXTENSION_PROBE = (
+EXTENSION_PROBE = (
     "import pybind11, sysconfig; print(pybind11.get_cmake_dir()); "
     "print(sysconfig.get_paths()['platlib'])"
 )
@@ -633,7 +619,7 @@ def extension_options(python: Path, log: Path | None = None) -> tuple[str, ...]:
 
     Passed to every CMake package: a package with no extension ignores them.
     """
-    probe = [str(python), "-c", _EXTENSION_PROBE]
+    probe = [str(python), "-c", EXTENSION_PROBE]
     done = subprocess.run(probe, capture_output=True, text=True, check=False)
     if done.returncode:
         tee([*installer(python), PYBIND11_REQUIREMENT], log=log)
@@ -668,13 +654,12 @@ def target_environment(
         [str(python), "-c", "import motion_spec"], capture_output=True, check=False
     )
     if has_self.returncode:
-        source = CHECKOUT
-        if not (source / "pyproject.toml").is_file():
+        if not (CHECKOUT / "pyproject.toml").is_file():
             raise RuntimeError(
                 f"no virtual environment is active and motion-spec runs from no checkout to "
                 f"install into {venv}; activate the environment motion-spec is installed in"
             )
-        pip_install(source, log, dev, python)
+        pip_install(CHECKOUT, log, dev, python)
     return python
 
 
@@ -721,6 +706,7 @@ def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path
     prefix = root / INSTALL_DIRECTORY
     using = shell()
     path = root / f"setup-motion-spec.{using}"
+    paths = 'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
     if ros:
         from motion_spec.health import ros_distro
 
@@ -736,11 +722,9 @@ def write_environment(root: Path, ros: bool, python: Path | None = None) -> Path
             f'case ":${{COLCON_PREFIX_PATH:-}}:" in *:{prefix}:*) ;; *)'
             f" [ -f {overlay} ] && . {overlay} ;; esac\n"
         )
-        paths = 'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
     else:
         sourcing = ""
-        paths = (
-            'export PATH="$MOTION_SPEC_PREFIX/bin${PATH:+:$PATH}"\n'
+        paths += (
             'export CMAKE_PREFIX_PATH="$MOTION_SPEC_PREFIX${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"\n'
             'export LD_LIBRARY_PATH="$MOTION_SPEC_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
         )
@@ -785,10 +769,8 @@ def find_environment(start: Path | None = None) -> Path | None:
         if chosen.source == "environment":
             raise RuntimeError(f"{ENVIRONMENT_VARIABLE} names no file: {path}")
     preferred = f"setup-motion-spec.{shell()}"
-    ordered = (preferred, *(name for name in ENVIRONMENT_FILES if name != preferred))
-    roots = [start.resolve()] if start else []
-    roots.append(Path.cwd())
-    for root in roots:
+    ordered = [preferred] + [name for name in ENVIRONMENT_FILES if name != preferred]
+    for root in [start.resolve(), Path.cwd()] if start else [Path.cwd()]:
         for parent in (root, *root.parents):
             for name in ordered:
                 if (parent / name).is_file():
@@ -814,9 +796,5 @@ def capture_environment(script: Path) -> dict[str, str]:
         reason = detail[-1] if detail else f"it exited {done.returncode} without saying why"
         raise RuntimeError(f"sourcing {script} failed: {reason}")
 
-    environment = {}
-    for entry in done.stdout.split(b"\0"):
-        key, separator, value = entry.decode(errors="replace").partition("=")
-        if separator:
-            environment[key] = value
-    return environment
+    entries = (entry.decode(errors="replace").partition("=") for entry in done.stdout.split(b"\0"))
+    return {key: value for key, separator, value in entries if separator}

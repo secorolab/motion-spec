@@ -185,7 +185,6 @@ class RosImageRecorder(RosImageSubscription):
                         # Ctrl-C is for the controller, not ffmpeg
                         start_new_session=True,
                     )
-                assert self._ffmpeg is not None and self._ffmpeg.stdin is not None
                 header_stamp = message.header.stamp
                 stamp = (
                     header_stamp.sec + header_stamp.nanosec * 1e-9
@@ -213,8 +212,7 @@ class RosImageRecorder(RosImageSubscription):
                 last_frame = frame
         finally:
             if self._ffmpeg is not None:
-                if self._ffmpeg.stdin is not None:
-                    self._ffmpeg.stdin.close()
+                self._ffmpeg.stdin.close()
                 try:
                     self._ffmpeg.wait(timeout=10)
                 except subprocess.TimeoutExpired:

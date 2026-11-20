@@ -62,6 +62,4 @@ def test_real_world_execution_rejects_a_constrained_scene_object() -> None:
     graph = Dataset(default_union=True)
     graph.default_graph.parse(data=CONSTRAINED_SCENE_OBJECT, format="turtle")
     with pytest.raises(ConstraintViolation, match="constrains scene object"):
-        deployment.reject_scene_objects_on_hardware(
-            Model(graph=graph), URIRef("https://example.test/real-exec")
-        )
+        deployment.reject_scene_objects_on_hardware(Model(graph=graph))

@@ -61,26 +61,24 @@ def probe_devices(generation_dir: Path) -> dict:
     found = list(endpoints(tomllib.loads(toml_path.read_text()), ""))
     # flat: a probe waiting on another in the same pool can deadlock it
     jobs = [
-        (index, port)
-        for index, endpoint in enumerate(found)
+        (endpoint, port)
+        for endpoint in found
         for port in (endpoint["ports"].values() if endpoint["kind"] == "network" else (None,))
     ]
     if not jobs:
         return {"devices": found, "config": str(toml_path)}
     with ThreadPoolExecutor(max_workers=min(16, len(jobs))) as pool:
-        answers = list(pool.map(lambda job: probe(found[job[0]], job[1]), jobs))
-    replies: dict[int, list] = {}
-    for (index, _), answer in zip(jobs, answers):
-        replies.setdefault(index, []).append(answer)
+        # in job order: each endpoint's answers are consecutive
+        answers = pool.map(lambda job: probe(*job), jobs)
     devices = []
-    for index, endpoint in enumerate(found):
-        said = replies.get(index, [])
+    for endpoint in found:
         if endpoint["kind"] != "network":
-            devices.append({**endpoint, **said[0]})
-        else:
-            devices.append(
-                {**endpoint, "ports": said, "ok": all(p["ok"] for p in said) if said else None}
-            )
+            devices.append({**endpoint, **next(answers)})
+            continue
+        said = [next(answers) for _ in endpoint["ports"]]
+        devices.append(
+            {**endpoint, "ports": said, "ok": all(p["ok"] for p in said) if said else None}
+        )
     return {"devices": devices, "config": str(toml_path)}
 
 

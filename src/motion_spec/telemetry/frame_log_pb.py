@@ -12,6 +12,7 @@ import io
 import subprocess
 import tempfile
 from collections.abc import Iterator
+from functools import cache
 from pathlib import Path
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
@@ -74,11 +75,10 @@ TWIST_NAMES = ("lx", "ly", "lz", "ax", "ay", "az")
 WRENCH_NAMES = ("fx", "fy", "fz", "tx", "ty", "tz")
 PROTO = Path(__file__).with_name("frame_log.proto")
 FORMAT_VERSION = 4
-_HEADER_SLOTS = ("quantities", "poses", "twists", "wrenches", "devices")
+HEADER_SLOTS = ("quantities", "poses", "twists", "wrenches", "devices")
 CONSTRAINT_KEYS = ("active", "error", "output", "satisfied", "sat_t", "measured", "setpoint")
 MONITOR_KEYS = ("active", "value", "satisfied", "sat_t")
 TRIGGER_KEYS = ("kind", "idx", "fsm_state", "t", "wall_ns")
-_CLASS_CACHE: dict = {}
 
 
 def slot(frame, category: str, index: int):
@@ -105,30 +105,24 @@ def run_protoc(*arguments: str) -> None:
         raise RuntimeError(exc.stderr.strip() or exc.stdout.strip()) from exc
 
 
+@cache
 def descriptor_set() -> bytes:
     """frame_log.proto compiled by protoc to a FileDescriptorSet, built once."""
-    if "descriptor_set" not in _CLASS_CACHE:
-        with tempfile.TemporaryDirectory() as scratch:
-            out = Path(scratch) / "frame_log.desc"
-            run_protoc(f"--descriptor_set_out={out}")
-            _CLASS_CACHE["descriptor_set"] = out.read_bytes()
-    return _CLASS_CACHE["descriptor_set"]
+    with tempfile.TemporaryDirectory() as scratch:
+        out = Path(scratch) / "frame_log.desc"
+        run_protoc(f"--descriptor_set_out={out}")
+        return out.read_bytes()
 
 
+@cache
 def record_class_of(serialized_set: bytes):
+    """The FrameLogRecord class of a serialized FileDescriptorSet, built once per set."""
     pool = descriptor_pool.DescriptorPool()
     for file_proto in descriptor_pb2.FileDescriptorSet.FromString(serialized_set).file:
         pool.Add(file_proto)
     return message_factory.GetMessageClass(
         pool.FindMessageTypeByName(f"{PROTO_PACKAGE}.FrameLogRecord")
     )
-
-
-def record_class():
-    """The FrameLogRecord class of the shipped frame_log.proto, built once."""
-    if "record" not in _CLASS_CACHE:
-        _CLASS_CACHE["record"] = record_class_of(descriptor_set())
-    return _CLASS_CACHE["record"]
 
 
 def write_delimited(fh, message: bytes) -> None:
@@ -229,7 +223,7 @@ def tail_is_partial(path: Path | str) -> bool:
 
 def frame_record(flat: dict, schema: dict) -> bytes:
     pools = schema["pools"]
-    rec = record_class()()
+    rec = record_class_of(descriptor_set())()
     m = rec.frame
     m.SetInParent()
     for key in (
@@ -239,15 +233,17 @@ def frame_record(flat: dict, schema: dict) -> bytes:
     ):
         setattr(m, key, flat[key])
     for i in range(pools["constraints"]):
-        if flat[f"c{i}.active"]:
-            s = m.constraints.add()
-            for key in CONSTRAINT_KEYS[1:]:
-                setattr(s, key, flat[f"c{i}.{key}"])
+        if not flat[f"c{i}.active"]:
+            continue
+        s = m.constraints.add()
+        for key in CONSTRAINT_KEYS[1:]:
+            setattr(s, key, flat[f"c{i}.{key}"])
     for i in range(pools["monitors"]):
-        if flat[f"m{i}.active"]:
-            s = m.monitors.add()
-            for key in MONITOR_KEYS[1:]:
-                setattr(s, key, flat[f"m{i}.{key}"])
+        if not flat[f"m{i}.active"]:
+            continue
+        s = m.monitors.add()
+        for key in MONITOR_KEYS[1:]:
+            setattr(s, key, flat[f"m{i}.{key}"])
     for i in range(pools["quantities"]):
         if flat[f"q{i}"]:
             m.quantity_slots.append(i)
@@ -291,7 +287,7 @@ class LogContract:
         self.trigger_pool = header.trigger_pool
         # proto3 elides 0.0 like an unwritten field: activity comes from the motion's gate
         self.gate = {}
-        for category in ("quantities", *(name for name, _ in SPATIAL_CATEGORIES)):
+        for category in ["quantities"] + [name for name, _ in SPATIAL_CATEGORIES]:
             claimed = {index for motion in header.motions for index in getattr(motion, category)}
             if not claimed:
                 continue
@@ -340,7 +336,7 @@ def read_contract(path: Path | str) -> LogContract:
         category: [{"index": i, "id": f"{category[:-1]}_{i}", "iri": ""} for i in range(size)]
         for category, size in pools.items()
     }
-    for category in _HEADER_SLOTS:
+    for category in HEADER_SLOTS:
         fields[category] = [
             {"index": slot.number, "id": slot.id, "iri": slot.iri}
             for slot in getattr(record.header, category)
@@ -374,13 +370,11 @@ def parse_frame(msg, contract: LogContract) -> dict:
         ("monitors", MONITOR_KEYS, "monitors"),
     ):
         count = counts.get(counted, 0)
-        record[category] = [
-            {
-                "active": 1 if i < count else 0,
-                **{k: getattr(s, k) if (s := slot(msg, category, i)) else 0 for k in keys[1:]},
-            }
-            for i in range(len(fields[category]))
-        ]
+        record[category] = []
+        for i in range(len(fields[category])):
+            s = slot(msg, category, i)
+            slot_values = {k: getattr(s, k) if s else 0 for k in keys[1:]}
+            record[category].append({"active": 1 if i < count else 0, **slot_values})
     qids = contract.quantity_ids
     values = [0.0] * len(qids)
     for index, value in zip(msg.quantity_slots, msg.quantities):
@@ -396,11 +390,12 @@ def parse_frame(msg, contract: LogContract) -> dict:
         entry["id"]: {"seq": device.seq, "success": bool(device.success)}
         for entry, device in zip(fields["devices"], msg.devices)
     }
-    trigger_count = msg.trigger_count
     pool_size = contract.trigger_pool
-    start = max(0, trigger_count - pool_size)
     record["triggers"] = (
-        [triggers[idx % pool_size] for idx in range(start, trigger_count)]
+        [
+            triggers[idx % pool_size]
+            for idx in range(max(0, msg.trigger_count - pool_size), msg.trigger_count)
+        ]
         if triggers and pool_size
         else []
     )
@@ -440,8 +435,7 @@ def read_sampling(path: Path | str) -> dict | None:
         data = read_delimited(fh, partial_ok=True)
     if data is None:
         return None
-    record = contract.record_cls()
-    record.ParseFromString(data)
+    record = contract.record_cls.FromString(data)
     if record.WhichOneof("record") != "sampling":
         return None
     return {

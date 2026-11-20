@@ -100,13 +100,13 @@ def verify_run(run_dir: Path | str) -> None:
     if errors:
         raise RecordError(run_dir, *errors)
 
-    run = next(iter(rec.subjects(RDF.type, URI_PROV_EXT_TYPE_EXECUTION)), None)
+    run = next(rec.subjects(RDF.type, URI_PROV_EXT_TYPE_EXECUTION), None)
     if run is None:
         raise RecordError(rec_path, "records no prov-ext:Execution")
     if run != recorded_run.node:
         raise RecordError(rec_path, f"records the run {run}, not the one in {run_dir}")
-    checks = [
-        *((provenance_path.name, provenance, (None, RDF.type, kind)) for kind in PROV_TYPES),
+    checks = [(provenance_path.name, provenance, (None, RDF.type, kind)) for kind in PROV_TYPES]
+    checks += [
         (rec_path.name, rec, (run, RDF.type, URI_PROV_EXT_TYPE_EXECUTION)),
         (rec_path.name, rec, (run, PROV.wasAssociatedWith, None)),
         (rec_path.name, rec, (run, PROV.used, None)),

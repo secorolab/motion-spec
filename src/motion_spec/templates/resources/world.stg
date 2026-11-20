@@ -63,60 +63,14 @@ class WorldKinematics {
     }
 
     bool bind_joint(const std::string &segment, const double *position, std::string &error) {
-        if (sealed_) {
-            error = "the world model is sealed; no joint can be bound";
-            return false;
-        }
-        if (position == nullptr) {
-            error = "segment '" + segment + "' was bound to no measurement";
-            return false;
-        }
-        const int index = index_of(segment);
-        if (index \< 0) {
-            error = "no segment is named '" + segment + "'";
-            return false;
-        }
-        if (segments_[index].getJoint().getType() == KDL::Joint::None) {
-            error = "segment '" + segment + "' is fixed, so no measurement moves it";
-            return false;
-        }
-        // Several solver records may share one runtime, so binding the same address again is the
-        // same fact stated twice. A second, different address is two authorities for one joint.
-        if (joints_[index] != nullptr && joints_[index] != position) {
-            error = "segment '" + segment + "' is already bound to another measurement";
-            return false;
-        }
-        joints_[index] = position;
-        return true;
+        return bind_moving(segment, position, joints_, "measurement", error);
     }
 
     // The rate of the same joint, so the outward pass carries the twist beside the pose. An
     // unbound rate reads zero: the pose is still right, the twist is the arm held still.
     bool bind_joint_velocity(const std::string &segment, const double *velocity,
                              std::string &error) {
-        if (sealed_) {
-            error = "the world model is sealed; no joint can be bound";
-            return false;
-        }
-        if (velocity == nullptr) {
-            error = "segment '" + segment + "' was bound to no rate";
-            return false;
-        }
-        const int index = index_of(segment);
-        if (index \< 0) {
-            error = "no segment is named '" + segment + "'";
-            return false;
-        }
-        if (segments_[index].getJoint().getType() == KDL::Joint::None) {
-            error = "segment '" + segment + "' is fixed, so no rate moves it";
-            return false;
-        }
-        if (velocities_[index] != nullptr && velocities_[index] != velocity) {
-            error = "segment '" + segment + "' is already bound to another rate";
-            return false;
-        }
-        velocities_[index] = velocity;
-        return true;
+        return bind_moving(segment, velocity, velocities_, "rate", error);
     }
 
     // A forest root the scene does not place: a free body stands where something outside the
@@ -330,6 +284,35 @@ class WorldKinematics {
 
   private:
     static constexpr std::uint64_t kNoCycle = std::numeric_limits\<std::uint64_t\>::max();
+
+    bool bind_moving(const std::string &segment, const double *address,
+                     std::vector\<const double *\> &bound, const char *what, std::string &error) {
+        if (sealed_) {
+            error = "the world model is sealed; no joint can be bound";
+            return false;
+        }
+        if (address == nullptr) {
+            error = "segment '" + segment + "' was bound to no " + what;
+            return false;
+        }
+        const int index = index_of(segment);
+        if (index \< 0) {
+            error = "no segment is named '" + segment + "'";
+            return false;
+        }
+        if (segments_[index].getJoint().getType() == KDL::Joint::None) {
+            error = "segment '" + segment + "' is fixed, so no " + what + " moves it";
+            return false;
+        }
+        // Several solver records may share one runtime, so binding the same address again is the
+        // same fact stated twice. A second, different address is two authorities for one joint.
+        if (bound[index] != nullptr && bound[index] != address) {
+            error = "segment '" + segment + "' is already bound to another " + what;
+            return false;
+        }
+        bound[index] = address;
+        return true;
+    }
 
     void report(const char *what) const {
         if (!reported_) {

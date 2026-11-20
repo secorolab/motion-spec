@@ -228,32 +228,21 @@ ros-subscription-members(s) ::= <<
 // The pose's own frame is the model's statement, so it is resolved once here and read by index
 // on the hot path. A name the world model does not hold is a broken model and stops the run.
 
+ros-world-index(field, segment) ::= <<
+robot.<field> = world.index_of("<segment>");
+if (robot.<field> \< 0) {
+    std::cerr \<\< "[world] no segment is named '<segment>'" \<\< std::endl;
+    return 1;
+\}
+>>
+
 ros-subscription-wiring(s) ::= <<
-<s.written_poses:{w |     robot.<s.sub_id>_segment_<w.pose_id> = world.index_of("<w.frame_segment>");
-    if (robot.<s.sub_id>_segment_<w.pose_id> \< 0) {
-        std::cerr \<\< "[world] no segment is named '<w.frame_segment>'" \<\< std::endl;
-        return 1;
-    \}<if(w.reframed)>
-    robot.<s.sub_id>_staged_from_<w.pose_id> = world.index_of("<w.observed_wrt_segment>");
-    if (robot.<s.sub_id>_staged_from_<w.pose_id> \< 0) {
-        std::cerr \<\< "[world] no segment is named '<w.observed_wrt_segment>'" \<\< std::endl;
-        return 1;
-    \}
-    robot.<s.sub_id>_observed_of_<w.pose_id> = world.index_of("<w.observed_of_segment>");
-    if (robot.<s.sub_id>_observed_of_<w.pose_id> \< 0) {
-        std::cerr \<\< "[world] no segment is named '<w.observed_of_segment>'" \<\< std::endl;
-        return 1;
-    \}
-    robot.<s.sub_id>_target_of_<w.pose_id> = world.index_of("<w.target_of_segment>");
-    if (robot.<s.sub_id>_target_of_<w.pose_id> \< 0) {
-        std::cerr \<\< "[world] no segment is named '<w.target_of_segment>'" \<\< std::endl;
-        return 1;
-    \}
-    robot.<s.sub_id>_observed_body_<w.pose_id> = world.index_of("<w.observed_body_segment>");
-    if (robot.<s.sub_id>_observed_body_<w.pose_id> \< 0) {
-        std::cerr \<\< "[world] no segment is named '<w.observed_body_segment>'" \<\< std::endl;
-        return 1;
-    \}
+<s.written_poses:{w |
+    <ros-world-index({<s.sub_id>_segment_<w.pose_id>}, w.frame_segment)><if(w.reframed)>
+    <ros-world-index({<s.sub_id>_staged_from_<w.pose_id>}, w.observed_wrt_segment)>
+    <ros-world-index({<s.sub_id>_observed_of_<w.pose_id>}, w.observed_of_segment)>
+    <ros-world-index({<s.sub_id>_target_of_<w.pose_id>}, w.target_of_segment)>
+    <ros-world-index({<s.sub_id>_observed_body_<w.pose_id>}, w.observed_body_segment)>
     if (!world.bind_base("<w.observed_body_segment>", &robot.<s.sub_id>_base_<w.pose_id>, world_error)
             || !world.require_base("<w.observed_body_segment>", world_error)) {
         std::cerr \<\< "[world] " \<\< world_error \<\< std::endl;

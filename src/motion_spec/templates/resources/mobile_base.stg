@@ -42,9 +42,6 @@ base-force-solver(solver) ::= <<
 
 // Measured hub rates to a platform twist: the exact inverse of the chain the distribution uses,
 // closed with a damped least-squares solve because eight hub rates over-determine three platform
-// coordinates.
-// Measured hub rates to a platform twist: the exact inverse of the chain the distribution uses,
-// closed with a damped least-squares solve because eight hub rates over-determine three platform
 // coordinates. Computed once however many handlers assemble a composition solver -- they all
 // describe the same platform, and every one of them is handed the same answer.
 base-cycle-compose(base_velocity_solvers) ::= <<
@@ -59,8 +56,6 @@ base-cycle-compose(base_velocity_solvers) ::= <<
 <endif>
 >>
 
-// The platform wrench is the sum of the running motion's controller outputs, by coordinate. Only
-// that motion's contribute: a control signal keeps whatever it last wrote, so a handler the FSM
 // One term of the platform wrench: a controller that closes on a platform component contributes
 // its scalar, one that commands a wrench contributes that wrench's own component.
 base-wrench-term(term) ::= <<
@@ -74,6 +69,8 @@ base-wrench-rotation(term) ::= <<
     const KDL::Wrench <term.local> = (robot.world->pose(robot.world_<term.platform_index>, robot.control_cycle).M.Inverse() * robot.world->pose(robot.world_<term.frame_index>, robot.control_cycle).M) * data.<term.wrench>;
 >>
 
+// The platform wrench is the sum of the running motion's controller outputs, by coordinate. Only
+// that motion's contribute: a control signal keeps whatever it last wrote, so a handler the FSM
 // has left would otherwise keep driving the platform.
 base-cycle-force(resources, solver) ::= <<
     state.f_platform[0] = 0.0;

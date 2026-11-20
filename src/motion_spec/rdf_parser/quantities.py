@@ -288,12 +288,10 @@ def spatial_axes(
         return (SpatialAxis(Subspace.Linear, axis),) if axis else LINEAR_AXES
     if subspace in {"orientation", "angular-velocity"}:
         return (SpatialAxis(Subspace.Angular, axis),) if axis else ANGULAR_AXES
-    if subspace == "distance" and axis is not None:
-        return (SpatialAxis(Subspace.Linear, axis),)
+    if subspace == "distance":
+        return (SpatialAxis(Subspace.Linear, axis if axis is not None else "distance"),)
     if subspace == "rotation" and axis is not None:
         return (SpatialAxis(Subspace.Angular, axis),)
-    if subspace == "distance" and axis is None:
-        return (SpatialAxis(Subspace.Linear, "distance"),)
 
     return ()
 
@@ -432,7 +430,7 @@ def orientation(model, node) -> Orientation:
         Unit(unit),
         str(axes) if axes is not None else "xyz",
         (node, ~MAP["subobject"], None) in graph,
-        provenance=Provenance(authored=not is_snapshot(model, node) and is_authored(model, node)),
+        provenance=value_provenance(model, node),
     )
 
 
@@ -600,10 +598,11 @@ def pose(model, node) -> Pose:
     orientation_node = coordinate.orientation_coord.id
     representation = orientation_representation(model, orientation_node)
 
+    derived = (node, PROV.wasDerivedFrom, None) in graph
     # a config pose is read whole from the deployment config, not composed per axis
     euler_axes_sequence = None
     euler_intrinsic = False
-    if representation == "euler" and (node, PROV.wasDerivedFrom, None) not in graph:
+    if representation == "euler" and not derived:
         euler_axes_sequence, euler_intrinsic = get_euler_angles_params(
             coordinate.orientation_coord, graph
         )
@@ -615,7 +614,7 @@ def pose(model, node) -> Pose:
             for unit in graph[component : QUDT_SCHEMA["unit"]]
         }
     )
-    if is_snapshot(model, node) or (node, PROV.wasDerivedFrom, None) in graph:
+    if derived:
         authored = False
     else:
         components = (coordinate.position_coord, coordinate.orientation_coord)
@@ -685,9 +684,7 @@ def spatial_fields(model, node) -> dict:
         "reference_point": point(model, graph.value(node, GEOM_REL["reference-point"])),
         "as_seen_by": frame(model, graph.value(node, GEOM_COORD["as-seen-by"])),
         "unit": [model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-        "provenance": Provenance(
-            authored=not is_snapshot(model, node) and is_authored(model, node)
-        ),
+        "provenance": value_provenance(model, node),
     }
 
 
@@ -762,7 +759,7 @@ def wrench(model, node) -> Wrench:
         reference_point=point(model, reference),
         as_seen_by=frame(model, seen_by),
         unit=[model.id(unit) for unit in graph[node : QUDT_SCHEMA["unit"]]],
-        provenance=Provenance(authored=not is_snapshot(model, node) and is_authored(model, node)),
+        provenance=value_provenance(model, node),
         sensor_frame=frame(model, sensor_frame_node) if sensor_frame_node is not None else None,
         sensor_name=model.id(sensor) if sensor is not None else "",
         estimator=estimator,
@@ -816,12 +813,13 @@ def perceived_written_poses(model) -> dict[str, list[dict]]:
     )
     written: dict[str, list[dict]] = {}
     for act in sources:
+        is_topic = NS_MM_ROS["Topic"] in get_node_types(graph, act)
         rows = []
         for target in graph.objects(act, SOSA.hasFeatureOfInterest):
             # cameras feed a viewer, not the loop
             if URI_SENS_TYPE_CAMERA in get_node_types(graph, target):
                 continue
-            if NS_MM_ROS["Topic"] in get_node_types(graph, act):
+            if is_topic:
                 item = pose(model, target)
                 target_iri = item.of.uri
                 observed = graph.value(act, SOSA.observedProperty)
@@ -947,9 +945,7 @@ def quantity(model, node):
             None,
             None,
             None,
-            provenance=Provenance(
-                authored=not is_snapshot(model, node) and is_authored(model, node)
-            ),
+            provenance=value_provenance(model, node),
         )
     if URI_GEOM_TYPE_POSITION in types:
         return position(model, node)
@@ -965,8 +961,7 @@ def quantity(model, node):
     si_node = si_unit(unit_node)
     unit = Unit(model.id(si_node), str(si_node))
     has_view = (node, ~MAP["subobject"], None) in graph
-    # a snapshot's literal is only its value before the first capture
-    provenance = Provenance(authored=not is_snapshot(model, node) and is_authored(model, node))
+    provenance = value_provenance(model, node)
 
     if CSTR_HDL_EXT["SetpointGenerator"] in types:
         return SetpointQuantity(model.id(node), kind, unit, has_view, provenance=provenance)
@@ -1010,7 +1005,7 @@ def duration_quantity(model, node) -> Quantity:
         Unit("Second", str(NS_MM_QUDT_UNIT["SEC"])),
         value,
         False,
-        provenance=Provenance(authored=not is_snapshot(model, node) and is_authored(model, node)),
+        provenance=value_provenance(model, node),
         sampled=URI_DISTRIB_TYPE_SAMPLED_QUANTITY in get_node_types(model.graph, node),
     )
 
@@ -1078,24 +1073,25 @@ def is_authored(model, node) -> bool:
     return any((node, predicate, None) in model.graph for predicate in _AUTHORED_VALUE_PREDICATES)
 
 
-def is_snapshot(model, node) -> bool:
-    """Whether a node is itself a runtime sample-and-hold capture target. Its own graph fact
-    -- not carried by `Provenance`, which only states whether a value was authored.
+def value_provenance(model, node) -> Provenance:
+    """Whether a quantity's value was authored: never for a runtime sample-and-hold capture
+    target, whose literal is only its value before the first capture.
 
     A snapshot derives from its source (`prov:wasDerivedFrom`) and is sampled on a scheduled
     event (a time constraint stated `of-constraint` the quantity); a sensor tare carries the
     schedule but no derivation, and a derived slot the derivation but no schedule.
     """
     graph = model.graph
-    return (node, PROV.wasDerivedFrom, None) in graph and (
+    snapshot = (node, PROV.wasDerivedFrom, None) in graph and (
         None, URI_TIME_PRED_OF_CONSTRAINT, node
     ) in graph
+    return Provenance(authored=not snapshot and is_authored(model, node))
 
 
 @reader
 def snapshot_target_ids(model) -> set:
     """Every id whose node is a snapshot target, for readers that hold a record id rather than a
-    graph node and so cannot call `is_snapshot` directly.
+    graph node and so cannot call `value_provenance` directly.
     """
     graph = model.graph
     return {
@@ -1322,9 +1318,11 @@ def constraint(model, node) -> Constraint:
     if CSTR["EqualityConstraint"] in types:
         parameter = EqualityConstraint(quantity(model, graph.value(node, CSTR["reference-value"])))
     elif CSTR["UnilateralConstraint"] in types:
-        type_ = UnilateralConstraintType.LessThan
-        if CSTR["GreaterThanConstraint"] in types:
-            type_ = UnilateralConstraintType.GreaterThan
+        type_ = (
+            UnilateralConstraintType.GreaterThan
+            if CSTR["GreaterThanConstraint"] in types
+            else UnilateralConstraintType.LessThan
+        )
         parameter = UnilateralConstraint(
             type_, quantity(model, graph.value(node, CSTR["threshold"]))
         )

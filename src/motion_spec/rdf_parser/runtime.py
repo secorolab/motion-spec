@@ -170,15 +170,24 @@ def world_ports(
         if mapping.entity
     }
     _scene_trees, holders = scene_kinematics(model)
+    mapped_by_root = {
+        tree["root_iri"]: next(
+            (
+                entity
+                for target, entity in body_by_tree.items()
+                if target in holders.get(URIRef(tree["root_iri"]), ())
+            ),
+            None,
+        )
+        for tree in world_trees
+    }
     anchored_root = next(
         (
             tree["root"]
             for tree in world_trees
             if any(segment["joint"] for segment in tree["segments"])
-            and object_by_body.get(tree["root_iri"]) is None
-            and not any(
-                target in holders.get(URIRef(tree["root_iri"]), ()) for target in body_by_tree
-            )
+            and tree["root_iri"] not in object_by_body
+            and mapped_by_root[tree["root_iri"]] is None
         ),
         None,
     )
@@ -188,14 +197,7 @@ def world_ports(
         if tree["root"] == anchored_root or tree["root"] in placed_by_perception:
             continue
         obj = object_by_body.get(tree["root_iri"])
-        mapped_body = next(
-            (
-                entity
-                for target, entity in body_by_tree.items()
-                if target in holders.get(URIRef(tree["root_iri"]), ())
-            ),
-            None,
-        )
+        mapped_body = mapped_by_root[tree["root_iri"]]
         if obj is None and mapped_body is None:
             raise ConstraintViolation(
                 "kinematics",
@@ -301,7 +303,6 @@ def annotate_runtime(
             command one runtime in different modes.
     """
     runtime_by_signature: dict[tuple, str] = {}
-    owner_by_runtime: dict[str, str] = {}
     for solver in serial_chains:
         signature = (
             backend,
@@ -313,30 +314,30 @@ def annotate_runtime(
             solver.hardware.tcp_frame,
         )
         runtime_id = runtime_by_signature.setdefault(signature, solver.id)
-        owner_by_runtime.setdefault(runtime_id, solver.id)
         solver.runtime.id = runtime_id
-        solver.runtime.owner = solver.id == owner_by_runtime[runtime_id]
-        solver.runtime.owner_id = owner_by_runtime[runtime_id]
+        solver.runtime.owner = solver.id == runtime_id
+        solver.runtime.owner_id = runtime_id
         # ST4 treats "" as truthy
         solver.hardware.tool_body = solver.hardware.tool_body or None
         solver.hardware.tcp_frame = solver.hardware.tcp_frame or None
 
-    root_by_segment = {
-        name: tree["root"]
-        for tree in world_trees
-        for name in (tree["root"], *(segment["name"] for segment in tree["segments"]))
-    }
+    root_by_segment = {}
+    for tree in world_trees:
+        root_by_segment[tree["root"]] = tree["root"]
+        for segment in tree["segments"]:
+            root_by_segment[segment["name"]] = tree["root"]
+    world_index = world_index or {}
     reads = [
         frame
         for solver in serial_chains
-        for frame in place_solver_on_chain(solver, world_index or {}, root_by_segment)
+        for frame in place_solver_on_chain(solver, world_index, root_by_segment)
     ]
     # keyed by segment: two arms carry the same frame name
     for solver in force_solvers:
         for frame in [solver.force.as_seen_by, *(spec.force.as_seen_by for spec in solver.forces)]:
             if frame is None or not frame.uri:
                 continue
-            segment = (world_index or {}).get(frame.uri)
+            segment = world_index.get(frame.uri)
             if segment is None:
                 raise ConstraintViolation(
                     "geometry",
@@ -374,12 +375,13 @@ def annotate_runtime(
             mode_by_driver[driver.id] = mode
             modes[solver.runtime.id].add(mode)
     commanding = set(modes)
+    fpk = SOLVER_FAMILIES[KC_OP.ForwardPositionKinematics]
+    from_state = _STATE_ANSWERED.get(backend, {"VelocityTwist"})
     for solver in serial_chains:
         found = modes[solver.runtime.id]
         solver.runtime.command_mode = (
             next(iter(found)) if len(found) == 1 else "position" if found else None
         )
-        fpk = SOLVER_FAMILIES[KC_OP.ForwardPositionKinematics]
         twist = next((out for out in solver.output if isinstance(out, VelocityTwist)), None)
         if solver.algorithm is fpk and twist is not None:
             raise ConstraintViolation(
@@ -415,7 +417,6 @@ def annotate_runtime(
             for device in solver.devices:
                 if device.kind in GRIPPER_DEVICES:
                     device.joint_outputs = gripper_outputs
-        from_state = _STATE_ANSWERED.get(backend, {"VelocityTwist"})
         solver.state_output = [out for out in solver.output if out.type in from_state]
         solver.world_output = [out for out in solver.output if out.type not in from_state]
         index_chain_joints(solver)
@@ -423,9 +424,7 @@ def annotate_runtime(
     for motion in motions:
         mode_by_runtime = {}
         for solver in motion.serial_chain_solvers:
-            canonical = by_id.get(solver.id)
-            if canonical is None:
-                continue
+            canonical = by_id[solver.id]
             solver.command_mode = mode_by_driver.get(solver.motion_driver.id)
             held = mode_by_runtime.get(canonical.runtime.id)
             if held and solver.command_mode and held != solver.command_mode:
@@ -453,9 +452,7 @@ def annotate_runtime(
                     "forward kinematics in both",
                 )
         for command in motion.forwarded_commands:
-            canonical = by_id.get(command.robot_id)
-            if canonical is not None:
-                command.robot_id = canonical.runtime.id
+            command.robot_id = by_id[command.robot_id].runtime.id
     health_index = 0
     for solver in serial_chains:
         if not solver.runtime.owner:
@@ -470,8 +467,7 @@ def annotate_runtime(
             solver.gravity_compensation = [
                 -component or 0.0 for component in solver.derived_root_acceleration
             ]
-    # without gravity the observer reports the arm's weight as a push
-    for solver in serial_chains:
+        # without gravity the observer reports the arm's weight as a push
         if solver.gravity:
             continue
         for out in solver.world_output:

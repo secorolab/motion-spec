@@ -36,19 +36,16 @@ def resolve_run(path: Path | str) -> tuple[Path, Path, frame_log_pb.LogContract]
     return run_dir, log_path, frame_log_pb.read_contract(log_path)
 
 
-def validate_header(log_path: Path | str, contract=None) -> dict:
+def validate_header(log_path: Path | str, contract: frame_log_pb.LogContract) -> dict:
     """The log states its own identity, so there is nothing left to cross-check it against.
 
     A mismatch used to mean the log and schema.json had drifted apart; with the contract
     inside the log that class of error cannot arise. What can still fail is a log written by
     a runtime older than the embedded descriptor, which read_contract rejects.
     """
-    if contract is None:
-        contract = frame_log_pb.read_contract(log_path)
-    header = contract.header
-    if not header.schema_hash:
+    if not contract.header.schema_hash:
         raise RecordError(log_path, "frame log header carries no schema hash")
-    return {"schema_hash": header.schema_hash}
+    return {"schema_hash": contract.header.schema_hash}
 
 
 def verify_recording(path: Path | str) -> int:
@@ -81,7 +78,7 @@ def verify_recording(path: Path | str) -> int:
 
 
 def decode_frames(log_path: Path | str) -> list[dict]:
-    _run_dir, log_path, contract = resolve_run(log_path)
+    _, log_path, contract = resolve_run(log_path)
     validate_header(log_path, contract)
     return list(frame_log_pb.frame_records(log_path, contract))
 
@@ -108,7 +105,7 @@ def summarize(log_path: Path | str) -> str:
         f"log         {log_path}",
         f"run         {run_dir}",
         f"frames      {count}",
-        f"schema      {meta.get('schema_hash', '')}",
+        f"schema      {meta['schema_hash']}",
         f"final state {final_name}",
     ]
     if frame_log_pb.tail_is_partial(log_path):

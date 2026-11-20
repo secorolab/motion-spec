@@ -76,7 +76,7 @@ def source_constraints(run_dir: Path, contract) -> list[dict]:
     )
     kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
     source = next((path for path in kept if path.suffix == ".robmot" and path.is_file()), None)
-    authored = authored_lines(source.read_text() if source else "")
+    authored = authored_lines(source) if source else {}
     constants = {
         key: row.value
         for row in contract.header.constants

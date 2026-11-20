@@ -23,7 +23,7 @@ from rec import Verdict
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import deployed_devices
 from motion_spec.dashboard.metadata import annotations, model_folder
-from motion_spec.dashboard.roots import LAYOUT_REL, directory_size, json_file, trace
+from motion_spec.dashboard.roots import LAYOUT_REL, STATE_REL, directory_size, json_file, trace
 from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
 from motion_spec.rdf_parser.agents import agent_cameras
@@ -210,7 +210,7 @@ def generation_details(path: Path) -> dict:
     except ValueError:
         description = None
     # A generation with no run yet has no log to read, so the count comes off the source.
-    constraints = authored_lines(robmot.read_text()) if robmot else {}
+    constraints = authored_lines(robmot) if robmot else {}
     # A simulation is a platform with a name; hardware is the devices it deploys, which the
     # model graph names one by one. Reading them costs a graph parse, so it stays off the list.
     details["platform"] = details["platform"] or " · ".join(deployed_devices(path)) or None
@@ -383,7 +383,8 @@ def classify_quads(quads, graphs: dict[str, list[str]]) -> dict:
 def run_notes(path: Path) -> list[str]:
     """Read notes.json here rather than importing queries, which imports this module: every tag
     used by the run's notes."""
-    notes = json_file(path / "notes.json").get("notes", [])
+    state = roots.GENERATIONS / STATE_REL / path.relative_to(roots.GENERATIONS)
+    notes = json_file(state / "notes.json").get("notes", [])
     return list(dict.fromkeys(tag for note in notes for tag in note.get("tags") or []))
 
 
@@ -400,6 +401,9 @@ def run_info(path: Path) -> dict:
     record.default_union = True
     started = record.value(record.value(run.node, TIME.hasBeginning), TIME.inXSDDateTimeStamp)
     labels = annotations(path)
+    notes = json_file(
+        roots.GENERATIONS / STATE_REL / path.relative_to(roots.GENERATIONS) / "notes.json"
+    ).get("notes", [])
     return {
         **labels,
         "path": str(path.relative_to(roots.GENERATIONS)),
@@ -413,9 +417,7 @@ def run_info(path: Path) -> dict:
         "duration_s": health.get("written_frames", 0) * period_ns / 1e9,
         "dropped_frames": health.get("dropped_frames"),
         "tags": list(dict.fromkeys((*labels["tags"], *run_notes(path)))),
-        "notes_text": "\n".join(
-            note.get("text", "") for note in json_file(path / "notes.json").get("notes", [])
-        ),
+        "notes_text": "\n".join(note.get("text", "") for note in notes),
     }
 
 

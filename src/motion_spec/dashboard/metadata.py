@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 SECORO AG (secoro.uni-bremen.de)
 # Author: Vamsi Kalagaturu
 
-"""User annotations stay beside bundles without changing generated provenance."""
+"""User annotations, kept in the dashboard's store beside the bundles rather than in them."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.roots import LAYOUT_REL, json_file
+from motion_spec.dashboard.roots import LAYOUT_REL, STATE_REL, json_file
 
 LOCK = threading.RLock()
 
@@ -25,13 +25,14 @@ def generation_of(path: Path) -> Path:
 
 
 def model_folder(path: Path) -> Path:
-    """Use the catalog's first path segment as the model identity."""
+    """The dashboard's folder for PATH's model, the catalog's first path segment."""
     generation = generation_of(path)
-    return roots.GENERATIONS / generation.relative_to(roots.GENERATIONS).parts[0]
+    return roots.GENERATIONS / STATE_REL / generation.relative_to(roots.GENERATIONS).parts[0]
 
 
 def write_document(path: Path, payload: dict) -> None:
     """Replace one annotation document atomically; callers serialize updates with LOCK."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".writing")
     temporary.write_text(json.dumps(payload, indent=2) + "\n")
     temporary.replace(path)
@@ -39,7 +40,9 @@ def write_document(path: Path, payload: dict) -> None:
 
 def annotations(path: Path) -> dict:
     """Return user labels independently of generated facts and run-note tags."""
-    stored = json_file(path / "dashboard.json")
+    stored = json_file(
+        roots.GENERATIONS / STATE_REL / path.relative_to(roots.GENERATIONS) / "dashboard.json"
+    )
     return {
         "label": stored.get("label", ""),
         "pinned": stored.get("pinned", False),
@@ -69,7 +72,10 @@ def save_annotations(path: Path, changes: dict) -> dict:
         result = {**annotations(path), **changes}
         result["label"] = result["label"].strip()
         result["tags"] = list(dict.fromkeys(tag.strip() for tag in result["tags"] if tag.strip()))
-        write_document(path / "dashboard.json", result)
+        write_document(
+            roots.GENERATIONS / STATE_REL / path.relative_to(roots.GENERATIONS) / "dashboard.json",
+            result,
+        )
         return result
 
 
@@ -82,7 +88,10 @@ def set_protected(path: Path, enabled: bool, confirm: str = "") -> dict:
         raise ValueError(f"type '{path.name}' to remove its protection")
     with LOCK:
         result = {**annotations(path), "protected": enabled}
-        write_document(path / "dashboard.json", result)
+        write_document(
+            roots.GENERATIONS / STATE_REL / path.relative_to(roots.GENERATIONS) / "dashboard.json",
+            result,
+        )
         return result
 
 

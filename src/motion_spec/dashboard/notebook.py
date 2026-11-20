@@ -87,9 +87,15 @@ def stop_jupyter() -> None:
 
 
 def run_notebook(run_dir: Path, dashboard_port: int) -> dict:
-    """Seed a notebook beside the run that loads its signals, and open it in JupyterLab."""
+    """Seed a notebook in the dashboard's store that loads the run's signals, and open it in
+    JupyterLab."""
     jupyter_server(dashboard_port)
-    notebook = run_dir / "analysis.ipynb"
+    notebook = (
+        roots.GENERATIONS
+        / roots.STATE_REL
+        / run_dir.relative_to(roots.GENERATIONS)
+        / "analysis.ipynb"
+    )
     if not notebook.exists():
         cells = [
             [
@@ -135,6 +141,7 @@ def run_notebook(run_dir: Path, dashboard_port: int) -> dict:
                 for source in cells
             ],
         }
+        notebook.parent.mkdir(parents=True, exist_ok=True)
         notebook.write_text(json.dumps(template, indent=1))
     relative = notebook.relative_to(roots.WORKSPACE)
     return {"url": f"{JUPYTER['base']}/lab/tree/{relative}?token={JUPYTER['token']}"}

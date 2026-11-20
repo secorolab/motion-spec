@@ -331,48 +331,60 @@ def open_source(value: str, name: str | None = None) -> dict:
     return {"opened": value, "editor": name}
 
 
-def authored_lines(text: str) -> dict:
-    """(motion, constraint) -> (line number, expression, authored motion name) per source line.
+@lru_cache(maxsize=32)
+def parsed_motion_spec(path: str, version: int):
+    """The motion-spec-dsl model of the source at PATH as of VERSION (its mtime); None where it no
+    longer parses, so a page shows no source lines rather than failing."""
+    from motion_spec_dsl.langs import motion_spec_metamodel
+    from textx.exceptions import TextXError
+
+    try:
+        return motion_spec_metamodel().model_from_file(path)
+    except TextXError:
+        return None
+
+
+def authored_lines(path: Path) -> dict:
+    """(motion, constraint) -> (line number, expression, authored motion name) for every named
+    `while`/`until` constraint of the source at PATH.
 
     Display only: what a constraint is and what it drives comes off the log header, this says
     where the reader can go and read it.
     """
+    from motion_spec_dsl.classes.constraints import flatten_constraint_items
+    from textx import get_children_of_type, get_location
+
+    model = parsed_motion_spec(str(path), path.stat().st_mtime_ns)
+    if model is None:
+        return {}
+    text = path.read_text().splitlines()
     lines = {}
-    motion = section = None
-    for number, line in enumerate(text.splitlines(), 1):
-        line = line.strip().rstrip(",")
-        match = re.match(r"guarded-motion\s+\(ns=[^)]+\)\s+([\w-]+)", line)
-        if match:
-            motion = match.group(1)
-        block = re.match(r"(while|until|when)\b.*\{$", line)
-        if block:
-            section = block.group(1)
-        elif line == "}":
-            section = None
-        if section not in ("while", "until") or ":" not in line:
-            continue
-        name, _, expression = line.partition(":")
-        name, expression = name.strip(), expression.strip()
-        if re.fullmatch(r"[\w-]+", name) and expression:
-            # Authored with dashes, generated with underscores: one spelling keys both.
-            lines[((motion or "").replace("-", "_"), name.replace("-", "_"))] = (
-                number,
-                expression,
-                motion,
-            )
+    for motion in get_children_of_type("GuardedMotion", model):
+        for section in (motion.while_, motion.until):
+            if section is None:
+                continue
+            for item in flatten_constraint_items(section.constraints):
+                if not item.name:
+                    continue
+                number = get_location(item)["line"]
+                expression = text[number - 1].strip().rstrip(",").partition(":")[2].strip()
+                # Authored with dashes, generated with underscores: one spelling keys both.
+                key = (motion.name.replace("-", "_"), item.name.replace("-", "_"))
+                lines[key] = (number, expression, motion.name)
     return lines
 
 
-def declaration_lines(text: str) -> dict:
-    """authored name -> the line that declares it, for `<kind> <name> = ...` and `<kind> <name> {`.
+def declaration_lines(path: Path) -> dict:
+    """authored name -> the line that declares it in the source at PATH. A name reused in two
+    contexts points at where it was first written rather than the last."""
+    from textx import get_children, get_location
 
-    `authored_lines` covers constraints, which are named inside `while`/`until`; a spec quantity
-    is declared instead, so its line is found by the shape of a declaration. First one wins: a
-    name reused in two contexts points at where it was first written rather than the last.
-    """
+    model = parsed_motion_spec(str(path), path.stat().st_mtime_ns)
+    if model is None:
+        return {}
     lines: dict[str, int] = {}
-    for number, line in enumerate(text.splitlines(), 1):
-        match = re.match(r"\s*[\w-]+\s+([A-Za-z][\w-]*)\s*[={]", line)
-        if match:
-            lines.setdefault(match.group(1), number)
+    for item in get_children(lambda node: isinstance(getattr(node, "name", None), str), model):
+        if item.name:
+            number = get_location(item)["line"]
+            lines[item.name] = min(lines.get(item.name, number), number)
     return lines

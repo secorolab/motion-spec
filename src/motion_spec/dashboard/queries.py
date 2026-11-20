@@ -13,10 +13,11 @@ import rdflib
 from rdf_utils.models.prov import get_file_path
 from rdflib.namespace import PROV
 
+from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import classify_quads, graph_name, term_graphs
 from motion_spec.dashboard.graph import GraphService, load_document
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
-from motion_spec.dashboard.roots import LAYOUT_REL, json_file
+from motion_spec.dashboard.roots import LAYOUT_REL, STATE_REL, json_file
 from motion_spec.dashboard.runs import RunInfo
 from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.runs.provenance import (
@@ -41,7 +42,9 @@ NOTES_REL = "notes.json"
 
 def saved_queries(run_dir: Path) -> list:
     """The queries kept beside this run."""
-    return json_file(run_dir / QUERIES_REL).get("queries", [])
+    return json_file(
+        roots.GENERATIONS / STATE_REL / run_dir.relative_to(roots.GENERATIONS) / QUERIES_REL
+    ).get("queries", [])
 
 
 def save_queries(run_dir: Path, queries: list) -> dict:
@@ -50,13 +53,20 @@ def save_queries(run_dir: Path, queries: list) -> dict:
         raise ValueError("queries belong to a run")
     texts = [str(query) for query in queries][:200]
     with LOCK:
-        write_document(run_dir / QUERIES_REL, {"queries": texts})
+        write_document(
+            roots.GENERATIONS / STATE_REL / run_dir.relative_to(roots.GENERATIONS) / QUERIES_REL,
+            {"queries": texts},
+        )
     return {"saved": len(texts)}
 
 
 def run_notes(run_dir: Path) -> dict:
     """Every note kept beside this run, as written."""
-    return {"notes": json_file(run_dir / NOTES_REL).get("notes", [])}
+    return {
+        "notes": json_file(
+            roots.GENERATIONS / STATE_REL / run_dir.relative_to(roots.GENERATIONS) / NOTES_REL
+        ).get("notes", [])
+    }
 
 
 def save_notes(run_dir: Path, notes: list) -> dict:
@@ -95,7 +105,10 @@ def save_notes(run_dir: Path, notes: list) -> dict:
         )
     payload = {"notes": kept}
     with LOCK:
-        write_document(run_dir / NOTES_REL, payload)
+        write_document(
+            roots.GENERATIONS / STATE_REL / run_dir.relative_to(roots.GENERATIONS) / NOTES_REL,
+            payload,
+        )
     return payload
 
 
@@ -249,7 +262,7 @@ def model_lint(generation_dir: Path) -> dict:
     provenance = read_generation_dataset(generated / GENERATION_DOCUMENT)
     kept = (get_file_path(provenance, copy) for copy in provenance.subjects(PROV.alternateOf))
     authored = next((path for path in kept if path.suffix == ".robmot"), None)
-    lines = declaration_lines(authored.read_text()) if authored else {}
+    lines = declaration_lines(authored) if authored else {}
     items = [
         {
             "rule": "unused-declaration",

@@ -184,6 +184,8 @@ def storage_info() -> dict:
 
 
 LAYOUT_REL = "generated/contract/frame_layout.json"
+# the dashboard's own files, mirrored beside the bundles they are about
+STATE_REL = ".dashboard"
 
 
 _TRACED: dict[str, str] = {}

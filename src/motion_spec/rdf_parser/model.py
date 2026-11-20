@@ -17,13 +17,22 @@ from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote, urlsplit
 
 import rdflib
 from rdf_utils.constraints import ConstraintViolation
-from rdf_utils.models.vocab import URI_QUDT_UNIT_CM, URI_QUDT_UNIT_M, URI_QUDT_UNIT_MM
+from rdf_utils.models.prov import get_file_path
+from rdf_utils.models.vocab import (
+    URI_PROV_EXT_PRED_REL_PATH,
+    URI_QUDT_UNIT_CM,
+    URI_QUDT_UNIT_M,
+    URI_QUDT_UNIT_MM,
+    URI_ROS_TYPE_PACKAGE,
+    URI_SPDX_SW_TYPE_PACKAGE,
+)
 from rdf_utils.namespace import NS_MM_QUDT_UNIT
 from rdflib import URIRef
-from rdflib.namespace import split_uri
+from rdflib.namespace import DCTERMS, PROV, RDF, split_uri
 
 
 def identifier(name) -> str:
@@ -46,6 +55,42 @@ def kebab(text: str) -> str:
 def local_name(node) -> str | None:
     """The last segment of a node's URI, or None when there is no node."""
     return None if node is None else split_uri(str(node))[1]
+
+
+def model_file(graph, model) -> str | None:
+    """The file a scene's model is drawn from (its `dcterms:source`), as the runtime looks for it.
+
+    An absolute path, or one in a ROS or Python package, is where rdf-utils locates it. A path
+    relative to a directory stays as authored: scene-dsl reads it against the .scenex, but the
+    models here are written workspace-relative, and the run searches for them from the working
+    directory and the .scenex upwards, then in the asset cache (`codegen.asset_candidates`).
+    None when the model names no file.
+
+    Raises:
+        RuntimeError: the file is in a ROS package, and ROS is not on the path to locate it
+    """
+    source = graph.value(model, DCTERMS.source)
+    if source is None:
+        return None
+    location = graph.value(source, PROV.atLocation)
+    root = graph.value(location, PROV.atLocation)
+    in_package = any(
+        (root, RDF.type, kind) in graph for kind in (URI_ROS_TYPE_PACKAGE, URI_SPDX_SW_TYPE_PACKAGE)
+    )
+    directory = graph.value(root, PROV.atLocation)
+    if not in_package and urlsplit(str(directory)).scheme == "file":
+        return unquote(str(graph.value(location, URI_PROV_EXT_PRED_REL_PATH)))
+    try:
+        path = get_file_path(graph, source)
+    except ImportError as missing:
+        # Only a file in a ROS package needs ROS, so this is the one place that can say which
+        # file, and what to do about it, instead of a bare import error.
+        raise RuntimeError(
+            f"model '{model}' is in a ROS package, which cannot be located without ROS on the "
+            f"path: source /opt/ros/$ROS_DISTRO/setup.bash (and the workspace's own setup) in "
+            f"the shell this is running from, then try again"
+        ) from missing
+    return None if path is None else str(path)
 
 
 _LENGTH_UNITS = {URI_QUDT_UNIT_M, URI_QUDT_UNIT_CM, URI_QUDT_UNIT_MM}

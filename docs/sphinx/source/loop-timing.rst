@@ -116,7 +116,7 @@ hardware alike, and the real-time factor scales its period:
    effective period = nominal period / rtf     (rtf > 0)
    uncapped                                    (rtf == 0)
 
-The factor comes from ``mj_env.viewer.realtime_factor`` in a simulation with a window, so the
+The factor comes from ``mj_viewer.realtime_factor`` in a simulation with a window, so the
 viewer's ``,`` and ``.`` speed keys keep working mid-run; headless, it is the ``--rtf`` value
 scaled by the dashboard speed; on hardware it is the literal ``1.0``. This is a named
 backend dispatch (``loop-rtf-source``), not an inline conditional, for the same reason

@@ -1,0 +1,27 @@
+// The abstract scene of kinova_with_objects.scenex: one object to pick, a table, one arm.
+ns shp_env='https://example.test/scene-shapes/environment/'
+ns shp_agn='https://example.test/scene-shapes/agents/'
+ns shp_scene='https://example.test/scene-shapes/scenes/'
+
+obj set (ns=shp_env) pick_objects {
+    object box1
+}
+obj set (ns=shp_env) ws_objects {
+    object dining_table
+}
+ws set (ns=shp_env) workspaces {
+    workspace table_ws
+}
+agn set (ns=shp_agn) agents {
+    agent arm1
+}
+
+comp (ns=shp_env) comp_table of ws <workspaces.table_ws> {
+    obj <ws_objects.dining_table>
+}
+
+scene (ns=shp_scene) kinova_with_objects_scene {
+    obj set <pick_objects>
+    agn set <agents>
+    ws comp <comp_table>
+}

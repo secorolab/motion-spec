@@ -40,7 +40,6 @@ from motion_spec_dsl.rdf_parser.vocab import (
 )
 from rdf_utils.constraints import ConstraintViolation
 from rdf_utils.models.common import ModelBase, get_node_types
-from rdf_utils.models.execution import URI_EXEC_PRED_PATH
 from rdf_utils.models.vocab import (
     URI_GEOM_PRED_OF_POSE,
     URI_GEOM_PRED_WRT,
@@ -102,7 +101,7 @@ from motion_spec.classes.solvers import (
     VelocityCompositionSolver,
 )
 from motion_spec.rdf_parser import constraint_handler, quantities
-from motion_spec.rdf_parser.model import local_name, reader
+from motion_spec.rdf_parser.model import local_name, model_file, reader
 from motion_spec.rdf_parser.operations import OPS_GENERIC, OPS_SOLVER
 
 SUPPORTED_ROBOT_MODELS = {"KinovaGen3"}
@@ -417,12 +416,11 @@ def _agent_bindings(model):
     for modelled in graph.subjects(RDF.type, AGN.ModelledAgent):
         rows = []
         for asset in graph.objects(modelled, AGN["has-agent-model"]):
-            # Not `get_path_of_node`, which raises: a pathless agent model is metadata rather
-            # than a runtime asset, and the assembly around it still reads.
-            path = graph.value(asset, URI_EXEC_PRED_PATH)
+            # A pathless agent model is metadata rather than a runtime asset, and the assembly
+            # around it still reads.
+            path = model_file(graph, asset)
             if not path:
                 continue
-            path = str(path)
             for tree, entity in model_mappings(model, asset, GEOM_ENT.KinematicTree):
                 rows.append({"model": asset, "tree": tree, "path": path, "entity": entity})
         bindings_by_modelled[modelled] = rows

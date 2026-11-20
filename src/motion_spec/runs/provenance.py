@@ -15,15 +15,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from rdf_utils.models.prov import (
+    PackageInfo,
     add_agent,
     add_entity,
-    add_file_entity,
     get_git_info,
-    get_pkg_info,
+    get_py_pkg_info,
     load_pkg_prov,
     load_sampling_prov,
     load_transformation_prov,
 )
+from rdf_utils.models.time import add_wall_instant
 from rdf_utils.models.vocab import URI_AGN_TYPE_MOD_AGN
 from rdf_utils.namespace import NS_MM_QUDT, URL_MM_PROV_EXT_JSON, URL_MM_PROV_JSON
 from rdflib import Dataset, Graph, Literal, Namespace, URIRef
@@ -127,8 +128,42 @@ def _mtime(path: Path) -> datetime:
     return datetime.fromtimestamp(Path(path).stat().st_mtime, UTC)
 
 
+def _add_located_file(
+    graph: Graph,
+    entity: URIRef,
+    location: URIRef,
+    generated_by: URIRef | None = None,
+    generated_at: datetime | None = None,
+) -> None:
+    """A file entity at LOCATION, its path from the generations root.
+
+    Stated as a relative IRI, which the document's `@base` resolves, rather than as an rdf-utils
+    relative location: these documents move with the generations root they describe.
+    """
+    add_entity(graph, entity)
+    graph.add((entity, PROV.atLocation, location))
+    if generated_by is not None:
+        graph.add((entity, PROV.wasGeneratedBy, generated_by))
+    if generated_at is not None:
+        graph.add((entity, PROV.generatedAtTime, Literal(generated_at)))
+
+
+def _span(
+    graph: Graph, activity: URIRef, started: datetime, ended: datetime | None = None
+) -> tuple[URIRef, URIRef | None]:
+    """The activity's start and end, as OWL-Time instants named under it."""
+    start = URIRef(f"{activity}/start")
+    add_wall_instant(graph, start, started)
+    if ended is None:
+        return start, None
+    end = URIRef(f"{activity}/end")
+    add_wall_instant(graph, end, ended)
+    return start, end
+
+
 def add_package(graph: Graph, key: str) -> URIRef:
     """One package as the agent a step is associated with; stst and cmake are not Python ones."""
+    dirty = False
     if key == "stst":
         from motion_spec.setup import STST_REPOSITORY, shipped_pin
 
@@ -138,9 +173,23 @@ def add_package(graph: Graph, key: str) -> URIRef:
         match = re.search(r"cmake version (\S+)", run_tool("cmake", "--version") or "")
         name, version, commit, repository = "cmake", match.group(1) if match else None, None, None
     else:
-        name, version, commit, repository = get_pkg_info(key)
+        info = get_py_pkg_info(key)
+        # The distribution's name (`motion-spec`), which the agent has always been named by.
+        name = info.distrib_name or info.name
+        version, commit, repository, dirty = info.version, info.revision, info.repository, info.dirty
     agent = package_agent_uri(name, version, commit)
-    load_pkg_prov(graph, agent, name, version, commit, repository)
+    # load_pkg_prov names the agent by its purl; here it is one agent per release instead.
+    load_pkg_prov(
+        graph,
+        PackageInfo(
+            name=name,
+            purl=agent,
+            version=version,
+            revision=commit,
+            repository=repository,
+            dirty=dirty,
+        ),
+    )
     return agent
 
 
@@ -220,7 +269,7 @@ def generated_file(graph: Graph, generated: Path, path: Path) -> URIRef:
 
     entity = generation_scope(generated.parent)[f"entity/{os.path.relpath(path, generated.parent)}"]
     location = URIRef(os.path.relpath(Path(path).resolve(), generations_root().resolve()))
-    add_file_entity(graph, entity, location=location, generated_at=_mtime(path))
+    _add_located_file(graph, entity, location, generated_at=_mtime(path))
     return entity
 
 
@@ -246,8 +295,7 @@ def record_ir_generation(
         [manifest, *inputs],
         [ir_entity, generated_file(graph, generated, derived_path)],
         package,
-        started,
-        ended,
+        *_span(graph, activity, started, ended),
     )
     graph.add((ir_entity, PROV.wasDerivedFrom, manifest))
 
@@ -277,8 +325,7 @@ def record_code_generation(
         [generated_file(graph, generated, ir_path)],
         targets,
         package,
-        started,
-        ended,
+        *_span(graph, activity, started, ended),
     )
 
 
@@ -297,7 +344,12 @@ def record_tool_generation(
     activity = generation_scope(generated.parent)[f"activity/{step}"]
     targets = [generated_file(graph, generated, path) for path in written]
     load_transformation_prov(
-        graph, activity, sources, targets, add_package(graph, package), started, ended
+        graph,
+        activity,
+        sources,
+        targets,
+        add_package(graph, package),
+        *_span(graph, activity, started, ended),
     )
 
 
@@ -318,7 +370,9 @@ def record_build(
     activity = generation_scope(generated.parent)["activity/build"]
     package = add_package(graph, "cmake")
     target = generated_file(graph, generated, executable)
-    load_transformation_prov(graph, activity, sources, [target], package, started, ended)
+    load_transformation_prov(
+        graph, activity, sources, [target], package, *_span(graph, activity, started, ended)
+    )
     write_generation_graph(document, GRAPH_MOTION_SPEC, graph)
 
 
@@ -435,10 +489,10 @@ def record_run_file(graph: Graph, run_id: str, path: Path, role: str, *, generat
     location = os.path.relpath(Path(path).resolve(), generations_root().resolve())
     entity = URIRef(run_entity_uri(run_id, location))
     at = _mtime(path)
-    add_file_entity(
+    _add_located_file(
         graph,
         entity,
-        location=URIRef(location),
+        URIRef(location),
         generated_by=run if generated else None,
         generated_at=at if generated else None,
     )
@@ -506,7 +560,7 @@ def record_execution(
         run,
         [record_arguments(graph, run_id, arguments), *executables],
         add_package(graph, "motion_spec"),
-        started,
+        _span(graph, run, started)[0],
     )
     # The controller process carried the run out, driving the robots the scene models.
     for agent in (controller, *graph.subjects(RDF.type, URI_AGN_TYPE_MOD_AGN)):
@@ -538,15 +592,15 @@ def record_draw(graph: Graph, run_id: str, agent: URIRef, quantity: str, values,
     draw = URIRef(run_entity_uri(run_id, f"draw/{quantity}"))
     quantity_id = URIRef(quantity)
     add_entity(graph, quantity_id)
+    sampling = URIRef(f"{prov_uri(f'run:{run_id}')}/sampling/{_slug(quantity)}")
     load_sampling_prov(
         graph,
-        URIRef(f"{prov_uri(f'run:{run_id}')}/sampling/{_slug(quantity)}"),
+        sampling,
         [],
         [draw],
         quantity_id,
         agent,
-        drawn_at,
-        drawn_at,
+        *_span(graph, sampling, drawn_at, drawn_at),
     )
     if len(values) == 3:
         model = ModelBase(draw, types={URI_GEOM_TYPE_VECTOR_XYZ})
@@ -620,9 +674,10 @@ def artifact_sha256(path: Path) -> str:
 
 def record_software(run, run_dir: Path) -> None:
     """The recorder, and the checkout the run sits in; the execution document names motion-spec."""
-    name, version, _, _ = get_pkg_info("rec")
+    info = get_py_pkg_info("rec")
+    name, version = info.distrib_name or info.name, info.version
     run.log_dependencies([{"name": name, **({"version": version} if version else {})}])
-    commit, url = get_git_info(run_dir)
+    commit, url, _, _ = get_git_info(run_dir)
     if commit:
         name = url.rsplit("/", 1)[-1] if url else Path(run_dir).name
         run.log_repositories([{"name": name, "commit": commit, **({"url": url} if url else {})}])

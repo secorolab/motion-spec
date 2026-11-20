@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 
 from motion_spec.dashboard import roots
-from motion_spec.dashboard.roots import LAYOUT_REL, STATE_REL, json_file
+from motion_spec.dashboard.roots import HEADER_REL, STATE_REL, json_file
 
 LOCK = threading.RLock()
 
@@ -19,7 +19,7 @@ LOCK = threading.RLock()
 def generation_of(path: Path) -> Path:
     """Reject directories that are neither generations nor their direct runs."""
     generation = path.parent.parent if path.parent.name == "runs" else path
-    if not path.is_dir() or not (generation / LAYOUT_REL).is_file():
+    if not path.is_dir() or not (generation / HEADER_REL).is_file():
         raise ValueError("annotations belong to a generation or run")
     return generation
 

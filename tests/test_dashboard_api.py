@@ -15,8 +15,9 @@ from rec import Verdict
 from support import DASHBOARD_SCHEMA
 
 from motion_spec.dashboard import roots, server
-from motion_spec.generation.artifacts import build_frame_layout
+from motion_spec.generation.artifacts import build_frame_log_header_record
 from motion_spec.runs.provenance import rec_run
+from motion_spec.telemetry import frame_log_pb
 
 RUN = "demo/20260821T000000Z/runs/run-1"
 
@@ -25,9 +26,10 @@ RUN = "demo/20260821T000000Z/runs/run-1"
 def host(tmp_path, monkeypatch):
     """A server on an ephemeral port, rooted at a tree holding one finished run at RUN."""
     generation = tmp_path / "demo" / "20260821T000000Z"
-    layout = generation / "generated" / "contract" / "frame_layout.json"
-    layout.parent.mkdir(parents=True)
-    layout.write_text(json.dumps(build_frame_layout(DASHBOARD_SCHEMA)))
+    header = generation / roots.HEADER_REL
+    header.parent.mkdir(parents=True)
+    with header.open("wb") as fh:
+        frame_log_pb.write_delimited(fh, build_frame_log_header_record(DASHBOARD_SCHEMA))
     run = generation / "runs" / "run-1"
     (run / "logs").mkdir(parents=True)
     recorded = rec_run(run)

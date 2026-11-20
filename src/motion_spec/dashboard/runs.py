@@ -10,7 +10,7 @@ from pathlib import Path
 from rec import State, Verdict
 
 from motion_spec.dashboard.frames import FrameLayout
-from motion_spec.dashboard.roots import LAYOUT_REL
+from motion_spec.dashboard.roots import HEADER_REL
 from motion_spec.runs.provenance import rec_run
 from motion_spec.telemetry import frame_log_pb
 from motion_spec.telemetry.frame_log_pb import read_health
@@ -101,7 +101,7 @@ class GenerationInfo:
 
     @property
     def layout(self) -> FrameLayout:
-        return FrameLayout.load(self.dir / LAYOUT_REL)
+        return FrameLayout(frame_log_pb.read_contract(self.dir / HEADER_REL))
 
     @property
     def runs(self) -> list[RunInfo]:
@@ -122,7 +122,7 @@ class GenerationCatalog:
         found = {
             layout.parent.parent.parent
             for depth in ("*/*", "*/*/*")
-            for layout in self.root.glob(f"{depth}/{LAYOUT_REL}")
+            for layout in self.root.glob(f"{depth}/{HEADER_REL}")
             if not layout.parent.parent.parent.is_symlink()
         }
         generations = [GenerationInfo(d, self.root) for d in found]

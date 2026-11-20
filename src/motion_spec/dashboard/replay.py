@@ -202,7 +202,7 @@ def replay_data(run_dir: Path) -> dict:
         # A run named but not yet writing. The generation's header record is the same one the
         # runtime puts at the front of the log, and is itself a zero-frame log.
         generation = run_generation(run_dir)
-        record = generation / "generated/contract/frame_log_header.pb" if generation else None
+        record = generation / roots.HEADER_REL if generation else None
         if record is None or not record.is_file():
             raise
         log, contract = record, frame_log_pb.read_contract(record)

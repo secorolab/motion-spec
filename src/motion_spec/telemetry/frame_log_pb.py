@@ -74,6 +74,8 @@ POSE_NAMES = ("px", "py", "pz", "qx", "qy", "qz", "qw")
 TWIST_NAMES = ("lx", "ly", "lz", "ax", "ay", "az")
 WRENCH_NAMES = ("fx", "fy", "fz", "tx", "ty", "tz")
 PROTO = Path(__file__).with_name("frame_log.proto")
+# the header record a generation writes for its program to log first, readable before any run
+HEADER_FILE = "frame_log_header.pb"
 FORMAT_VERSION = 4
 HEADER_SLOTS = ("quantities", "poses", "twists", "wrenches", "devices")
 CONSTRAINT_KEYS = ("active", "error", "output", "satisfied", "sat_t", "measured", "setpoint")

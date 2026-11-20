@@ -26,7 +26,7 @@ from motion_spec.dashboard.catalog import (
     run_ended,
     run_recorded,
 )
-from motion_spec.dashboard.roots import LAYOUT_REL, RUN_LOG, trace
+from motion_spec.dashboard.roots import HEADER_REL, RUN_LOG, trace
 from motion_spec.setup import GENERATION_VARIABLE
 
 # One entry per run this dashboard started, keyed by the run directory: several runs of one
@@ -87,7 +87,7 @@ def start_run(generation_dir: Path, options: dict) -> dict:
     The CLI owns what a run is -- the run directory, the archive, the recovery afterwards --
     so start it rather than reimplementing it here, and let it say what it made.
     """
-    if not (generation_dir / LAYOUT_REL).exists():
+    if not (generation_dir / HEADER_REL).exists():
         raise ValueError("not a generation")
     simulated = bool(generation_platform(generation_dir).get("simulated"))
     # Simulations run side by side; the real robot runs one thing at a time, whichever
@@ -323,7 +323,7 @@ def console_log_for(path: Path) -> Path:
     started, and the CLI's own console of generating and building it. The newest is the one that
     says what just happened; without either, the name a run would have written.
     """
-    if not (path / LAYOUT_REL).is_file():
+    if not (path / HEADER_REL).is_file():
         return path / "logs" / "console.log"
     candidates = (path / RUN_LOG, path / "logs" / "console.log")
     written = [log for log in candidates if log.is_file()]

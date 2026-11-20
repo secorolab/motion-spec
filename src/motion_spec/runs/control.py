@@ -9,7 +9,6 @@ Stopping a run is not the block's: `motion-spec cancel` asks through rec.
 
 from __future__ import annotations
 
-import json
 import mmap
 import os
 import struct
@@ -17,7 +16,7 @@ import time
 from pathlib import Path
 
 from motion_spec.runs.provenance import run_generation
-from motion_spec.telemetry.frame_log_pb import ctrl_shm_name, shm_path
+from motion_spec.telemetry.frame_log_pb import HEADER_FILE, ctrl_shm_name, read_contract, shm_path
 
 SIZE = 48
 VERSION = 2
@@ -112,9 +111,9 @@ def run_channel(run_dir: Path) -> ControlChannel:
     generation = run_generation(run_dir)
     if generation is None:
         raise ValueError(f"{run_dir}: the run's document names no generation")
-    layout = json.loads((generation / "generated" / "contract" / "frame_layout.json").read_text())
+    header = read_contract(generation / "generated" / "contract" / HEADER_FILE).header
     name = os.environ.get("MOTION_SPEC_CTRL_SHM_NAME") or ctrl_shm_name(
-        layout["schema_hash"], run_dir.name
+        header.schema_hash, run_dir.name
     )
     return ControlChannel(name=name)
 

@@ -19,7 +19,7 @@ from motion_spec.dashboard.frames import (
 )
 from motion_spec.dashboard.jobs import RUNNING, mark_stopped
 from motion_spec.dashboard.replay import log_events
-from motion_spec.dashboard.roots import trace
+from motion_spec.dashboard.roots import HEADER_REL, trace
 from motion_spec.dashboard.runs import GenerationInfo
 from motion_spec.dashboard.tail import FrameLogTail
 from motion_spec.runs.control import SPEED_MAX, SPEED_MIN, acknowledged, control_run, run_channel
@@ -189,7 +189,7 @@ def live_state(run_dir: Path, signals=()) -> dict:
             if not started or started.get("recorded") is not False:
                 return _NOT_STARTED
             generation = run_generation(run_dir)
-            log = generation / "generated/contract/frame_log_header.pb" if generation else None
+            log = generation / HEADER_REL if generation else None
             if log is None or not log.is_file():
                 return _NOT_STARTED
             contract, log_less = frame_log_pb.read_contract(log), True

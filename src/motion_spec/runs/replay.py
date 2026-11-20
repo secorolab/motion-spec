@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from motion_spec.runs.provenance import run_generation, run_outputs
@@ -58,8 +57,8 @@ def verify_recording(path: Path | str) -> int:
     run_dir, log_path, contract = resolve_run(path)
     validate_header(log_path, contract)
     verify_run(run_dir)
-    layout_path = run_generation(run_dir) / "generated" / "contract" / "frame_layout.json"
-    expected = json.loads(layout_path.read_text())["schema_hash"]
+    header_path = run_generation(run_dir) / "generated" / "contract" / frame_log_pb.HEADER_FILE
+    expected = frame_log_pb.read_contract(header_path).header.schema_hash
     if contract.header.schema_hash != expected:
         raise RecordError(
             log_path,

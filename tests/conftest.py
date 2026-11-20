@@ -25,7 +25,6 @@ from rdflib.namespace import PROV
 from support import FRAME, MODEL_GRAPH, PROVENANCE, SCHEMA
 
 from motion_spec.generation.artifacts import (
-    build_frame_layout,
     build_frame_log_header_record,
     field_names_and_format,
 )
@@ -41,9 +40,8 @@ def source_tree(tmp_path: Path) -> Path:
     """
     path = tmp_path / "generated"
     (path / "contract").mkdir(parents=True)
-    (path / "contract" / "frame_layout.json").write_text(
-        json.dumps(build_frame_layout(SCHEMA), indent=4)
-    )
+    with (path / "contract" / frame_log_pb.HEADER_FILE).open("wb") as header:
+        frame_log_pb.write_delimited(header, build_frame_log_header_record(SCHEMA))
     shutil.copyfile(frame_log_pb.PROTO, path / "contract" / "frame_log.proto")
     (path / GENERATION_DOCUMENT).parent.mkdir()
     (path / GENERATION_DOCUMENT).write_text(json.dumps(PROVENANCE, indent=4))

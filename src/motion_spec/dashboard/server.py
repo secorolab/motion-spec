@@ -65,7 +65,7 @@ from motion_spec.dashboard.queries import (
 from motion_spec.dashboard.replay import plot_data, replay_data, run_verdict
 from motion_spec.dashboard.roots import (
     FRONTEND,
-    LAYOUT_REL,
+    HEADER_REL,
     current_roots,
     directory_size,
     expected_path,
@@ -239,7 +239,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/run":
                 # A generation answers for every run of it the dashboard started; a run for itself.
                 target = relative_path(roots.GENERATIONS, value)
-                if (target / LAYOUT_REL).exists():
+                if (target / HEADER_REL).exists():
                     return self.send_json(generation_status(target))
                 return self.send_json(run_status(target))
             if parsed.path == "/api/health":

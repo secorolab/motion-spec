@@ -509,7 +509,7 @@ def build_telemetry_model(schema: dict, ir: dict) -> dict:
 
 
 def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_ir: dict) -> dict:
-    """Write frame_layout.json and the frame-log header record, and return the frame-log header
+    """Write the frame-log header record, and return the frame-log header
     + sample model that codegen folds into the IR.
 
     The decode contract is not written here: it is serialized into the frame log's own header
@@ -519,10 +519,8 @@ def write_telemetry_artifacts(ir: dict, *, ir_path: Path, output_dir: Path, fsm_
     layout = build_frame_layout(schema)
     end_state = schema["fsm"]["end"]
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "frame_layout.json").write_text(json.dumps(layout, indent=4) + "\n")
     header_record = build_frame_log_header_record(schema)
-    # the record the runtime writes first, readable before any run
-    with (output_dir / "frame_log_header.pb").open("wb") as fh:
+    with (output_dir / frame_log_pb.HEADER_FILE).open("wb") as fh:
         frame_log_pb.write_delimited(fh, header_record)
     header_bytes = [f"0x{byte:02x}" for byte in header_record]
     return {

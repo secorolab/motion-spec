@@ -3,16 +3,15 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from support import DASHBOARD_SCHEMA
 
 from motion_spec.dashboard.frames import FrameLayout, ShmFrameReader
 from motion_spec.generation.artifacts import (
-    build_frame_layout,
+    build_frame_log_header_record,
     field_names_and_format,
 )
+from motion_spec.telemetry import frame_log_pb
 
 FRAME = {
     "t": 2.5,
@@ -58,9 +57,10 @@ ZERO_FRAME = {name: 0 for name in field_names_and_format(DASHBOARD_SCHEMA["pools
 
 @pytest.fixture
 def layout(tmp_path) -> FrameLayout:
-    path = tmp_path / "frame_layout.json"
-    path.write_text(json.dumps(build_frame_layout(DASHBOARD_SCHEMA), indent=4))
-    return FrameLayout.load(path)
+    path = tmp_path / frame_log_pb.HEADER_FILE
+    with path.open("wb") as fh:
+        frame_log_pb.write_delimited(fh, build_frame_log_header_record(DASHBOARD_SCHEMA))
+    return FrameLayout(frame_log_pb.read_contract(path))
 
 
 def test_a_reader_returns_the_published_frame(tmp_path, layout):

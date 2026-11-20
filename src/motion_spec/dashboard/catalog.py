@@ -23,7 +23,7 @@ from rec import Verdict
 from motion_spec.dashboard import roots
 from motion_spec.dashboard.graph import deployed_devices
 from motion_spec.dashboard.metadata import annotations, model_folder
-from motion_spec.dashboard.roots import LAYOUT_REL, STATE_REL, directory_size, json_file, trace
+from motion_spec.dashboard.roots import STATE_REL, directory_size, json_file, trace
 from motion_spec.dashboard.runs import ENDED, GenerationInfo, RunInfo
 from motion_spec.dashboard.sources import aligned_rows, authored_lines
 from motion_spec.rdf_parser.agents import agent_cameras
@@ -41,7 +41,7 @@ from motion_spec.runs.verify import RecordError
 
 
 def generation_info(path: Path) -> dict:
-    layout = json_file(path / LAYOUT_REL)
+    layout = GenerationInfo(path, roots.GENERATIONS).layout
     # The generation is the activity every tool's step was delegated in.
     provenance = read_generation_dataset(path / "generated" / GENERATION_DOCUMENT)
     began = provenance.value(provenance.value(predicate=PROV.hadActivity), TIME.hasBeginning)
@@ -64,9 +64,9 @@ def generation_info(path: Path) -> dict:
         "backend": platform.get("backend"),
         "platform": platform.get("name"),
         "simulated": platform.get("simulated"),
-        "schema_hash": layout.get("schema_hash"),
+        "schema_hash": layout.schema_hash,
         "size_bytes": directory_size(path),
-        "pools": layout.get("pools", {}),
+        "pools": layout.pools,
         "runs": len(runs),
         "cameras": generation_cameras(path),
         "last_run": (

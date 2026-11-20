@@ -21,6 +21,7 @@ from pathlib import Path
 
 from motion_spec.runs.provenance import FRAME_LOG_PACKED, artifact_size
 from motion_spec.setup import ENVIRONMENT_FILES, generations_root
+from motion_spec.telemetry.frame_log_pb import HEADER_FILE
 
 
 def pidfile(port: int | str, role: str = "dashboard") -> Path:
@@ -183,7 +184,7 @@ def storage_info() -> dict:
     }
 
 
-LAYOUT_REL = "generated/contract/frame_layout.json"
+HEADER_REL = f"generated/contract/{HEADER_FILE}"
 # the dashboard's own files, mirrored beside the bundles they are about
 STATE_REL = ".dashboard"
 

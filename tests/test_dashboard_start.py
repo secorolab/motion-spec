@@ -4,7 +4,6 @@ how it is stopped. Exercised with a process of this test's own choosing rather t
 
 from __future__ import annotations
 
-import json
 import socket
 import subprocess
 import sys
@@ -22,9 +21,7 @@ def generation(tmp_path, monkeypatch):
     monkeypatch.setattr(roots, "GENERATIONS", tmp_path.parent)
     monkeypatch.setattr(roots, "WORKSPACE", tmp_path.parent)
     (tmp_path / "generated/contract").mkdir(parents=True)
-    (tmp_path / "generated/contract/frame_layout.json").write_text(
-        json.dumps({"platform": {"simulated": False}, "cameras": []})
-    )
+    (tmp_path / roots.HEADER_REL).touch()
     yield tmp_path
     for key in [key for key, run in jobs.RUNNING.items() if run["generation"] == str(tmp_path)]:
         jobs.RUNNING.pop(key)

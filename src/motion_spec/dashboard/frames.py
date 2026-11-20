@@ -7,10 +7,8 @@ view of "right now" -- lossy by design. The frame log (see tail.py) stays the lo
 
 from __future__ import annotations
 
-import json
 import mmap
 import struct
-from pathlib import Path
 
 from motion_spec.telemetry.frame_log_pb import shm_path
 
@@ -62,31 +60,17 @@ def slot_signals(contract) -> dict:
 
 
 class FrameLayout:
-    """A generation's frame_layout.json as the struct that decodes its shm Frame."""
+    """The struct that decodes a program's shm Frame, laid out from its frame-log header the way
+    the generator laid out the Frame it compiled in."""
 
-    def __init__(self, layout: dict):
-        from motion_spec.generation.artifacts import FRAME_LAYOUT_VERSION
+    def __init__(self, contract):
+        from motion_spec.generation.artifacts import field_names_and_format
 
-        version = layout.get("frame_layout_version")
-        if version != FRAME_LAYOUT_VERSION:
-            raise ValueError(
-                f"frame_layout.json is layout version {version}; this motion-spec reads "
-                f"version {FRAME_LAYOUT_VERSION}"
-            )
-        self.fields = layout["fields"]
-        self.pools = layout["pools"]
-        self.schema_hash = layout["schema_hash"]
-        self.names = [field["name"] for field in self.fields]
-        self.struct = struct.Struct("<" + "".join(field["fmt"] for field in self.fields))
-        if self.struct.size != layout["frame_size_bytes"]:
-            raise ValueError(
-                f"frame_layout.json is inconsistent: {len(self.fields)} fields pack to "
-                f"{self.struct.size} bytes but frame_size_bytes says {layout['frame_size_bytes']}"
-            )
-
-    @classmethod
-    def load(cls, path: Path | str) -> FrameLayout:
-        return cls(json.loads(Path(path).read_text()))
+        self.pools = {category: len(entries) for category, entries in contract.fields.items()}
+        self.schema_hash = contract.header.schema_hash
+        fmt, self.names = field_names_and_format(self.pools)
+        self.struct = struct.Struct(fmt)
+        self.formats = list(fmt[1:])
 
 
 class ShmFrameReader:
@@ -144,15 +128,10 @@ class SignalFields:
         self.contract = contract
         self.offsets: dict[str, tuple[int, struct.Struct]] = {}
         offset = 0
-        for field in layout.fields:
-            item = struct.Struct("<" + field["fmt"])
-            self.offsets[field["name"]] = (offset, item)
+        for name, code in zip(layout.names, layout.formats, strict=True):
+            item = struct.Struct("<" + code)
+            self.offsets[name] = (offset, item)
             offset += item.size
-        if offset != layout.struct.size:
-            raise ValueError(
-                f"frame_layout.json field formats pack to {offset} bytes, but the frame "
-                f"struct is {layout.struct.size}"
-            )
         self._constraints = {
             field["id"]: field["index"] for field in contract.fields["constraints"]
         }

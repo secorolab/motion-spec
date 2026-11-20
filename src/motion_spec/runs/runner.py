@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -43,8 +42,10 @@ from motion_spec.runs.provenance import (
 from motion_spec.runs.ros_video import RosImageRecorder, real_camera_recordings
 from motion_spec.runs.verify import FRAME_LOG, verify_run
 from motion_spec.telemetry.frame_log_pb import (
+    HEADER_FILE,
     LOG_SUFFIX,
     ctrl_shm_name,
+    read_contract,
     read_sampling,
     shm_name_for,
 )
@@ -93,9 +94,7 @@ def run_cataloged(
         raise RunnerError(f"{run_dir}: already records a run; choose a fresh run directory")
     if frame_log.exists():
         raise RunnerError(f"{frame_log}: refusing to overwrite an existing frame log")
-    schema_hash = json.loads((source_dir / "contract" / "frame_layout.json").read_text())[
-        "schema_hash"
-    ]
+    schema_hash = read_contract(source_dir / "contract" / HEADER_FILE).header.schema_hash
     model = generation_model(source_dir)
     platform = platform_facts(model.graph)
     config = Path(platform["config"]) if platform["config"] else None

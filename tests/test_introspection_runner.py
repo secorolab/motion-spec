@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +16,7 @@ from motion_spec.runs.provenance import (
 )
 from motion_spec.runs.runner import run_cataloged
 from motion_spec.runs.verify import verify_run
+from motion_spec.telemetry import frame_log_pb
 
 # Writes to both streams, copies `source_log` as its frame log when named, then exits with
 # `exit_code`.
@@ -44,9 +44,8 @@ def test_each_run_names_its_own_shared_memory_blocks(tmp_path: Path, source_tree
     # A run runs what its generation's build generated.
     now = datetime.now(UTC)
     record_build(source_tree, source_tree / "controller", executable, started=now, ended=now)
-    schema_hash = json.loads((source_tree / "contract" / "frame_layout.json").read_text())[
-        "schema_hash"
-    ][:16]
+    header = frame_log_pb.read_contract(source_tree / "contract" / frame_log_pb.HEADER_FILE).header
+    schema_hash = header.schema_hash[:16]
 
     for run_id in ("run-a", "run-b"):
         run_dir = tmp_path / "runs" / run_id

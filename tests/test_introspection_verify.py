@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
@@ -13,8 +12,9 @@ from rdf_utils.models.vocab import URI_PROV_EXT_TYPE_TRANSFORMATION
 from rdflib import Dataset
 from rdflib.namespace import DCTERMS, PROV, RDF
 from rec.provenance import RUN_BASE
-from support import EXAMPLES
+from support import EXAMPLES, SCHEMA
 
+from motion_spec.generation.artifacts import build_frame_layout
 from motion_spec.generation.pipeline import generate_model
 from motion_spec.runs import replay
 from motion_spec.runs.provenance import (
@@ -33,7 +33,7 @@ def run_dir(tmp_path: Path, source_tree: Path) -> Path:
     `logs/`, and its outputs recorded once it exited."""
     run_dir = tmp_path / "runs" / "run-test"
     (run_dir / "logs").mkdir(parents=True)
-    schema = json.loads((source_tree / "contract" / "frame_layout.json").read_text())
+    schema = build_frame_layout(SCHEMA)
     run, bundle_id = start_rec_run(run_dir, "run-test", source_tree, tmp_path / "main", schema)
     shutil.copyfile(source_tree / "frame_log.pb", run_dir / "logs" / "frame_log.pb")
     (run_dir / "logs" / "console.log").write_text("started\n")
@@ -96,7 +96,7 @@ def test_a_logless_run_verifies_and_its_provenance_says_it_kept_no_log(
 ) -> None:
     run_dir = tmp_path / "runs" / "run-quiet"
     (run_dir / "logs").mkdir(parents=True)
-    schema = json.loads((source_tree / "contract" / "frame_layout.json").read_text())
+    schema = build_frame_layout(SCHEMA)
     run, bundle_id = start_rec_run(run_dir, "run-quiet", source_tree, tmp_path / "main", schema)
     (run_dir / "logs" / "console.log").write_text("started\n")
 

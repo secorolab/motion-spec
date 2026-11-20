@@ -165,7 +165,7 @@ def generate_code(
     ir["communication"]["telemetry_artifacts"] = write_telemetry_artifacts(
         ir, ir_path=ir_path, output_dir=contract_dir, fsm_ir=fsm
     )
-    written = [contract_dir / "frame_layout.json", contract_dir / "frame_log_header.pb"]
+    written = [contract_dir / frame_log_pb.HEADER_FILE]
 
     headers_dir = output_dir / "headers"
     headers_dir.mkdir(parents=True, exist_ok=True)

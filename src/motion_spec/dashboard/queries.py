@@ -17,7 +17,7 @@ from motion_spec.dashboard import roots
 from motion_spec.dashboard.catalog import classify_quads, graph_name, term_graphs
 from motion_spec.dashboard.graph import GraphService, load_document
 from motion_spec.dashboard.metadata import LOCK, generation_of, write_document
-from motion_spec.dashboard.roots import LAYOUT_REL, STATE_REL, json_file
+from motion_spec.dashboard.roots import HEADER_REL, STATE_REL, json_file
 from motion_spec.dashboard.runs import RunInfo
 from motion_spec.dashboard.sources import declaration_lines
 from motion_spec.runs.provenance import (
@@ -124,7 +124,7 @@ def run_query(run_dir: Path, sparql: str, offset: int = 0) -> dict:
     """
     # A generation with no run still has a model graph worth exploring, and the Explore page is
     # the only way left to look at one -- so a query aimed at a generation answers from it.
-    if (run_dir / LAYOUT_REL).exists():
+    if (run_dir / HEADER_REL).exists():
         service = GraphService(run_dir)
     else:
         # Kept per log revision, as the run list is.

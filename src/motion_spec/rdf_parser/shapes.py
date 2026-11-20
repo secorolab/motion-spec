@@ -123,8 +123,8 @@ def read_shapes(model, scene: MjcfSceneSpec) -> list[MjcfSceneShape]:
             "contype": contype,
             "conaffinity": conaffinity,
             "group": group,
-            # MuJoCo takes RGBA, so the colour is converted here. A shape only touched has none,
-            # so it keeps MuJoCo's default; group 3 hides it unless shown.
+            # MuJoCo takes RGBA, so the colour is converted here. A shape that states none keeps
+            # MuJoCo's default.
             "rgba": None if shape.color is None else list(shape.color.rgba),
         }
         # The scene states the scale in its own length unit; MuJoCo takes metres.
